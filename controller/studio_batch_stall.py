@@ -55,6 +55,44 @@ def plain(job_id, minutes, *, last=None, restart_pending=None, session=None):
             + ', then ' + fix['commands'][1] + ' (finished members are kept; the rest run as ' + job_id + '-rN).')
 
 
+def refusal_recovery(session, job_id):
+    """The only recovery for a batch the EA refused before any test ran: stop it, fix the SET, prepare anew.
+
+    Never continue --clear-stop: the EA refuses the same inputs again, and clear-stop only clears the
+    owner STOP file (Banker, 2026-10-13)."""
+    if (session or {}).get('authority_kind') == 'demo_direct':
+        prefix, steps = 'goat.exe demo --installation <receipt> ', [['stop']]
+    else:
+        prefix, steps = 'goat.exe studio --installation <receipt> ', [['batch-stop', '--job-id', job_id]]
+    return dict(commands=[prefix + ' '.join(step) for step in steps], args=steps,
+                note='Then rebuild the SET (fix the input the EA names), prepare a new batch from it and start that. '
+                     'Do not continue ' + job_id + ': an unchanged retry refuses again, and clear-stop only clears '
+                     'the owner STOP file.')
+
+
+def _refused(refusal_fn):
+    """The EA's refusal of this attempt (studio_ea_refusal), read only once a stall holds; None on any error."""
+    if refusal_fn is None:
+        return None
+    try:
+        refusal = refusal_fn()
+    except Exception:
+        return None
+    return refusal if isinstance(refusal, dict) and refusal.get('plain') else None
+
+
+def _verdict(job_id, minutes, since, restart_pending, session, last, refusal):
+    if refusal is not None:
+        fix = refusal_recovery(session, job_id)
+        return dict(since_wall=since, minutes=round(minutes), restart_pending=restart_pending, ea_refusal=refusal,
+                    plain='Stalled: no member has run for ' + str(int(minutes)) + ' min. ' + refusal['plain']
+                          + ' Run ' + fix['commands'][0] + ' first.',
+                    fix=fix)
+    return dict(since_wall=since, minutes=round(minutes), restart_pending=restart_pending,
+                plain=plain(job_id, minutes, last=last, restart_pending=restart_pending, session=session),
+                fix=recovery(session, job_id))
+
+
 def _wall(text):
     try:
         return datetime.fromisoformat(str(text).replace('Z', '+00:00')).timestamp()
@@ -62,13 +100,15 @@ def _wall(text):
         return None
 
 
-def research_stall(activity, monitor, journal, *, now, session):
+def research_stall(activity, monitor, journal, *, now, session, refusal_fn=None):
     """research-status: a running batch whose MT5 has run nothing for STALL_SECONDS, else None.
 
     Every condition is read from evidence research-status already holds: no member
     ongoing, members still waiting in an unfinished native queue, a ticking monitor
     whose tester is idle, and no member start or end for STALL_SECONDS (the last
-    member's end, or the driver start when none has ended yet).
+    member's end, or the driver start when none has ended yet). Only then is
+    ``refusal_fn()`` read: when the EA refused the attempt (its Experts log), the
+    verdict quotes that reason and drops continue --clear-stop, which cannot fix it.
     """
     if not isinstance(activity, dict) or activity.get('kind') != 'batch' or activity.get('status') != 'running':
         return None
@@ -86,13 +126,11 @@ def research_stall(activity, monitor, journal, *, now, session):
     if since is None or now - since < STALL_SECONDS:
         return None
     minutes = (now - since) / 60
-    job_id = activity.get('batch_id')
-    return dict(since_wall=since, minutes=round(minutes), restart_pending=monitor.get('restart_pending'),
-                plain=plain(job_id, minutes, last=last, restart_pending=monitor.get('restart_pending'), session=session),
-                fix=recovery(session, job_id))
+    return _verdict(activity.get('batch_id'), minutes, since, monitor.get('restart_pending'), session, last,
+                    _refused(refusal_fn))
 
 
-def driver_stall(observed, record, *, quiet_since, now, session, job_id, monitor_fn):
+def driver_stall(observed, record, *, quiet_since, now, session, job_id, monitor_fn, refusal_fn=None):
     """The driver's own view: reconcile reports nothing running, the native queue is not
     finished, nothing changed for STALL_SECONDS and the monitor shows an idle tester.
 
@@ -122,7 +160,4 @@ def driver_stall(observed, record, *, quiet_since, now, session, job_id, monitor
     if not isinstance(monitor, dict) or monitor.get('ticking') is not True or monitor.get('tester_state') != 'idle':
         return None
     minutes = (now - quiet_since) / 60
-    restart_pending = monitor.get('restart_pending')
-    return dict(since_wall=quiet_since, minutes=round(minutes), restart_pending=restart_pending,
-                plain=plain(job_id, minutes, restart_pending=restart_pending, session=session),
-                fix=recovery(session, job_id))
+    return _verdict(job_id, minutes, quiet_since, monitor.get('restart_pending'), session, None, _refused(refusal_fn))

@@ -68,7 +68,7 @@ Result: a hybrid. The controller keeps planning, provenance, research and the fi
 |---|---|---|---|
 | Stop | `demo_agent.py stop` (active batch; owner STOP set) or `stop --batch-id <id>` (one unstarted batch, no STOP) | `goat_studio batch-stop --job-id <id>` | one sentence plus the next command |
 | Start | `demo_agent.py start --batch-id <id> [--max-seconds N]` | `goat_studio run-batch --job-id <id> --max-seconds N` | "Owner STOP is on; run clear-stop, then start again." |
-| Continue | `demo_agent.py continue --batch-id <id> [--include-failed] [--clear-stop]` (prepares and starts) | `goat_studio batch-continue --job-id <id>` (prepares only) | "Batch X is still running; stop it first: stop --batch-id X." |
+| Continue | `demo_agent.py continue --batch-id <id> [--include-failed] [--clear-stop]` (prepares and starts) | `goat_studio batch-continue --job-id <id>` (prepares only) | "Batch X is still running; stop it first: stop --batch-id X." / `EA_REFUSED_INPUTS` "Continue refused: the EA refused X before any test ran: <reason>. ..." (rebuild the SET) / `HUMAN_CANCEL_RETAINED` (the person presses Start). `--clear-stop` clears only the owner STOP file (`clears: owner_stop_file_only`). |
 | Keep reads fast | `demo_agent.py compact-evidence [--apply]` | `goat_studio compact-evidence [--apply]` | refuses while a batch is active (checked before any archive and again inside the queue transaction); skips a job whose never-started retirement proof compares the whole row |
 | Shrink legacy receipts | `demo_agent.py compact-receipts [--apply]` | `goat_studio compact-receipts [--apply]` | refuses while any batch is active (checked before any archive and again inside each row's transaction); skips a row that is not in the canonical layout; see "Receipts" below |
 

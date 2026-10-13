@@ -25,13 +25,15 @@ def _decode(raw):
     return raw.decode('utf-8', errors='replace').lstrip('﻿')
 
 
-def _tail(path):
+def _tail(path, limit=MAX_TAIL_BYTES):
+    """The last ``limit`` bytes of an MT5 journal MT5 may hold open (a plain read-only open, which shares
+    read and write on Windows, so MT5 keeps writing). studio_ea_refusal reuses it."""
     size = path.stat().st_size
     with path.open('rb') as stream:
-        if size > MAX_TAIL_BYTES:
+        if size > limit:
             # Keep UTF-16 code-unit alignment for the usual MT5 journal encoding.
-            stream.seek(size - MAX_TAIL_BYTES + (size % 2))
-        return stream.read(MAX_TAIL_BYTES)
+            stream.seek(size - limit + (size % 2))
+        return stream.read(limit)
 
 
 def native_error_evidence(terminal_data_root, native_run_relative):

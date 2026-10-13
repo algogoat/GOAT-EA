@@ -908,15 +908,19 @@ class DemoAgent:
             raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
         from studio_batch_close import refuse_closed
         refuse_closed(self.root, batch_id)          # a closed batch never continues, before any terminal effect
+        # Read-only, before any terminal effect or STOP clear: a refusal an unchanged retry repeats ends here.
+        previous = self._previous_attempt(job)
+        self._refuse_unfixable_retry(batch_id, previous)
         if unactivated_hint(self.root, job):
             self.retire_unactivated(batch_id)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
         if monitor.get('blocker'):
             raise ValueError(monitor['blocker']['message'] + ' ' + monitor['blocker']['fix'])
+        cleared = None
         if (self.state_root / 'STOP').exists():
             if clear_stop is not True:
                 raise ValueError('Owner STOP is on; continue with --clear-stop to lift it.')
-            self.clear_stop()
+            cleared = self.clear_stop()
         readback = self._refresh_readback()
         # The core's resolver: a retained, never-started successor of this batch (for
         # example after the driver failed to spawn) is reused instead of a new -rN, and
@@ -932,7 +936,54 @@ class DemoAgent:
                          members=prepared.get('members'), binding_changed_keys=prepared.get('binding_changed_keys'),
                          broker=broker)
         driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
-        return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
+        # What --clear-stop did (only ever the owner STOP file), and the previous attempt's EA refusal, if any.
+        return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id),
+                    clears=cleared.get('clears') if isinstance(cleared, dict) else None, stop_cleared=cleared,
+                    previous_attempt=previous)
+
+    def _previous_attempt(self, job):
+        """Read-only: how this batch's last launch attempt ended at the EA (its dispatch receipt status and its Experts
+        log refusal, studio_ea_refusal). Never raises; unreadable evidence reads as None."""
+        from studio_dispatch_observe import observe_dispatch
+        from studio_ea_refusal import for_job
+        attempt = ((job or {}).get('launch_intent') or {}).get('attempt_id')
+        if not (isinstance(attempt, str) and re.fullmatch(r'[a-f0-9]{64}', attempt)):
+            return dict(attempt_id=None, dispatch_status=None, ea_refusal=None)
+        dispatch = None
+        try:
+            observed = observe_dispatch(self.local / 'native-gate', attempt)
+            if observed.get('status') == 'receipt_observed':
+                dispatch = observed['receipt']['status']
+        except (OSError, ValueError, KeyError, TypeError):
+            dispatch = None
+        try:
+            jobs = self._jobs_readonly()
+        except (OSError, sqlite3.Error, ValueError, AttributeError):
+            jobs = ()
+        return dict(attempt_id=attempt, dispatch_status=dispatch, ea_refusal=for_job(self.install, job, jobs, now=self.clock()))
+
+    @staticmethod
+    def _refuse_unfixable_retry(batch_id, previous):
+        """continue refuses a retry that cannot work, naming the reason and the fix; nothing was changed.
+
+        The EA refused the batch's own inputs before any test ran (``refused before passes`` or ``Initialization
+        Failed`` in its Experts log): an unchanged continue refuses again, and clear-stop only clears the owner STOP
+        file. A retained human cancel (dispatch HUMAN_CANCEL_RETAINED) is the person's to release with Start."""
+        from studio_ea_refusal import blocks_retry
+        refusal = previous.get('ea_refusal')
+        if blocks_retry(refusal):
+            raise Refusal('Continue refused: the EA refused ' + batch_id + ' before any test ran: ' + str(refusal['reason'])
+                          + '. Continuing unchanged will refuse again, and clear-stop only clears the owner STOP file. '
+                          'Rebuild the SET (fix the input it names), prepare a new batch from it and start that. Nothing '
+                          'was changed. (Experts log ' + str(refusal['log']) + ' at ' + str(refusal['at_local']) + ')',
+                          'EA_REFUSED_INPUTS', batch_id=batch_id, ea_refusal=refusal,
+                          dispatch_status=previous.get('dispatch_status'), clears=None)
+        if previous.get('dispatch_status') == 'HUMAN_CANCEL_RETAINED':
+            raise Refusal('Continue refused: the EA kept a person\'s cancel for ' + batch_id + '\'s last start '
+                          '(HUMAN_CANCEL_RETAINED). clear-stop only clears the owner STOP file and never a human cancel. '
+                          'Have the person press Start in the GOAT panel on this MT5; nothing was changed.',
+                          'HUMAN_CANCEL_RETAINED', batch_id=batch_id, ea_refusal=refusal,
+                          dispatch_status='HUMAN_CANCEL_RETAINED', clears=None)
 
     def _peer_view(self):
         """The fields studio_peer_roster reads, without opening (or EA-hashing) the controller."""
@@ -1007,10 +1058,17 @@ class DemoAgent:
             self._append('studio_cancel_pending', 'cancelled', batch_id=batch_id, broker=broker)
             return dict(status=controller.job(batch_id)['status'], batch_id=batch_id)
 
+    # clear-stop deletes exactly one file: the owner STOP this tool's own `stop` wrote. It never clears a human cancel,
+    # TAKE CONTROL, an EA latch or an EA input refusal (ea_refusal in batch-status), and says so in every result.
+    CLEARS = 'owner_stop_file_only'
+    CLEARS_NOTE = ('clear-stop clears only the owner STOP file written by demo stop. It does not change the EA\'s inputs, '
+                   'a human cancel, TAKE CONTROL or any EA latch; a batch the EA refused (ea_refusal in batch-status) '
+                   'needs a rebuilt SET.')
+
     def clear_stop(self):
         marker = self.state_root / 'STOP'
         if not marker.exists():
-            return dict(status='already_clear')
+            return dict(status='already_clear', clears=self.CLEARS, note=self.CLEARS_NOTE)
         try:
             record = read_json(marker)
         except (ValueError, json.JSONDecodeError):
@@ -1029,7 +1087,7 @@ class DemoAgent:
             if read_json(self.local / 'ui-observation.json').get('owner') != 'agent':
                 raise ValueError('Agent does not own the EA')
             marker.unlink()
-            return self._append('clear_stop', 'verified', broker=broker)
+            return dict(self._append('clear_stop', 'verified', broker=broker, clears=self.CLEARS), note=self.CLEARS_NOTE)
 
     def _stop_requested(self):
         if (self.state_root / 'STOP').exists():

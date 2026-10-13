@@ -76,6 +76,13 @@ class EnumLadderRuleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'ATR_TF_: Optimization ladder contains undeclared enum values'):
             validate_strategy(defaults(ATR_TF_='5||5||5||15||Y'), SCHEMA)
 
+    def test_the_rule_applies_to_the_v148_contract_too(self):
+        schema = contracts('1.48')[0]
+        values = {name: schema_default(name, definition, schema['defines'])
+                  for name, definition in schema['inputs'].items()} | dict(RSI_TF_='15||5||10||15||Y')
+        with self.assertRaisesRegex(ValueError, '^' + ENUM_LADDER_CODE + ': .*an EA before V1.49 has no such check'):
+            validate_strategy(values, schema)
+
     def test_native_forms_listed_per_enum(self):
         self.assertEqual(native_enum_ladders(TFS), [(0, 1)])
         self.assertEqual(native_enum_ladders([0, 1, 2]), [(0, 1), (0, 2), (1, 2)])

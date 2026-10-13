@@ -159,7 +159,9 @@ def check_enum_ladders(values, schema):
 
     Runs from validate_strategy, so validate-set, prepare-batch, seed-prepare/seed-start, build-set, the queue
     and drafts all agree. The EA's seed path skips its own check (GOAT V1.49.mq5:3941-3942), so this is the
-    only gate that keeps a seed plan and the prove batch built from it on the same rule."""
+    only gate that keeps a seed plan and the prove batch built from it on the same rule. It applies to every
+    supported contract (V1.48 too): the ladder change is MT5's, not the EA's; V1.49 only detects it, and an older EA
+    would silently run a search space other than the one the SET, the axis count and the init-rule check describe."""
     problems = []
     for name, encoded in values.items():
         definition = schema['inputs'].get(name) or {}
@@ -187,10 +189,11 @@ def check_enum_ladders(values, schema):
             f'Fix: fix {name} at one value ({name}={parts[0]}||{parts[1]}||{parts[2]}||{parts[3]}||N), '
             f'or list the {separate} ({rungs}) as separate members')
     if problems:
-        raise ValueError(ENUM_LADDER_CODE + ': the GOAT EA refuses an optimization before any pass when MT5 does not '
-                         'keep an enum ladder exactly as written ("Native optimization flag/value/range differs", '
-                         + ENUM_LADDER_EVIDENCE + '); a stepped enum ladder is refused, and only step 1 over '
-                         'consecutive declared items is proven to pass. ' + ' | '.join(problems))
+        raise ValueError(ENUM_LADDER_CODE + ': MT5 does not keep a stepped enum ladder exactly as written, so the GOAT '
+                         'EA refuses the optimization before any pass ("Native optimization flag/value/range differs", '
+                         + ENUM_LADDER_EVIDENCE + '; an EA before V1.49 has no such check and would search values '
+                         'the SET does not say); only step 1 over consecutive declared items is proven to pass. '
+                         + ' | '.join(problems))
 
 
 RISK_SIZING_CODE = 'RISK_PER_SEQUENCE_NEEDS_TWO_TRADES'

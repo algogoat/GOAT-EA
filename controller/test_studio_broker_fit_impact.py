@@ -137,6 +137,34 @@ class ImpactTests(unittest.TestCase):
             with self.subTest(currency=currency), self.assertRaises(ValueError):
                 impact.impact(*args, schema=SCHEMA, account_currency=currency)
 
+    def test_the_portfolio_floor_is_recomputed_on_a_cent_contract(self):
+        # Round 2 (goatai#2350 6157285146): the manifest's 95,000 USD is a standard-contract floor; on the cent contract the
+        # floor is the recomputed one (Kestrel with start lot 0.1: 13,640, as in test_studio_broker_fit).
+        sets = self.root / 'sets'
+        sets.mkdir()
+        (sets / 'a.set').write_bytes(KESTREL)
+        reference = {member_id(KESTREL): dict(canonicalSymbol='EURUSD', reference=REFERENCE)}
+        lots = self.root / 'lots.json'
+        lots.write_text(json.dumps(dict(members=[dict(memberId=member_id(KESTREL), arms={'09': dict(n=3, median=0.1, min=0.1, max=0.1)})])))
+        args = (reference, impact.load_sets(sets, reference), impact.read_start_lots(lots), [Decimal('13639.99'), Decimal(50000)])
+        cent = impact.impact(*args, schema=SCHEMA, account_currency='USC', min_equity=Decimal(95000))
+        self.assertEqual((cent['contractClass'], cent['coverage'], cent['members'][0]['minEquity']), ('cent', 1.0, 13640.0))
+        self.assertEqual(cent['portfolio']['50000'], dict(offered=True, refusal=None, minEquity=13640.0, minEquitySource='computed_live_contract',
+                                                          minEquityComputed=13640.0, tradableRiskShare=1.0))
+        self.assertEqual(cent['portfolio']['13639.99']['refusal'], 'PORTFOLIO_NEEDS_LARGER_ACCOUNT')
+        stricter = impact.impact(*args, schema=SCHEMA, account_currency='USC', min_equity_by_contract=dict(cent=60000))
+        self.assertEqual((stricter['portfolio']['50000']['minEquity'], stricter['portfolio']['50000']['minEquitySource']),
+                         (60000.0, 'manifest_minEquityByContract'))
+        standard = impact.impact(*args, schema=SCHEMA, min_equity=Decimal(95000))
+        self.assertEqual((standard['contractClass'], standard['portfolio']['50000']['minEquity'], standard['portfolio']['50000']['refusal']),
+                         ('standard', 95000.0, 'PORTFOLIO_NEEDS_LARGER_ACCOUNT'))
+        # Without a start lot no equity makes the member tradable: coverage 0, never offered.
+        unknown = impact.impact(reference, args[1], {}, [Decimal(50000)], schema=SCHEMA, account_currency='USC')
+        self.assertEqual((unknown['coverage'], unknown['portfolio']['50000']['refusal'], unknown['portfolio']['50000']['minEquity']),
+                         (0.0, 'PORTFOLIO_BROKER_UNFIT', None))
+        with self.assertRaises(ValueError):
+            impact.impact(*args, schema=SCHEMA, account_currency='USC', min_equity_by_contract=dict(micro=1))
+
     def test_the_cli_reads_a_portfolio_export_and_writes_nothing(self):
         import base64
         export = self.root / 'p.goatportfolio'

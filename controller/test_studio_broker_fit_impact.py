@@ -119,6 +119,22 @@ class ImpactTests(unittest.TestCase):
         self.assertEqual(row['outcomes']['50000']['detail']['Risk'], 209.56)
         self.assertIn('margin per lot (MARGIN_TOO_HIGH)', result['notAssessed'])
 
+    def test_a_cent_account_on_a_cent_contract_sizes_like_the_same_number_of_dollars(self):
+        # P-beta38-cent-accounts: 50,000 USC on the reference specs scaled to a cent contract = 50,000 USD standard.
+        sets = self.root / 'sets'
+        sets.mkdir()
+        (sets / 'a.set').write_bytes(KESTREL)
+        reference = {member_id(KESTREL): dict(canonicalSymbol='EURUSD', reference=REFERENCE)}
+        lots = self.root / 'lots.json'
+        lots.write_text(json.dumps(dict(members=[dict(memberId=member_id(KESTREL), arms={'09': dict(n=3, median=0.1, min=0.1, max=0.1)})])))
+        args = (reference, impact.load_sets(sets, reference), impact.read_start_lots(lots), [Decimal(50000)])
+        cent = impact.impact(*args, schema=SCHEMA, account_currency='USC')
+        standard = impact.impact(*args, schema=SCHEMA)
+        self.assertEqual(cent['members'][0]['outcomes'], standard['members'][0]['outcomes'])
+        self.assertEqual((cent['accountUnit']['centOf'], cent['contract']), ('USD', 'reference contract / 100 (cent)'))
+        with self.assertRaises(ValueError):
+            impact.impact(*args, schema=SCHEMA, account_currency='EUR')
+
     def test_the_cli_reads_a_portfolio_export_and_writes_nothing(self):
         import base64
         export = self.root / 'p.goatportfolio'

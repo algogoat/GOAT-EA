@@ -503,3 +503,28 @@ Codex review follow-up (inline findings on 8975f1b): the actual value-per-point 
 (min-lot feasibility, Risk' search, margin pick); the central estimate (`scaled.startLot`, `scaled.plannedLoss`) now also
 runs at that ratio rather than 1.0. Grid_Size converted inside (-0.5, 0.5) is `EA_INIT_REFUSED` (round 2); `digits: 0`
 is accepted (round 5 F1-impact).
+
+## Cent accounts (P-beta38-cent-accounts, goatai#2350 6156302597)
+
+- **Account currencies** (`CENT_CURRENCIES`): `USC` = US cents. Sources: XS's cent account page lists "Base Currency
+  USC" (xs.com/en/accounts/account-types/preferred/cent-account); PrimeXBT's MT5 cent account press release ("denominated
+  in US cents (USC)", fxstreet.com, 2026-08); PU Prime and Exness cent accounts in USC (compareforexbrokers.com,
+  brokerlistings.com reviews); Vantage's help centre ("US Dollar Cent (USC)"). Exness's other cent currencies `EUC`,
+  `GBC`, `CHC`, `AUC`, `CAC` (= EUR, GBP, CHF, AUD, CAD cents; third-party reviews of Exness, e.g. brokerlistings.com,
+  tradingbeasts.com). Not added: `USc` (no broker evidence found).
+- **Rate:** `USC` against a USD reference is exactly 0.01, no quote, no freshness check: `conversion.source:
+  'cent_account_fixed'`. Any other cent currency is its base currency's fresh-quote conversion x 0.01
+  (`'cent_account_quote'`). A normal pair is `'quote'`, the same currency `'same_currency'`.
+- **Lots are not special-cased:** the broker's cent contract (e.g. 1,000 units against 100,000) is read live and the
+  contract ratio carries the 1/100. A 50,000 USC account on a cent contract deploys exactly the bytes of a 50,000 USD
+  standard account, member by member.
+- **Money is in account units:** Risk' = scaled USD Risk / 0.01 (Risk x account equity / reference equity, floored to
+  the cent), checked against EA_MIN_RISK 10 in the account's units: the EA reads Risk in the account currency
+  (`Risk` input "Risk/Loss per Sequence", GOAT_Inputs_Definitions.mqh:644; compared with `CurrentSequencePL`, the sum
+  of POSITION_PROFIT in the account currency, mq5:1102-1113, 1161-1162; the solver's planned loss uses
+  SYMBOL_TRADE_TICK_VALUE, account currency, mq5:535-547; minimum 10 as written, mq5:3253). Margin (the SDK's, account
+  currency), the 50% cap and plannedLoss / plannedLossMax are in the same units.
+- **Output:** `accountUnit {currency, centOf, factor, note}` on the result and every member; for a cent account the note
+  is "Cent account: balances are shown in US cents (50,000 = $500)."; `centOf: null`, `factor: 1` otherwise.
+- **Open ruling:** a manifest's own `minEquity` floor is in the reference currency (USD), so it stays a USD floor on a
+  cent account (Exp 03's 95,000 = 9,500,000 USC). Spread on a real cent account can only be judged by a real read.

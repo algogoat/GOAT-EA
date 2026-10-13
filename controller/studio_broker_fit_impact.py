@@ -128,7 +128,7 @@ def load_sets(source, member_ids):
     return {member_id: by_prefix.get(_member_suffix(member_id)) for member_id in member_ids}
 
 
-def _member_outcome(values, defaults, reference, lot, equity, reference_equity):
+def _member_outcome(values, defaults, reference, lot, equity, reference_equity, *, rate=Decimal(1), contract_ratio=Decimal(1)):
     """(outcome, code, detail) of one member at one equity under the round 5 rules on the reference broker."""
     mode = bf._number(values, defaults, 'Mode_Lots')
     if bf.unreadable_money(values, defaults):
@@ -143,10 +143,10 @@ def _member_outcome(values, defaults, reference, lot, equity, reference_equity):
     if bf.fixed_money_off_reference(values, defaults, equity, reference_equity):
         return 'other', bf.CONTRACT_MISMATCH, 'fixed money limit'
     rules = dict(volume_min=reference['volumeMin'], volume_step=reference['volumeStep'], volume_max=reference['volumeMax'],
-                 contract_ratio=Decimal(1), reference_volume_min=reference['volumeMin'], reference_volume_step=reference['volumeStep'],
+                 contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'], reference_volume_step=reference['volumeStep'],
                  reference_volume_max=reference['volumeMax'], start_lot=None if lot is None else Decimal(repr(float(lot))),
                  value_ratio=Decimal(1), memo={})
-    outcome = bf.rules_at(values, defaults, rules, equity=equity, reference_equity=reference_equity, rate=Decimal(1))
+    outcome = bf.rules_at(values, defaults, rules, equity=equity, reference_equity=reference_equity, rate=rate)
     if outcome['code'] is None:
         scaled = outcome['scaled']
         return 'fit', None, dict(Risk=bf.num(scaled['Risk']), riskSearched=bf.num(scaled['riskSearched']),
@@ -154,10 +154,17 @@ def _member_outcome(values, defaults, reference, lot, equity, reference_equity):
     return ('BELOW_MIN_LOT' if outcome['code'] == bf.BELOW_MIN_LOT else 'other'), outcome['code'], None
 
 
-def impact(member_reference, sets, start_lots, equities, *, schema, reference_equity=Decimal(100000)):
+def impact(member_reference, sets, start_lots, equities, *, schema, reference_equity=Decimal(100000), account_currency=None):
     """The report (see the module docstring). member_reference: {memberId: {canonicalSymbol, reference}}; sets:
-    {memberId: bytes or None}; start_lots: read_start_lots(...); equities: Decimals."""
+    {memberId: bytes or None}; start_lots: read_start_lots(...); equities: Decimals, in the account's own units.
+    account_currency: a cent currency of the reference currency (USC for USD; P-beta38-cent-accounts) evaluates a cent
+    account on the reference broker's specs scaled to a cent contract: rate 0.01, contract 1/100 of the reference's."""
     defaults = bf.schema_defaults(schema)
+    rate, contract_ratio = Decimal(1), Decimal(1)
+    if account_currency and account_currency in bf.CENT_CURRENCIES:
+        rate, contract_ratio = bf.CENT_FACTOR, Decimal(100)
+    elif account_currency and account_currency != 'USD':
+        raise ValueError('impact evaluates the reference currency (USD) or its cent account (USC) only')
     counts = {str(equity): {name: 0 for name in OUTCOMES} for equity in equities}
     members = []
     for member_id in sorted(member_reference):
@@ -182,12 +189,15 @@ def impact(member_reference, sets, start_lots, equities, *, schema, reference_eq
             if values is None or facts is None:
                 outcome, code, detail = 'other', 'SET_OR_REFERENCE_MISSING', None
             else:
-                outcome, code, detail = _member_outcome(values, defaults, facts, lots and lots['startLot'], equity, reference_equity)
+                outcome, code, detail = _member_outcome(values, defaults, facts, lots and lots['startLot'], equity, reference_equity,
+                                                        rate=rate, contract_ratio=contract_ratio)
             counts[str(equity)][outcome] += 1
             row['outcomes'][str(equity)] = dict(outcome=outcome, code=code, detail=detail)
         members.append(row)
     return dict(schema='goat-broker-fit-impact-v1', rule='round 5 F1 (band + quantization margin) on the reference broker',
                 notAssessed=list(NOT_ASSESSED), referenceEquity=bf.num(reference_equity), counts=counts,
+                accountUnit=bf.account_unit(account_currency or 'USD'),
+                contract='reference contract / 100 (cent)' if contract_ratio != 1 else 'reference contract',
                 membersWithStartLots=sum(1 for row in members if row['startLot']), members=members)
 
 
@@ -205,6 +215,7 @@ def main(argv=None):
     run.add_argument('--equities', default='25000,50000,75000')
     run.add_argument('--reference-equity', default='100000')
     run.add_argument('--ea-version', default='1.49')
+    run.add_argument('--account-currency', default=None, help='USC: a cent account (equities in cents, cent contract)')
     args = parser.parse_args(argv)
     reference = read_json(args.member_reference)
     if args.command == 'start-lots':
@@ -213,7 +224,7 @@ def main(argv=None):
         schema, _ = contracts(args.ea_version)
         equities = [Decimal(text.strip()) for text in args.equities.split(',') if text.strip()]
         result = impact(reference, load_sets(args.sets, reference), read_start_lots(args.start_lots) if args.start_lots else {},
-                        equities, schema=schema, reference_equity=Decimal(args.reference_equity))
+                        equities, schema=schema, reference_equity=Decimal(args.reference_equity), account_currency=args.account_currency)
     json.dump(result, sys.stdout, indent=1, default=str)
     sys.stdout.write('\n')
     return 0

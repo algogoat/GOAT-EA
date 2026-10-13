@@ -680,7 +680,7 @@ class CurrencyTests(unittest.TestCase):
         raw = kestrel_with(**FIXED)
         account = dict(ACCOUNT, currency='EUR', equity=200000.0)
         result = run([(member(raw), raw)], account=account, symbols=[symbol(), symbol('EURUSD.x', bid=1.2, ask=1.2002, trade_mode=0)])
-        self.assertEqual((result['scale'], result['conversion']), (2.2, dict(rate=1.1, symbol='EURUSD', side='bid')))
+        self.assertEqual((result['scale'], result['conversion']), (2.2, dict(rate=1.1, symbol='EURUSD', side='bid', source='quote')))
         # Lots follow the reference-currency equity: 0.05 x 2.2 = 0.11. Risk is money in EUR, the same fraction of
         # equity: 500 x 200,000 / 100,000 = 1000.0 (not x2.2, which would over-risk by the exchange rate).
         self.assertEqual(one(result)['edits'], dict(Lots_Input='0.11', Risk='1000.0'))
@@ -708,7 +708,7 @@ class CurrencyTests(unittest.TestCase):
         live = lambda age: {'GBPUSD': int(T0 + 180 * 60), 'EURUSD': int(T0 + 180 * 60 - age)}
         raw = kestrel_with(**FIXED)
         fresh = run([(member(raw, canonical='GBPUSD'), raw)], account=account, symbols=facts, quotes=live(120), arrived=['GBPUSD'])
-        self.assertEqual(fresh['conversion'], dict(rate=1.2, symbol='EURUSD', side='bid'))
+        self.assertEqual(fresh['conversion'], dict(rate=1.2, symbol='EURUSD', side='bid', source='quote'))
         old = run([(member(raw, canonical='GBPUSD'), raw)], account=account, symbols=facts, quotes=live(121), arrived=['GBPUSD'])
         self.assertEqual((old['conversion'], old['refusal']['code'], old['deployBasis']), (None, bf.ACCOUNT_CURRENCY_UNSUPPORTED, None))
 
@@ -718,6 +718,72 @@ class CurrencyTests(unittest.TestCase):
         self.assertEqual({row['code'] for row in result['members']}, {bf.ACCOUNT_CURRENCY_UNSUPPORTED})
         self.assertEqual((result['scale'], result['offered'], result['refusal']['code'], result['deployBasis']),
                          (None, False, bf.ACCOUNT_CURRENCY_UNSUPPORTED, None))
+
+
+class CentAccountTests(unittest.TestCase):
+    """P-beta38-cent-accounts (goatai#2350 6156302597): USC = USD x 0.01. Bilal's $500 PU Prime demo is 50,000 USC."""
+    PU = dict(ACCOUNT, server='PUPrime-Demo')
+    CENT = symbol(trade_contract_size=1000.0, trade_tick_value=1.0)     # a cent contract: 1,000 units, 1 USC per point
+
+    def members(self):
+        fixed = kestrel_with(**dict(FIXED, EA_Desc='F'))
+        return [(member(KESTREL), KESTREL), (member(fixed, member_id='fixed'), fixed)]
+
+    def test_usc_is_usd_times_a_hundredth_with_no_quote(self):
+        self.assertEqual(bf.conversion('USC', 'USD', []), (Decimal('0.01'), None, None, 'cent_account_fixed'))
+        result = run(self.members(), account=dict(self.PU, currency='USC', equity=50000.0), symbols=[self.CENT])
+        self.assertEqual(result['conversion'], dict(rate=0.01, symbol=None, side=None, source='cent_account_fixed'))
+        self.assertEqual((result['scale'], result['deployBasis']['rate'], result['deployBasis']['accountCurrency']), (0.005, '0.01', 'USC'))
+        unit = dict(currency='USC', centOf='USD', factor=0.01, note='Cent account: balances are shown in US cents (50,000 = $500).')
+        self.assertEqual(result['accountUnit'], unit)
+        self.assertEqual({row['memberId']: row['accountUnit'] for row in result['members']}, {m['memberId']: unit for m, _ in self.members()})
+        self.assertEqual(bf.account_unit('USD', 50000)['centOf'], None)
+
+    def test_a_cent_account_deploys_the_bytes_of_the_same_size_standard_account(self):
+        # 50,000 USC on a cent contract sizes like 50,000 USD on a standard one: no special-casing of lots, the live
+        # contract ratio (100,000 / 1,000) carries the 1/100. Every member's deployed bytes are equal, and every money
+        # value is the same number, in USC on one side and USD on the other.
+        cent = run(self.members(), account=dict(self.PU, currency='USC', equity=50000.0), symbols=[self.CENT])
+        standard = run(self.members(), account=dict(self.PU, currency='USD', equity=50000.0), symbols=[symbol()])
+        for a, b in zip(cent['members'], standard['members']):
+            with self.subTest(member=a['memberId']):
+                self.assertEqual((a['status'], a['edits'], a['setSha256Deployed']), (b['status'], b['edits'], b['setSha256Deployed']))
+                self.assertEqual((a['margin']['required'], a['margin']['limit']), (b['margin']['required'], b['margin']['limit']))
+                self.assertEqual(a['scaled'], b['scaled'])
+        self.assertEqual([row['edits'] for row in cent['members']], [dict(Risk='209.56'), dict(Risk='250.0', Lots_Input='0.02')])
+
+    def test_money_is_in_account_units(self):
+        # Risk' = the scaled USD Risk / 0.01: at 50,000 USC ($500) the USD Risk is 500 x 500 / 100,000 = 2.50, i.e. 250
+        # USC; EA_MIN_RISK 10 is compared in USC (mq5:3253 reads Risk as written, in the account currency).
+        row = one(run([(member(KESTREL), KESTREL)], account=dict(self.PU, currency='USC', equity=50000.0), symbols=[self.CENT]))
+        self.assertEqual((row['scaled']['riskSearched'], row['margin']['limit']), (250.0, 25000.0))
+        self.assertLessEqual(row['scaled']['plannedLossMax'], row['scaled']['riskSearched'])
+        tiny = one(run([(member(KESTREL), KESTREL)], account=dict(self.PU, currency='USC', equity=1999.0), symbols=[self.CENT]))
+        self.assertEqual(tiny['code'], bf.BELOW_MIN_LOT)                            # Risk 9.99 USC < 10
+        # A standard $500 account cannot run it at all (Risk 2.50 < 10): the reason cent accounts exist here.
+        standard = one(run([(member(KESTREL), KESTREL)], account=dict(self.PU, currency='USD', equity=500.0), symbols=[symbol()]))
+        self.assertEqual(standard['code'], bf.BELOW_MIN_LOT)
+
+    def test_other_cent_currencies_go_through_their_base_currency_quote(self):
+        fresh = {'EURUSD': int(T0 + 180 * 60)}
+        facts = [symbol('EURUSD', bid=1.1, ask=1.1002)]
+        self.assertEqual(bf.conversion('EUC', 'USD', facts, quotes=fresh, offset_minutes=180, utc_now=T0),
+                         (Decimal('0.011'), 'EURUSD', 'bid', 'cent_account_quote'))
+        stale = {'EURUSD': int(T0 + 180 * 60 - 121)}
+        self.assertIsNone(bf.conversion('EUC', 'USD', facts, quotes=stale, offset_minutes=180, utc_now=T0))
+        # Spellings without broker evidence are not cent accounts (USc: not confirmed, so no pair converts it).
+        self.assertIsNone(bf.conversion('USc', 'USD', facts, quotes=fresh, offset_minutes=180, utc_now=T0))
+        self.assertEqual(sorted(bf.CENT_CURRENCIES), ['AUC', 'CAC', 'CHC', 'EUC', 'GBC', 'USC'])
+
+    def test_the_deploy_recheck_re_derives_the_cent_account(self):
+        # A manifest without its own minEquity floor: that floor is USD (the test manifest's 2,500 = 250,000 USC), an open
+        # ruling for cent accounts (contract "Cent accounts").
+        account = dict(self.PU, currency='USC', equity=50000.0)
+        block = plan_block(run(self.members(), account=account, symbols=[self.CENT], minEquity=None))
+        self.assertIsNone(block['manifest']['minEquity'])
+        raws = [raw for _, raw in self.members()]
+        self.assertEqual(stale(block, raws, account=account, symbols=[self.CENT]), [])
+        self.assertEqual(stale(block, raws, account=dict(account, currency='USD'), symbols=[self.CENT])[0]['input'], 'account')
 
 
 class BrokerSpecTests(unittest.TestCase):

@@ -397,13 +397,46 @@ def is_conversion_pair(facts, account_currency, reference_currency):
     return {facts.get('currency_base'), facts.get('currency_profit')} == {account_currency, reference_currency}
 
 
+# Cent accounts (P-beta38-cent-accounts, goatai#2350 6156302597): MT5 account currencies that are 1/100 of a base
+# currency. Only spellings with broker evidence are listed (contracts/broker-fit.md, "Cent accounts"): USC (XS, PrimeXBT,
+# PU Prime, Exness, Vantage) and Exness's EUC, GBC, CHC, AUC, CAC. A cent account's balance, equity, margin, profit and
+# every money input are in those cents; the 1/100 lot size comes from the broker's own cent contract size.
+CENT_CURRENCIES = dict(USC='USD', EUC='EUR', GBC='GBP', CHC='CHF', AUC='AUD', CAC='CAD')
+CENT_FACTOR = Decimal('0.01')
+CENT_UNIT_NAMES = dict(USD=('US cents', '$'), EUR=('euro cents', 'EUR '), GBP=('pence', 'GBP '), CHF=('Swiss cents', 'CHF '),
+                       AUD=('Australian cents', 'AUD '), CAD=('Canadian cents', 'CAD '))
+
+
+def account_unit(currency, equity=None):
+    """{currency, centOf, factor, note}: what one account unit is (the app's card). centOf/note only for a cent
+    account: 'Cent account: balances are shown in US cents (50,000 = $500).'"""
+    base = CENT_CURRENCIES.get(currency)
+    if base is None:
+        return dict(currency=currency, centOf=None, factor=1, note=None)
+    name, sign = CENT_UNIT_NAMES[base]
+    example = dec(equity) if dec(equity) is not None and dec(equity) > 0 else Decimal(50000)
+    whole = (example * CENT_FACTOR).quantize(CENT, rounding=ROUND_FLOOR).normalize()
+    note = 'Cent account: balances are shown in %s (%s = %s%s).' % (name, '{:,}'.format(int(example)) if example == example.to_integral_value()
+                                                                     else format(example, ','), sign, format(whole, ',f'))
+    return dict(currency=currency, centOf=base, factor=num(CENT_FACTOR), note=note)
+
+
 def conversion(account_currency, reference_currency, symbols, *, quotes=None, offset_minutes=None, utc_now=None):
-    """(rate, symbol, side): the value of 1 account-currency unit in the reference currency, from a quoted pair on the
-    terminal, taking the side that values the account LOWER (bid when the account currency is the base, 1/ask when it
-    is the quote). (1, None, None) for the same currency; None when no pair has a price at most FRESH_QUOTE_SECONDS old
-    (its last tick time in `quotes`, judged with the proven server offset; review 6130418265 item 3)."""
+    """(rate, symbol, side, source): the value of 1 account-currency unit in the reference currency, from a quoted pair
+    on the terminal, taking the side that values the account LOWER (bid when the account currency is the base, 1/ask
+    when it is the quote). (1, None, None, 'same_currency') for the same currency; None when no pair has a price at most
+    FRESH_QUOTE_SECONDS old (its last tick time in `quotes`, judged with the proven server offset; review 6130418265
+    item 3). A cent account (CENT_CURRENCIES) is its base currency x 0.01: exactly 0.01 with no quote when the base IS
+    the reference currency ('cent_account_fixed'), else the base's own fresh-quote conversion x 0.01
+    ('cent_account_quote')."""
+    base = CENT_CURRENCIES.get(account_currency)
+    if base is not None:
+        if base == reference_currency:
+            return CENT_FACTOR, None, None, 'cent_account_fixed'
+        inner = conversion(base, reference_currency, symbols, quotes=quotes, offset_minutes=offset_minutes, utc_now=utc_now)
+        return None if inner is None else (inner[0] * CENT_FACTOR, inner[1], inner[2], 'cent_account_quote')
     if account_currency == reference_currency:
-        return Decimal(1), None, None
+        return Decimal(1), None, None, 'same_currency'
     candidates = []
     for facts in symbols:
         base, profit = facts.get('currency_base'), facts.get('currency_profit')
@@ -420,7 +453,7 @@ def conversion(account_currency, reference_currency, symbols, *, quotes=None, of
     if not candidates:
         return None
     _, name, rate, side = sorted(candidates)[0]
-    return rate, name, side
+    return rate, name, side, 'quote'
 
 
 # ------------------------------------------------------------------ input semantics
@@ -1211,6 +1244,10 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
                 inner['min_equity'] = None
                 members[index], internals[index] = row, inner
     used = any(inner.get('exempt') for inner in internals)
+    # P-beta38-cent-accounts: every member's money values (Risk, limits, margin, plannedLoss) are in this unit.
+    unit = account_unit(account.get('currency'), account_equity)
+    for row in members:
+        row['accountUnit'] = unit
     result = _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals,
                         clock)
     live = dec(account.get('equity'))
@@ -1505,7 +1542,9 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
                      equity=num(account_equity), leverage=account.get('leverage'), demo=True),
         reference=dict(equity=num(ref_equity), currency=ref_currency, server=manifest['referenceAccount']['server']),
         scale=num(scale), scaleMode='equity_linear',
-        conversion=None if converted is None else dict(rate=num(converted[0]), symbol=converted[1], side=converted[2]),
+        conversion=None if converted is None else dict(rate=num(converted[0]), symbol=converted[1], side=converted[2], source=converted[3]),
+        # P-beta38-cent-accounts: what one account unit is; every money value here is in it.
+        accountUnit=account_unit(account.get('currency'), account_equity),
         minEquity=num(min_equity_value), manifestMinEquity=num(dec(manifest.get('minEquity'))),
         offered=refusal is None, refusal=refusal,
         tradableRiskShare=num(share.quantize(Decimal('0.0001'))), riskWeighting=weighting,
@@ -2060,8 +2099,10 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=
             mapped = sorted({symbol for symbol, problem in (map_symbol(m['canonicalSymbol'], symbols) for m in manifest['members'])
                              if symbol})
             reference_currency = manifest['referenceAccount']['currency']
-            pairs = sorted({item['name'] for item in symbols if account['currency'] != reference_currency
-                            and is_conversion_pair(item, account['currency'], reference_currency)} - set(mapped))
+            # A cent account converts through its base currency (EUC through EURUSD); USC against USD needs no pair.
+            priced = CENT_CURRENCIES.get(account['currency'], account['currency'])
+            pairs = sorted({item['name'] for item in symbols if priced != reference_currency
+                            and is_conversion_pair(item, priced, reference_currency)} - set(mapped))
             first = {name: _tick_stamp(mt5.symbol_info_tick(name)) for name in mapped + pairs}
             quotes = {name: stamp[1] if stamp else None for name, stamp in first.items()}
             # Re-read the mapped symbols' last ticks until one ARRIVES: its age is then at most the time since the

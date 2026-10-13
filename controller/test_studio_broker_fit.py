@@ -900,8 +900,9 @@ def inputs(rows):
 
 
 IDENTITY_CASES = HERE / 'contracts' / 'deploy-identity' / 'deploy-identity-cases.json'
-# Vendored byte-identical from goatai docs/fixtures/deploy-identity-cases.json at goatai#2500 head 1e6b7fa4.
-IDENTITY_CASES_SHA256 = '0ac65c400b06cf0bb3e5bfde7abc02c8a755179dc52d129f807a7723288301d6'
+# Vendored byte-identical from goatai docs/fixtures/deploy-identity-cases.json at goatai#2500 head e91afa29 (adds the binary-tie
+# case: 25,050 on a 102,400 reference = 0.24462890625, written '0.2446289062', ties to even as format(scale, '.10f')).
+IDENTITY_CASES_SHA256 = 'e9bedca2f32409feaf130c4b843ff85ff47f3239133228b48079bffc1ffa66fa'
 
 
 class DeployRecordTests(unittest.TestCase):
@@ -946,7 +947,10 @@ class DeployRecordTests(unittest.TestCase):
         raw = IDENTITY_CASES.read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(), IDENTITY_CASES_SHA256, 'the vendored copy is byte-identical')
         cases = json.loads(raw)['cases']
-        self.assertGreaterEqual(len(cases), 6)
+        self.assertGreaterEqual(len(cases), 7)
+        tie = next(case for case in cases if case['name'] == 'scale_binary_tie_102400_ties_to_even')
+        self.assertEqual(25050 / 102400, tie['scale'])
+        self.assertIn('|scale=0.2446289062|', bf.deploy_identity_preimage(tie['scale'], tie['setSha256Deployed']), 'an exact binary tie rounds to even')
         for case in cases:
             with self.subTest(case=case['name']):
                 self.assertEqual(bf.deploy_identity_preimage(case['scale'], case['setSha256Deployed']), case['preimage'])

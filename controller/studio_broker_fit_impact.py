@@ -161,7 +161,9 @@ def impact(member_reference, sets, start_lots, equities, *, schema, reference_eq
     account on the reference broker's specs scaled to a cent contract: rate 0.01, contract 1/100 of the reference's."""
     defaults = bf.schema_defaults(schema)
     rate, contract_ratio = Decimal(1), Decimal(1)
-    if account_currency and account_currency in bf.CENT_CURRENCIES:
+    # Only a cent account of the reference currency itself (USC for USD) has a fixed rate; EUC and the other cent
+    # currencies need a live base/USD quote this report does not have (Codex P2 on #236), so they are refused below.
+    if account_currency and bf.CENT_CURRENCIES.get(account_currency) == 'USD':
         rate, contract_ratio = bf.CENT_FACTOR, Decimal(100)
     elif account_currency and account_currency != 'USD':
         raise ValueError('impact evaluates the reference currency (USD) or its cent account (USC) only')

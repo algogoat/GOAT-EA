@@ -132,8 +132,10 @@ class ImpactTests(unittest.TestCase):
         standard = impact.impact(*args, schema=SCHEMA)
         self.assertEqual(cent['members'][0]['outcomes'], standard['members'][0]['outcomes'])
         self.assertEqual((cent['accountUnit']['centOf'], cent['contract']), ('USD', 'reference contract / 100 (cent)'))
-        with self.assertRaises(ValueError):
-            impact.impact(*args, schema=SCHEMA, account_currency='EUR')
+        # Only USC: EUC and the other cent currencies need a live base/USD quote (Codex P2 on #236), never USC's 0.01.
+        for currency in ('EUR', 'EUC', 'GBC', 'CHC', 'AUC', 'CAC', 'USc'):
+            with self.subTest(currency=currency), self.assertRaises(ValueError):
+                impact.impact(*args, schema=SCHEMA, account_currency=currency)
 
     def test_the_cli_reads_a_portfolio_export_and_writes_nothing(self):
         import base64

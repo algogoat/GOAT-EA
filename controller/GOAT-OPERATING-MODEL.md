@@ -43,7 +43,7 @@ The matrix (`strategy.matrix`) is the scoreboard. Each template row has `eligibi
 The loop, every time:
 
 1. **Batch or seed run finishes.** Run `finish` (batches) or `seed-report` (seeds).
-2. **Decide what qualified.** Batch member: `exports.native_threshold_candidate_count >= 1` (export files that passed the native profit, ARF and SR thresholds). Seed member: `summary.qualifying_count >= 1` (frames meeting both seed cutoffs).
+2. **Decide what qualified.** Batch member: `exports.native_threshold_candidate_count >= 1` (export files that passed the native profit, ARF and SR thresholds). Seed member: a candidate in its `result_path` with `Profit` > 0 and `Profit Factor` ≥ 1.05; `summary.qualifying_count` (frames meeting both seed cutoffs) admits net losers, so it is not enough on its own.
 3. **Record every member** with `strategy.recordResult`, including failures and interruptions, each with its own attempt ID (`<attempt_id>-m<index>` for batch members, `<seed batch id>-<alias>` for seeds). Put the qualifying count in `metrics`. A terminal result can never be changed; a retry is a new attempt.
 4. **Order the next batch** from the refreshed matrix. The app does not reorder anything for you; you build the member list in this order:
    - **Proven**: template/symbol pairs with the user's own `completed` result that had qualifying exports, or a qualifying seed.

@@ -408,6 +408,10 @@ failures, empty results and those never started. A failed member also shows its
 Verified reports contain actual rows, average/best fitness, health percentage,
 zero-trade count, average trades and qualifying count. Native health means the
 percentage of rows with trades greater than zero; it does not mean profitable.
+The qualifying count uses the plan's cutoff (`min_fitness`, `min_trades`), which
+admits net losers. Read a seed honestly from each member's result artifact: count the
+candidates whose `metrics` have `Profit` > 0 and `Profit Factor` >= 1.05, and promote
+only those (TEMPLATE-WORKFLOW.md, "A new strategy, start to finish").
 Filename metrics are checked against XML rows. The report retains the raw XML
 path and hash. Each per-member result artifact stores `base_values` once and every candidate
 stores only optimized `value_overrides`. Reconstruct exact values with

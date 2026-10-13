@@ -90,12 +90,16 @@ start to finish" (Explore, then Refine, then Prove):
   before the later proof's `BackOOSDate`; about 400 frames per member on the 3 most
   likely assets first.
 - **Read it honestly.** `qualifying_count` uses the plan's cutoff, which admits net
-  losers. In each member's `result_path` file, count the candidates with `Profit` > 0
-  and `Profit Factor` ≥ 1.05. None on any asset: tell the user the idea found no
-  profitable setting, record it and drop it; don't re-hunt with small tweaks.
-- **Promote the winners only** with `seed-promote` (the profitable candidate with the
-  highest `Result`), then run its `fixed.set` / `robustness.set` in an ordinary batch
-  with a forward window on dates after the seed window, judged forward, then FOOS.
+  losers. In each member's `result_path` file, count the profitable qualifiers:
+  candidates with `qualifies: true` (the plan's trade and fitness minimums) **and**
+  `Profit` > 0 **and** `Profit Factor` ≥ 1.05, and record that count. None on any
+  asset: tell the user the idea found no profitable setting, record it and drop it;
+  don't re-hunt with small tweaks.
+- **Promote the winners only** with `seed-promote` (the profitable qualifier with the
+  highest `Result`). Run its `robustness.set` in an ordinary batch with a forward
+  window on dates after the seed window, judged forward, then FOOS. `fixed.set` never
+  goes into that batch (it has no search axis, and `prepare-batch` refuses it); it is
+  the exact candidate, for a single test only.
 
 Never put a hand-written SET or unseeded ranges into a production batch. Hand-built
 ideas overfit easily, because every filter the user picked is part of the search, so

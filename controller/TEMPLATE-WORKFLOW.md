@@ -62,17 +62,24 @@ back to step 1 as a new variant.
      likely assets first.
 4. **Read the seed honestly.** `summary.qualifying_count` counts rows that meet the
    plan's cutoff (`min_fitness`, `min_trades`); that cutoff admits net losers, and
-   health only means "traded". Open each member's `result_path` file and count the
-   candidates whose `metrics` have `Profit` > 0 **and** `Profit Factor` ≥ 1.05. A
-   strategy with no such candidate on any asset is dropped and recorded, not re-hunted
-   with small tweaks. Record every member, failures included.
+   health only means "traded". Open each member's `result_path` file and count its
+   **profitable qualifiers**: candidates with `qualifies: true` (it keeps both plan
+   cutoffs, so a one-trade candidate with a high profit factor never wins) **and**
+   `metrics.Profit` > 0 **and** `metrics."Profit Factor"` ≥ 1.05. A strategy with no
+   profitable qualifier on any asset is dropped and recorded, not re-hunted with small
+   tweaks. Record every member, failures included, with the profitable-qualifier
+   count as its qualifying count (AGENT-START-HERE, seed step 5).
 5. **Promote the winners only.** For each member that has one, `seed-promote` the
-   profitable candidate (step 4) with the highest `Result`:
+   profitable qualifier (step 4) with the highest `Result`:
    `seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--member <alias>]`.
-   It writes `fixed.set` and `robustness.set` (the candidate's neighbourhood).
-6. **Prove in an ordinary batch.** Put the promoted SETs in a `prepare-batch` plan with
-   a forward window, on dates after the seed window (`seed_window.to_date` in
-   `promotion.json`), and judge them like any template: forward, then FOOS. Declare
+   It writes `fixed.set` (the exact candidate, no search axis) and `robustness.set`
+   (the candidate's neighbourhood, with search axes).
+6. **Prove in an ordinary batch.** Put each promoted **`robustness.set`** in a
+   `prepare-batch` plan with a forward window, on dates after the seed window
+   (`seed_window.to_date` in `promotion.json`), and judge it like any template:
+   forward, then FOOS. Never put `fixed.set` in that batch: `prepare-batch` validates
+   every member as an optimization template and refuses a SET with no active axis.
+   `fixed.set` is the exact candidate for a single test only, such as a hold-up test. Declare
    the held-out lock (`heldOut.declare`) as it enters Prove. Only then can its files
    enter a portfolio pool. Each promoted or changed version counts as its own variant.
 

@@ -2,7 +2,7 @@
   "schema": "goat-house-deploy-identity-cases-v1",
   "source_of_truth": "goatai desktop/main/services/demoDeployService.ts houseDeployIdentity (goatai#2500; Claude-Mac goatai#2350 6130422276); test: desktop/tests/houseBrokerFit.test.ts",
   "sync": "The GOAT-EA controller vendors this file byte-identically and stores the same identity for a broker-fit deploy. Change it here first, then copy the same bytes; never edit one copy alone. The file is pure ASCII.",
-  "rule": "preimage = 'goat-house-deploy-identity-v1|scale=' + S + '|' + the setSha256Deployed values (64 lower-case hex each, duplicates kept) sorted ascending and joined with ','; S = the scale written with exactly 10 decimals (round to nearest) and then trailing zeros and a trailing point removed (JavaScript scale.toFixed(10), Python format(scale, '.10f'), then rstrip('0').rstrip('.')): 1 -> '1', 0.355 -> '0.355'. No trailing newline. sha256 = lower-case hex SHA-256 of the UTF-8 bytes of preimage. The scale must be finite and positive and the list non-empty.",
+  "rule": "preimage = 'goat-house-deploy-identity-v1|scale=' + S + '|' + the setSha256Deployed values (64 lower-case hex each, duplicates kept) sorted ascending and joined with ','; S = the scale's exact binary value written with exactly 10 decimals, rounded to nearest with ties to even (Python format(scale, '.10f'); not JavaScript toFixed, which rounds an exact tie up), then trailing zeros and a trailing point removed (rstrip('0').rstrip('.')): 1 -> '1', 0.355 -> '0.355', 0.24462890625 (25,050 on a 102,400 reference) -> '0.2446289062'. No trailing newline. sha256 = lower-case hex SHA-256 of the UTF-8 bytes of preimage. The scale must be finite and positive and the list non-empty.",
   "cases": [
     {
       "name": "scale_one_two_members",
@@ -66,6 +66,16 @@
       ],
       "preimage": "goat-house-deploy-identity-v1|scale=2|6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
       "sha256": "f2ac92e12149c5c9d26c2139d7dec0434fb189af5378b022495eb2ea59912297"
+    },
+    {
+      "name": "scale_binary_tie_102400_ties_to_even",
+      "scale": 0.24462890625,
+      "setSha256Deployed": [
+        "6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790",
+        "990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=0.2446289062|6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
+      "sha256": "8e6a1dd0a5a9ab6606b520a377a4286cb652b6bb6368b2fda1d41b3c997afa50"
     }
   ]
 }

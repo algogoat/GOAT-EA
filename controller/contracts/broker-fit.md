@@ -274,7 +274,7 @@ signature itself (see Round 5 F2), at review and at deploy.
   `houseDeployIdentity`): sha256 hex of the UTF-8 pre-image `goat-house-deploy-identity-v1|scale=<S>|<setSha256Deployed
   sorted ascending, duplicates kept, comma-joined>`, `S = format(scale, '.10f').rstrip('0').rstrip('.')`, no trailing
   newline. Shared vectors: `controller/contracts/deploy-identity/deploy-identity-cases.json`, vendored byte-identical
-  from goatai `docs/fixtures/deploy-identity-cases.json` (sha256 `0ac65c40...301d6`); change it there first.
+  from goatai `docs/fixtures/deploy-identity-cases.json` (sha256 `e9bedca2...ffa66fa`); change it there first.
 - At scale 1.0 with no edits, deployed == reference, so every staged file is byte-identical to today's.
 
 ## Decisions (points the contract left open or got wrong)

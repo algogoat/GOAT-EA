@@ -498,3 +498,8 @@ null`, `marginReason` and `margin.basis` `REFERENCE_IDENTICAL_MARGIN`, `margin.u
 hair off 1.0 or any condition off, and the band applies. A member whose point distances convert is never at the
 reference itself (judged under the band); one changed member anywhere revokes the exemption, and the exempt members
 are then judged again under the band (not refused). The deploy re-check re-derives the same rule.
+
+Codex review follow-up (inline findings on 8975f1b): the actual value-per-point ratio is already inside the F1 band
+(min-lot feasibility, Risk' search, margin pick); the central estimate (`scaled.startLot`, `scaled.plannedLoss`) now also
+runs at that ratio rather than 1.0. Grid_Size converted inside (-0.5, 0.5) is `EA_INIT_REFUSED` (round 2); `digits: 0`
+is accepted (round 5 F1-impact).

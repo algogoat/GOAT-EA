@@ -990,8 +990,8 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
                 # small (the 8,370 high-ATR case: VOLUME_MIN plans 1.6 x 40.59 = 64.95 against 41.85).
                 if reference.get('referenceScale') and money_factor == 1:
                     # Round 6: the reference scale itself (see _member): the reference Risk, the EA's own pick.
-                    start = _lots(pick(new_risk, 1.0))
-                    planned_loss = _lots(round(planned(start), 2))
+                    start = _lots(pick(new_risk, value_ratio))
+                    planned_loss = _lots(round(value_ratio * planned(start), 2))
                     risk_searched = new_risk
                     band_report = dict(lossBand=None, quantizationMargin=None, startLotMax=None, plannedLossMax=None)
                     bound = start
@@ -1022,9 +1022,11 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
                         if 'Risk' not in values:
                             return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Risk'))
                         edits['Risk'] = format_like(new_risk, first_field(values['Risk']))
-                    start = _lots(pick(new_risk, 1.0))
+                    # The central estimate runs at the member's ACTUAL value-per-point ratio (Codex P1 on 8975f1b: a broker
+                    # whose point is worth 1.25x the reference's plans 1.25x the loss per lot), the band around it.
+                    start = _lots(pick(new_risk, value_ratio))
                     margin_start = _lots(pick(new_risk, band_low))      # the largest start lot the band allows
-                    planned_loss = _lots(round(planned(start), 2))
+                    planned_loss = _lots(round(value_ratio * planned(start), 2))
                     loss_band = dict(low=round(band_low, 6), high=round(band_high, 6), kind='atr' if atr else 'points',
                                      valueRatio=round(value_ratio, 6), anchorError=round(anchor_error, 6))
                     band_report = dict(lossBand=loss_band, quantizationMargin=risk_searched - new_risk, startLotMax=margin_start,

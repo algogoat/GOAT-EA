@@ -585,12 +585,34 @@ class ScalingTests(unittest.TestCase):
         raw = kestrel_with(**dict(NEUTRAL, RSI_TF_='H4'))
         self.assertIn('RSI_TF_ unreadable', bf.offset_neutral(bf.set_values(raw, SCHEMA), bf.schema_defaults(SCHEMA), 'M1')[1])
 
+    def test_a_broker_worth_more_per_point_never_rounds_the_start_lot_up(self):
+        # Codex P1 on 8975f1b: reference start lot 0.01 (VOLUME_MIN) and a broker whose value per point is 1.25x the
+        # reference's: the scaled risk asks for 0.008 lots, which the EA would round up to 0.01 (+25%). The actual ratio
+        # is in the F1 band (min-lot feasibility, Risk' search, margin pick) and in the central plan.
+        other = dict(ACCOUNT, server='Other-Demo')
+        ref = reference(startLot=0.01)
+        def check(tick_value, equity):
+            return run([(member(KESTREL, ref=ref), KESTREL)], account=other, equity=equity, symbols=[symbol(trade_tick_value=tick_value)])
+        self.assertEqual((one(check(1.25, 100000))['code'], one(check(1.25, 250000))['code']), (bf.BELOW_MIN_LOT, bf.BELOW_MIN_LOT))
+        same_value = one(check(1.0, 250000))
+        self.assertEqual((same_value['status'], same_value['scaled']['startLot'], same_value['scaled']['plannedLoss']), ('fit', 0.01, 500.0))
+        # The minimum equity follows the ratio exactly: VOLUME_MIN at the band top must fit, and the top is x1.25.
+        self.assertEqual((check(1.0, 400000)['minEquity'], check(1.25, 400000)['minEquity']), (240000.0, 300000.0))
+        richer = one(check(1.25, 400000))['scaled']
+        self.assertEqual((richer['lossBand']['valueRatio'], richer['lossBand']['high'], richer['startLot'], richer['plannedLoss']),
+                         (1.25, 3.0, 0.02, 1626.78))
+        self.assertLessEqual(richer['plannedLossMax'], richer['riskSearched'])
+
     def test_a_grid_size_the_ea_refuses_is_excluded(self):
         # mq5:3317: Grid_Size inside (-0.5, 0.5) stops the EA. Point ratio 0.1 turns Grid_Size 4.0 into 0.4.
         raw = kestrel_with(**dict(NEUTRAL, Grid_Size='4.0'))
         row = one(run([(member(raw, timeframe='M15'), raw)], symbols=[symbol(**FOUR_DIGIT)], spread=1))
         self.assertEqual((row['code'], row['message']),
                          (bf.EA_INIT_REFUSED, "On this broker this set's Grid_Size would be 0.4, which the GOAT EA refuses to start with."))
+        # Codex P2 on 8975f1b, its own numbers: Grid_Size 1.0 at point ratio 0.1 is 0.1 (never a deployable "fit").
+        tiny = kestrel_with(**dict(NEUTRAL, Grid_Size='1.0', Grid_Min='5.0', Grid_Max='100.0', EA_Desc='T'))
+        row = one(run([(member(tiny, timeframe='M15'), tiny)], symbols=[symbol(**FOUR_DIGIT)], spread=1))
+        self.assertEqual((row['code'], row['edits'], row['setSha256Deployed']), (bf.EA_INIT_REFUSED, None, None))
         fine = kestrel_with(**dict(NEUTRAL, Grid_Size='5.0', Grid_Min='5.0', Grid_Max='100.0'))
         self.assertEqual(one(run([(member(fine, timeframe='M15'), fine)], symbols=[symbol(**FOUR_DIGIT)], spread=1))['status'], 'fit')
 

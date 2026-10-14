@@ -126,6 +126,9 @@ class RunFolderFixture(VolumePatches, G20Fixture):
         return self.preview(apply=True, confirm=True, **kw)
 
     def complete(self, **kw):
+        if 'keep_list' not in kw:
+            kw['keep_list'] = self.keep_file()           # --complete re-checks the keep-list too (review item 2)
+        kw.setdefault('keep_last', 0)
         return self.agent.run_folder_archive(None, complete=True, confirm=True, **kw)
 
     def skipped(self, result):
@@ -376,6 +379,44 @@ class EligibilityTests(RunFolderFixture):
         result = self.apply()
         self.assertEqual([r['run_id'] for r in result['results']], [failed.name])
         self.assertEqual({p.name: self.tree(p) for p in (running, queued, cancelled, pointed, driven, parent)}, before)
+
+    def test_complete_rejudges_every_run_right_before_its_removal(self):
+        """Review item 2 on #237: apply and complete can be days apart; whatever began to need the run since keeps it."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        cited = str(run / 'deploy' / alias(10) / 'EURUSD' / (STEM + '.set'))
+        sha = hashlib.sha256(original['deploy/%s/EURUSD/%s.set' % (alias(10), STEM)]).hexdigest()
+        reader = self.root / 'catchups' / 'cu-late'
+        driver = self.root / 'batch-drivers' / 'banker-done-1.json'
+        lineage = self.root / 'batch-lineage' / 'banker-done-1-r1.json'
+        lock = {sha: dict(lock_id='l' * 64, status='locked')}
+        cases = (
+            ('ARCHIVE_IN_FLIGHT_READER', lambda: (write_json(reader / 'manifest.json', dict(members=[dict(source_path=cited)])),
+                                                  write_json(reader / 'state.json', dict(status='active', members=[dict(status='running')]))),
+             lambda: __import__('shutil').rmtree(reader)),
+            ('ARCHIVE_DRIVER_LIVE', lambda: write_json(driver, dict(binding=dict(job_id='banker-done-1'), stopped=False, status='observing')),
+             lambda: driver.unlink()),
+            ('ARCHIVE_SUCCESSOR_ACTIVE', lambda: (write_json(lineage, dict(batch_id='banker-done-1-r1', predecessor_batch_id='banker-done-1')),
+                                                  self.make_run(2, 'banker-done-1-r1', status='running')),
+             lambda: (lineage.unlink(), self.queue[-1].update(status='completed'), self.write_queue())),
+            ('ARCHIVE_KEEP_LISTED', None, None),
+            ('ARCHIVE_HELDOUT_LOCK_ACTIVE', None, None),
+        )
+        for code, arrange, undo in cases:
+            with self.subTest(code=code):
+                if arrange:
+                    arrange()
+                kw = dict(keep_list=self.keep_file([run.name])) if code == 'ARCHIVE_KEEP_LISTED' else {}
+                with patch('studio_run_folder_archive.active_lock_shas', return_value=lock if code == 'ARCHIVE_HELDOUT_LOCK_ACTIVE' else {}):
+                    result = self.complete(run_ids=[run.name], **kw)
+                self.assertEqual(result['results'], [])
+                self.assertIn(code, result['skipped'][0]['codes'])
+                self.assertEqual({k: v for k, v in self.tree(run).items() if k != runs.STUB}, original)   # nothing removed
+                if undo:
+                    undo()
+        done = self.complete(run_ids=[run.name])
+        self.assertEqual([r['state'] for r in done['results']], ['removed'])
 
     def test_an_unattributed_folder_is_never_moved(self):
         stray = self.source / 'Rfff16576d9af'
@@ -633,7 +674,8 @@ class CliTests(RunFolderFixture):
         code, applied = self.cli('evidence-archive', '--run-folders', *root, '--apply', '--confirm', '--keep-list', str(self.keep_file()),
                                  '--run-id', run.name)
         self.assertEqual((code, [r['state'] for r in applied['result']['results']]), (0, ['archived']))
-        code, done = self.cli('evidence-archive', '--run-folders', '--complete', '--confirm')
+        code, done = self.cli('evidence-archive', '--run-folders', '--complete', '--confirm', '--keep-list', str(self.keep_file()),
+                              '--keep-last', '0')
         self.assertEqual((code, [r['state'] for r in done['result']['results']]), (0, ['removed']))
         self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
 

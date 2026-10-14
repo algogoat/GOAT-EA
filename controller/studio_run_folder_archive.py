@@ -689,9 +689,14 @@ def _human(size):
 
 
 def plan(root, install, archive_root=None, *, keep=None, keep_last=DEFAULT_KEEP_LAST, run_ids=None,
-         floor_bytes=DEFAULT_FLOOR_GB * GB, max_runs=None, now, sizes=True):
+         floor_bytes=DEFAULT_FLOOR_GB * GB, max_runs=None, now, sizes=True, recheck_archived=False):
     """Read-only plan of ``evidence-archive --run-folders``: every run folder under ``<Common Files>\\GOAT``, eligible or
-    with the reasons it stays. Writes nothing (the archive root's writability probe creates and removes one file)."""
+    with the reasons it stays. Writes nothing (the archive root's writability probe creates and removes one file).
+
+    ``recheck_archived`` (``--complete``, review item 2 on #237): a run whose stub is ``archived`` or ``removing`` is
+    judged again by every per-run rule (active pointer, owners finished, live/paused driver, continue-able, successor,
+    in-flight reader, held-out lock from its manifest's SET sha256s, keep-list, keep-last) and listed as eligible for
+    removal only when none blocks it; a run without a stub is then not a candidate at all."""
     source = source_root(install)
     installs, unreadable = installations(root, install)
     owned, problems = owners(installs)
@@ -735,9 +740,11 @@ def plan(root, install, archive_root=None, *, keep=None, keep_last=DEFAULT_KEEP_
         except ArchiveUnreachable as error:
             archived.append(dict(run_id=run_id, path=str(run), state='invalid_stub', error=str(error)))
             continue
-        if stub is not None:
+        if stub is not None and (not recheck_archived or stub['state'] == 'removed'):
             archived.append(dict(run_id=run_id, path=str(run), state=stub['state'], archive_dir=stub['archive_dir'],
                                  bytes=stub['bytes'], file_count=stub['file_count']))
+            continue
+        if stub is None and recheck_archived:
             continue
         group = owned.get(run_id)
         if not group:
@@ -765,7 +772,14 @@ def plan(root, install, archive_root=None, *, keep=None, keep_last=DEFAULT_KEEP_
             blockers.append(_blocker('ARCHIVE_KEPT_RECENT', '%s is one of the newest %d runs (--keep-last); it stays.'
                                      % (run_id, keep_last), keep_last=keep_last))
         files, links = ([], [])
-        if not blockers and (sizes or lock_shas):
+        if stub is not None:
+            # An archived run is judged from its manifest (its sources may already be partly gone).
+            try:
+                files = [dict(relative_path=e['relative_path'], bytes=e['bytes'], sha256=e['sha256'])
+                         for e in sorted(open_archive(stub)[1].values(), key=lambda e: e['relative_path'])]
+            except ArchiveUnreachable as error:
+                blockers.append(_blocker('EVIDENCE_ARCHIVE_UNREACHABLE', str(error)))
+        elif not blockers and (sizes or lock_shas):
             files, links = walk(run)
         if links:
             blockers.append(_blocker('ARCHIVE_SOURCE_LINK', '%s holds a symbolic link or junction (%s); nothing in it moves.'
@@ -773,7 +787,7 @@ def plan(root, install, archive_root=None, *, keep=None, keep_last=DEFAULT_KEEP_
         if not blockers and lock_shas:
             for item in files:
                 if item['relative_path'].casefold().startswith('deploy/') and item['relative_path'].casefold().endswith('.set'):
-                    digest = archive.file_sha256(run / item['relative_path'])
+                    digest = item.get('sha256') or archive.file_sha256(run / item['relative_path'])
                     if digest in lock_shas:
                         lock = lock_shas[digest]
                         blockers.append(_blocker('ARCHIVE_HELDOUT_LOCK_ACTIVE', 'Held-out lock %s (%s) freezes %s; it stays '

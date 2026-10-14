@@ -2682,12 +2682,12 @@ class DemoAgent:
             self._paired_account()
         except ValueError as exc:
             raise Refusal('evidence-archive runs only on a paired demo installation: ' + str(exc), 'ARCHIVE_NOT_DEMO') from None
-        if complete:
-            return self._run_folder_complete(run_ids)
-        if apply and keep_list is None:
-            raise Refusal('--apply needs --keep-list <file>: the JSON list (it may be empty, []) of batches and run folders '
+        if (apply or complete) and keep_list is None:
+            raise Refusal('--%s needs --keep-list <file>: the JSON list (it may be empty, []) of batches and run folders '
                           'the prereg files, the book and live portfolios cite, which the controller cannot see. Nothing '
-                          'was moved.', 'ARCHIVE_KEEP_LIST_REQUIRED')
+                          'was moved.' % ('apply' if apply else 'complete'), 'ARCHIVE_KEEP_LIST_REQUIRED')
+        if complete:
+            return self._run_folder_complete(run_ids, archive.read_keep_list(keep_list), keep_last)
         if apply and (archive_root is None or not str(archive_root)):
             raise Refusal('evidence-archive --run-folders --apply needs --archive-root <folder on another drive>.',
                           'ARCHIVE_ROOT_INVALID')
@@ -2732,17 +2732,14 @@ class DemoAgent:
                                     next_step='evidence-archive --run-folders --complete --confirm re-verifies every archived '
                                               'file and then removes the sources (ARCHIVED.json stays).'), applied=True)
 
-    def _run_folder_complete(self, run_ids):
+    def _run_folder_complete(self, run_ids, keep, keep_last):
         """``evidence-archive --run-folders --complete``: remove the sources of every archived run folder (or of
-        ``run_ids``) whose stub is ``archived`` or ``removing``, each only after re-verifying its whole archive."""
+        ``run_ids``) whose stub is ``archived`` or ``removing``. Right before each run's removal the FULL per-run plan
+        runs again (review item 2 on #237): active pointer, owners finished, live/paused driver, continue-able,
+        successor, in-flight reader, held-out lock, ``keep`` and ``keep_last``; any blocker keeps that run's sources."""
         import studio_run_folder_archive as runs
         source = runs.source_root(self.install)
         with runs.ArchiverLock(self.install):
-            try:
-                pointers = runs.active_pointers(source)
-            except ValueError as exc:
-                raise Refusal('The active run cannot be proven (%s); nothing was removed.' % str(exc)[:300],
-                              'ARCHIVE_ACTIVE_UNVERIFIABLE') from None
             names = sorted(entry.name for entry in os.scandir(source) if entry.is_dir(follow_symlinks=False)
                            and runs.RUN_NAME.fullmatch(entry.name)) if source.is_dir() else []
             results, skipped = [], []
@@ -2752,8 +2749,12 @@ class DemoAgent:
                 stub = runs.load_stub(source / run_id)
                 if stub is None or stub['state'] == 'removed':
                     continue
-                if run_id in pointers:
-                    skipped.append(dict(run_id=run_id, codes=['ARCHIVE_RUN_ACTIVE']))
+                again = runs.plan(self.root, self.install, None, keep=keep, keep_last=keep_last, run_ids=[run_id],
+                                  now=self.clock(), sizes=False, recheck_archived=True)
+                if again['blockers'] or not again['eligible']:
+                    skipped.append(dict(run_id=run_id, codes=[b['code'] for b in again['blockers']] +
+                                        [c for row in again['skipped'] for c in row['codes']],
+                                        plain=(again['blockers'] or again['skipped'] or [dict(plain=None)])[0]['plain']))
                     continue
                 result = runs.complete_run(source, source / run_id, now=self.clock())
                 self._append('run_folder_archive', 'completed', run_id=run_id, archive_dir=result['archive_dir'],

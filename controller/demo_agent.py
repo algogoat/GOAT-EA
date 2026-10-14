@@ -2649,7 +2649,7 @@ class DemoAgent:
             return archive.public(dict(preview, result=result), applied=True)
 
     def run_folder_archive(self, archive_root=None, *, apply=False, complete=False, confirm=False, keep_list=None,
-                           keep_last=None, run_ids=None, max_runs=None, free_floor_gb=None):
+                           keep_last=None, run_ids=None, max_runs=None, free_floor_gb=None, restore=False, repoint=False):
         """``evidence-archive --run-folders``: move finished native run folders (``Common Files\\GOAT\\R<12 hex>``) to an
         archive root on another local NTFS/ReFS volume (studio_run_folder_archive, goatai#2350 6156934300).
 
@@ -2664,9 +2664,10 @@ class DemoAgent:
         """
         import studio_evidence_archive as archive
         import studio_run_folder_archive as runs
-        if apply and complete:
-            raise Refusal('evidence-archive --run-folders --complete is its own step: run --apply first, then --complete '
-                          '(never both at once); nothing was changed.', 'ARCHIVE_MODE_CONFLICT')
+        modes = [name for name, on in (('apply', apply), ('complete', complete), ('restore', restore), ('repoint', repoint)) if on]
+        if len(modes) > 1:
+            raise Refusal('evidence-archive --run-folders takes one of --apply, --complete, --restore, --repoint at a time '
+                          '(given: %s); nothing was changed.' % ', '.join('--' + m for m in modes), 'ARCHIVE_MODE_CONFLICT')
         run_ids = list(run_ids or [])
         if any(not isinstance(item, str) or not runs.RUN_NAME.fullmatch(item) for item in run_ids):
             raise ValueError('--run-id must name a run folder R<12 lowercase hex>')
@@ -2675,13 +2676,15 @@ class DemoAgent:
         if keep_last < 0 or floor_gb < 0 or (max_runs is not None and int(max_runs) < 1):
             raise ValueError('--keep-last and --free-floor-gb must be zero or more, --max-runs one or more')
         floor = int(floor_gb * runs.GB)
-        if (apply or complete) and confirm is not True:
-            raise Refusal('evidence-archive --run-folders --%s moves run folders off this volume; pass --confirm.'
-                          % ('apply' if apply else 'complete'), 'ARCHIVE_CONFIRM_REQUIRED')
+        if modes and confirm is not True:
+            raise Refusal('evidence-archive --run-folders --%s changes run folders or their stubs; pass --confirm.'
+                          % modes[0], 'ARCHIVE_CONFIRM_REQUIRED')
         try:
             self._paired_account()
         except ValueError as exc:
             raise Refusal('evidence-archive runs only on a paired demo installation: ' + str(exc), 'ARCHIVE_NOT_DEMO') from None
+        if restore or repoint:
+            return self._run_folder_restore_or_repoint(run_ids, archive_root if repoint else None)
         if (apply or complete) and keep_list is None:
             raise Refusal('--%s needs --keep-list <file>: the JSON list (it may be empty, []) of batches and run folders '
                           'the prereg files, the book and live portfolios cite, which the controller cannot see. Nothing '
@@ -2731,6 +2734,41 @@ class DemoAgent:
                                     archived_bytes=sum(item['bytes'] for item in results),
                                     next_step='evidence-archive --run-folders --complete --confirm re-verifies every archived '
                                               'file and then removes the sources (ARCHIVED.json stays).'), applied=True)
+
+    def _run_folder_restore_or_repoint(self, run_ids, new_root):
+        """``--restore`` (``new_root`` None): bring each ``--run-id`` back to its own volume, verified, and retire its stub.
+        ``--repoint --archive-root <new root>``: point each archived run (the ``--run-id`` ones, else every one) at its
+        verified copy under the new root, e.g. after the archive drive was cloned or replaced (review item 4 on #237)."""
+        import studio_run_folder_archive as runs
+        source = runs.source_root(self.install)
+        if new_root is None and not run_ids:
+            raise Refusal('--restore needs --run-id <R...> (repeatable): which archived run folders come back; nothing was '
+                          'changed.', 'ARCHIVE_RUN_ID_REQUIRED')
+        if new_root is not None and not str(new_root):
+            raise Refusal('--repoint needs --archive-root <the new archive root>.', 'ARCHIVE_ROOT_INVALID')
+        with runs.ArchiverLock(self.install):
+            names = sorted(entry.name for entry in os.scandir(source) if entry.is_dir(follow_symlinks=False)
+                           and runs.RUN_NAME.fullmatch(entry.name)) if source.is_dir() else []
+            chosen = [name for name in names if (name in run_ids if run_ids else runs.load_stub(source / name) is not None)]
+            unknown = sorted(set(run_ids) - set(names))
+            if unknown:
+                raise Refusal('No run folder %s under %s; nothing was changed.' % (unknown[0], source), 'ARCHIVE_NOT_ARCHIVED',
+                              run_id=unknown[0])
+            if not chosen:
+                raise Refusal('No archived run folder to repoint; nothing was changed.', 'ARCHIVE_NOTHING_TO_MOVE')
+            results = []
+            for run_id in chosen:
+                if new_root is None:
+                    result = runs.restore_run(self.root, source, source / run_id, now=self.clock())
+                    self._append('run_folder_archive', 'restored', run_id=run_id, archive_dir=result['archive_dir'],
+                                 restored=result['restored'], retired_stub=result['retired_stub'])
+                else:
+                    result = runs.repoint_run(self.root, source, source / run_id, new_root, now=self.clock())
+                    self._append('run_folder_archive', 'repointed', run_id=run_id, archive_dir=result['archive_dir'],
+                                 previous_archive_dir=result['previous_archive_dir'], retired_stub=result['retired_stub'])
+                results.append(result)
+            return dict(scope='run_folders', applied=True, restored=new_root is None, repointed=new_root is not None,
+                        results=results)
 
     def _run_folder_complete(self, run_ids, keep, keep_last):
         """``evidence-archive --run-folders --complete``: remove the sources of every archived run folder (or of
@@ -3901,6 +3939,12 @@ def main(argv=None):
     archiver.add_argument('--max-runs', type=int, default=None, help='With --run-folders --apply: archive at most N runs')
     archiver.add_argument('--free-floor-gb', type=float, default=None,
                           help='With --run-folders: refuse when the archive root would keep less than this free (default 50)')
+    archiver.add_argument('--restore', action='store_true',
+                          help='With --run-folders --run-id R... --confirm: copy an archived run folder back to its own volume, '
+                               'verified, and retire its ARCHIVED.json (the archive copy is kept)')
+    archiver.add_argument('--repoint', action='store_true',
+                          help='With --run-folders --archive-root <new root> --confirm: point archived run folders (--run-id, '
+                               'else all) at their verified copies under a new archive root, e.g. after a drive clone')
     archiver.add_argument('--archive-root', type=Path,
                           help='Required for the preview and --apply: an existing folder on another local NTFS/ReFS volume; '
                                'files go to <root>/<installation>/<batch id>/ (--complete reads the pointer instead)')
@@ -4079,12 +4123,13 @@ def main(argv=None):
                               'nothing was changed.', 'ARCHIVE_MODE_CONFLICT')
             result = agent.run_folder_archive(args.archive_root, apply=args.apply, complete=args.complete, confirm=args.confirm,
                                               keep_list=args.keep_list, keep_last=args.keep_last, run_ids=args.run_id,
-                                              max_runs=args.max_runs, free_floor_gb=args.free_floor_gb)
+                                              max_runs=args.max_runs, free_floor_gb=args.free_floor_gb,
+                                              restore=args.restore, repoint=args.repoint)
         elif args.command == 'evidence-archive':
-            if args.batch_id is None or any(value is not None for value in (args.run_id, args.keep_last, args.max_runs,
-                                                                           args.free_floor_gb)):
+            if args.batch_id is None or args.restore or args.repoint or any(
+                    value is not None for value in (args.run_id, args.keep_last, args.max_runs, args.free_floor_gb)):
                 raise ValueError('evidence-archive needs --batch-id (or --run-folders for run folders; --run-id, --keep-last, '
-                                 '--max-runs and --free-floor-gb belong to --run-folders)')
+                                 '--max-runs, --free-floor-gb, --restore and --repoint belong to --run-folders)')
             result = agent.evidence_archive(args.batch_id, args.archive_root,
                 apply=args.apply, confirm=args.confirm, keep_list=args.keep_list, complete=args.complete)
         elif args.command == 'evidence-restore': result = agent.evidence_restore(args.batch_id, confirm=args.confirm)

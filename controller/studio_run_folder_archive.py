@@ -110,7 +110,7 @@ CODES = frozenset((
     'ARCHIVE_KEPT_RECENT', 'ARCHIVE_ROOT_FLOOR', 'ARCHIVE_ACTIVE_UNVERIFIABLE', 'ARCHIVE_RUN_ARCHIVED',
     'ARCHIVE_ARCHIVER_BUSY', 'ARCHIVE_STUB_INVALID',
     # Claude-Mac's review of #237: removable/RAM targets, a source that cannot be removed.
-    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED', 'ARCHIVE_TARGET_LINK'))
+    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED', 'ARCHIVE_TARGET_LINK', 'ARCHIVE_RUN_ID_REQUIRED'))
 
 
 def _utc(now):
@@ -1166,6 +1166,132 @@ def complete_run(source, run, *, now, completed_by='demo_agent'):
     return dict(run_id=run.name, archive_dir=str(folder), state='removed', removed=removed, verified=len(entries),
                 file_count=len(entries), bytes=sum(entry['bytes'] for entry in entries.values()),
                 manifest_sha256=stub['manifest_sha256'])
+
+
+RETIRED = ('run-folder-archive', 'retired')         # <controller state>/run-folder-archive/retired/: retired stubs
+
+
+def _retire(root, stub, reason, *, now, by, **details):
+    """Keep an audit record of a stub that restore or repoint replaces (in the controller state, never in the run)."""
+    import uuid
+    folder = Path(root).joinpath(*RETIRED)
+    stamp = datetime.fromtimestamp(now, timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    path = folder / ('%s.%s.%s.json' % (stub['run_id'], stamp, uuid.uuid4().hex[:8]))
+    archive._write_json_file(path, dict(stub, retired_at=_utc(now), retired_by=by, retired_reason=reason, **details))
+    return path
+
+
+def _clear_caches():
+    _STUBS.clear(); _MANIFESTS.clear(); _OPEN.clear()
+
+
+def restore_run(root, source, run, *, now, restored_by='demo_agent'):
+    """``--restore``: bring an archived run folder back to its source volume, verified, then retire its stub.
+
+    Every manifest entry either is still local and hashes to the manifest, or its archive copy re-hashes to the manifest
+    (no cache); a local file that differs refuses ARCHIVE_RESTORE_CONFLICT and an unusable archive copy
+    ARCHIVE_VERIFY_FAILED, both before anything is copied. Each missing file is copied back (temporary file, fsync,
+    verified against the manifest sha256, rename). Then the stub goes to ``<controller state>/run-folder-archive/
+    retired/`` (an audit record) and is removed, so readers read the local folder again. The archive copy is kept."""
+    run = Path(run)
+    stub = load_stub(run)
+    if stub is None:
+        raise Refusal('Run folder %s has no ARCHIVED.json (never archived, or already restored); nothing was changed.'
+                      % run.name, 'ARCHIVE_NOT_ARCHIVED', run_id=run.name)
+    folder, entries = open_archive(stub, strict=True)
+    refusal = run_target_refusal(run, folder.parent, folder)
+    if refusal is not None:
+        raise refusal
+    present, links = walk(run)
+    if links:
+        raise Refusal('Run folder %s holds a symbolic link or junction (%s); nothing was restored.' % (run.name, links[0]),
+                      'ARCHIVE_SOURCE_LINK', run_id=run.name, links=links[:50])
+    local = {_key(item['relative_path']) for item in present}
+    to_copy, conflicts, bad = [], [], []
+    for key, entry in sorted(entries.items()):
+        if key in local:
+            path = run / entry['relative_path']
+            if _io(path).stat().st_size != entry['bytes'] or archive.file_sha256(path) != entry['sha256']:
+                conflicts.append(entry['relative_path'])
+            continue
+        try:
+            _verify_file(stub, folder, entry, full=True, cache=False)
+        except ArchiveUnreachable:
+            bad.append(entry['relative_path'])
+            continue
+        to_copy.append(entry)
+    if conflicts:
+        raise Refusal('%d local file(s) of run folder %s differ from the archive (first: %s); nothing was restored. Inspect '
+                      'them.' % (len(conflicts), run.name, conflicts[0]), 'ARCHIVE_RESTORE_CONFLICT', run_id=run.name,
+                      relative_path=conflicts[0], relative_paths=conflicts[:50])
+    if bad:
+        raise Refusal('%d archive copy(ies) of run folder %s are missing or corrupt and not local either (first: %s); nothing '
+                      'was restored.' % (len(bad), run.name, bad[0]), 'ARCHIVE_VERIFY_FAILED', run_id=run.name,
+                      relative_path=bad[0], relative_paths=bad[:50])
+    for entry in to_copy:
+        archive.copy_verified(folder / entry['relative_path'], run / entry['relative_path'], expected=entry['sha256'])
+    present, _ = walk(run)
+    held = {_key(item['relative_path']): item['bytes'] for item in present}
+    missing = sorted(entry['relative_path'] for key, entry in entries.items() if held.get(key) != entry['bytes'])
+    if missing:
+        raise Refusal('Run folder %s still lacks %d archived file(s) after the copy (first: %s); its stub is kept.'
+                      % (run.name, len(missing), missing[0]), 'ARCHIVE_VERIFY_FAILED', run_id=run.name, relative_path=missing[0])
+    retired = _retire(root, stub, 'restored', now=now, by=restored_by, restored_files=len(to_copy),
+                      already_local=len(entries) - len(to_copy), restored_from=str(folder))
+    _io(stub_path(run)).unlink()
+    _clear_caches()
+    return dict(run_id=run.name, restored=len(to_copy), already_local=len(entries) - len(to_copy), file_count=len(entries),
+                bytes=sum(entry['bytes'] for entry in entries.values()), archive_dir=str(folder), retired_stub=str(retired),
+                state='restored', plain='Run folder %s is back on its own volume; the archive copy at %s is kept.'
+                                        % (run.name, folder))
+
+
+def repoint_run(root, source, run, new_root, *, now, repointed_by='demo_agent'):
+    """``--repoint``: point an archived run folder's stub at ``<new root>/<run id>`` (a clone or copy of its archive on
+    another drive), accepted only when the new root passes every archive-root check, the folder there is no link and
+    not on the source volume, its manifest hashes to the stub's and every file re-hashes to it (no cache) with the
+    folder holding exactly those files. The stub is rewritten atomically with the new folder, root and volume GUID;
+    the old stub is kept as an audit record in ``<controller state>/run-folder-archive/retired/``."""
+    run = Path(run)
+    stub = load_stub(run)
+    if stub is None:
+        raise Refusal('Run folder %s has no ARCHIVED.json; nothing to repoint.' % run.name, 'ARCHIVE_NOT_ARCHIVED',
+                      run_id=run.name)
+    found, _, target_root = target_blockers(source, new_root, 0, 0)
+    if found:
+        raise Refusal(found[0]['plain'] + ' Nothing was changed.', found[0]['code'], run_id=run.name,
+                      **{k: v for k, v in found[0].items() if k not in ('code', 'plain')})
+    folder = target_root / run.name
+    refusal = run_target_refusal(run, target_root, folder)
+    if refusal is not None:
+        raise refusal
+    manifest = folder / MANIFEST
+    if not _io(manifest).is_file() or archive.file_sha256(manifest) != stub['manifest_sha256']:
+        raise Refusal('%s holds no manifest that hashes to run folder %s\'s stub; nothing was changed.' % (folder, run.name),
+                      'ARCHIVE_REPOINT_MISMATCH', run_id=run.name, archive_dir=str(folder))
+    moved = {k: v for k, v in stub.items() if k not in ('volume_guid', 'archive_relative')}
+    moved.update(archive_dir=str(folder))
+    opened, entries = open_archive(moved, strict=True)            # the new location only
+    for entry in entries.values():
+        try:
+            _verify_file(moved, opened, entry, full=True, cache=False)
+        except ArchiveUnreachable as error:
+            raise Refusal('%s Nothing was changed.' % error, 'ARCHIVE_REPOINT_MISMATCH', run_id=run.name,
+                          relative_path=entry['relative_path'], archive_dir=str(folder)) from None
+        _refuse_same_file(run, opened, entry['relative_path'], 'nothing was changed.')
+    if set(_archive_walk(opened)) != set(entries):
+        raise Refusal('%s does not hold exactly the manifest\'s files; nothing was changed.' % folder,
+                      'ARCHIVE_REPOINT_MISMATCH', run_id=run.name, archive_dir=str(folder))
+    retired = _retire(root, stub, 'repointed', now=now, by=repointed_by, repointed_to=str(folder))
+    updated = dict(moved, archive_root=str(target_root), manifest=str(manifest), repointed_at=_utc(now),
+                   repointed_by=repointed_by,
+                   previous_archive_dirs=list(stub.get('previous_archive_dirs') or []) + [stub['archive_dir']],
+                   plain='This run folder\'s files live in %s; controller readers follow this file. Do not delete it.' % folder,
+                   **archive._volume_fields(folder))
+    _write_record(stub_path(run), updated)
+    _clear_caches()
+    return dict(run_id=run.name, archive_dir=str(folder), previous_archive_dir=stub['archive_dir'], state=stub['state'],
+                file_count=len(entries), retired_stub=str(retired), repointed=True)
 
 
 def public(value, applied=False):

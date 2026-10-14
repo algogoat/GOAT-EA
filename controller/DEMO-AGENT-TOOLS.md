@@ -457,7 +457,9 @@ archive never deletes the only copy. No MT5 effect.
 ```powershell
 & $goat demo --installation $receipt evidence-archive --run-folders --archive-root 'E:\GOAT-Run-Archive'                                 # preview: eligible folders, bytes, target free space
 & $goat demo --installation $receipt evidence-archive --run-folders --archive-root 'E:\GOAT-Run-Archive' --keep-list '<keep.json>' --apply --confirm   # copy + verify + ARCHIVED.json; sources stay
-& $goat demo --installation $receipt evidence-archive --run-folders --complete --confirm                                                 # separate step: re-verify, then remove the sources
+& $goat demo --installation $receipt evidence-archive --run-folders --complete --confirm --keep-list '<keep.json>'                        # separate step: re-judge each run, then remove its sources one verified file at a time
+& $goat demo --installation $receipt evidence-archive --run-folders --restore --run-id 'R<12 hex>' --confirm                               # bring a run back to C:, verified; retire its stub
+& $goat demo --installation $receipt evidence-archive --run-folders --repoint --archive-root 'H:\GOAT-Run-Archive' --confirm             # point the stubs at a verified clone of the archive
 ```
 
 Moves finished native run folders (`Common Files\GOAT\R<12 hex>`) to
@@ -489,6 +491,22 @@ Moves finished native run folders (`Common Files\GOAT\R<12 hex>`) to
   source still hashes to the manifest, and only then removes the sources (only regular
   files below that run folder). It holds its own lock (`ARCHIVE_ARCHIVER_BUSY`), not the
   terminal lease, and re-checks each run right before copying or removing it.
+- `--complete` needs `--keep-list` and re-runs the full per-run plan right before each run
+  (anything that began to need it since `--apply` keeps it). Its sources go one at a time:
+  right before each removal the archive copy must still be the same file (size, mtime,
+  volume, file ID) and re-hash to the manifest (`ARCHIVE_VERIFY_FAILED` keeps that source
+  and every later one). A source that cannot be removed refuses `ARCHIVE_SOURCE_LOCKED`
+  naming it. Removable drives and RAM disks refuse `ARCHIVE_ROOT_REMOVABLE`; a link at or
+  above `<root>\<run id>` refuses `ARCHIVE_TARGET_LINK`; an archive copy that is its own
+  source (same file ID) refuses `ARCHIVE_TARGET_CONFLICT`.
+- `--restore --run-id R... --confirm` copies every file not local back (verified against
+  the manifest; a local file that differs refuses `ARCHIVE_RESTORE_CONFLICT`), then moves
+  the stub to `<controller state>\run-folder-archive\retired\` (audit record). It also
+  repairs a run whose `--complete` stopped on a lost copy. `--repoint --archive-root <new
+  root> --confirm` accepts `<new root>\<run id>` only when it passes every archive-root
+  check and its manifest and every file verify (`ARCHIVE_REPOINT_MISMATCH`), then rewrites
+  each stub (old one retired). A drive that only changed letter needs neither: readers
+  find it by its volume GUID.
 
 ### Protected peer restarts
 

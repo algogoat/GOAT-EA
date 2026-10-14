@@ -389,6 +389,79 @@ class MoveTests(RunFolderFixture):
             self.refused('ARCHIVE_ROOT_SAME_VOLUME', self.apply)
         self.assertFalse((run / runs.STUB).exists())
 
+    def restore(self, *run_ids, **kw):
+        return self.agent.run_folder_archive(None, restore=True, confirm=True, run_ids=list(run_ids), **kw)
+
+    def test_restore_brings_a_completed_run_back_verified_and_retires_its_stub(self):
+        """Review item 4 on #237: the move is never one-way."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        self.complete()
+        self.refused('ARCHIVE_RUN_ID_REQUIRED', self.restore)
+        result = self.restore(run.name)
+        self.assertEqual([(r['run_id'], r['restored'], r['state']) for r in result['results']],
+                         [(run.name, len(original), 'restored')])
+        self.assertEqual(self.tree(run), original)                          # byte-identical, no stub
+        retired = list((self.root / 'run-folder-archive' / 'retired').glob(run.name + '.*.json'))
+        self.assertEqual([json.loads(p.read_text())['retired_reason'] for p in retired], ['restored'])
+        self.assertTrue((self.archive_root / run.name / runs.MANIFEST).is_file())   # the archive copy is kept
+        cited = run / 'deploy' / alias(10) / 'EURUSD' / (STEM + '.set')
+        self.assertEqual(runs.resolve(cited), cited)                       # readers read the local folder again
+        self.refused('ARCHIVE_NOT_ARCHIVED', self.restore, run.name)
+
+    def test_restore_repairs_a_run_whose_complete_stopped_on_a_lost_copy(self):
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        last = sorted(original)[-1]
+        victim = self.archive_root / run.name / last
+        real = archive.file_sha256
+
+        def hash_then_pull_the_copy(path):
+            if victim.exists() and os.path.normcase(str(path)).startswith(os.path.normcase(str(run))):
+                victim.unlink()
+            return real(path)
+        with patch('studio_evidence_archive.file_sha256', side_effect=hash_then_pull_the_copy):
+            with self.assertRaises(Refusal):
+                self.complete()
+        self.restore(run.name)                                               # local copy of the lost file is kept
+        self.assertEqual(self.tree(run), original)
+
+    def test_restore_refuses_a_local_file_that_differs(self):
+        run = self.make_run(1, 'banker-done-1')
+        self.apply()
+        (run / 'log.GOAT').write_bytes(b'edited after apply')
+        self.refused('ARCHIVE_RESTORE_CONFLICT', self.restore, run.name)
+        self.assertTrue((run / runs.STUB).is_file())
+
+    def test_repoint_follows_a_cloned_archive_and_refuses_a_bad_clone(self):
+        import shutil
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        self.complete()
+        cited = run / 'deploy' / alias(10) / 'EURUSD' / (STEM + '.set')
+        clone_root = self.archive_root / 'clone'
+        shutil.copytree(self.archive_root / run.name, clone_root / run.name)
+        (self.archive_root / run.name).rename(self.archive_root / 'old-drive-gone')
+        runs._clear_caches()
+        with self.assertRaises(Refusal):
+            runs.resolve(cited)                                                # the old drive is gone
+        bad = clone_root / run.name / 'log.GOAT'
+        good = bad.read_bytes()
+        bad.write_bytes(b'X' * len(good))
+        self.refused('ARCHIVE_REPOINT_MISMATCH', self.agent.run_folder_archive, clone_root, repoint=True, confirm=True)
+        bad.write_bytes(good)
+        result = self.agent.run_folder_archive(clone_root, repoint=True, confirm=True)
+        self.assertEqual([(r['run_id'], r['archive_dir']) for r in result['results']], [(run.name, str(clone_root / run.name))])
+        stub = json.loads((run / runs.STUB).read_text())
+        self.assertEqual((stub['archive_dir'], stub['state'], stub['previous_archive_dirs']),
+                         (str(clone_root / run.name), 'removed', [str(self.archive_root / run.name)]))
+        self.assertEqual(runs.read_bytes(cited), original[cited.relative_to(run).as_posix()])
+        self.assertEqual([json.loads(p.read_text())['retired_reason']
+                          for p in (self.root / 'run-folder-archive' / 'retired').glob(run.name + '.*.json')], ['repointed'])
+
     def test_removal_never_leaves_the_run_folder(self):
         run = self.make_run(1, 'banker-done-1')
         outside = self.source / 'keep-me.txt'

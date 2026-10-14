@@ -44,7 +44,20 @@ MUTATIONS = [
     ('untested window passes', RULE, "window.get('present') is False:\n        result['reasons']",
      "window.get('present') is False:\n        result['status'] = 'pass'; result['reasons']"),
     ('catch-up weeks ignored', RULE, '            last = tested_through        # catch-up weeks count toward FOOS\n', '            pass\n'),    # The date math.
-    ('BOOS rounded down', RULE, "boos=_ceil(Fraction(o_weeks, 2))", "boos=o_weeks // 2"),
+    ('BOOS rounded down', RULE, "boos=_ceil(o_weeks * BOOS_SHARE[_formula(formula)])",
+     "boos=math.floor(o_weeks * BOOS_SHARE[_formula(formula)])"),
+    # BOOS = 1/3 O (Vince, locked 2026-10-11; P-beta38-oos-formula-boos-third) and stamped work keeping its own formula.
+    ('BOOS back to 1/2 O', RULE, 'OOS_FORMULA: Fraction(1, 3)', 'OOS_FORMULA: Fraction(1, 2)'),
+    ('stamped record re-derived with the current formula', RULE,
+     "fresh = compute(record.get('o_weeks'), record.get('export_friday'), record_formula(record))",
+     "fresh = compute(record.get('o_weeks'), record.get('export_friday'), OOS_FORMULA)"),
+    ('pre-lock exports not recognised', RULE, 'for formula in (OOS_FORMULA, LEGACY_OOS_FORMULA):', 'for formula in (OOS_FORMULA,):'),
+    ('successor drops its stamped formula', RULE, ", oosFormula=record_formula(record))", ")"),
+    # The lenient BOOS gate (Claude-Mac 6106961195): no profit bar, loss vs rolling in-sample windows of BOOS's length.
+    ('BOOS needs a profit again', RULE, "lenient=gate == 'lenient_p10'", 'lenient=False'),
+    ('BOOS loss leg dropped', RULE, '        if loss_ok is False:\n', '        if False:\n'),
+    ('p10 windows are not BOOS long', RULE, "days = 7 * record['weeks']['boos']", "days = 7 * record['weeks']['sample']"),
+    ('p10 windows step two weeks', RULE, '            first += timedelta(days=7)\n', '            first += timedelta(days=14)\n'),
     ('FWD rounded down', RULE, "fwd = _ceil(Fraction(o_weeks, 3))", "fwd = o_weeks // 3"),
     ('FOOS rounded down', RULE, "foos=_ceil(Fraction(o_weeks, 4))", "foos=o_weeks // 4"),
     ('a month is 4 weeks', RULE, 'WEEKS_PER_MONTH = Fraction(13, 3)', 'WEEKS_PER_MONTH = Fraction(4, 1)'),
@@ -66,8 +79,7 @@ MUTATIONS = [
     ('seed prepare ignores the formula', 'studio_seed.py', 'members,payloads=self._freeze(root,filled)',
      'members,payloads=self._freeze(root,{k:v for k,v in plan.items() if k!="oos_windows"})'),
     ('successor loses the windows', 'studio_batch.py',
-     "        remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])\n",
-     '        pass\n'),
+     "        remaining['oos_windows'] = successor_request(oos_record)\n", '        pass\n'),
     # Exact pre-FOOS metrics at export (studio_window_metrics).
     ('pre-FOOS window runs into FOOS', 'studio_window_metrics.py', 'return export_start, start, to_date - timedelta(days=1)',
      'return export_start, start, to_date + timedelta(days=27)'),

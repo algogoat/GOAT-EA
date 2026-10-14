@@ -413,6 +413,7 @@ def batch_status(controller, batch_id):
     if isinstance(oos, dict):
         # Formula batches only (goat-oos-windows-v1): every window and the FOOS replay to run after the batch.
         extra['oos_windows'] = dict(o_weeks=oos.get('o_weeks'), export_friday=oos.get('export_friday'),
+                                    oosFormula=oos.get('oosFormula', 'boos-1/2'),
                                     optimization_end=oos.get('optimization_end'),
                                     windows={key: dict(first_day=(oos.get(key) or {}).get('first_day'),
                                                        last_day=(oos.get(key) or {}).get('last_day'),
@@ -599,8 +600,10 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
         remaining['evidence_end'] = recorded['target']
     oos_record = (source_plan.get('native_batch') or {}).get('oos_windows')
     if isinstance(oos_record, dict):
-        # Same O and the same resolved export Friday: the successor's windows are the original's, day for day.
-        remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])
+        # Same O, the same resolved export Friday and the same stamped formula (a BOOS 1/2 O batch stays 1/2 O):
+        # the successor's windows are the original's, day for day.
+        from studio_oos_windows import successor_request
+        remaining['oos_windows'] = successor_request(oos_record)
     write_json(plan_path, remaining)
     result = prepare_batch(controller, batch_id, plan_path, now=now)
     result['news_file'] = save_record(controller, news_record)

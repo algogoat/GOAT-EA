@@ -41,6 +41,7 @@ import re
 import shutil
 import sqlite3
 import time
+import uuid
 
 from studio_refusal import Refusal
 
@@ -103,14 +104,86 @@ def kept_originals(path):
     return kept
 
 
+SWAP_STALE_SECONDS = 600          # a swap takes seconds; an older "swapping" record has no live owner
+_ACTIVE_SWAPS = set()             # nonces of swaps this process is running now
+
+
+def _pid_alive(pid):
+    """Whether a process with this PID is running. Never signals it."""
+    if type(pid) is not int or pid <= 0:
+        return False
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)      # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5             # access denied: it exists
+        try:
+            code = wintypes.DWORD()
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259   # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)                                      # POSIX: signal 0 only checks
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _swap_in_progress(sidecar, record):
+    """A ``swapping`` record whose compaction is still running (its owner is alive and it is recent)."""
+    owner = record.get('owner')
+    if not isinstance(owner, dict):
+        return False
+    try:
+        if time.time() - sidecar.stat().st_mtime > SWAP_STALE_SECONDS:
+            return False
+    except OSError:
+        return False
+    if owner.get('pid') == os.getpid():
+        return owner.get('nonce') in _ACTIVE_SWAPS
+    return _pid_alive(owner.get('pid'))
+
+
+def _rejected_name(path, stamp):
+    candidate, n = path.with_name(path.name + '.compact-rejected-' + stamp), 1
+    while candidate.exists():
+        candidate, n = path.with_name(path.name + '.compact-rejected-' + stamp + '-' + str(n)), n + 1
+    return candidate
+
+
+def _put_back(path, aside, stamp):
+    """Move whatever sits at ``path`` (a placed copy, or a database something created in the swap gap) to
+    ``.compact-rejected-<stamp>`` and the original back from ``aside``. Returns the rejected path or None."""
+    rejected = None
+    if aside.exists():
+        if path.exists():
+            rejected = _rejected_name(path, stamp)
+            os.rename(path, rejected)
+        os.rename(aside, path)
+    return rejected
+
+
 def recover_interrupted(path):
     """Undo a compaction that a stop interrupted mid-swap (its sidecar still says ``swapping``).
 
-    Until the sidecar says ``kept`` the original is the truth: it goes back to ``studio.sqlite`` (a copy
-    already placed there is moved aside to ``.compact-rejected-<stamp>``), the temp copy is removed and
-    the sidecar is retired. StudioStore runs this before it opens the database, so an interruption can
-    never leave the controller without its database or open an empty new one in its place. Raises on
-    an I/O error (the caller must not open the database then).
+    Until the sidecar says ``kept`` the original is the truth: it goes back to ``studio.sqlite`` (whatever
+    is there, a placed copy or a database something created in the swap gap, moves to
+    ``.compact-rejected-<stamp>``, never deleted), the temp copy is removed, and only once the original is
+    provably back (the file at ``studio.sqlite`` has the original's recorded size and no aside is left) is
+    the sidecar retired. StudioStore runs this before it opens the database, so an interruption can never
+    leave the controller to open, or create, an empty database in place of its data.
+
+    A swap still running in a live process refuses (DB_COMPACT_IN_PROGRESS) rather than racing it; so does
+    a record whose original cannot be proven back (DB_COMPACT_RECOVERY_REQUIRED). Either way the caller
+    must not open the database. An I/O error raises too.
     """
     path = Path(path)
     recovered = []
@@ -122,13 +195,15 @@ def recover_interrupted(path):
         if not isinstance(record, dict) or record.get('schema') != SIDECAR_SCHEMA or record.get('phase') != 'swapping':
             continue
         aside = sidecar.with_name(sidecar.name[:-len('.json')])
-        stamp = aside.name[len(path.name + ASIDE):]
-        rejected = None
-        if aside.exists():
-            if path.exists():
-                rejected = path.with_name(path.name + '.compact-rejected-' + stamp)
-                os.rename(path, rejected)
-            os.rename(aside, path)
+        if _swap_in_progress(sidecar, record):
+            raise Refusal('A studio.sqlite compaction is swapping files right now; retry in a few seconds.',
+                          'DB_COMPACT_IN_PROGRESS', sidecar=str(sidecar))
+        rejected = _put_back(path, aside, aside.name[len(path.name + ASIDE):])
+        size = record.get('original_bytes')
+        if aside.exists() or not path.is_file() or (type(size) is int and path.stat().st_size != size):
+            raise Refusal('An interrupted studio.sqlite compaction left the original at ' + str(aside) + ' and it could '
+                          'not be proven back at ' + str(path) + '; nothing was opened. Inspect ' + str(sidecar) + '.',
+                          'DB_COMPACT_RECOVERY_REQUIRED', sidecar=str(sidecar))
         copy = Path(str(record.get('copy') or ''))
         if copy.name.startswith(path.name + '.compact-') and copy.name.endswith('.tmp') and copy.parent == path.parent \
                 and copy.exists():
@@ -138,6 +213,15 @@ def recover_interrupted(path):
     if recovered:
         _log(path.parent, dict(operation='recover_interrupted_compaction', recovered=recovered))
     return recovered
+
+
+def connect_existing(path, *, timeout=1):
+    """A read-write connection that never creates the file (``mode=rw``): a missing database raises instead.
+
+    Every opener that is not the store's creator uses this, so nothing can create an empty ``studio.sqlite``
+    (for example in a compaction's swap gap) and write to it while the real data sits aside.
+    """
+    return sqlite3.connect(Path(path).resolve().as_uri() + '?mode=rw', uri=True, timeout=timeout, isolation_level=None)
 
 
 def facts(path):
@@ -205,8 +289,11 @@ def write_queue(db, binding, raw, *, create=False):
             db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)', (binding, raw))
         db.execute('RELEASE goat_queue_write')
     except BaseException:
-        db.execute('ROLLBACK TO goat_queue_write')
-        db.execute('RELEASE goat_queue_write')
+        try:
+            db.execute('ROLLBACK TO goat_queue_write')
+            db.execute('RELEASE goat_queue_write')
+        except sqlite3.OperationalError:
+            pass    # SQLite already rolled the whole transaction back (FULL/IOERR): the original error is the news
         raise
     return 1 if (deleted or create) else 0
 
@@ -265,9 +352,15 @@ def reclaim(db, *, pages_per_step=PAGES_PER_STEP, max_seconds=MAX_SECONDS, busy_
     if not force and not over_threshold(before['page_size'], before['page_count'], before['freelist_count']):
         return dict(result, reason='below_threshold')
     previous = db.execute('PRAGMA busy_timeout').fetchone()[0]
+    spill = db.execute('PRAGMA cache_spill').fetchone()[0]
     start, steps, stopped = clock(), 0, 'freelist_empty'
     try:
         db.execute('PRAGMA busy_timeout=' + str(int(busy_ms)))
+        # No cache spill (Claude-Mac D2 on #239): a step larger than the page cache would spill mid-statement, each
+        # spill needs EXCLUSIVE and waits busy_ms behind any reader, and SQLite keeps going after a busy spill, so one
+        # step could hold RESERVED+PENDING for minutes (453 s measured) and lock new readers out. Without spilling,
+        # the step's only exclusive wait is its commit: at most busy_ms, then SQLITE_BUSY and the step is undone.
+        db.execute('PRAGMA cache_spill=0')
         free = before['freelist_count']
         while free > 0:
             if clock() - start >= max_seconds:
@@ -281,6 +374,9 @@ def reclaim(db, *, pages_per_step=PAGES_PER_STEP, max_seconds=MAX_SECONDS, busy_
             steps += 1
             free = db.execute('PRAGMA freelist_count').fetchone()[0]
     finally:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        db.execute('PRAGMA cache_spill=' + str(int(spill)))
         db.execute('PRAGMA busy_timeout=' + str(int(previous)))
     after = _pragmas(db)
     return dict(result, ran=steps > 0, reason=stopped, steps=steps, seconds=round(clock() - start, 3),
@@ -380,7 +476,7 @@ def _held(path):
         extra = Path(str(path) + suffix)
         if extra.exists() and (suffix == '-journal' or extra.stat().st_size):
             return 'a ' + suffix[1:] + ' file is present (another connection is writing or crashed mid-write)'
-    probe = sqlite3.connect(path, timeout=0, isolation_level=None)
+    probe = connect_existing(path, timeout=0)
     try:
         probe.execute('BEGIN EXCLUSIVE')
         probe.execute('ROLLBACK')
@@ -495,7 +591,7 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
         held = _held(path)
         if held:
             raise Refusal('The controller database is held: ' + held + '. Nothing was changed.', 'DB_COMPACT_DB_HELD')
-        lock = sqlite3.connect(path, timeout=0, isolation_level=None)
+        lock = connect_existing(path, timeout=0)
         try:
             try:
                 lock.execute('BEGIN IMMEDIATE')            # no writer until the copy is verified
@@ -534,54 +630,70 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
         # process has the file open, which is exactly "held". The swap is journaled first (sidecar phase
         # "swapping", fsynced): a stop anywhere until the sidecar says "kept" is undone by recover_interrupted,
         # which StudioStore runs before it opens the database, so there is always a canonical studio.sqlite.
+        nonce = uuid.uuid4().hex
+        original_bytes = path.stat().st_size
         record = dict(schema=SIDECAR_SCHEMA, phase='swapping', at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
-                      database=str(path), original=str(aside), copy=str(temporary))
-        _write_json(sidecar, record)
+                      database=str(path), original=str(aside), copy=str(temporary), original_bytes=original_bytes,
+                      owner=dict(pid=os.getpid(), nonce=nonce))
+        _ACTIVE_SWAPS.add(nonce)       # while set, another opener refuses instead of racing this swap
         try:
-            os.rename(path, aside)
-        except OSError as error:
-            temporary.unlink()
-            sidecar.unlink()
-            raise Refusal('The controller database is held (' + str(error)[:200] + '); the copy was removed and '
-                          'nothing was changed.', 'DB_COMPACT_DB_HELD') from None
-        try:
-            if any(Path(str(path) + suffix).exists() for suffix in ('-journal', '-wal')):
-                # A journal written for the original must never be applied to the copy.
-                raise OSError('a journal appeared beside the database during the swap')
-            with _closing(_ro(aside)) as moved:
-                unchanged = differences(original, snapshot(moved, integrity=False))
-            if unchanged:
-                raise ValueError('the database changed during compaction (' + ', '.join(unchanged) + ')')
-            _place(temporary, path)
-        except (OSError, ValueError, sqlite3.Error) as error:
-            if not path.exists():
-                os.rename(aside, path)
-            if temporary.exists():
+            _write_json(sidecar, record)
+            try:
+                os.rename(path, aside)
+            except OSError as error:
                 temporary.unlink()
-            sidecar.unlink()
-            code = 'DB_COMPACT_MISMATCH' if isinstance(error, ValueError) else 'DB_COMPACT_SWAP_FAILED'
-            raise Refusal('Compaction was rolled back: ' + str(error)[:240] + '. The original is in place.', code) from None
-        try:
-            with _closing(_ro(path)) as placed:
-                found = differences(original, snapshot(placed))
-                placed_pages = _pragmas(placed)
-        except sqlite3.Error as error:
-            found = ['unreadable: ' + str(error)[:120]]
-        if found:
-            rejected = path.with_name(path.name + '.compact-rejected-' + stamp)
-            os.rename(path, rejected)
-            os.rename(aside, path)
-            sidecar.unlink()
-            raise Refusal('The placed copy did not verify (' + ', '.join(found) + '); the original was put back and '
-                          'the copy kept at ' + str(rejected) + '.', 'DB_COMPACT_MISMATCH', differences=found)
-        record.update(phase='kept', original_bytes=aside.stat().st_size,
-                      compacted_bytes=path.stat().st_size, live_bytes=info['live_bytes'],
-                      auto_vacuum_after=placed_pages['auto_vacuum'],
-                      tables={name: value['rows'] for name, value in original['tables'].items()},
-                      schema_sha256=original['schema_sha256'],
-                      retire='after the next successful batch start (retire_pre_vacuum)')
-        record.pop('copy')
-        _write_json(sidecar, record)
+                sidecar.unlink()
+                raise Refusal('The controller database is held (' + str(error)[:200] + '); the copy was removed and '
+                              'nothing was changed.', 'DB_COMPACT_DB_HELD') from None
+            try:
+                if any(Path(str(path) + suffix).exists() for suffix in ('-journal', '-wal')):
+                    # A journal written for the original must never be applied to the copy.
+                    raise OSError('a journal appeared beside the database during the swap')
+                with _closing(_ro(aside)) as moved:
+                    unchanged = differences(original, snapshot(moved, integrity=False))
+                if unchanged:
+                    raise ValueError('the database changed during compaction (' + ', '.join(unchanged) + ')')
+                _place(temporary, path)
+                with _closing(_ro(path)) as placed:
+                    found = differences(original, snapshot(placed))
+                    placed_pages = _pragmas(placed)
+                if found:
+                    raise ValueError('the placed copy did not verify (' + ', '.join(found) + ')')
+            except (OSError, ValueError, sqlite3.Error) as error:
+                # Claude-Mac D1 on #239: whatever is at the path now (the placed copy, or a database something
+                # created in the gap) is moved aside, never trusted, and the sidecar goes only once the original
+                # is provably back.
+                code = 'DB_COMPACT_MISMATCH' if isinstance(error, ValueError) else 'DB_COMPACT_SWAP_FAILED'
+                rejected = None
+                try:
+                    rejected = _put_back(path, aside, stamp)
+                    with _closing(_ro(path)) as back:
+                        restored = not aside.exists() and not differences(original, snapshot(back, integrity=False))
+                except (OSError, sqlite3.Error):
+                    restored = False
+                if not restored:
+                    raise Refusal('Compaction stopped mid-swap (' + str(error)[:200] + ') and the original could not be '
+                                  'proven back; it is kept at ' + str(aside) + ' and the swap record stays, so the next '
+                                  'controller open puts it back. Nothing was deleted.', 'DB_COMPACT_RECOVERY_REQUIRED',
+                                  sidecar=str(sidecar)) from None
+                if temporary.exists():
+                    temporary.unlink()
+                sidecar.unlink()
+                raise Refusal('Compaction was rolled back: ' + str(error)[:240] + '. The original is back in place '
+                              '(verified)' + ('; what was at the path is kept at ' + str(rejected) if rejected else '')
+                              + '.', code, **({'rejected': str(rejected)} if rejected else {})) from None
+            # Still inside the swap: "kept" is written before another opener may treat the record as stale.
+            record.update(phase='kept', original_bytes=aside.stat().st_size,
+                          compacted_bytes=path.stat().st_size, live_bytes=info['live_bytes'],
+                          auto_vacuum_after=placed_pages['auto_vacuum'],
+                          tables={name: value['rows'] for name, value in original['tables'].items()},
+                          schema_sha256=original['schema_sha256'],
+                          retire='after the next successful batch start (retire_pre_vacuum)')
+            record.pop('copy')
+            record.pop('owner')
+            _write_json(sidecar, record)
+        finally:
+            _ACTIVE_SWAPS.discard(nonce)
     finally:
         gate_scope.__exit__(None, None, None)
     result = dict(plan, applied=True, original=str(aside), sidecar=str(sidecar), bytes_before=record['original_bytes'],

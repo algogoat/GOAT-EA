@@ -141,6 +141,28 @@ class ReclaimTests(Thresholds, unittest.TestCase):
         self.assertFalse(result['ran'])
         self.assertEqual(self.db.execute('PRAGMA busy_timeout').fetchone()[0], before)
 
+    def test_a_reader_holding_a_shared_lock_never_stalls_it_past_its_bound(self):
+        """Claude-Mac D2 on #239: a step larger than the page cache spilled, and each spill waited behind a reader."""
+        self.bloat(8)
+        self.db.execute('PRAGMA cache_size=20')                       # far smaller than one 2048-page step
+        spill = self.db.execute('PRAGMA cache_spill').fetchone()[0]
+        reader = sqlite3.connect(self.path, isolation_level=None); self.addCleanup(reader.close)
+        reader.execute('BEGIN'); reader.execute('SELECT count(*) FROM studio_queues').fetchone()   # SHARED lock held
+        free = self.db.execute('PRAGMA freelist_count').fetchone()[0]
+        import time as clock
+        started = clock.monotonic()
+        result = maint.reclaim(self.db, busy_ms=100)
+        elapsed = clock.monotonic() - started
+        reader.execute('ROLLBACK')
+        self.assertLess(elapsed, maint.MAX_SECONDS + 0.5, result)
+        self.assertEqual(result['reason'], 'busy')
+        self.assertEqual(self.db.execute('PRAGMA freelist_count').fetchone()[0], free)   # the step was undone
+        self.assertFalse(self.db.in_transaction)
+        self.assertEqual(self.db.execute('PRAGMA cache_spill').fetchone()[0], spill)
+        self.assertTrue(maint.reclaim(self.db)['ran'])                 # and it runs once the reader is gone
+        with maint._closing(maint._ro(self.path)) as db:
+            self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+
     def test_never_inside_a_transaction_and_never_on_a_legacy_store(self):
         self.bloat(4)
         self.db.execute('BEGIN')
@@ -376,6 +398,86 @@ class CompactTests(Thresholds, unittest.TestCase):
         self.assertEqual(real_rename, os.rename); self.assertEqual(real_place, maint._place)
         self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_000)['applied'])   # and it can run again
 
+    def test_a_database_created_in_the_swap_gap_is_set_aside_and_the_original_restored(self):
+        """Claude-Mac D1 on #239: an outside opener creates studio.sqlite between the rename and the placement."""
+        before = self.content()
+        real_place = maint._place
+
+        def gap(source, target):
+            with maint._closing(sqlite3.connect(target, isolation_level=None)) as db:   # a creating opener
+                db.execute('CREATE TABLE studio_queues(binding TEXT PRIMARY KEY, jobs TEXT NOT NULL)')
+                db.execute("INSERT INTO studio_queues VALUES('gap','[]')")
+            return real_place(source, target)                                           # the path exists: fails
+        with patch.object(maint, '_place', side_effect=gap), self.assertRaises(Refusal) as caught:
+            maint.compact(self.path, apply=True, now=1_760_000_000)
+        self.assertEqual(caught.exception.code, 'DB_COMPACT_SWAP_FAILED', str(caught.exception))
+        self.assertIn('verified', str(caught.exception))
+        self.assertEqual(maint.differences(before, self.content()), [])               # the real data is back
+        self.assertEqual(pragma(self.path, 'auto_vacuum'), 0)
+        rejected = Path(caught.exception.fields['rejected'])
+        with maint._closing(maint._ro(rejected)) as db:                               # the gap database is kept
+            self.assertEqual(db.execute('SELECT binding FROM studio_queues').fetchall(), [('gap',)])
+        self.assertEqual(sorted(p.name for p in self.root.iterdir() if maint.ASIDE in p.name or p.name.endswith('.tmp')), [])
+        self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_100)['applied'])
+
+    def test_an_opener_in_the_swap_gap_refuses_and_creates_nothing(self):
+        real_place = maint._place
+        seen = []
+
+        def gap(source, target):
+            for opener in (lambda: StudioStore(target), lambda: maint.connect_existing(target).close()):
+                try:
+                    opener()
+                    seen.append('opened')
+                except Refusal as error:
+                    seen.append(error.code)
+                except sqlite3.OperationalError:
+                    seen.append('no such file')
+                self.assertFalse(Path(target).exists(), 'nothing created in the gap')
+            return real_place(source, target)
+        with patch.object(maint, '_place', side_effect=gap):
+            self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_000)['applied'])
+        self.assertEqual(seen, ['DB_COMPACT_IN_PROGRESS', 'no such file'])
+        self.assertEqual(pragma(self.path, 'auto_vacuum'), 2)
+
+    def test_an_unprovable_restore_keeps_the_swap_record_for_the_next_open(self):
+        before = self.content()
+        with patch.object(maint, '_place', side_effect=OSError('placement failed')), \
+                patch.object(maint, '_put_back', side_effect=OSError('restore failed')), \
+                self.assertRaises(Refusal) as caught:
+            maint.compact(self.path, apply=True, now=1_760_000_000)
+        self.assertEqual(caught.exception.code, 'DB_COMPACT_RECOVERY_REQUIRED')
+        self.assertFalse(self.path.exists())
+        sidecar = Path(caught.exception.fields['sidecar'])
+        self.assertEqual(json.loads(sidecar.read_text(encoding='utf-8'))['phase'], 'swapping')
+        StudioStore(self.path).close()                                                  # the next open puts it back
+        after = self.content()
+        self.assertEqual({key: after['tables'][key] for key in before['tables']}, before['tables'])
+        self.assertFalse(sidecar.exists())
+
+    def test_a_live_foreign_owner_refuses_recovery_and_a_dead_one_allows_it(self):
+        stamp = maint._stamp(1_760_000_000)
+        aside = self.root / ('studio.sqlite' + maint.ASIDE + stamp)
+        os.rename(self.path, aside)
+        sidecar = aside.with_name(aside.name + '.json')
+        record = dict(schema=maint.SIDECAR_SCHEMA, phase='swapping', original_bytes=os.path.getsize(aside),
+                      owner=dict(pid=os.getppid(), nonce='x'))
+        sidecar.write_text(json.dumps(record), encoding='utf-8')
+        with self.assertRaises(Refusal) as caught:
+            StudioStore(self.path)
+        self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
+        self.assertFalse(self.path.exists(), 'never creates while the owner swaps')
+        with patch.object(maint, '_pid_alive', return_value=False):
+            self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
+        self.assertEqual(pragma(self.path, 'user_version'), 7)
+        self.assertFalse(sidecar.exists())
+
+    def test_connect_existing_never_creates(self):
+        missing = self.root / 'none.sqlite'
+        with self.assertRaises(sqlite3.OperationalError):
+            maint.connect_existing(missing)
+        self.assertFalse(missing.exists())
+
     def test_refuses_a_missing_database(self):
         with self.assertRaises(Refusal) as caught:
             maint.compact(self.root / 'none.sqlite', apply=True)
@@ -548,6 +650,19 @@ class MemberBoundaryTests(unittest.TestCase):
             self.assertEqual(db.in_transaction, in_transaction)
             if in_transaction:
                 db.execute('ROLLBACK')
+
+    def test_write_queue_reraises_the_real_error_when_sqlite_already_rolled_back(self):
+        class Full(sqlite3.OperationalError):
+            pass
+
+        class Db:
+            def execute(self, sql, *args):
+                if sql.startswith('DELETE'):
+                    raise Full('database or disk is full')
+                if sql.startswith('ROLLBACK TO'):
+                    raise sqlite3.OperationalError('no such savepoint: goat_queue_write')
+        with self.assertRaises(Full):
+            maint.write_queue(Db(), 'b', '[]')
 
     def test_no_production_module_rewrites_the_queue_row_with_update_or_replace(self):
         controller = Path(__file__).resolve().parent

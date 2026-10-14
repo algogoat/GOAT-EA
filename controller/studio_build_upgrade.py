@@ -105,7 +105,8 @@ def replace_build(receipt, review_id, candidate_receipt, candidate_ea, expected_
         for view in sorted(plan['after_ownership'],key=lambda x:x['path']):
             if not Path(view['path']).is_relative_to(root):
                 database=safe_path(view['path'])
-                db=stack.enter_context(closing(sqlite3.connect(database,timeout=1,isolation_level=None)))
+                from studio_db_maintenance import connect_existing   # mode=rw: never creates a missing database
+                db=stack.enter_context(closing(connect_existing(database,timeout=1)))
                 db.execute('BEGIN IMMEDIATE')
         journal=safe_path(folder/'build-upgrade.json');pending=pending_path(root)
         retained=read_json(journal) if journal.exists() else None

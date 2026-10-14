@@ -268,12 +268,18 @@ signature itself (see Round 5 F2), at review and at deploy.
   `refused_before_stage`.
 - **Every resume re-checks (GOAT-EA#229 review 6160002799).** A deploy-load call that finds the journal past
   `validated` re-checks the fit in that call, so a plan reviewed at 50k and resumed at 20k never reaches `ready`:
-  - `staged` with MT5 running: `check_live` right after `broker_proof`, before the close. Stale -> `FIT_STALE`
-    "... Nothing was closed or launched; run deploy-stop to set this deployment aside."; the journal stays `staged`.
+  - `staged` with MT5 running: `check_live` right after `broker_proof`, before the close.
   - `closed` (or `staged` with MT5 already gone): the broker cannot be read, so only the plan TTL is checked before the
-    launch (`check_plan_age`, the `reviewedAtUtc` row; now = the later of the PC clock and `--server-time-utc`). An
-    expired plan refuses the same way and a fresh attempt re-plans. Inside the TTL MT5 is relaunched with Algo Trading
-    off (`Enabled=0`), and the post-launch check below decides.
+    launch (`check_plan_age`, the `reviewedAtUtc` row). Inside the TTL MT5 is relaunched with Algo Trading off
+    (`Enabled=0`), and the post-launch check below decides.
+  - Either refusal SETS THE NEVER-LAUNCHED JOURNAL ASIDE itself (review 6160692543), through the deploy-stop unwind:
+    nothing is closed or launched, the staged dashboard state and deploy profile are renamed aside, the previous
+    profile is restored, and the journal says `stopped` with `stop_reason` `FIT_STALE` (live check) or `PLAN_EXPIRED`
+    (TTL alone). The refusal keeps `FIT_STALE` and its fields: "... Nothing was closed or launched: GOAT set this
+    deployment aside and <profile outcome>. Check again to re-plan." A fresh check is then never refused "Another demo
+    deployment is live". An unconfirmed close stays a manual state (no automatic set-aside).
+  - The TTL's now, in `check_plan_age` and in `check_live`'s `stale_members`, is the later of the PC clock and
+    `--server-time-utc`.
   - `launched` .. `policy_applied`: `check_live` once the relaunched dashboard has answered, before any child is
     linked or readiness is claimed. Stale -> the inert-only unwind (MT5 closed normally with Algo Trading off, never a
     position closed, the deployment set aside, the previous profile restored), refused `FIT_STALE` with the unwind

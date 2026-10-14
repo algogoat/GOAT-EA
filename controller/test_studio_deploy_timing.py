@@ -3,7 +3,8 @@ Fixture-only, no MT5, no I/O beyond temp files.
 
 The ten checks of the reference's test_deploy_timing_profile.cjs are ported case by case into the shared
 controller/contracts/deploy-timing-fixtures/profile-cases.json (with extra cases on the same rules); every verdict here
-must equal the reference's (the same file was run through the .cjs validator: 35 cases, 0 mismatches). Also: the
+must equal the reference's (the file at 7cb5591 was run through the .cjs validator: 35 cases, 0 mismatches; review
+6160002799 item 4 then changed the evidence and resume rules here first, and the .cjs reference must follow). Also: the
 built-in profiles' budgets, runner timeouts and effective sha256, the --timing-profile loader, and that the desktop
 profile is exactly the controller's pinned constants.
 """
@@ -72,9 +73,13 @@ class ReferenceChecks(unittest.TestCase):
     def test_10_resume_details_match_the_reference(self):
         profile = timing.PROFILES['vps-cold-36']
         fresh = timing.resume_allowed(profile, 600)
-        self.assertEqual(fresh, dict(ok=True, leftSeconds=13800, neededSeconds=720))
+        # Review 6160002799 item 4 (Codex P2): the resume re-check's status re-poll (dashboardWaitSeconds 480) is needed too.
+        self.assertEqual(fresh, dict(ok=True, leftSeconds=13800, neededSeconds=480 + 480 + 60 + 90 + 90))
         late = timing.resume_allowed(profile, timing.REGISTRATION_SECONDS - 600)
-        self.assertEqual((late['ok'], late['code'], late['leftSeconds'], late['neededSeconds']), (False, 'RESUME_REGISTRATION_TOO_OLD', 600, 720))
+        self.assertEqual((late['ok'], late['code'], late['leftSeconds'], late['neededSeconds']), (False, 'RESUME_REGISTRATION_TOO_OLD', 600, 1200))
+        # Codex's example: 800 s left passed against the old 720 s; the status poll could then use 480 of them.
+        self.assertEqual(timing.resume_allowed(profile, timing.REGISTRATION_SECONDS - 800)['code'], 'RESUME_REGISTRATION_TOO_OLD')
+        self.assertEqual(timing.resume_allowed(timing.PROFILES['desktop'], 0)['neededSeconds'], 180 + 240 + 60 + 90 + 90)
         self.assertEqual(timing.resume_allowed(profile, math.nan)['code'], 'RESUME_AGE_UNKNOWN')
         for bad in (None, math.inf, True, '600'):
             self.assertEqual(timing.resume_allowed(profile, bad)['code'], 'RESUME_AGE_UNKNOWN', bad)
@@ -89,6 +94,22 @@ class ReferenceChecks(unittest.TestCase):
         self.assertEqual(str(caught.exception), 'TIMING_BELOW_EVIDENCE: dashboardWaitSeconds 180 s does not cover the measured '
                                                 'coldStartSeconds 190 s x 1.5')
         self.assertEqual(verdict(lambda: timing.runner_timeout_ms(timing.PROFILES['desktop'], -1)), 'TIMING_INVALID')
+
+    def test_the_margin_is_mandatory_and_the_close_wait_has_the_measured_vps_floor(self):
+        # Review 6160002799 item 4: no `evidence: null` bypass, and close-wait >= the measured VPS close x 1.5.
+        vps = timing.PROFILES['vps-cold-36']
+        self.assertEqual((timing.MEASURED_VPS_CLOSE_SECONDS, timing.CLOSE_WAIT_FLOOR_SECONDS), (vps['evidence']['closeSeconds'], 118.5))
+        with self.assertRaises(timing.TimingRefusal) as caught:
+            timing.validate_profile(dict(vps, id='my-vps', evidence=None))
+        self.assertEqual(caught.exception.code, 'TIMING_EVIDENCE_REQUIRED')
+        fast = dict(vps, id='fast-host', closeWaitSeconds=118, evidence=dict(vps['evidence'], closeSeconds=10))
+        with self.assertRaises(timing.TimingRefusal) as caught:
+            timing.validate_profile(fast)
+        self.assertEqual(str(caught.exception), 'TIMING_BELOW_EVIDENCE: closeWaitSeconds 118 s does not cover the measured VPS close 79 s x 1.5')
+        self.assertEqual(verdict(lambda: timing.validate_profile(dict(fast, closeWaitSeconds=119))), 'ok')
+        # The one profile without evidence is the pinned desktop (the controller's own constants with no flag).
+        self.assertEqual(verdict(lambda: timing.validate_profile(copy.deepcopy(timing.PROFILES['desktop']))), 'ok')
+        self.assertEqual(verdict(lambda: timing.validate_profile(dict(timing.PROFILES['desktop'], closeWaitSeconds=31))), 'TIMING_EVIDENCE_REQUIRED')
 
     def test_constants_match_the_reference(self):
         self.assertEqual((timing.SCHEMA, timing.PORTFOLIO_REQUEST_CAP_SECONDS, timing.REGISTRATION_SECONDS, timing.APPLY_POLICY_SECONDS,

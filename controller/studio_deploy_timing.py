@@ -28,6 +28,11 @@ REGISTRATION_SECONDS = 14400
 APPLY_POLICY_SECONDS = 60
 # A profile wait must cover its measured duration with this margin, or it is refused as too tight.
 MIN_MARGIN = 1.5
+# The measured VPS close (the vps-cold-36 evidence below: Exp 03 VPS, 2026-10-12, 36 charts). Every profile but the
+# pinned desktop one waits at least this x MIN_MARGIN (118.5 s, so 119 s as an integer) for MT5 to close, whatever its
+# own evidence says (Claude-Mac, GOAT-EA#229 review 6160002799 item 4).
+MEASURED_VPS_CLOSE_SECONDS = 79
+CLOSE_WAIT_FLOOR_SECONDS = MEASURED_VPS_CLOSE_SECONDS * MIN_MARGIN
 # Field -> inclusive bounds, in the reference's order (the first broken rule is the one reported).
 FIELDS = (
     ('closeWaitSeconds', 10, 600),
@@ -109,24 +114,38 @@ def validate_profile(profile):
         raise TimingRefusal('TIMING_LINK_REQUEST_TOO_LONG', 'one link request must end well inside the child start window')
     # The reference reads `profile.evidence !== null`: a missing evidence key is refused like any non-object.
     evidence = profile.get('evidence', _MISSING)
-    if evidence is not None:
-        if not _is_object(evidence):
-            raise TimingRefusal('TIMING_INVALID', 'evidence is null or an object')
+    if evidence is not None and not _is_object(evidence):
+        raise TimingRefusal('TIMING_INVALID', 'evidence is null or an object')
+    # The 1.5x margin is mandatory (review 6160002799 item 4): only the pinned desktop waits, which are the controller's
+    # own constants without a flag, carry no evidence. Every other profile names its three measured durations.
+    if not (evidence is None and _is_pinned_desktop(profile)):
+        if evidence is None:
+            raise TimingRefusal('TIMING_EVIDENCE_REQUIRED', 'only the built-in desktop waits may omit evidence; this profile '
+                                                            'needs its measured closeSeconds, coldStartSeconds and coldLinkSeconds')
         for measure, field in EVIDENCE:
             if measure not in evidence:
-                continue
+                raise TimingRefusal('TIMING_EVIDENCE_REQUIRED', 'evidence.' + measure + ' is required (the measured duration '
+                                                                + field + ' must cover x ' + str(MIN_MARGIN) + ')')
             seen = evidence[measure]
             if not _is_number(seen) or not math.isfinite(seen) or seen <= 0:
                 raise TimingRefusal('TIMING_INVALID', 'evidence.' + measure + ' must be a positive number')
             if profile[field] < seen * MIN_MARGIN:
                 raise TimingRefusal('TIMING_BELOW_EVIDENCE', f'{field} {_text(profile[field])} s does not cover the measured '
                                                              f'{measure} {_text(seen)} s x {MIN_MARGIN}')
+        if profile['closeWaitSeconds'] < CLOSE_WAIT_FLOOR_SECONDS:
+            raise TimingRefusal('TIMING_BELOW_EVIDENCE', f'closeWaitSeconds {_text(profile["closeWaitSeconds"])} s does not cover the '
+                                                         f'measured VPS close {MEASURED_VPS_CLOSE_SECONDS} s x {MIN_MARGIN}')
     if budget_seconds(profile) >= REGISTRATION_SECONDS:
         raise TimingRefusal('TIMING_OVER_REGISTRATION', 'the deploy budget must end before the dashboard registration expires')
     return profile
 
 
 _MISSING = object()
+
+
+def _is_pinned_desktop(profile):
+    """The built-in desktop profile: its id and exactly its waits (a file may not reuse the id with other waits)."""
+    return profile.get('id') == DEFAULT_ID and effective(profile) == effective(PROFILES[DEFAULT_ID])
 
 
 def _text(value):
@@ -142,8 +161,9 @@ def runner_timeout_ms(profile, slack_seconds=180):
 
 
 def resume_allowed(profile, registration_age_seconds):
-    """Whether a deploy resumed at `registered` or `dashboard_ready` may keep its retained registration: what is left
-    of the deploy (child start, policy, ack, audit) must end before the registration expires (trap T6)."""
+    """Whether a deploy resumed at `dashboard_ready` may keep its retained registration: what is left of the deploy
+    (the resume re-check's own status read, child start, policy, ack, audit) must end before the registration
+    expires (trap T6)."""
     validate_profile(profile)
     return resume_rule(profile, registration_age_seconds)
 
@@ -155,7 +175,10 @@ def resume_rule(profile, registration_age_seconds):
     if not _is_number(age) or not math.isfinite(age) or age < 0:
         return dict(ok=False, code='RESUME_AGE_UNKNOWN', reason='the registration age could not be read; refusing the resume')
     left = REGISTRATION_SECONDS - age
-    needed = profile['childStartWaitSeconds'] + APPLY_POLICY_SECONDS + profile['ackWaitSeconds'] + profile['auditWaitSeconds']
+    # The resume re-check's status re-poll can take up to dashboardWaitSeconds before the link starts (review item 4,
+    # Codex P2 on GOAT-EA#229).
+    needed = (profile['dashboardWaitSeconds'] + profile['childStartWaitSeconds'] + APPLY_POLICY_SECONDS
+              + profile['ackWaitSeconds'] + profile['auditWaitSeconds'])
     if left > needed:
         return dict(ok=True, leftSeconds=left, neededSeconds=needed)
     return dict(ok=False, code='RESUME_REGISTRATION_TOO_OLD', leftSeconds=left, neededSeconds=needed,

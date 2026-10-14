@@ -687,6 +687,19 @@ def _launch_telemetry(arguments, options, previous, pre_launch_check, launch_sta
         return dict(schema=TELEMETRY_SCHEMA, error=type(exc).__name__ + ': ' + str(exc)[:200])
 
 
+def _launched_identity(process, pid):
+    """The MT5 just launched as (pid, image, creation time), which a resume re-checks (GOAT-EA#229 review item 3). Never
+    raises: MT5 is already started, so the 'launched' phase must be written whatever the inventory answers. An MT5 not
+    listed with that pid keeps no creation time, and a resume then refuses rather than guess."""
+    try:
+        running = process.inspect()
+    except Exception:
+        running = None
+    if isinstance(running, dict) and running.get('pid') == pid:
+        return {key: running.get(key) for key in ('pid', 'executable', 'created_utc')}
+    return dict(pid=pid, executable=None, created_utc=None)
+
+
 def _row_linked(row):
     return bool(row['linkedFresh']) and row['chartId'] > 0 and row['magic'] > 0
 
@@ -802,9 +815,12 @@ def _named_rows(failed):
 
 
 def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason, clock=time.monotonic,
-            close_key='unwind_close'):
+            close_key='unwind_close', expected_process=None, keep_mailbox=False):
     """Unload the deployment from an inert terminal: close MT5 normally, rename the dashboard state, the deploy
-    profile and the mailbox files aside, then select the previous profile again. Never closes positions."""
+    profile and the mailbox files aside, then select the previous profile again. Never closes positions.
+    ``expected_process`` (a resume unwind): the exact MT5 the resume re-check proved, which close_terminal re-checks
+    right before its close. ``keep_mailbox``: the retained registration was not proven this deployment's, so it and the
+    retained request are left in place for inspection (GOAT-EA#229 review item 3)."""
     launched = journal.get('phase') not in ('validated', 'staged', 'closed')
     if launched and process.inspect() is not None:
         proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
@@ -813,7 +829,8 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
         if proof['positions'] or proof['orders']:
             raise ValueError('The demo account still has open positions or orders. Close or keep them yourself in MT5; GOAT never closes them automatically')
         close_started = clock()
-        closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'])
+        expected = {} if expected_process is None else dict(expected_process=expected_process)
+        closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'], **expected)
         journal.setdefault('observed_seconds', {})[close_key] = _seconds(clock() - close_started)
         if closed.get('phase') not in ('stopped', 'already_stopped'):
             _cut(journal, close_key); write_json(where['journal'], journal)
@@ -827,7 +844,11 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
         # Rename aside, never delete: a later launch has no saved dashboard or deploy profile to resume, and
         # every byte remains for inspection. Only this deployment's own profile is moved, never the previous one.
         mailbox_root = portfolio_root(controller)
+        if keep_mailbox:
+            journal['mailbox_left_in_place'] = True
         for source in (where['state'], where['profile'], mailbox_root / 'request.json', mailbox_root / 'registration.json'):
+            if keep_mailbox and source.parent == mailbox_root and source.name in ('request.json', 'registration.json'):
+                continue
             if source.exists():
                 target = source.with_name(source.name + '.stopped-' + stamp)
                 sharing_retry(lambda: source.rename(target)); archived.append(str(target))
@@ -962,15 +983,19 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         record.update(phase=name, **extra); record['updated_utc'] = datetime.now(timezone.utc).isoformat()
         write_json(where['journal'], record)
 
-    def fail_and_unwind(code, message, failed=(), *, refusal_code=None, **facts):
+    unwinding = []  # set once an auto-unwind has started: a crash inside it is recorded, never a second unwind
+
+    def fail_and_unwind(code, message, failed=(), *, refusal_code=None, unwind=None, **facts):
         """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path. ``refusal_code``
-        (the remote deploy v0 codes) makes the final refusal a typed Refusal; the older codes keep their plain one."""
+        (the remote deploy v0 codes) makes the final refusal a typed Refusal; the older codes keep their plain one.
+        ``unwind``: _unwind's expected_process / keep_mailbox for a resume refusal."""
         cut_open()
         record.update(failure=dict(code=code, message=message[:400], utc=utc_now(), **facts), rows_failed=list(failed))
         write_json(where['journal'], record)
+        unwinding.append(code)
         try:
             _unwind(controller, session, record, where, 'unwind-' + deployment_id[:24] + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
-                    mt5=mt5, process=process, close=closer, reason=code, clock=clock)
+                    mt5=mt5, process=process, close=closer, reason=code, clock=clock, **(unwind or {}))
         except (OSError, ValueError) as exc:
             record['auto_unwind'] = dict(status='failed', error=str(exc)[:300], utc=utc_now())
             write_json(where['journal'], record)
@@ -987,15 +1012,40 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         unchanged. At dashboard_ready, which never registers again, the retained registration must also be exactly this
         deployment's, young enough that the rest of the deploy ends before its 4 h expiry (resumeAllowed), and a fresh
         status read must show the dashboard observed and inert. Anything else unwinds (D3) and records why; the next
-        deploy-load is then a fresh attempt with a new registration (remote deploy design M5: unwind, never re-register)."""
+        deploy-load is then a fresh attempt with a new registration (remote deploy design M5: unwind, never re-register).
+        An MT5 other than the launched one (pid and creation time) is refused with nothing changed (review item 3)."""
+        from studio_research_profile import _same_identity
         facts = dict(from_phase=resumed_from, utc=utc_now())
         record['resume_check'] = facts
+        # The MT5 this deployment launched: pid, image and creation time (a reused pid is another process).
+        launched = record.get('launched_process') or dict(pid=record.get('pid'), executable=None, created_utc=None)
+        mailbox_root = portfolio_root(controller)
+
+        def registration_owned():
+            """The retained registration is byte for byte the one this deployment wrote (its journaled sha256)."""
+            try:
+                _, digest = read(mailbox_root / 'registration.json', 131072)
+            except (OSError, ValueError):
+                return False
+            return digest is not None and digest == record.get('registration_sha256')
 
         def refuse(code, message):
+            # The unwind closes only the MT5 this deployment launched (close_terminal re-checks it right before its close)
+            # and never renames aside a registration (or its request) that is not this deployment's own.
             facts.update(ok=False, code=code)
-            fail_and_unwind(code, message, refusal_code=code)
+            fail_and_unwind(code, message, refusal_code=code,
+                            unwind=dict(expected_process=launched, keep_mailbox=not registration_owned()))
 
-        expected = record.get('pid')
+        def refuse_untouched(code, message):
+            """A refusal about an MT5 GOAT did not launch: journaled, nothing closed, renamed or unloaded (review item 3)."""
+            facts.update(ok=False, code=code)
+            cut_open()
+            record['failure'] = dict(code=code, message=message[:400], utc=utc_now())
+            write_json(where['journal'], record)
+            raise Refusal(message + ' GOAT closed, unloaded and renamed nothing. Check which MT5 this is; run deploy-stop to unload '
+                          'this deployment from it once it is inert, then deploy-load again.', code)
+
+        expected = launched.get('pid')
         begin('launch_observe')
         deadline = clock() + profile['launchObserveSeconds']
         while True:
@@ -1009,15 +1059,16 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         facts['terminal_pid'] = running.get('pid') if running else None
         if running is None:
             refuse('RESUME_TERMINAL_GONE', 'The MT5 this deployment launched is no longer running, so GOAT did not resume it.')
-        if expected is None or running.get('pid') != expected:
-            refuse('RESUME_TERMINAL_CHANGED', 'A different MT5 process is running than the one this deployment launched (pid '
-                   + str(expected) + '), so GOAT did not resume it.')
+        if not _same_identity(running, launched):
+            facts['terminal_created_utc'] = running.get('created_utc')
+            refuse_untouched('RESUME_TERMINAL_CHANGED', 'A different MT5 process is running than the one this deployment launched (pid '
+                             + str(expected) + ', started ' + str(launched.get('created_utc')) + '), so GOAT did not resume it.')
         changed = [m['name'] for m in members if not _same_bytes(m['path'], m['raw'])]
         if changed:
             refuse('RESUME_BYTES_CHANGED', 'A staged SET changed after the launch (' + ', '.join(changed[:3]) + '), so GOAT did not resume it.')
         if resumed_from == 'dashboard_ready':
             try:
-                registration, digest = read(portfolio_root(controller) / 'registration.json', 131072)
+                registration, digest = read(mailbox_root / 'registration.json', 131072)
             except (OSError, ValueError):
                 registration, digest = None, None
             expires = registration.get('expiresAtUtc') if isinstance(registration, dict) else None
@@ -1053,7 +1104,13 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         """A crash that is not a ValueError (a bug, a KeyError, an unexpected OSError) still journals `failure`. Before
         the launch nothing is half-loaded and the next deploy-load resumes the same plan; once MT5 may be running the
         deploy profile, it unwinds like any failure after the launch (D3). The journal written is the durable one, never
-        a phase the crash interrupted before it was written."""
+        a phase the crash interrupted before it was written.
+
+        Two exceptions (GOAT-EA#229 review items 2 and 4): a crash inside an auto-unwind already under way is recorded as
+        that unwind's failure and raised again, never a second unwind, and the first failure stays the journal's
+        `failure`. A crash at `launch_intent` (Popen itself, or before `launched` was written) keeps the old stop: MT5
+        may or may not have started, so nothing is closed and the next deploy-load says to inspect MT5 (never launched
+        twice)."""
         cut_open()
         try:
             durable = read_json(where['journal'])
@@ -1063,7 +1120,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if 'observed_cut_by_failure' in record:
             durable['observed_cut_by_failure'] = record['observed_cut_by_failure']
         message = (type(exc).__name__ + ': ' + str(exc))[:300]
-        if durable.get('phase') not in LAUNCHED_PHASES:
+        if unwinding:
+            durable['auto_unwind'] = dict(status='failed', error=message, exception=type(exc).__name__, utc=utc_now())
+            write_json(where['journal'], durable)
+            raise exc
+        if durable.get('phase') not in LAUNCHED_PHASES or durable.get('phase') == 'launch_intent':
             durable['failure'] = dict(code='controller_crash', message=message, utc=utc_now(), phase=durable.get('phase'),
                                       exception=type(exc).__name__)
             write_json(where['journal'], durable)
@@ -1145,7 +1206,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                 # The same keyword arguments as the call above, for the journal only (the test pins them equal).
                 options = dict(cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                phase('launched', pid=child.pid, launch_telemetry=_launch_telemetry(
+                phase('launched', pid=child.pid, launched_process=_launched_identity(process, child.pid), launch_telemetry=_launch_telemetry(
                     arguments, options, record.get('previous_terminal'), pre_launch_check, launch_started, popen_returned, child.pid))
         elif record['phase'] == 'launch_intent':
             raise ValueError('A dashboard launch intent is retained without confirmation; inspect MT5 before retrying (never launched twice)')
@@ -1210,7 +1271,8 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                         and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']))
             acked = _poll_until(controller, ident, 'status', acknowledged, seconds=profile['ackWaitSeconds'], request=request, sleep=sleep, clock=clock)
             if acked is None or not acknowledged(acked):
-                raise ValueError('Child charts did not acknowledge the exposure policy in time; run deploy-load again')
+                # A timeout unwinds like the dashboard and link timeouts: never leave a loaded MT5 with Algo off (review item 4).
+                fail_and_unwind('ack_timeout', 'Child charts did not acknowledge the exposure policy in time.')
             end('ack')
             phase('policy_applied', command_id=command)
 
@@ -1220,7 +1282,8 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             audit = _poll_until(controller, ident, 'audit', lambda r: r['result'] == 'observed' and all(row['settingsMatch'] for row in r['rows']),
                                 seconds=profile['auditWaitSeconds'], request=request, sleep=sleep, clock=clock)
             if audit is None or audit['result'] != 'observed':
-                raise ValueError('The dashboard settings audit did not complete (' + (audit['result'] if audit else 'receipt_timeout') + ')')
+                fail_and_unwind('audit_timeout', 'The dashboard settings audit did not complete ('
+                                + (audit['result'] if audit else 'receipt_timeout') + ').')
             end('audit')
             if audit['registrationSha256'] != record.get('registration_sha256'):
                 raise ValueError('The dashboard audited a different registration than this deployment registered; readiness is not claimed')
@@ -1263,7 +1326,11 @@ def status(controller, *, mt5=None, process=None, request=None):
         if observed['result'] == 'observed':
             result['trading'] = bool(observed['tradingAllowed'] and observed['rows'] and all(r['linkedFresh'] for r in observed['rows']))
     except ValueError as exc:
-        result['dashboard_error'] = str(exc)
+        if _is_request_still_live(exc) or _is_unresolved_mutation(exc):
+            # deploy-load is waiting on its own request (dashboard, ack or audit): pending, as the link step treats it.
+            result['dashboard'] = dict(result='pending', reason='request_still_live' if _is_request_still_live(exc) else 'mutation_started', rows=[])
+        else:
+            result['dashboard_error'] = str(exc)
     return result
 
 

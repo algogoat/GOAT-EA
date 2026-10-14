@@ -114,8 +114,9 @@ def trace_load(case, *, pending_polls=2, **load_kwargs):
     return json.loads(json.dumps(trace)), result
 
 
-# What a desktop journal gains over the pre-profile golden: the profile (first v0 commit) and the observed durations.
-NEW_JOURNAL_FIELDS = ('timing_profile', 'observed_seconds')
+# What a desktop journal gains over the pre-profile golden: the profile (first v0 commit), the observed durations and
+# the launched MT5's identity (pid, image, creation time) a resume re-checks (review 6160002799 item 3).
+NEW_JOURNAL_FIELDS = ('timing_profile', 'observed_seconds', 'launched_process')
 PHASES = {'close', 'launch_observe', 'dashboard_first_answer', 'child_start', 'link', 'ack', 'audit'}
 
 
@@ -151,8 +152,9 @@ class DesktopGolden(Base):
         self.assertEqual(without_timing_record(trace), GOLDEN)
         self.assertEqual(result['timing_profile'], dict(id='desktop', sha256=SHAS['desktop'], source='default',
                                                         values=timing.effective(timing.PROFILES['desktop'])))
-        # The golden diff, stated: the journal gains exactly these two keys and nothing else changes.
+        # The golden diff, stated: the journal gains exactly these keys and nothing else changes.
         self.assertEqual(set(trace['journal_keys']) - set(GOLDEN['journal_keys']), set(NEW_JOURNAL_FIELDS))
+        self.assertEqual(result['launched_process'], dict(pid=77, executable='terminal64.exe', created_utc='2026-10-02T01:00:00+00:00'))
         self.assertEqual(set(GOLDEN['journal_keys']) - set(trace['journal_keys']), set())
         self.assertEqual(set(result['observed_seconds']), PHASES)
         self.assertTrue(all(isinstance(v, float) and v >= 0 for v in result['observed_seconds'].values()))
@@ -222,8 +224,9 @@ class VpsWaits(Base):
         self.assertEqual(journal['observed_cut_by_failure'], ['child_start', 'link'], 'child 1 never started')
         self.assertGreaterEqual(journal['observed_seconds']['link'], 480)
 
-    def test_a_reviewed_profiles_ack_wait_is_the_one_applied(self):
-        mine = dict(timing.PROFILES['desktop'], id='slow-ack', ackWaitSeconds=150)
+    def test_a_reviewed_profiles_ack_wait_is_the_one_applied_and_its_timeout_unwinds(self):
+        # A reviewed profile carries its evidence (review 6160002799 item 4: no evidence-null bypass).
+        mine = dict(VPS, id='slow-ack', ackWaitSeconds=150)
         clock, started = Clock(), []
         def unacknowledged(controller, ident, action, timeout=60):
             receipt = mailbox.portfolio_request(controller, ident, action, timeout=timeout)
@@ -233,17 +236,36 @@ class VpsWaits(Base):
                 clock.t += 5
                 receipt = receipt | dict(commandPending=True)
             return receipt
-        self.start_ea(pairing='none')
+        ea = self.start_ea(pairing='none')
         with self.relaunch(), self.assertRaisesRegex(ValueError, 'did not acknowledge the exposure policy in time'):
             deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=unacknowledged, sleep=clock.sleep, clock=clock, timing=mine,
                         timing_source='file:' + 'f' * 64)
         waited = clock() - started[0]
         self.assertGreaterEqual(waited, 150); self.assertLess(waited, 150 + 7)
-        journal = self.journal()  # a plain refusal (no unwind): the durable phase is kept, the durations reach it
-        self.assertEqual((journal['phase'], journal['observed_cut_by_failure']), ('attached', ['ack']))
+        # Review 6160002799 item 4: an ack timeout unwinds like the other timeouts (no loaded MT5 left with Algo off).
+        journal = self.journal()
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['auto_unwind']['status'], journal['observed_cut_by_failure']),
+                         ('stopped', 'ack_timeout', 'unwound', ['ack']))
+        self.assertEqual(ea.shutdowns, 2)
         self.assertEqual(journal['observed_seconds']['ack'], round(waited, 3))
-        self.assertEqual(set(journal['observed_seconds']), PHASES - {'audit'})
+        self.assertEqual(set(journal['observed_seconds']), PHASES - {'audit'} | {'unwind_close'})
         self.assertEqual((self.journal()['timing_profile']['id'], self.journal()['timing_profile']['source']), ('slow-ack', 'file:' + 'f' * 64))
+
+    def test_an_audit_timeout_unwinds_too(self):
+        clock = Clock()
+        def silent_audit(controller, ident, action, timeout=60):
+            if action == 'audit':
+                clock.t += timeout
+                return dict(result='receipt_timeout', id='0' * 32, requestRetained=True)
+            return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+        ea = self.start_ea(pairing='none')
+        with self.relaunch(), self.assertRaisesRegex(ValueError, r'settings audit did not complete \(receipt_timeout\)'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=silent_audit, sleep=clock.sleep, clock=clock)
+        journal = self.journal()
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['auto_unwind']['status'], journal['observed_cut_by_failure']),
+                         ('stopped', 'audit_timeout', 'unwound', ['audit']))
+        self.assertEqual(ea.shutdowns, 2)
+        self.assertIsNone(deploy.current_deployment(self.c))
 
     def test_an_invalid_profile_is_refused_before_anything_is_written(self):
         for bad, code in ((dict(VPS, linkRequestSeconds=91), 'TIMING_LINK_REQUEST_OVER_CAP'),
@@ -459,9 +481,10 @@ class Resume(Base):
         check = result['resume_check']
         self.assertEqual((check['from_phase'], check['ok'], check['terminal_pid']), ('dashboard_ready', True, 77))
         self.assertLess(check['registration_age_seconds'], 120)
-        self.assertEqual((check['resume_allowed']['ok'], check['resume_allowed']['neededSeconds']), (True, 480))
+        # The resume's own status re-poll (dashboardWaitSeconds) is part of what is needed (review 6160002799 item 4).
+        self.assertEqual((check['resume_allowed']['ok'], check['resume_allowed']['neededSeconds']), (True, 660))
 
-    def refused_resume(self, code, *, timing_profile=None, clock=None):
+    def refused_resume(self, code, *, timing_profile=None, clock=None, registration_kept=False):
         with self.relaunch() as launch, self.assertRaises(Refusal) as caught:
             deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=(clock.sleep if clock else lambda s: None),
                         clock=clock or time.monotonic, timing=timing_profile)
@@ -471,19 +494,27 @@ class Resume(Base):
         self.assertEqual((journal['phase'], journal['failure']['code'], journal['resume_check']['code'], journal['resume_check']['ok']),
                          ('stopped', code, code, False))
         self.assertEqual(journal['auto_unwind']['status'], 'unwound')
-        self.assertFalse(self.registration_path().exists(), 'the retained registration is set aside, never reused')
+        if registration_kept:
+            # Review 6160002799 item 3: a registration that is not this deployment's own is never renamed aside.
+            self.assertTrue(self.registration_path().exists(), 'a registration GOAT did not write is left in place')
+            self.assertTrue(journal['mailbox_left_in_place'])
+        else:
+            self.assertFalse(self.registration_path().exists(), 'the retained registration is set aside, never reused')
         self.assertIn('Run deploy-load again to retry', str(caught.exception))
         return journal, str(caught.exception)
+
+    def aged(self, seconds):
+        """deploy-load's wall clock moved on by `seconds`: the registration file is untouched, so it stays this deployment's."""
+        real = time.time
+        return patch.object(deploy, 'time', types.SimpleNamespace(time=lambda: real() + seconds, monotonic=time.monotonic, sleep=time.sleep))
 
     def test_a_resume_past_the_4_h_registration_unwinds_records_why_and_the_next_load_is_fresh(self):
         ea = self.start_ea(pairing='none')
         self.crash_at('link_children', timing=copy.deepcopy(VPS))
-        registration = json.loads(self.registration_path().read_text())
-        registration['expiresAtUtc'] = int(time.time()) + 600  # registered 3 h 50 min ago
-        self.registration_path().write_text(json.dumps(registration, separators=(',', ':')))
-        journal, message = self.refused_resume('RESUME_REGISTRATION_TOO_OLD', timing_profile=copy.deepcopy(VPS))
+        with self.aged(timing.REGISTRATION_SECONDS - 600):  # registered 3 h 50 min ago
+            journal, message = self.refused_resume('RESUME_REGISTRATION_TOO_OLD', timing_profile=copy.deepcopy(VPS))
         rule = journal['resume_check']['resume_allowed']
-        self.assertEqual((rule['ok'], rule['neededSeconds']), (False, 720))
+        self.assertEqual((rule['ok'], rule['neededSeconds']), (False, 1200))
         self.assertLessEqual(rule['leftSeconds'], 600)
         self.assertGreaterEqual(journal['resume_check']['registration_age_seconds'], 13790)
         self.assertIn('the retained registration would expire before the deploy can finish', message)
@@ -498,28 +529,50 @@ class Resume(Base):
         fresh = json.loads(self.registration_path().read_text())
         self.assertGreater(fresh['expiresAtUtc'], int(time.time()) + 14400 - 120)
 
-    def test_the_desktop_rule_needs_480_s_of_registration(self):
+    def test_the_desktop_rule_needs_660_s_of_registration(self):
         self.start_ea(pairing='none')
         self.crash_at('link_children')
-        registration = json.loads(self.registration_path().read_text())
-        registration['expiresAtUtc'] = int(time.time()) + 300
-        self.registration_path().write_text(json.dumps(registration, separators=(',', ':')))
-        journal, _ = self.refused_resume('RESUME_REGISTRATION_TOO_OLD')
-        self.assertEqual(journal['resume_check']['resume_allowed']['neededSeconds'], 480)
+        with self.aged(timing.REGISTRATION_SECONDS - 600):  # 600 s left: enough before, not with the status re-poll
+            journal, _ = self.refused_resume('RESUME_REGISTRATION_TOO_OLD')
+        self.assertEqual(journal['resume_check']['resume_allowed']['neededSeconds'], 180 + 240 + 60 + 90 + 90)
 
     def test_a_missing_registration_is_an_unknown_age(self):
         self.start_ea(pairing='none')
         self.crash_at('link_children')
         self.registration_path().rename(self.registration_path().with_name('registration.json.moved'))
-        self.refused_resume('RESUME_AGE_UNKNOWN')
+        self.refused_resume('RESUME_AGE_UNKNOWN', registration_kept=False)
 
-    def test_a_registration_that_changed_is_refused(self):
-        self.start_ea(pairing='none')
+    def test_a_registration_that_changed_is_refused_and_left_in_place(self):
+        ea = self.start_ea(pairing='none')
         self.crash_at('link_children')
         registration = json.loads(self.registration_path().read_text())
         registration['aiThreshold'] = 51
+        foreign = json.dumps(registration, separators=(',', ':'))
+        self.registration_path().write_text(foreign)
+        self.refused_resume('RESUME_REGISTRATION_CHANGED', registration_kept=True)
+        self.assertEqual(self.registration_path().read_text(), foreign, 'byte for byte, never renamed or rewritten')
+        self.assertEqual(ea.shutdowns, 2, 'only the MT5 this deployment launched (pid and creation time) is closed')
+
+    def test_a_too_old_registration_that_is_not_ours_is_left_in_place(self):
+        self.start_ea(pairing='none')
+        self.crash_at('link_children')
+        registration = json.loads(self.registration_path().read_text())
+        registration['expiresAtUtc'] = int(time.time()) + 300  # not the bytes this deployment registered
         self.registration_path().write_text(json.dumps(registration, separators=(',', ':')))
-        self.refused_resume('RESUME_REGISTRATION_CHANGED')
+        self.refused_resume('RESUME_REGISTRATION_TOO_OLD', registration_kept=True)
+
+    def test_the_resume_unwind_closes_only_the_mt5_it_proved(self):
+        # The proven identity reaches close_terminal, which re-checks it right before its close.
+        self.start_ea(pairing='none')
+        self.crash_at('link_children')
+        seen = []
+        real = deploy.close_terminal
+        def close(controller, attempt_id, **kwargs):
+            seen.append(kwargs.get('expected_process'))
+            return real(controller, attempt_id, **kwargs)
+        with patch.object(deploy, 'close_terminal', close), self.aged(timing.REGISTRATION_SECONDS - 300):
+            self.refused_resume('RESUME_REGISTRATION_TOO_OLD')
+        self.assertEqual(seen, [dict(pid=77, executable='terminal64.exe', created_utc='2026-10-02T01:00:00+00:00')])
 
     def test_a_terminal_gone_since_the_launch_is_waited_for_then_unwound_without_a_close(self):
         ea = self.start_ea(pairing='none')
@@ -530,13 +583,40 @@ class Resume(Base):
         self.assertGreaterEqual(clock(), deploy.LAUNCH_OBSERVE_SECONDS, 'observed for launchObserveSeconds first')
         self.assertEqual(ea.shutdowns, 1, 'nothing to close')
 
-    def test_a_different_mt5_process_is_never_resumed(self):
+    def changed_terminal(self, ea, from_phase):
+        """Review 6160002799 item 3: an MT5 GOAT did not launch is refused with no mutation at all."""
+        where = deploy.paths(self.c, 'e' * 32)
+        registration = self.registration_path().read_bytes() if self.registration_path().exists() else None
+        with self.relaunch() as launch, self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        launch.assert_not_called()
+        self.assertEqual(caught.exception.code, 'RESUME_TERMINAL_CHANGED')
+        self.assertIn('GOAT closed, unloaded and renamed nothing', str(caught.exception))
+        journal = self.journal()
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['resume_check']['code']),
+                         (from_phase, 'RESUME_TERMINAL_CHANGED', 'RESUME_TERMINAL_CHANGED'))
+        self.assertNotIn('auto_unwind', journal)
+        self.assertEqual(ea.shutdowns, 1, 'never closed: only the deploy\'s own first close happened')
+        self.assertEqual(self.process.closed, []); self.assertIsNotNone(self.process.identity, 'that MT5 keeps running')
+        self.assertTrue(where['state'].exists() and where['profile'].exists(), 'nothing renamed aside')
+        if registration is not None:
+            self.assertEqual(self.registration_path().read_bytes(), registration)
+        return journal
+
+    def test_a_different_mt5_process_is_never_resumed_or_touched(self):
         ea = self.start_ea(pairing='none')
         self.crash_at('link_children')
         self.process.identity = dict(pid=99, executable='terminal64.exe', created_utc='2026-10-02T02:00:00+00:00')
-        journal, _ = self.refused_resume('RESUME_TERMINAL_CHANGED')
+        journal = self.changed_terminal(ea, 'dashboard_ready')
         self.assertEqual(journal['resume_check']['terminal_pid'], 99)
-        self.assertEqual(ea.shutdowns, 2, 'the inert MT5 is unloaded like any other unwind')
+
+    def test_the_same_pid_with_another_creation_time_is_another_process(self):
+        ea = self.start_ea(pairing='none')
+        self.crash_at('link_children')
+        self.process.identity = dict(pid=77, executable='terminal64.exe', created_utc='2026-10-02T03:00:00+00:00')  # a reused pid
+        journal = self.changed_terminal(ea, 'dashboard_ready')
+        self.assertEqual((journal['resume_check']['terminal_pid'], journal['resume_check']['terminal_created_utc']),
+                         (77, '2026-10-02T03:00:00+00:00'))
 
     def test_a_set_changed_after_the_launch_is_never_resumed(self):
         self.start_ea(pairing='none')
@@ -547,11 +627,11 @@ class Resume(Base):
         self.refused_resume('RESUME_BYTES_CHANGED')
 
     def test_a_resume_at_registered_re_checks_the_terminal_too(self):
-        self.start_ea(pairing='none')
+        ea = self.start_ea(pairing='none')
         self.crash_at('status')
         self.assertEqual(self.journal()['phase'], 'registered')
         self.process.identity = dict(pid=99, executable='terminal64.exe', created_utc='2026-10-02T02:00:00+00:00')
-        self.refused_resume('RESUME_TERMINAL_CHANGED')
+        self.changed_terminal(ea, 'registered')
 
     def test_a_resume_that_finds_algo_trading_on_is_never_linked(self):
         ea = self.start_ea(pairing='none')
@@ -628,12 +708,74 @@ class CrashJournal(Base):
         journal = self.journal()
         self.assertEqual((journal['phase'], journal['failure']['phase']), ('validated', 'validated'))
 
+    def test_a_crash_inside_the_auto_unwind_never_unwinds_twice_and_keeps_the_first_failure(self):
+        # Review 6160002799 item 2: dashboard_not_ready unwinds, and the unwind's close itself raises a non-ValueError.
+        clock, closes = Clock(), []
+        def silent(controller, ident, action, timeout=60):
+            if action == 'status':
+                clock.t += timeout
+                return dict(result='receipt_timeout', id='0' * 32, requestRetained=True)
+            return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+        def close(controller, attempt_id, **kwargs):
+            closes.append(attempt_id)
+            if attempt_id.startswith('unwind-'):
+                raise RuntimeError('bug in the unwind close')
+            return deploy.close_terminal(controller, attempt_id, **kwargs)
+        self.start_ea(pairing='none')
+        with self.relaunch(), self.assertRaisesRegex(RuntimeError, 'bug in the unwind close'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=silent, close=close, sleep=clock.sleep, clock=clock)
+        self.assertEqual(len([c for c in closes if c.startswith('unwind-')]), 1, 'close is called once: never a second unwind')
+        journal = self.journal()
+        self.assertEqual(journal['failure']['code'], 'dashboard_not_ready', 'the first failure is kept, not controller_crash')
+        self.assertEqual((journal['auto_unwind']['status'], journal['auto_unwind']['exception']), ('failed', 'RuntimeError'))
+        self.assertIn('RuntimeError: bug in the unwind close', journal['auto_unwind']['error'])
+        self.assertEqual(journal['phase'], 'registered')
+
+    def test_a_popen_crash_keeps_the_inspect_mt5_stop_and_closes_nothing(self):
+        # Review 6160002799 item 4: Popen itself raised, so MT5 may or may not have started. Another MT5 the user opened
+        # meanwhile is never closed, and the next deploy-load keeps the old stop (never launched twice).
+        ea = self.start_ea(pairing='none')
+        other = dict(pid=88, executable='terminal64.exe', created_utc='2026-10-02T04:00:00+00:00')
+        def failing(*args, **kwargs):
+            self.process.identity = other
+            raise FileNotFoundError(2, 'The system cannot find the file specified')
+        with patch('studio_demo_deploy.subprocess.Popen', side_effect=failing), self.assertRaises(FileNotFoundError):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        journal = self.journal()
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['failure']['phase'], journal['failure']['exception']),
+                         ('launch_intent', 'controller_crash', 'launch_intent', 'FileNotFoundError'))
+        self.assertNotIn('auto_unwind', journal)
+        self.assertEqual((ea.shutdowns, self.process.closed, self.process.identity), (1, [], other))
+        with self.relaunch() as launch, self.assertRaisesRegex(ValueError, r'inspect MT5 before retrying \(never launched twice\)'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        launch.assert_not_called()
+
     def test_a_kill_runs_no_handler(self):
         self.start_ea(pairing='none')
         self.crash_at('link_children')
         journal = self.journal()
         self.assertEqual(journal['phase'], 'dashboard_ready')
         self.assertNotIn('failure', journal)
+
+
+class DeployStatus(Base):
+    def test_a_live_request_during_a_deploy_wait_is_pending_not_an_error(self):
+        # Review 6160002799 item 4: deploy-status while deploy-load waits on its own dashboard, ack or audit request.
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        for error, reason in ((mailbox.RequestStillLive(mailbox.REQUEST_STILL_LIVE_MESSAGE), 'request_still_live'),
+                              (ValueError(mailbox.REQUEST_STILL_LIVE_MESSAGE), 'request_still_live'),
+                              (mailbox.UnresolvedMutation(mailbox.UNRESOLVED_MUTATION_MESSAGE), 'mutation_started')):
+            with self.subTest(reason=reason, error=type(error).__name__):
+                def busy(controller, ident, action, timeout=60):
+                    raise error
+                result = deploy.status(self.c, request=busy)
+                self.assertEqual(result['dashboard'], dict(result='pending', reason=reason, rows=[]))
+                self.assertNotIn('dashboard_error', result)
+        def other(controller, ident, action, timeout=60):
+            raise ValueError('Retained portfolio request belongs to another registration')
+        self.assertEqual(deploy.status(self.c, request=other)['dashboard_error'], 'Retained portfolio request belongs to another registration')
 
 
 class AttemptCounter(Base):

@@ -1,6 +1,6 @@
 {
  "schema": "goat-deploy-timing-v1/cases",
- "source": "goatai tools/remote-deploy/test_deploy_timing_profile.cjs (10 checks), ported case by case; the extra cases follow the reference's rules. Both validators must give these verdicts.",
+ "source": "goatai tools/remote-deploy/test_deploy_timing_profile.cjs (10 checks), ported case by case; the extra cases follow the reference's rules. Both validators must give these verdicts. GOAT-EA#229 review 6160002799 item 4 (mandatory evidence, TIMING_EVIDENCE_REQUIRED, the 119 s close floor, the resume status re-poll in the needed time) changed 7 cases (base, age or verdict) and added 7; the .cjs reference must take the same change.",
  "builtins": {
   "desktop": {"budgetSeconds": 720, "runnerTimeoutMs": 900000,
               "canonical": "{\"ackWaitSeconds\":90,\"auditWaitSeconds\":90,\"childStartWaitSeconds\":240,\"closeWaitSeconds\":30,\"dashboardWaitSeconds\":180,\"launchObserveSeconds\":30,\"linkRequestSeconds\":20,\"schema\":\"goat-deploy-timing-v1\"}",
@@ -31,19 +31,26 @@
   {"check": null, "name": "an upper-case id", "base": "desktop", "set": {"id": "Desktop"}, "expect": "TIMING_INVALID"},
   {"check": null, "name": "launch observe above 120 s", "base": "desktop", "set": {"launchObserveSeconds": 121}, "expect": "TIMING_OUT_OF_RANGE"},
   {"check": null, "name": "link request 0 s", "base": "desktop", "set": {"linkRequestSeconds": 0}, "expect": "TIMING_OUT_OF_RANGE"},
-  {"check": null, "name": "evidence exactly 1.5x is covered", "base": "desktop", "set": {"evidence": {"coldStartSeconds": 120}}, "expect": "ok"},
-  {"check": null, "name": "evidence just over 1.5x is not", "base": "desktop", "set": {"evidence": {"coldStartSeconds": 120.5}}, "expect": "TIMING_BELOW_EVIDENCE"},
-  {"check": null, "name": "evidence with only unrelated keys", "base": "desktop", "set": {"evidence": {"measuredUtc": "2026-10-12", "charts": 2}}, "expect": "ok"},
+  {"check": null, "name": "evidence exactly 1.5x is covered", "base": "vps-cold-36", "set": {"dashboardWaitSeconds": 180, "evidence": {"closeSeconds": 79, "coldStartSeconds": 120, "coldLinkSeconds": 88}}, "expect": "ok"},
+  {"check": null, "name": "evidence just over 1.5x is not", "base": "vps-cold-36", "set": {"dashboardWaitSeconds": 180, "evidence": {"closeSeconds": 79, "coldStartSeconds": 120.5, "coldLinkSeconds": 88}}, "expect": "TIMING_BELOW_EVIDENCE"},
+  {"check": null, "name": "evidence with only unrelated keys (no bypass, review 6160002799 item 4)", "base": "desktop", "set": {"evidence": {"measuredUtc": "2026-10-12", "charts": 2}}, "expect": "TIMING_EVIDENCE_REQUIRED"},
   {"check": null, "name": "null evidence measure", "base": "desktop", "set": {"evidence": {"closeSeconds": null}}, "expect": "TIMING_INVALID"},
-  {"check": null, "name": "the largest in-bounds profile still ends before the registration", "base": "desktop", "set": {"closeWaitSeconds": 600, "launchObserveSeconds": 120, "dashboardWaitSeconds": 1200, "childStartWaitSeconds": 1200, "linkRequestSeconds": 90, "ackWaitSeconds": 600, "auditWaitSeconds": 600}, "expect": "ok"}
+  {"check": null, "name": "the largest in-bounds profile still ends before the registration", "base": "vps-cold-36", "set": {"closeWaitSeconds": 600, "launchObserveSeconds": 120, "dashboardWaitSeconds": 1200, "childStartWaitSeconds": 1200, "linkRequestSeconds": 90, "ackWaitSeconds": 600, "auditWaitSeconds": 600}, "expect": "ok"},
+  {"check": null, "name": "null evidence is only the pinned desktop waits", "base": "vps-cold-36", "set": {"evidence": null}, "expect": "TIMING_EVIDENCE_REQUIRED"},
+  {"check": null, "name": "the desktop waits under another id need evidence", "base": "desktop", "set": {"id": "my-desktop"}, "expect": "TIMING_EVIDENCE_REQUIRED"},
+  {"check": null, "name": "the desktop id with other waits needs evidence", "base": "desktop", "set": {"ackWaitSeconds": 120}, "expect": "TIMING_EVIDENCE_REQUIRED"},
+  {"check": null, "name": "every measure is required", "base": "vps-cold-36", "set": {"evidence": {"closeSeconds": 79, "coldStartSeconds": 190}}, "expect": "TIMING_EVIDENCE_REQUIRED"},
+  {"check": null, "name": "close wait floor: the measured VPS close 79 s x 1.5, whatever a profile measured", "base": "vps-cold-36", "set": {"closeWaitSeconds": 118, "evidence": {"closeSeconds": 40, "coldStartSeconds": 190, "coldLinkSeconds": 88}}, "expect": "TIMING_BELOW_EVIDENCE"},
+  {"check": null, "name": "close wait floor: 119 s is covered", "base": "vps-cold-36", "set": {"closeWaitSeconds": 119, "evidence": {"closeSeconds": 40, "coldStartSeconds": 190, "coldLinkSeconds": 88}}, "expect": "ok"}
  ],
  "resume": [
   {"check": 10, "name": "a fresh registration", "base": "vps-cold-36", "ageSeconds": 600, "expect": "ok"},
   {"check": 10, "name": "ten minutes before expiry", "base": "vps-cold-36", "ageSeconds": 13800, "expect": "RESUME_REGISTRATION_TOO_OLD"},
   {"check": 10, "name": "an unreadable age (NaN in the reference)", "base": "vps-cold-36", "ageSeconds": "NaN", "expect": "RESUME_AGE_UNKNOWN"},
   {"check": null, "name": "a negative age", "base": "vps-cold-36", "ageSeconds": -1, "expect": "RESUME_AGE_UNKNOWN"},
-  {"check": null, "name": "exactly the time needed is not enough (left must exceed needed)", "base": "vps-cold-36", "ageSeconds": 13680, "expect": "RESUME_REGISTRATION_TOO_OLD"},
-  {"check": null, "name": "one second more than needed", "base": "vps-cold-36", "ageSeconds": 13679, "expect": "ok"},
-  {"check": null, "name": "desktop needs 480 s of the registration", "base": "desktop", "ageSeconds": 13919, "expect": "ok"}
+  {"check": null, "name": "exactly the time needed is not enough (left must exceed needed)", "base": "vps-cold-36", "ageSeconds": 13200, "expect": "RESUME_REGISTRATION_TOO_OLD"},
+  {"check": null, "name": "one second more than needed", "base": "vps-cold-36", "ageSeconds": 13199, "expect": "ok"},
+  {"check": null, "name": "desktop needs 660 s of the registration (the resume status re-poll included)", "base": "desktop", "ageSeconds": 13739, "expect": "ok"},
+  {"check": null, "name": "desktop with exactly 660 s left", "base": "desktop", "ageSeconds": 13740, "expect": "RESUME_REGISTRATION_TOO_OLD"}
  ]
 }

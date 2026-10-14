@@ -7,8 +7,10 @@ Status: **v0, beta.38**.
 - Claude-Mac approved it for beta.38 on goatai#2350 (comment 6129098775).
 - The reference validator is goatai `tools/remote-deploy/deploy_timing_profile.cjs`. The Python port is
   `studio_deploy_timing.py`, and the two must agree exactly.
-- The shared goldens are in `deploy-timing-fixtures/`. `profile-cases.json` holds 35 cases, and the `.cjs` reference
-  gives the same verdict on every one of them.
+- The shared goldens are in `deploy-timing-fixtures/`. `profile-cases.json` held 35 cases at 7cb5591, and the `.cjs`
+  reference gave the same verdict on every one of them. Claude-Mac's review 6160002799 (item 4) then made the evidence
+  mandatory, added the close-wait floor and put the resume status read into the needed time. The Python port and the
+  cases (now 42) have that change, and the `.cjs` reference must take the same one.
 
 ## 1. The parameter
 
@@ -43,6 +45,12 @@ A host (or the app) bounds its `deploy-load` runner with `runner_timeout_ms(prof
 - a cold start of 190 s;
 - a cold link of 88 s.
 
+**The evidence is mandatory** (review 6160002799 item 4). Only the built-in `desktop` waits, which are the controller's
+own constants with no flag, carry `evidence: null`. Every other profile, a file or a parameter, names all three measured
+durations (`closeSeconds`, `coldStartSeconds`, `coldLinkSeconds`), and each wait must cover its measure times 1.5. Its
+close wait must also cover the measured VPS close times 1.5 (79 s x 1.5 = 118.5 s, so at least 119 s), whatever the
+profile itself measured.
+
 ### Refusal codes
 
 Every code below comes from the reference, in the reference's order of checks. A refusal is a `Refusal` (so the
@@ -55,7 +63,8 @@ CLI's `code` is `REFUSED` and its `refusal_code` is the code).
 | `TIMING_OUT_OF_RANGE` | A wait is outside its bounds. |
 | `TIMING_LINK_REQUEST_OVER_CAP` | `linkRequestSeconds` is above 90 (trap T3). |
 | `TIMING_LINK_REQUEST_TOO_LONG` | `linkRequestSeconds` is not shorter than `childStartWaitSeconds`. |
-| `TIMING_BELOW_EVIDENCE` | A wait is under 1.5 times its measured evidence: `closeSeconds` for the close wait, `coldStartSeconds` for the dashboard wait, `coldLinkSeconds` for the child start wait. |
+| `TIMING_EVIDENCE_REQUIRED` | A profile other than the built-in `desktop` waits has `evidence: null`, or its evidence lacks one of the three measures. |
+| `TIMING_BELOW_EVIDENCE` | A wait is under 1.5 times its measured evidence: `closeSeconds` for the close wait, `coldStartSeconds` for the dashboard wait, `coldLinkSeconds` for the child start wait. Or the close wait is under the measured VPS close (79 s) times 1.5. |
 | `TIMING_OVER_REGISTRATION` | The whole budget is not shorter than the 4 h registration. With today's bounds this cannot happen; the check is kept for the day the bounds change. |
 
 ### The record
@@ -130,22 +139,27 @@ treated that as a refusal and unwound after about 31 s. Now, inside the `childSt
 A `deploy-load` that finds its journal at `launched`, `registered` or `dashboard_ready` first re-proves what the
 skipped phases proved. It records the result in `resume_check`.
 
-1. **The terminal.** The MT5 running is the one this deployment launched: the journaled pid. It is observed for up to
+1. **The terminal.** The MT5 running is the one this deployment launched: the journaled `launched_process` (pid, image
+   and creation time, read right after the launch; a reused pid is another process). It is observed for up to
    `launchObserveSeconds`. If none is running, the code is `RESUME_TERMINAL_GONE`. If another process is running, the
-   code is `RESUME_TERMINAL_CHANGED`.
+   code is `RESUME_TERMINAL_CHANGED`, and that refusal **changes nothing**: no close, no unload, no rename (review
+   6160002799 item 3). A launch whose identity was not read has no creation time, so its resume refuses too.
 2. **The bytes.** Every staged SET still holds its reviewed bytes, or the code is `RESUME_BYTES_CHANGED`. The chart
    files and the resume file are not compared: MT5 and the dashboard rewrite them while they run.
 3. **Only at `dashboard_ready`.** This is the one phase that never registers again (`launched` and `registered`
    register again, as before).
    - **The registration's age.** It comes from `registration.json` (`expiresAtUtc - 14400`) and must pass
-     `resumeAllowed` for the profile in use. What is left of the deploy (child start, policy, ack and audit) must end
-     before the expiry. A registration that is unreadable or missing is `RESUME_AGE_UNKNOWN`. One that is too old is
+     `resumeAllowed` for the profile in use. What is left of the deploy (this re-check's own status read, child start,
+     policy, ack and audit) must end before the expiry: 660 s for `desktop`, 1,200 s for `vps-cold-36`. A registration that is unreadable or missing is `RESUME_AGE_UNKNOWN`. One that is too old is
      `RESUME_REGISTRATION_TOO_OLD`.
    - **The same registration.** The registration must be exactly the one this deployment registered: the same sha,
      and the same content apart from the expiry. Otherwise the code is `RESUME_REGISTRATION_CHANGED`.
    - **A fresh status read.** It must be observed (`RESUME_DASHBOARD_NOT_READY`) and inert (`RESUME_NOT_INERT`).
 
-Any refusal **unwinds** (D3), journals `failure` and `resume_check`, and raises a `Refusal` with the code. The next
+Any other refusal **unwinds** (D3), journals `failure` and `resume_check`, and raises a `Refusal` with the code. The
+unwind passes the proven identity to `close_terminal` (`expected_process`), which re-checks it right before its close.
+A retained registration that is not byte for byte the one this deployment wrote (its journaled sha256) is left in place
+with its request, and the journal says `mailbox_left_in_place`. The next
 `deploy-load` is then a fresh attempt with a new 4 h registration, once MT5 is open again: the same rule as every
 auto-unwind. **Decided here (open question M5):** v0 unwinds and never registers again on resume, because a new
 registration would touch the EA's registration contract.
@@ -159,8 +173,19 @@ two ways:
   exception}` is written to the journal as it was last written durably, never with a phase the crash interrupted. The
   original exception is raised again. The next `deploy-load` resumes the same plan and moves the old failure to
   `earlier_failures`.
-- **From `launch_intent` on.** The deploy unwinds like any failure after the launch, and the CLI gets the `Refusal`
+- **At `launch_intent`** (`Popen` itself raised, or the crash came before `launched` was written). MT5 may or may not
+  have started, so the crash is journaled like one before the launch and nothing is closed. The next `deploy-load`
+  keeps the old stop: inspect MT5 before retrying (never launched twice).
+- **From `launched` on.** The deploy unwinds like any failure after the launch, and the CLI gets the `Refusal`
   `DEPLOY_CONTROLLER_CRASH`.
+- **Inside an auto-unwind.** A crash in an unwind that is already under way is recorded as `auto_unwind: {status:
+  failed, error, exception}` and raised again. There is never a second unwind, and the first failure (for example
+  `dashboard_not_ready`) stays the journal's `failure`.
+
+**Timeouts.** The ack and audit timeouts (`ack_timeout`, `audit_timeout`) unwind like the dashboard and link timeouts,
+so no loaded MT5 is left with Algo Trading off. **`deploy-status`** during a dashboard, ack or audit wait answers
+`dashboard: {result: pending, reason: request_still_live | mutation_started}`, as the link step treats the same
+refusals, instead of a `dashboard_error`.
 
 A process kill runs no handler. The journal then stays at its phase, and section 3 covers the resume.
 

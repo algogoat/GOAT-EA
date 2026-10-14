@@ -106,8 +106,10 @@ values (`controller/studio_ea_init_rules.py`, `EA_INIT_RULES`, each with its
 (`Mode_Bias_Exit=BiasExit_SmartRescue`) without `Mode_Lots=RiskperSeq` and `Risk>0`,
 `Risk<10` with risk sizing, MLPS hard close or Smart Peak, Smart Peak percentages
 outside 0-100, RRR on with `RRR<=0` or an inconsistent SL/TP or SL/LP pair,
-`|Grid_Size|<0.5`, LP and TP both disabled, malformed `Active_Time_*` sessions and
-inconsistent export dates in `EA_Desc @{mode=EXPORT,...}`. It is checked over every
+`|Grid_Size|<0.5`, LP and TP both disabled, malformed `Active_Time_*` sessions,
+inconsistent export dates in `EA_Desc @{mode=EXPORT,...}` and any `Mode_Download` other
+than `Download_Disabled` (the EA removes itself in `OnInit`; it is a data tool, not a
+strategy setting). It is checked over every
 value MT5 can run: the current value, every value of an active ladder and the first
 field of a dormant `N` tuple. **Any failing combination refuses**, for fixed SETs
 and optimization ranges alike, because an init-failing pass produces nothing and an
@@ -117,7 +119,19 @@ range), never the rule. More than 10,000 combinations for one rule is refused as
 uncheckable; narrow the named ladders. A GOAT schema that lost an input or enum label
 a rule reads is refused (`EA_INIT_SCHEMA_UNRECOGNISED`). Refusals that depend on the
 symbol, account, files or run context (tester vs live) are listed in `NOT_PORTED`
-with the reason, and a test keeps both tables complete against the EA source.
+with the reason, and a test keeps the tables complete against the EA source,
+including its `ExpertRemove()` paths.
+
+**Refused in the tester only (`TESTER_INIT_REFUSED`, at `prepare-batch`).** Some
+SETs are valid on a live chart but refused by `OnInit` in every tester, optimization
+and forward pass: today an AI bias mode other than `Bias_Disabled` with the
+`BiasProtocol_ControlTowerV2` or `...DemoRaw` protocol (`GOAT V1.49.mq5:2777`; the
+header defaults are exactly that). `validate-set` keeps accepting them, since they are
+valid live; `prepare-batch` refuses such a member before anything is staged, over every
+reachable value the same strict way, naming the member, rule, values and the EA's
+message. Turn AI bias off (`Mode_Bias=Bias_Disabled`) or use
+`BiasProtocol_LegacyRecorded` for a backtest. An already-queued identical batch is
+still reused.
 
 ## Build a documented variant
 

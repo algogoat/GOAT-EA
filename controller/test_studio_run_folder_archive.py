@@ -461,6 +461,21 @@ class MoveTests(RunFolderFixture):
         self.restore(run.name)                                               # local copy of the lost file is kept
         self.assertEqual(self.tree(run), original)
 
+    def test_restore_keeps_the_source_volume_above_its_floor(self):
+        """Review r2 item 2 on #237: restoring 40 GB onto 20 GB free would fill C:, the problem this tool solves."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        self.complete()
+        needed = sum(len(raw) for raw in original.values())
+        usage = SimpleNamespace(total=100 * runs.GB, used=0, free=needed + 5 * runs.GB)
+        with patch('studio_run_folder_archive.shutil.disk_usage', return_value=usage):
+            error = self.refused('ARCHIVE_SOURCE_FLOOR', self.restore, run.name)            # default floor: 10 GB
+            self.assertEqual((error.fields['needed_bytes'], error.fields['floor_bytes']), (needed, 10 * runs.GB))
+            self.refused('ARCHIVE_SOURCE_FLOOR', self.restore, run.name, source_floor_gb=6)
+            self.restore(run.name, source_floor_gb=4)
+        self.assertEqual(self.tree(run), original)
+
     def test_restore_refuses_a_local_file_that_differs(self):
         run = self.make_run(1, 'banker-done-1')
         self.apply()

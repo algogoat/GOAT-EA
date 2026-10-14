@@ -112,7 +112,7 @@ CODES = frozenset((
     'ARCHIVE_ARCHIVER_BUSY', 'ARCHIVE_STUB_INVALID',
     # Claude-Mac's review of #237: removable/RAM targets, a source that cannot be removed.
     'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED', 'ARCHIVE_TARGET_LINK', 'ARCHIVE_RUN_ID_REQUIRED',
-    'ARCHIVE_SOURCE_STREAMS', 'ARCHIVE_RESET_REFUSED'))
+    'ARCHIVE_SOURCE_STREAMS', 'ARCHIVE_RESET_REFUSED', 'ARCHIVE_SOURCE_FLOOR', 'ARCHIVE_ADOPT_CONFLICT'))
 
 
 def _utc(now):
@@ -1289,7 +1289,10 @@ def _clear_caches():
     _STUBS.clear(); _MANIFESTS.clear(); _OPEN.clear()
 
 
-def restore_run(root, source, run, *, now, restored_by='demo_agent'):
+DEFAULT_SOURCE_FLOOR_GB = 10
+
+
+def restore_run(root, source, run, *, now, restored_by='demo_agent', floor_bytes=DEFAULT_SOURCE_FLOOR_GB * GB):
     """``--restore``: bring an archived run folder back to its source volume, verified, then retire its stub.
 
     Every manifest entry either is still local and hashes to the manifest, or its archive copy re-hashes to the manifest
@@ -1332,6 +1335,14 @@ def restore_run(root, source, run, *, now, restored_by='demo_agent'):
         raise Refusal('%d archive copy(ies) of run folder %s are missing or corrupt and not local either (first: %s); nothing '
                       'was restored.' % (len(bad), run.name, bad[0]), 'ARCHIVE_VERIFY_FAILED', run_id=run.name,
                       relative_path=bad[0], relative_paths=bad[:50])
+    # The run folders' own volume (C:) keeps ``floor_bytes`` free after the copy (review r2 item 2 on #237).
+    needed = sum(entry['bytes'] for entry in to_copy)
+    free = shutil.disk_usage(_io(run)).free
+    if free - needed < floor_bytes:
+        raise Refusal('Restoring run folder %s needs %s on its volume, which has %s free; that would leave %s, under the %s '
+                      'floor (--source-floor-gb). Nothing was restored. Free space first.'
+                      % (run.name, _human(needed), _human(free), _human(max(0, free - needed)), _human(floor_bytes)),
+                      'ARCHIVE_SOURCE_FLOOR', run_id=run.name, free_bytes=free, needed_bytes=needed, floor_bytes=floor_bytes)
     for entry in to_copy:
         archive.copy_verified(folder / entry['relative_path'], run / entry['relative_path'], expected=entry['sha256'])
     present, _ = walk(run)

@@ -110,7 +110,7 @@ CODES = frozenset((
     'ARCHIVE_KEPT_RECENT', 'ARCHIVE_ROOT_FLOOR', 'ARCHIVE_ACTIVE_UNVERIFIABLE', 'ARCHIVE_RUN_ARCHIVED',
     'ARCHIVE_ARCHIVER_BUSY', 'ARCHIVE_STUB_INVALID',
     # Claude-Mac's review of #237: removable/RAM targets, a source that cannot be removed.
-    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED'))
+    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED', 'ARCHIVE_TARGET_LINK'))
 
 
 def _utc(now):
@@ -910,6 +910,42 @@ def _archive_walk(folder):
     return found
 
 
+def run_target_refusal(run, archive_root, folder):
+    """Why ``folder`` (``<archive root>/<run id>``) cannot hold this run's archive, else None (review item 3 on #237): the
+    archive root, the folder or any folder between them is a symbolic link or junction (a link back to the source would
+    make the "archive" the source itself), or the folder lies on the source's volume."""
+    root = Path(os.path.abspath(_plain(str(archive_root))))
+    link = root if archive._is_link(_io(root)) else archive.link_below(root, folder)
+    if link is not None:
+        return Refusal('%s is a symbolic link or junction; a run folder\'s archive must be a real folder on the archive '
+                       'drive. Nothing was changed.' % link, 'ARCHIVE_TARGET_LINK', run_id=Path(run).name, link=str(link))
+    try:
+        same = _io(folder).exists() and archive.volume_of(folder) == archive.volume_of(run)
+    except OSError as error:
+        return Refusal('The archive folder %s cannot be inspected (%s); nothing was changed.' % (folder, str(error)[:200]),
+                       'ARCHIVE_ROOT_UNAVAILABLE', run_id=Path(run).name, archive_dir=str(folder))
+    if same:
+        return Refusal('The archive folder %s is on the same volume as run folder %s; nothing was changed.' % (folder, run),
+                       'ARCHIVE_ROOT_SAME_VOLUME', run_id=Path(run).name, archive_dir=str(folder))
+    return None
+
+
+def same_file(left, right):
+    """True when two paths are the very same file (volume serial number and file ID), e.g. a hard link."""
+    try:
+        a, b = os.stat(_io(left)), os.stat(_io(right))
+    except OSError:
+        return False
+    return bool(a.st_ino) and (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def _refuse_same_file(run, folder, relative, consequence):
+    if same_file(Path(run) / relative, Path(folder) / relative):
+        raise Refusal('The archive copy %s is the same file as its source (same volume and file ID); %s'
+                      % (Path(folder) / relative, consequence), 'ARCHIVE_TARGET_CONFLICT', run_id=Path(run).name,
+                      relative_path=relative, archive_dir=str(folder))
+
+
 def apply_run(run, archive_root, files, *, install, now, archived_by='demo_agent', owners_=()):
     """Copy one eligible run folder to ``<archive root>/<run id>/``, verify every file, write the manifest and the stub.
     Removes nothing. A crash before the stub leaves the source untouched; a re-run resumes (identical copies are reused)."""
@@ -920,7 +956,11 @@ def apply_run(run, archive_root, files, *, install, now, archived_by='demo_agent
         raise Refusal('Run folder %s is already archived (%s); --complete removes its sources.' % (run_id, stub['state']),
                       'ARCHIVE_RUN_ARCHIVED', run_id=run_id, state=stub['state'])
     folder = Path(os.path.abspath(str(archive_root))) / run_id
-    _io(folder).mkdir(parents=True, exist_ok=True)
+    for _ in ('before', 'after'):                    # checked before the folder is made and again once it exists
+        refusal = run_target_refusal(run, archive_root, folder)
+        if refusal is not None:
+            raise refusal
+        _io(folder).mkdir(parents=True, exist_ok=True)
     archive._remove_temporaries(folder)
     entries, copied, reused = [], 0, 0
     for item in files:
@@ -928,6 +968,7 @@ def apply_run(run, archive_root, files, *, install, now, archived_by='demo_agent
         if size != item['bytes']:
             raise Refusal('The source %s/%s changed size while it was archived; nothing was removed.' % (run_id, item['relative_path']),
                           'ARCHIVE_SOURCE_CHANGED', run_id=run_id, relative_path=item['relative_path'])
+        _refuse_same_file(run, folder, item['relative_path'], 'nothing was removed and no stub was written.')
         reused += again
         copied += not again
         entries.append(dict(relative_path=item['relative_path'], bytes=size, sha256=digest))
@@ -941,6 +982,9 @@ def apply_run(run, archive_root, files, *, install, now, archived_by='demo_agent
     if stray:
         raise Refusal('The archive folder %s holds %d file(s) this run folder does not (first: %s); nothing was removed. '
                       'Inspect it.' % (folder, len(stray), stray[0]), 'ARCHIVE_TARGET_CONFLICT', run_id=run_id, target=str(folder))
+    refusal = run_target_refusal(run, archive_root, folder)       # once more before anything is written there
+    if refusal is not None:
+        raise refusal
     total = sum(entry['bytes'] for entry in entries)
     manifest_path = folder / MANIFEST
     if _io(manifest_path).is_file():
@@ -1022,6 +1066,8 @@ def _copy_still_verified(stub, run, folder, entry, identity, removed):
         stat = _io(target).stat()
     except OSError as error:
         raise fail('cannot be read now (%s)' % str(error)[:200]) from None
+    if same_file(Path(run) / entry['relative_path'], target):
+        raise fail('is the same file as its source')
     if _identity(stat) != identity:
         raise fail('changed since it was verified (size, mtime or file ID)')
     try:
@@ -1051,8 +1097,12 @@ def complete_run(source, run, *, now, completed_by='demo_agent'):
         raise Refusal('Run folder %s has no ARCHIVED.json; run --apply first. Nothing was removed.' % run.name,
                       'ARCHIVE_NOT_ARCHIVED', run_id=run.name)
     folder, entries = open_archive(stub, strict=True)
+    refusal = run_target_refusal(run, folder.parent, folder)
+    if refusal is not None:
+        raise refusal
     identities = {}
     for key, entry in entries.items():
+        _refuse_same_file(run, folder, entry['relative_path'], 'every source is kept; nothing was removed.')
         try:
             target = _verify_file(stub, folder, entry, full=True, cache=False)
             identities[key] = _identity(_io(target).stat())

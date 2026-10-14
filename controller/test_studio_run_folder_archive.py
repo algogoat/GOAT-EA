@@ -334,6 +334,61 @@ class MoveTests(RunFolderFixture):
         self.complete()
         self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
 
+    def link(self, target, at):
+        """A directory junction (Windows) or symbolic link at ``at`` pointing to ``target``."""
+        if os.name == 'nt':
+            import _winapi
+            _winapi.CreateJunction(str(target), str(at))
+        else:
+            os.symlink(target, at, target_is_directory=True)
+
+    def test_probe_a_per_run_archive_folder_linked_back_to_its_source_refuses(self):
+        """Review item 3 on #237 (linkroot237.py): <root>/R... as a link back to the source used to "archive" it in place
+        (copied 0, manifest written into the source). Apply and complete now refuse ARCHIVE_TARGET_LINK."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.link(run, self.archive_root / run.name)
+        self.refused('ARCHIVE_TARGET_LINK', self.apply)
+        self.assertEqual(self.tree(run), original)                     # no manifest in the source, no stub
+        os.rmdir(self.archive_root / run.name)                          # removes the junction only
+        # The state the old apply left: a real archive moved aside, the manifest in the source, a link in its place.
+        self.apply()
+        real = self.archive_root / 'moved-aside'
+        (self.archive_root / run.name).rename(real)
+        (run / runs.MANIFEST).write_bytes((real / runs.MANIFEST).read_bytes())
+        self.link(run, self.archive_root / run.name)
+        with self.assertRaises(Refusal) as caught:
+            self.complete()
+        self.assertEqual(caught.exception.code, 'ARCHIVE_TARGET_LINK')
+        self.assertEqual({k: v for k, v in self.tree(run).items() if k not in (runs.STUB, runs.MANIFEST)}, original)
+
+    def test_an_archive_copy_that_is_its_own_source_refuses(self):
+        """Review item 3: an archive copy that is the source itself (hard link: same volume serial and file ID)."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        copy = self.archive_root / run.name / 'log.GOAT'
+        copy.unlink()
+        os.link(run / 'log.GOAT', copy)
+        self.assertTrue(runs.same_file(run / 'log.GOAT', copy))
+        with self.assertRaises(Refusal) as caught:
+            self.complete()
+        self.assertEqual(caught.exception.code, 'ARCHIVE_TARGET_CONFLICT')
+        self.assertEqual({k: v for k, v in self.tree(run).items() if k != runs.STUB}, original)
+
+    def test_a_per_run_archive_folder_on_the_source_volume_refuses(self):
+        run = self.make_run(1, 'banker-done-1')
+        folder = os.path.normcase(str(self.archive_root / run.name))
+
+        def volume(path):
+            text = os.path.normcase(os.path.abspath(path))
+            if text.startswith(folder):
+                return 1                                                   # e.g. a mount folder of C: inside the root
+            return 2 if text.startswith(os.path.normcase(str(self.archive_root))) else 1
+        with patch('studio_evidence_archive.volume_of', side_effect=volume):
+            self.refused('ARCHIVE_ROOT_SAME_VOLUME', self.apply)
+        self.assertFalse((run / runs.STUB).exists())
+
     def test_removal_never_leaves_the_run_folder(self):
         run = self.make_run(1, 'banker-done-1')
         outside = self.source / 'keep-me.txt'

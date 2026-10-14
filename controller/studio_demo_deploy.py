@@ -740,7 +740,7 @@ def _unwind_summary(journal):
 
 
 def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic,
-         manifest_sha256=None, server_time_utc=None):
+         manifest_sha256=None, server_time_utc=None, utc_clock=time.time):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     plan = read_json(plan_path)
@@ -811,6 +811,13 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         write_json(where['journal'], record)
         raise ValueError(message + ' ' + _unwind_summary(record) + ' Run deploy-load again to retry.')
 
+    # A broker-fit plan is re-checked on the live broker in 'validated', before anything is staged. A call that resumes
+    # the journal past it re-checks too (GOAT-EA#229 review 6160002799: a plan reviewed at 50k, resumed at 'staged' at
+    # 20k, reached 'ready' at scale 0.5): check_live before MT5 is closed; with MT5 already closed, the plan TTL before
+    # the launch and check_live once the relaunched dashboard answers, unwinding on a stale fit.
+    fit_unchecked = BROKER_FIT_KEY in plan and record['phase'] != 'validated'
+    resume_unfinished = ' Nothing was closed or launched; run deploy-stop to set this deployment aside.'
+
     if record['phase'] == 'validated':
         try:
             with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
@@ -847,6 +854,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if running is not None:
             # Demo proof and inert state come first; closing never touches positions.
             broker_proof(controller, session, mt5=mt5)
+            if fit_unchecked:
+                import studio_broker_fit as broker_fit
+                broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc,
+                                      outcome=resume_unfinished)
+                fit_unchecked = False
             attempt_id = 'deploy-' + deployment_id[:24] + suffix
             closed = (close or close_terminal)(controller, attempt_id, build_id=plan['buildId'])
             if closed.get('phase') not in ('stopped', 'already_stopped'):
@@ -862,6 +874,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             pre_launch_check = dict(started_utc=check_started, finished_utc=utc_now(), present=present is not None)
             if present is not None:
                 raise ValueError('The selected MT5 reopened before the dashboard launch; nothing was launched')
+            if fit_unchecked:
+                # MT5 is closed, so the broker cannot be read: an expired plan refuses (a fresh attempt re-plans). Inside
+                # the TTL MT5 is relaunched with Algo Trading off (Enabled=0) and check_live runs once the dashboard
+                # answers, before any child is linked; a stale fit then unwinds.
+                import studio_broker_fit as broker_fit
+                broker_fit.check_plan_age(plan, utc_now=max(utc_clock(), server_time_utc or 0), outcome=resume_unfinished)
             portable = saved_launch_policy(controller, session)
             # Byte-exact: the SETs, resume file, every chart of the profile and the namespace claim.
             verify_staged(controller, plan, members)
@@ -903,6 +921,21 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             fail_and_unwind('not_inert_after_start', 'Algo Trading is already on (or the account has positions or orders) after MT5 started; '
                             'GOAT does not load a portfolio then.')
         phase('dashboard_ready')
+
+    if fit_unchecked and record['phase'] in ('dashboard_ready', 'attached', 'policy_applied'):
+        # The post-launch re-check of a resumed broker-fit deploy (above): stale -> the inert-only unwind (Algo Trading
+        # stays off, positions are never closed). Any other read failure leaves the journal here for the next resume.
+        import studio_broker_fit as broker_fit
+        try:
+            broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
+        except Refusal as stale:
+            if stale.code != broker_fit.FIT_STALE:
+                raise
+            try:
+                fail_and_unwind(stale.code, str(stale))
+            except ValueError as exc:
+                raise Refusal(str(exc), stale.code, **stale.fields) from stale
+        fit_unchecked = False
 
     if record['phase'] == 'dashboard_ready':
         # A beta.24 journal launched by the template deploy resumes here too; its profile holds no children,

@@ -1954,8 +1954,7 @@ def stale_members(block, references, schema, *, account, symbols, ticks, quotes,
     def add(member_id, name, reviewed, live):
         rows.append(dict(memberId=member_id, input=name, reviewed=reviewed, live=live))
 
-    age = utc_now - block['reviewedAtUtc']
-    if age > PLAN_TTL_SECONDS or age < -FRESH_QUOTE_SECONDS:
+    if plan_expired(block, utc_now):
         add(None, 'reviewedAtUtc', block['reviewedAtUtc'], int(utc_now))
         return rows
     live_equity = dec(account.get('equity'))
@@ -2037,9 +2036,26 @@ def stale_members(block, references, schema, *, account, symbols, ticks, quotes,
     return rows
 
 
-def check_live(controller, session, plan, *, mt5=None, process=None, clock=None, sleep=None, server_time_utc=None):
+def plan_expired(block, utc_now):
+    """The plan TTL: older than PLAN_TTL_SECONDS, or from the future by more than FRESH_QUOTE_SECONDS."""
+    age = utc_now - block['reviewedAtUtc']
+    return age > PLAN_TTL_SECONDS or age < -FRESH_QUOTE_SECONDS
+
+
+def check_plan_age(plan, *, utc_now, outcome=' Nothing was written or launched.'):
+    """The plan TTL alone, with stale_members' 'reviewedAtUtc' row, for a resumed deploy that cannot read the broker
+    because its MT5 is already closed (GOAT-EA#229 review 6160002799): refuses FIT_STALE once the plan has expired."""
+    block = plan['brokerFit']
+    if plan_expired(block, utc_now):
+        raise Refusal(FIT_STALE_MESSAGE + outcome, FIT_STALE,
+                      stale=[dict(memberId=None, input='reviewedAtUtc', reviewed=block['reviewedAtUtc'], live=int(utc_now))])
+
+
+def check_live(controller, session, plan, *, mt5=None, process=None, clock=None, sleep=None, server_time_utc=None,
+               outcome=' Nothing was written or launched.'):
     """Refuse FIT_STALE before anything is staged when the live broker no longer gives the reviewed fit: one short
-    attach-only read (read_broker) of the manifest's members, then stale_members."""
+    attach-only read (read_broker) of the manifest's members, then stale_members. A resumed deploy runs it again
+    (studio_demo_deploy.load) and passes the sentence that says what it left undone (`outcome`)."""
     import base64
     block = plan['brokerFit']
     references = [base64.b64decode(member['contentBase64'], validate=True) for member in plan['members']]
@@ -2051,7 +2067,7 @@ def check_live(controller, session, plan, *, mt5=None, process=None, clock=None,
     stale = stale_members(block, references, controller.schema, account=account, symbols=symbols, ticks=ticks, quotes=quotes,
                           margins=margins, utc_now=utc_now, arrived=arrived)
     if stale:
-        raise Refusal(FIT_STALE_MESSAGE + ' Nothing was written or launched.', FIT_STALE, stale=stale[:20],
+        raise Refusal(FIT_STALE_MESSAGE + outcome, FIT_STALE, stale=stale[:20],
                       liveEquity=account.get('equity'), liveCurrency=account.get('currency'))
 
 

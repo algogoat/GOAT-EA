@@ -300,6 +300,103 @@ class BrokerFitDeployTests(DeployFixture):
         self.assertEqual(caught.exception.code, bf.FIT_STALE)
         self.assertIn(bf.SPREAD_SAMPLE_UNAVAILABLE, [row['input'] for row in caught.exception.fields['stale']])
 
+    # ---- every resume re-checks (GOAT-EA#229 review 6160002799)
+
+    def stop_at(self, phase, members, block):
+        """A first deploy-load of the plan reviewed at 50k that passes the live check, then stops at `phase`: 'staged'
+        (MT5 did not confirm the close) or 'closed' (MT5 closed, then seen running again before the launch)."""
+        def close(controller, attempt_id, build_id=None):
+            return dict(phase='close_unconfirmed' if phase == 'staged' else 'stopped')   # the fake MT5 keeps running
+        with self.reads(50000.0), patch('studio_demo_deploy.subprocess.Popen', side_effect=AssertionError('launched')):
+            with self.assertRaises(ValueError):
+                deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), close=close,
+                            manifest_sha256=self.genuine, sleep=lambda s: None)
+        where = deploy.paths(self.c, 'e' * 32)
+        self.assertEqual(json.loads(where['journal'].read_text())['phase'], phase)
+        return where
+
+    def test_a_staged_resume_rechecks_the_live_fit_before_mt5_is_closed(self):
+        # The review's probe: reviewed at 50k (scale 0.5), stopped at 'staged', deploy-load run again at 20k live equity.
+        # Before the fix it closed and relaunched MT5 with the 0.5 bytes and reached 'ready' (about 2.5x the risk).
+        members, raws, block = self.review(equity=50000)
+        where = self.stop_at('staged', members, block)
+        closes = []
+        with self.relaunch() as popen, self.reads(20000.0) as read, self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 20000.0), close=lambda *a, **k: closes.append(a),
+                        manifest_sha256=self.genuine, sleep=lambda s: None)
+        self.assertEqual((caught.exception.code, caught.exception.fields['liveEquity']), (bf.FIT_STALE, 20000.0))
+        self.assertIn('The account changed since the check; run the fit again. Nothing was closed or launched; run deploy-stop',
+                      str(caught.exception))
+        read.assert_called_once()
+        self.assertEqual((closes, popen.call_count), ([], 0), 'nothing was closed or launched')
+        self.assertIsNotNone(self.process.inspect())
+        self.assertEqual(json.loads(where['journal'].read_text())['phase'], 'staged')
+
+    def test_a_staged_resume_with_a_fresh_fit_deploys(self):
+        members, raws, block = self.review(equity=50000)
+        self.stop_at('staged', members, block)
+        self.start_ea(pairing='none')
+        with self.relaunch(), self.reads(50000.0) as read:
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), manifest_sha256=self.genuine,
+                                 sleep=lambda s: None)
+        self.assertEqual(result['phase'], 'ready')
+        read.assert_called_once()   # before the close; this call's own check covers the launch
+
+    def test_an_expired_closed_resume_refuses_before_the_launch(self):
+        members, raws, block = self.review(equity=50000)
+        where = self.stop_at('closed', members, block)
+        self.process.identity = None   # MT5 is closed: the broker cannot be read
+        reviewed = block['reviewedAtUtc']
+        clocks = (dict(utc_clock=lambda: reviewed + bf.PLAN_TTL_SECONDS + 1),
+                  # A PC clock that lags is not trusted over the app's server time.
+                  dict(utc_clock=lambda: reviewed + 60, server_time_utc=float(reviewed + bf.PLAN_TTL_SECONDS + 1)))
+        for clock in clocks:
+            with self.subTest(clock=sorted(clock)):
+                with self.relaunch() as popen, patch('studio_broker_fit.read_broker', side_effect=AssertionError('MT5 is closed')), \
+                        self.assertRaises(Refusal) as caught:
+                    deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), manifest_sha256=self.genuine,
+                                sleep=lambda s: None, **clock)
+                self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']), (bf.FIT_STALE, 'reviewedAtUtc'))
+                self.assertIn('Nothing was closed or launched', str(caught.exception))
+                self.assertEqual(popen.call_count, 0)
+                self.assertFalse(where['config'].exists(), 'no startup configuration was written')
+                self.assertEqual(json.loads(where['journal'].read_text())['phase'], 'closed')
+
+    def test_a_closed_resume_inside_the_ttl_rechecks_after_the_launch(self):
+        members, raws, block = self.review(equity=50000)
+        self.stop_at('closed', members, block)
+        self.process.identity = None
+        self.start_ea(pairing='none')
+        with self.relaunch() as popen, self.reads(50000.0) as read:
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), manifest_sha256=self.genuine,
+                                 sleep=lambda s: None, utc_clock=lambda: block['reviewedAtUtc'] + 60)
+        self.assertEqual(result['phase'], 'ready')
+        popen.assert_called_once()
+        read.assert_called_once()   # after the launch
+
+    def test_a_stale_fit_after_a_resumed_launch_unwinds(self):
+        members, raws, block = self.review(equity=50000)
+        where = self.stop_at('closed', members, block)
+        self.process.identity = None
+        ea = self.start_ea(pairing='none')
+        with self.relaunch() as popen, self.reads(20000.0) as read, self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 20000.0), manifest_sha256=self.genuine,
+                        sleep=lambda s: None, utc_clock=lambda: block['reviewedAtUtc'] + 60)
+        self.assertEqual((caught.exception.code, caught.exception.fields['liveEquity']), (bf.FIT_STALE, 20000.0))
+        self.assertIn('The account changed since the check; run the fit again. GOAT closed MT5 with Algo Trading off', str(caught.exception))
+        self.assertIn('nothing traded', str(caught.exception))
+        popen.assert_called_once()
+        read.assert_called_once()
+        journal = json.loads(where['journal'].read_text())
+        self.assertEqual((journal['phase'], journal['stop_reason'], journal['auto_unwind']['status'], journal['failure']['code']),
+                         ('stopped', bf.FIT_STALE, 'unwound', bf.FIT_STALE))
+        self.assertEqual((journal['trading_changed'], journal['positions_closed']), (False, False))
+        self.assertNotIn('linked_rows', journal)
+        self.assertEqual(ea.link_requests, 0, 'no child was linked')
+        self.assertIn('Enabled=0', where['config'].read_bytes().decode('utf-16'), 'relaunched with Algo Trading off')
+        self.assertIsNone(self.process.inspect(), 'MT5 was closed normally')
+        self.assertFalse(where['state'].exists() or where['profile'].exists(), 'the deployment was set aside')
+
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')
         with self.relaunch(), patch('studio_broker_fit.read_broker', side_effect=AssertionError('no broker-fit read')):

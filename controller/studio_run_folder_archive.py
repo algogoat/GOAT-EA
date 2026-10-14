@@ -110,7 +110,8 @@ CODES = frozenset((
     'ARCHIVE_KEPT_RECENT', 'ARCHIVE_ROOT_FLOOR', 'ARCHIVE_ACTIVE_UNVERIFIABLE', 'ARCHIVE_RUN_ARCHIVED',
     'ARCHIVE_ARCHIVER_BUSY', 'ARCHIVE_STUB_INVALID',
     # Claude-Mac's review of #237: removable/RAM targets, a source that cannot be removed.
-    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED', 'ARCHIVE_TARGET_LINK', 'ARCHIVE_RUN_ID_REQUIRED'))
+    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED', 'ARCHIVE_TARGET_LINK', 'ARCHIVE_RUN_ID_REQUIRED',
+    'ARCHIVE_SOURCE_STREAMS', 'ARCHIVE_RESET_REFUSED'))
 
 
 def _utc(now):
@@ -910,6 +911,39 @@ def _archive_walk(folder):
     return found
 
 
+def alternate_streams(path):
+    """The NTFS alternate data stream names of a file (FindFirstStreamW), [] when it has none or off Windows. The copy
+    carries only the unnamed ``::$DATA`` stream, so a file with another one is refused, never silently thinned."""
+    if os.name != 'nt':
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class StreamData(ctypes.Structure):
+        _fields_ = [('size', ctypes.c_longlong), ('name', ctypes.c_wchar * 296)]
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.FindFirstStreamW.restype = wintypes.HANDLE
+    kernel32.FindFirstStreamW.argtypes = (wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    kernel32.FindNextStreamW.argtypes = (wintypes.HANDLE, ctypes.c_void_p)
+    kernel32.FindClose.argtypes = (wintypes.HANDLE,)
+    data = StreamData()
+    handle = kernel32.FindFirstStreamW(str(_io(path)), 0, ctypes.byref(data), 0)
+    if handle in (None, wintypes.HANDLE(-1).value, ctypes.c_void_p(-1).value):
+        error = ctypes.get_last_error()
+        if error == 38:                                   # ERROR_HANDLE_EOF: no stream at all
+            return []
+        raise OSError(error, 'FindFirstStreamW failed for ' + str(path))
+    names = []
+    try:
+        while True:
+            names.append(data.name)
+            if not kernel32.FindNextStreamW(handle, ctypes.byref(data)):
+                break
+    finally:
+        kernel32.FindClose(handle)
+    return [name for name in names if name.upper() != '::$DATA']
+
+
 def run_target_refusal(run, archive_root, folder):
     """Why ``folder`` (``<archive root>/<run id>``) cannot hold this run's archive, else None (review item 3 on #237): the
     archive root, the folder or any folder between them is a symbolic link or junction (a link back to the source would
@@ -962,6 +996,13 @@ def apply_run(run, archive_root, files, *, install, now, archived_by='demo_agent
             raise refusal
         _io(folder).mkdir(parents=True, exist_ok=True)
     archive._remove_temporaries(folder)
+    for item in files:                               # before anything is copied: only the unnamed data stream moves
+        streams = alternate_streams(run / item['relative_path'])
+        if streams:
+            raise Refusal('%s/%s carries alternate data stream(s) %s, which the archive copy would not carry; nothing was '
+                          'copied for this run. Remove the stream(s) or keep the run (--keep-list).'
+                          % (run_id, item['relative_path'], ', '.join(streams[:5])), 'ARCHIVE_SOURCE_STREAMS',
+                          run_id=run_id, relative_path=item['relative_path'], streams=streams[:20])
     entries, copied, reused = [], 0, 0
     for item in files:
         digest, size, again = archive.copy_verified(run / item['relative_path'], folder / item['relative_path'])

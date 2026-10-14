@@ -462,6 +462,22 @@ class MoveTests(RunFolderFixture):
         self.assertEqual([json.loads(p.read_text())['retired_reason']
                           for p in (self.root / 'run-folder-archive' / 'retired').glob(run.name + '.*.json')], ['repointed'])
 
+    @unittest.skipUnless(os.name == 'nt', 'NTFS alternate data streams')
+    def test_a_source_file_with_an_alternate_data_stream_refuses(self):
+        """Review (also in this PR): the copy carries only the unnamed stream, so a file with another one refuses."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.assertEqual(runs.alternate_streams(run / 'log.GOAT'), [])
+        with open(str(run / 'log.GOAT') + ':Zone.Identifier', 'wb') as stream:
+            stream.write(b'[ZoneTransfer]\r\nZoneId=3\r\n')
+        self.assertEqual(runs.alternate_streams(run / 'log.GOAT'), [':Zone.Identifier:$DATA'])
+        with self.assertRaises(Refusal) as caught:
+            self.apply()
+        self.assertEqual((caught.exception.code, caught.exception.fields['relative_path']), ('ARCHIVE_SOURCE_STREAMS', 'log.GOAT'))
+        self.assertFalse((run / runs.STUB).exists())
+        self.assertEqual(self.tree(self.archive_root / run.name), {})       # nothing copied for this run
+        self.assertEqual(self.tree(run), original)
+
     def test_removal_never_leaves_the_run_folder(self):
         run = self.make_run(1, 'banker-done-1')
         outside = self.source / 'keep-me.txt'

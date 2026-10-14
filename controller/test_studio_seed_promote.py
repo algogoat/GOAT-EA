@@ -94,6 +94,34 @@ class SeedPromoteTests(unittest.TestCase):
         self.assertEqual({k: robustness[k] for k in ('Period', 'Size', 'UseTrail', 'Mode')}, dict(
             Period='15||10||5||20||Y', Size='0.50000000||0.5||0.25||1||Y', UseTrail='0||false||1||true||Y', Mode='1||1||1||3||Y'))
 
+    def promoted_with_bias(self, mode):
+        """Seed and promote a source carrying the real AI bias inputs: Mode_Bias=<mode>, the header's DemoRaw protocol."""
+        from studio_installation import contracts
+        real = contracts('1.49')[0]['inputs']
+        self.controller.schema['inputs'] |= dict(Mode_Bias=dict(real['Mode_Bias']), Bias_Protocol=dict(real['Bias_Protocol']))
+        self.source.write_bytes(('; Source header\r\nEA_Desc=Original\r\nPeriod=10||10||5||20||Y\r\nSize=1.5\r\n'
+                                 'Mode_Bias=%s\r\nBias_Protocol=2\r\n' % mode).encode('utf-16'))
+        candidates = self.run_seed()
+        receipt = promote(self.controller, 'batch', candidates[0]['candidate_sha256'], 'Bias Control', runner=self.runner)
+        sets = self.sets(receipt)
+        for values in sets:
+            self.assertEqual((values['Mode_Bias'].split('||')[0], values['Bias_Protocol'].split('||')[0]), (mode, '2'))
+        return sets
+
+    def test_promoted_sets_from_an_ai_off_source_pass_the_tester_rule(self):
+        # Positive control for TESTER_INIT_REFUSED (GOAT-EA#231): promotion writes no AI bias inputs of its own,
+        # so the catalog's Bias_Disabled reaches fixed.set and robustness.set unchanged and prepare-batch accepts them.
+        from studio_ea_init_rules import check_tester_init
+        for values in self.promoted_with_bias('1'):
+            check_tester_init(values, self.controller.schema)
+
+    def test_promoted_sets_carry_an_ai_on_source_through_unchanged(self):
+        # The rule's only producer risk is the source SET itself: an AI-on source stays AI-on and is refused at prepare.
+        from studio_ea_init_rules import TESTER_INIT_CODE, check_tester_init
+        for values in self.promoted_with_bias('2'):
+            with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE):
+                check_tester_init(values, self.controller.schema)
+
     def test_repeat_returns_receipt_and_conflicts_refuse(self):
         candidate = self.run_seed()[0]['candidate_sha256']
         first = promote(self.controller, 'batch', candidate, 'Keeper', runner=self.runner)

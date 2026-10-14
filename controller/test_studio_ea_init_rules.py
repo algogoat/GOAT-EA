@@ -256,6 +256,21 @@ class TesterInitRuleTests(RuleCase):
         self.assertEqual(validate_raw(raw, self.schema, contracts('1.49')[1])['kind'], 'fixed_settings')
         self.assertEqual({rule['id'] for rule in EA_INIT_RULES} & {rule['id'] for rule in TESTER_INIT_RULES}, set())
 
+    def test_fresh_starters_pass_the_tester_rule(self):
+        # Positive control (GOAT-EA#231): starter-set writes Mode_Bias=Bias_Disabled for both shapes and both schemas.
+        import tempfile
+        from studio_template_tools import STARTER_SHAPES, starter_set
+        for version in SCHEMAS:
+            schema, policy = contracts(version)
+            for shape in STARTER_SHAPES:
+                with self.subTest(version=version, shape=shape), tempfile.TemporaryDirectory() as folder:
+                    result = starter_set(shape, Path(folder) / 'starter.set', schema, policy, controller_version='t',
+                                         ea_version=version)
+                    from studio_strategy_settings import read_values
+                    values = read_values(Path(result['output']['path']).read_bytes())
+                    self.assertEqual(values['Mode_Bias'], str(schema['inputs']['Mode_Bias']['enum_choices']['Bias_Disabled']))
+                    check_tester_init(values, schema)
+
     def test_a_goat_schema_without_the_protocol_label_fails_closed(self):
         broken = copy.deepcopy(self.schema)
         broken['inputs']['Bias_Protocol']['enum_choices'] = {'BiasProtocol_LegacyRecorded': 0}

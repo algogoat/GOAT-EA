@@ -6,13 +6,18 @@ Code: `controller/studio_oos_windows.py` (rule `goat-oos-windows-v1`, evaluation
 `goat-oos-window-rule-v1`). Tests: `controller/test_studio_oos_windows.py` and the mutation check
 `scripts/test_oos_windows_controller_mutations.py`.
 
+Revised by Vince on 2026-10-11 ("YES LOCK IT IN", goatai#2350 6106946678; Claude-Mac's review
+6106961195, ruled a beta.38 must-fix in 6162820519 as `P-beta38-oos-formula-boos-third`): BOOS is
+**1/3 O (= FWD)**, not 1/2 O, and it is a **lenient "not broken" gate**. Every window record now
+stamps `oosFormula: "boos-1/3"`; see "Stamped windows keep their formula" below.
+
 ## The windows
 
 O is the optimization period: SAMPLE + FWD. From oldest to newest:
 
 | Window | Length | Role |
 |---|---|---|
-| BOOS | 1/2 O, immediately before SAMPLE | pass/fail only |
+| BOOS | 1/3 O (= FWD), immediately before SAMPLE | lenient "not broken" gate only |
 | SAMPLE | 2/3 O | the optimizer fits here |
 | FWD | 1/3 O | ranks and picks passes |
 | FOOS | 1/4 O, ending at the export Friday | held out: pass/fail only, **never used for ranking** |
@@ -41,30 +46,53 @@ Friday; nobody types FromDate, ForwardDate, ToDate or BackOOSDate by hand for a 
 
 | O (months) | O (weeks) | BOOS | SAMPLE | FWD | FOOS |
 |---|---|---|---|---|---|
-| 3 | 13 | 7 | 8 | 5 | 4 |
-| 6 | 26 | 13 | 17 | 9 | 7 |
-| 12 | 52 | 26 | 34 | 18 | 13 |
-| 24 | 104 | 52 | 69 | 35 | 26 |
+| 3 | 13 | 5 | 8 | 5 | 4 |
+| 6 | 26 | 9 | 17 | 9 | 7 |
+| 12 | 52 | 18 | 34 | 18 | 13 |
+| 24 | 104 | 35 | 69 | 35 | 26 |
 
 ## Worked example: O = 12 months, export Friday 2026-10-02
 
-O = 52 weeks: BOOS 26, SAMPLE 34, FWD 18, FOOS 13 weeks.
+O = 52 weeks: BOOS 18, SAMPLE 34, FWD 18, FOOS 13 weeks.
 
 | Window | First day | Last day (inclusive) |
 |---|---|---|
-| BOOS | Sat 2025-01-04 | Fri 2025-07-04 |
+| BOOS | Sat 2025-03-01 | Fri 2025-07-04 |
 | SAMPLE | Sat 2025-07-05 | Fri 2026-02-27 |
 | FWD | Sat 2026-02-28 | Fri 2026-07-03 |
 | FOOS (held out) | Sat 2026-07-04 | Fri 2026-10-02 |
 
 - Optimization end: Fri 2026-07-03.
 - Tester: `FromDate=2025.07.05`, `ForwardMode=4`, `ForwardDate=2026.02.28`, `ToDate=2026.07.04`.
-- Export: `BackOOSDate=2025.01.04`, `IncludeBackOOS=1`, `EvidenceEnd=2026.07.04`.
+- Export: `BackOOSDate=2025.03.01`, `IncludeBackOOS=1`, `EvidenceEnd=2026.07.04`.
 - FOOS replay: OOS catch-up with `evidence_end` 2026-10-02.
 - Seed hunts with the same O read SAMPLE only: `FromDate=2025.07.05`, `ToDate=2026.02.28`, `ForwardMode=0`.
 
 The table above is pinned in `test_studio_oos_windows.py`; so are O = 3, 6 and 24 months and
-a FOOS that spans the 2024-02-29 leap day.
+a FOOS that spans the 2024-02-29 leap day. A test also pins BOOS = FWD for every O from 2 to 520
+weeks, so the fraction cannot drift back to 1/2.
+
+### Stamped windows keep their formula (nothing is re-judged)
+
+Before the 2026-10-11 lock reached the controller, BOOS was 1/2 O (3 months: 7 weeks; 6: 13;
+12: 26; 24: 52). Plans, prepared batches, runs and judged catch-ups from that time keep it:
+
+- Every record (`native_batch.oos_windows`, the seed manifest's `oos_windows`, `batch-status`)
+  stamps `oosFormula`: `boos-1/3` from now on. A record without the key was stamped under 1/2 O
+  and reads `boos-1/2`.
+- Preparation and activation (`verify_native`) re-derive a record from its own O, export Friday
+  **and stamped formula**, never the current one, then check the native and export BOOS dates
+  against that record. A 1/2 O batch keeps validating; a 1/3 O record cannot pass as a 1/2 O one.
+- `batch-resume` successors keep their source's formula (`oos_windows.oosFormula` in the
+  successor plan), so a 1/2 O batch resumes with its own 1/2 O dates. New plans leave
+  `oosFormula` out.
+- Catch-up judging recognises an export's formula from its dates, because the export and its
+  run folder carry only dates. It judges a 1/2 O export with the BOOS bar it had (PF >= 1.0 and
+  DD). Where both formulas give the same dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up
+  to the same BOOS), the pre-lock 1/2 O wins unless the caller passes the stamped formula
+  (`judge_retest(..., oos_formula=...)`), so no export moves onto the newer gate by inference.
+  `oos_rule` stamps `oosFormula` and `boosGate`. The SAMPLE, FWD and FOOS dates are identical under both
+  formulas; only BOOS differs.
 
 ## How FOOS is held out with the EA's existing inputs (no EA change)
 
@@ -120,8 +148,20 @@ For each OOS window (BOOS and FOOS):
 1. **At least 30 trades.** Fewer is `not_eligible_yet`: too few to judge either way, never a
    failure. A window is **never shortened** to reach the floor, and a window under the floor is
    never judged on PF or DD.
-2. With the floor met it passes on **PF ≥ 1.0 AND DD ≤ 1.5 × in-sample (SAMPLE) DD**, the DD bar
-   computed exactly (2·DD ≤ 3·SAMPLE DD, no float rounding at the bar).
+2. With the floor met **FOOS** passes on **PF ≥ 1.0 AND DD ≤ 1.5 × in-sample (SAMPLE) DD**, the DD
+   bar computed exactly (2·DD ≤ 3·SAMPLE DD, no float rounding at the bar).
+3. **BOOS is the lenient "not broken" gate** (Vince 6106946678, Claude-Mac 6106961195). It fails
+   only on **DD > 1.5 × in-sample DD**, or on a **loss worse than `in_sample_p10`**: the 10th
+   percentile (linear interpolation, as numpy `linear` and Excel `PERCENTILE.INC`) of the net
+   results of every window of **BOOS's own length** inside SAMPLE, the first starting on SAMPLE's
+   first day and each next one **one week** later. So BOOS is compared like with like at every O.
+   It is never a profit requirement and never a ranking input: a BOOS that lost, but no more than
+   that in-sample window, passes. A BOOS loss with no `in_sample_p10` (no complete deal capture,
+   or SAMPLE shorter than BOOS) is `not_measured`. The BOOS result carries `gate: "lenient_p10"`,
+   `in_sample_p10` and `in_sample_windows`; every `oos_rule` carries `oosFormula`, `boosGate` and
+   `oosUsedForSelection: "gate_only"`. (`controller/studio_oos_windows.py`: `percentile`,
+   `_lenient_loss_test`, `judge_window(..., lenient=True)`, and `in_sample_p10` in `judge_retest`.)
+   A 1/2 O export stamped before the lock keeps the PF/DD bar on BOOS.
 
 Window results, in this order:
 
@@ -129,7 +169,7 @@ Window results, in this order:
 |---|---|
 | `no_data` | No such window, the window has not been tested, or there is no trade count for it. |
 | `not_eligible_yet` | Fewer than 30 trades, or FOOS not tested through the export Friday yet. |
-| `fail` | 30+ trades and a measured PF below 1.0 (net below 0) or a measured DD above 1.5 × SAMPLE DD. |
+| `fail` | 30+ trades and a measured DD above 1.5 × SAMPLE DD, or (FOOS) a measured PF below 1.0 (net below 0), or (BOOS) a loss worse than `in_sample_p10`. |
 | `not_measured` | 30+ trades, nothing measured failed, but PF, the window DD or the SAMPLE DD (> 0) is missing. |
 | `pass` | 30+ trades, PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD, all measured. |
 
@@ -167,7 +207,7 @@ sequence capture); without it the window is `no_data`. DD comes from the re-test
 ### Shared fixture
 
 `controller/fixtures/oos-holdout-gate-cases.json` (schema `goat-oos-holdout-gate-cases-v1`)
-holds the rules, the definitions, 25 window cases, 8 set cases and 5 date cases.
+holds the rules, the definitions, 32 window cases, 9 set cases and 5 date cases.
 `controller/test_studio_oos_windows.py` runs every case and checks the file's rules against the
 module constants. The same bytes live at goatai `docs/fixtures/oos-holdout-gate-cases.json`, where
 the desktop gate test runs every case. Change it in GOAT-EA first, then copy the identical file to
@@ -429,7 +469,7 @@ This is documented (`studio_oos_windows.DEMO_RULE`); nothing in the controller a
 ## How agents talk about it
 
 - Say the windows with their dates: "O is 12 months. The optimizer fits on 5 Jul 2025 to 27 Feb
-  2026 and ranks on 28 Feb to 3 Jul 2026. BOOS (4 Jan to 4 Jul 2025) and the held-out FOOS
+  2026 and ranks on 28 Feb to 3 Jul 2026. BOOS (1 Mar to 4 Jul 2025) and the held-out FOOS
   (4 Jul to 2 Oct 2026) are pass/fail checks only."
 - FOOS is held out: never describe it as part of the ranking, never pick or sort sets by FOOS
   results, and never show FOOS numbers as a reason a set was chosen.

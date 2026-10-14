@@ -40,13 +40,13 @@ class DateMathTests(unittest.TestCase):
 
     def test_worked_example_twelve_months_export_friday_2026_10_02(self):
         r = w.compute(52, '2026-10-02')
-        self.assertEqual(r['weeks'], dict(boos=26, sample=34, fwd=18, foos=13))
+        self.assertEqual((r['weeks'], r['oosFormula']), (dict(boos=18, sample=34, fwd=18, foos=13), 'boos-1/3'))
         self.assertEqual({k: (r[k]['first_day'], r[k]['last_day']) for k in ('boos', 'sample', 'fwd', 'foos')}, dict(
-            boos=('2025-01-04', '2025-07-04'), sample=('2025-07-05', '2026-02-27'),
+            boos=('2025-03-01', '2025-07-04'), sample=('2025-07-05', '2026-02-27'),
             fwd=('2026-02-28', '2026-07-03'), foos=('2026-07-04', '2026-10-02')))
         self.assertEqual(r['optimization_end'], '2026-07-03')
         self.assertEqual(r['tester'], dict(FromDate='2025.07.05', ToDate='2026.07.04', ForwardMode=4, ForwardDate='2026.02.28'))
-        self.assertEqual(r['export'], dict(BackOOSDate='2025.01.04', IncludeBackOOS=True))
+        self.assertEqual(r['export'], dict(BackOOSDate='2025.03.01', IncludeBackOOS=True))
         self.assertEqual(r['export_evidence_end'], '2026-07-04')
         self.assertEqual(r['seed_tester'], dict(FromDate='2025.07.05', ToDate='2026.02.28', ForwardMode=0, ForwardDate=''))
         self.assertEqual(r['heldout_lock'], dict(start='2026-07-04', end='2026-10-03', revealableAfter='2026-10-02'))
@@ -54,11 +54,11 @@ class DateMathTests(unittest.TestCase):
 
     def test_pinned_values_for_other_periods_and_a_leap_year(self):
         pinned = {
-            (13, '2026-10-02'): ('2026.04.18', '2026.06.06', '2026.08.01', '2026.09.05'),
-            (26, '2026-10-02'): ('2025.11.15', '2026.02.14', '2026.06.13', '2026.08.15'),
-            (104, '2026-10-02'): ('2023.04.08', '2024.04.06', '2025.08.02', '2026.04.04'),
+            (13, '2026-10-02'): ('2026.05.02', '2026.06.06', '2026.08.01', '2026.09.05'),
+            (26, '2026-10-02'): ('2025.12.13', '2026.02.14', '2026.06.13', '2026.08.15'),
+            (104, '2026-10-02'): ('2023.08.05', '2024.04.06', '2025.08.02', '2026.04.04'),
             # FOOS of 13 weeks ending 2024-03-01 spans the leap day: 91 days, still Saturday..Friday.
-            (52, '2024-03-01'): ('2022.06.04', '2022.12.03', '2023.07.29', '2023.12.02'),
+            (52, '2024-03-01'): ('2022.07.30', '2022.12.03', '2023.07.29', '2023.12.02'),
         }
         for (weeks, friday), (back, start, forward, to_date) in pinned.items():
             with self.subTest(weeks=weeks, friday=friday):
@@ -66,6 +66,31 @@ class DateMathTests(unittest.TestCase):
                 self.assertEqual((r['export']['BackOOSDate'], r['tester']['FromDate'], r['tester']['ForwardDate'],
                                   r['tester']['ToDate']), (back, start, forward, to_date))
         self.assertEqual(w.compute(52, '2024-03-01')['foos']['days'], 91)
+
+    def test_locked_table_boos_is_one_third_of_o(self):
+        # Vince 2026-10-11 (goatai#2350 6106946678), Claude-Mac's gate (6162820519): BOOS = FWD = 1/3 O, rounded up.
+        self.assertEqual((w.FRACTIONS['boos'], w.OOS_FORMULA, w.BOOS_SHARE[w.OOS_FORMULA]), ('1/3', 'boos-1/3', Fraction(1, 3)))
+        table = {3: dict(boos=5, sample=8, fwd=5, foos=4), 6: dict(boos=9, sample=17, fwd=9, foos=7),
+                 12: dict(boos=18, sample=34, fwd=18, foos=13), 24: dict(boos=35, sample=69, fwd=35, foos=26)}
+        for months, weeks in table.items():
+            with self.subTest(months=months):
+                self.assertEqual(w.split(w.optimization_weeks(months=months)), weeks)
+                self.assertEqual(w.compute(w.optimization_weeks(months=months), '2026-10-02')['weeks'], weeks)
+        for o in range(2, 521):
+            self.assertEqual(w.split(o)['boos'], w.split(o)['fwd'], o)       # never drifts back to 1/2 O
+
+    def test_legacy_half_o_formula_keeps_the_old_dates(self):
+        # The dates every batch stamped before the lock carries (the pre-fix pinned values).
+        pinned = {(13, '2026-10-02'): '2026.04.18', (26, '2026-10-02'): '2025.11.15', (52, '2026-10-02'): '2025.01.04',
+                  (104, '2026-10-02'): '2023.04.08', (52, '2024-03-01'): '2022.06.04'}
+        for (weeks, friday), back in pinned.items():
+            with self.subTest(weeks=weeks, friday=friday):
+                old, new = w.compute(weeks, friday, 'boos-1/2'), w.compute(weeks, friday)
+                self.assertEqual((old['export']['BackOOSDate'], old['oosFormula']), (back, 'boos-1/2'))
+                for key in ('tester', 'sample', 'fwd', 'foos', 'optimization_end', 'export_evidence_end', 'seed_tester'):
+                    self.assertEqual(old[key], new[key], key)        # only BOOS differs
+        with self.assertRaises(ValueError):
+            w.compute(52, '2026-10-02', 'boos-1/4')
 
     def test_invariants_for_every_period_and_export_friday(self):
         for months in MONTHS:
@@ -92,10 +117,12 @@ class DateMathTests(unittest.TestCase):
     def test_judging_windows_are_never_shorter_than_their_share(self):
         for o in range(2, 521):
             weeks = w.split(o)
-            self.assertGreaterEqual(Fraction(weeks['boos']), Fraction(o, 2))
+            self.assertGreaterEqual(Fraction(weeks['boos']), Fraction(o, 3))
             self.assertGreaterEqual(Fraction(weeks['fwd']), Fraction(o, 3))
             self.assertGreaterEqual(Fraction(weeks['foos']), Fraction(o, 4))
-            self.assertLess(weeks['boos'] - Fraction(o, 2), 1)
+            self.assertLess(weeks['boos'] - Fraction(o, 3), 1)
+            self.assertLess(w.split(o, 'boos-1/2')['boos'] - Fraction(o, 2), 1)
+            self.assertGreaterEqual(Fraction(w.split(o, 'boos-1/2')['boos']), Fraction(o, 2))
             self.assertLess(weeks['foos'] - Fraction(o, 4), 1)
             self.assertEqual(weeks['sample'] + weeks['fwd'], o)
             self.assertGreaterEqual(weeks['sample'], 1)
@@ -126,14 +153,54 @@ class DateMathTests(unittest.TestCase):
         self.assertIsNone(w.formula_of(dict(r['tester'], ForwardDate='2026.03.07'), r['export']['BackOOSDate']))
         self.assertIsNone(w.formula_of(dict(FromDate='2026.02.01', ToDate='2026.09.01', ForwardDate='2026.07.01'), '2026.01.01'))
         self.assertIsNone(w.formula_of(None, '2026.01.01'))
+        # Explicit 1/3 O dates are formula dates; so are an export's 1/2 O dates stamped before the lock.
+        self.assertEqual(w.formula_of(r['tester'], '2025.03.01')['oosFormula'], 'boos-1/3')
+        self.assertEqual(w.formula_of(r['tester'], '2025.01.04'), w.compute(52, '2026-10-02', 'boos-1/2'))
 
     def test_recorded_windows_are_re_derived(self):
         r = w.compute(52, '2026-10-02')
         self.assertEqual(w.same(json.loads(json.dumps(r))), r)
         for key, value in (('optimization_end', '2026-07-10'), ('export_evidence_end', '2026-10-03'),
-                           ('tester', dict(r['tester'], ToDate='2026.10.03')), ('rule', 'other')):
-            with self.subTest(key=key), self.assertRaises(ValueError):
+                           ('tester', dict(r['tester'], ToDate='2026.10.03')), ('rule', 'other'),
+                           ('oosFormula', 'boos-1/2'), ('oosFormula', 'boos-1/4')):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 w.same(dict(r, **{key: value}))
+        stripped = {key: value for key, value in r.items() if key != 'oosFormula'}
+        with self.assertRaises(ValueError):
+            w.same(stripped)            # a 1/3 O record cannot pass as a pre-lock 1/2 O one
+
+    def legacy_record(self):
+        """A record exactly as the pre-lock controller stamped it: BOOS 1/2 O and no oosFormula key."""
+        record = json.loads(json.dumps(w.compute(52, '2026-10-02', 'boos-1/2')))
+        del record['oosFormula']
+        self.assertEqual((record['export']['BackOOSDate'], record['weeks']['boos'], record['boos']['first_day']),
+                         ('2025.01.04', 26, '2025-01-04'))
+        return record
+
+    def test_a_record_stamped_under_half_o_still_validates(self):
+        record = self.legacy_record()
+        self.assertEqual(w.record_formula(record), 'boos-1/2')
+        self.assertNotIn('oosFormula', w.same(record))
+        native = dict(oos_windows=record, back_oos_date='2025.01.04', forward_start='2026.02.28',
+                      export_settings=dict(BackOOSDate='2025.01.04', IncludeBackOOS=True),
+                      evidence_end=dict(target='2026-07-04', ea_setting=dict(key='EvidenceEnd', value='2026.07.04')))
+        jobs = [dict(conditions=dict(from_date='2025.07.05', to_date='2026.07.04', forward_mode=4))]
+        self.assertEqual(w.verify_native(native, jobs), record)
+        for change in (dict(back_oos_date='2025.03.01'), dict(export_settings=dict(BackOOSDate='2025.03.01', IncludeBackOOS=True))):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                w.verify_native(dict(native, **change), jobs)        # still exact: its own 1/2 O dates only
+        self.assertEqual(w.successor_request(record), dict(optimization_weeks=52, export_friday='2026-10-02', oosFormula='boos-1/2'))
+        self.assertEqual(w.successor_request(w.compute(52, '2026-10-02'))['oosFormula'], 'boos-1/3')
+
+    def test_explicit_one_third_dates_validate_at_activation(self):
+        record = w.compute(52, '2026-10-02')
+        native = dict(oos_windows=record, back_oos_date='2025.03.01', forward_start='2026.02.28',
+                      export_settings=dict(BackOOSDate='2025.03.01', IncludeBackOOS=True),
+                      evidence_end=dict(target='2026-07-04', ea_setting=dict(key='EvidenceEnd', value='2026.07.04')))
+        jobs = [dict(conditions=dict(from_date='2025.07.05', to_date='2026.07.04', forward_mode=4))]
+        self.assertEqual(w.verify_native(native, jobs), record)
+        with self.assertRaises(ValueError):
+            w.verify_native(dict(native, back_oos_date='2025.01.04'), jobs)
 
 
 def window(trades=30, pf=1.2, dd=100.0, **extra):
@@ -166,13 +233,42 @@ class EvaluationTests(unittest.TestCase):
 
     def test_pf_bar(self):
         self.assertEqual(w.judge(window(pf=1.0), window(pf=1.0), in_sample_dd=100.0)['status'], 'pass')
-        for name in ('boos', 'foos'):
-            windows = dict(boos=window(), foos=window())
-            windows[name] = window(pf=0.999)
-            result = w.judge(windows['boos'], windows['foos'], in_sample_dd=100.0)
-            self.assertEqual(result['status'], 'fail', name)
-            self.assertIn('profit factor below 1.0 (1.00)', result['plain'])
+        result = w.judge(window(), window(pf=0.999), in_sample_dd=100.0)
+        self.assertEqual(result['status'], 'fail')
+        self.assertIn('profit factor below 1.0 (1.00)', result['plain'])
+        # The PF bar is FOOS's; BOOS needs it only under the pre-lock 1/2 O formula.
+        legacy = w.judge(window(pf=0.999), window(), in_sample_dd=100.0, oos_formula='boos-1/2')
+        self.assertEqual((legacy['status'], legacy['boosGate']), ('fail', 'pf_dd'))
+        self.assertIn('profit factor below 1.0 (1.00)', legacy['plain'])
         self.assertEqual(w.judge(window(pf=None, pf_note='no losing deals'), window(), in_sample_dd=100.0)['status'], 'pass')
+
+    def test_lenient_boos_is_never_a_profit_requirement(self):
+        # Vince 6106946678 / Claude-Mac 6106961195: BOOS fails only on DD > 1.5x in-sample or a loss worse than the
+        # in-sample 10th-percentile window of BOOS's own length.
+        cases = ((dict(pf=0.5, pl=-40.0, in_sample_p10=-50.0), 'pass'),       # a loss, but no worse than p10
+                 (dict(pf=0.5, pl=-50.0, in_sample_p10=-50.0), 'pass'),       # exactly at the bar
+                 (dict(pf=0.5, pl=-50.01, in_sample_p10=-50.0), 'fail'),
+                 (dict(pf=0.9, pl=-1.0, in_sample_p10=20.0), 'fail'),         # every in-sample window made money
+                 (dict(pf=1.2, pl=30.0, in_sample_p10=None), 'pass'),         # no loss: p10 not needed
+                 (dict(pf=0.9, pl=-1.0, in_sample_p10=None), 'not_measured'),
+                 (dict(pf=0.9, pl=None, in_sample_p10=-50.0), 'not_measured'),
+                 (dict(pf=0.5, pl=-40.0, in_sample_p10=-50.0, dd=150.01), 'fail'))
+        for extra, status in cases:
+            with self.subTest(extra=extra):
+                result = w.judge(window(**extra), window(), in_sample_dd=100.0)
+                self.assertEqual(result['status'], status, result['plain'])
+                self.assertEqual(result['windows']['boos']['gate'], 'lenient_p10')
+        result = w.judge(window(pf=0.5, pl=-40.0, in_sample_p10=-50.0), window(), in_sample_dd=100.0)
+        self.assertEqual((result['oosFormula'], result['boosGate'], result['oosUsedForSelection'], result['used_for_ranking']),
+                         ('boos-1/3', 'lenient_p10', 'gate_only', False))
+        self.assertEqual(result['windows']['boos']['in_sample_p10'], -50.0)
+
+    def test_percentile_is_linear_interpolation(self):
+        self.assertEqual(w.percentile([-125, -125, -100, -75]), -125.0)
+        self.assertAlmostEqual(w.percentile([10, 0, 20, 30, 40, 50, 60, 70, 80, 90, 100]), 10.0)
+        self.assertAlmostEqual(w.percentile([0, 10]), 1.0)
+        self.assertEqual(w.percentile([7]), 7.0)
+        self.assertIsNone(w.percentile([]))
 
     def test_drawdown_bar_is_one_and_a_half_times_in_sample(self):
         self.assertEqual(w.judge(window(dd=150.0), window(dd=150.0), in_sample_dd=100.0)['status'], 'pass')
@@ -186,7 +282,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(w.judge(window(dd=0.01), window(), in_sample_dd=0.0)['status'], 'not_measured')   # no limit
 
     def test_a_failure_with_the_floor_met_outranks_a_thin_window(self):
-        result = w.judge(window(pf=0.5), window(trades=3), in_sample_dd=100.0)
+        result = w.judge(window(dd=200.0), window(trades=3), in_sample_dd=100.0)
         self.assertEqual(result['status'], 'fail')
         self.assertEqual(result['windows']['foos']['status'], 'not_eligible_yet')
 
@@ -209,7 +305,7 @@ class EvaluationTests(unittest.TestCase):
 
     def test_pf_test_is_net_result_at_least_zero(self):
         self.assertEqual(w.judge(window(pf=None, pl=0.0), window(pf=None, pl=0.0), in_sample_dd=100.0)['status'], 'pass')
-        self.assertEqual(w.judge(window(pf=None, pl=-0.01), window(), in_sample_dd=100.0)['status'], 'fail')
+        self.assertEqual(w.judge(window(), window(pf=None, pl=-0.01), in_sample_dd=100.0)['status'], 'fail')
 
     def test_judge_never_shortens_a_window(self):
         foos = window(trades=12, first_day='2026-07-04', last_day='2026-10-02')
@@ -230,7 +326,9 @@ class SharedFixtureTests(unittest.TestCase):
         rules = self.fixture['rules']
         self.assertEqual(self.fixture['schema'], 'goat-oos-holdout-gate-cases-v1')
         self.assertEqual(rules['fractions_of_o'], w.FRACTIONS)
-        self.assertEqual(w.split(12), dict(boos=6, sample=8, fwd=4, foos=3))        # 1/2, 2/3, 1/3, 1/4 of 12 weeks
+        self.assertEqual(w.split(12), dict(boos=4, sample=8, fwd=4, foos=3))        # 1/3, 2/3, 1/3, 1/4 of 12 weeks
+        self.assertIn('in_sample_p10_pl', rules['boos_gate'])
+        self.assertIn('10th percentile', self.fixture['definitions']['in_sample_p10_pl'])
         self.assertEqual((rules['min_trades'], rules['min_pf'], rules['max_dd_multiple_of_in_sample']),
                          (w.MIN_TRADES, w.MIN_PF, float(w.MAX_DD_RATIO)))
         self.assertEqual(tuple(rules['statuses']), w.STATUSES)
@@ -292,18 +390,21 @@ class PlanTests(unittest.TestCase):
         filled, record = w.apply_to_batch_spec(self.spec(), now=SATURDAY)
         tester = filled['members'][0]['tester']
         self.assertEqual({k: tester[k] for k in ('FromDate', 'ToDate', 'ForwardMode', 'ForwardDate')}, record['tester'])
-        self.assertEqual((filled['export']['BackOOSDate'], filled['export']['IncludeBackOOS']), ('2025.01.04', True))
+        self.assertEqual((filled['export']['BackOOSDate'], filled['export']['IncludeBackOOS']), ('2025.03.01', True))
+        self.assertEqual(record['oosFormula'], 'boos-1/3')
         self.assertEqual(filled['evidence_end'], '2026-07-04')
         self.assertEqual(record['requested'], dict(optimization_months=12, export_friday='2026-10-02'))
 
     def test_stated_dates_must_equal_the_formula(self):
         spec = self.spec()
         spec['members'][0]['tester'].update(FromDate='2025.07.05', ToDate='2026.07.04', ForwardMode=4, ForwardDate='2026.02.28')
-        spec['export'].update(BackOOSDate='2025.01.04', IncludeBackOOS=True)
+        spec['export'].update(BackOOSDate='2025.03.01', IncludeBackOOS=True)      # explicit 1/3 O dates
         spec['evidence_end'] = '2026-07-04'
         self.assertEqual(w.apply_to_batch_spec(spec, now=SATURDAY)[1]['o_weeks'], 52)
         for path, value in ((('members', 0, 'tester', 'ToDate'), '2026.10.03'), (('members', 0, 'tester', 'ForwardMode'), 0),
                             (('export', 'BackOOSDate'), '2025.01.03'), (('export', 'IncludeBackOOS'), False),
+                            (('export', 'BackOOSDate'), '2025.01.04'),          # 1/2 O dates under the current formula
+                            (('oos_windows', 'oosFormula'), 'boos-1/4'),
                             (('evidence_end',), '2026-10-02'), (('evidence_end',), 'auto')):
             with self.subTest(path=path, value=value):
                 changed = json.loads(json.dumps(spec))
@@ -313,6 +414,11 @@ class PlanTests(unittest.TestCase):
                 target[path[-1]] = value
                 with self.assertRaises(ValueError):
                     w.apply_to_batch_spec(changed, now=SATURDAY)
+        # A batch-resume successor of a pre-lock batch states its own formula and keeps its 1/2 O dates.
+        legacy = json.loads(json.dumps(spec))
+        legacy['export']['BackOOSDate'] = '2025.01.04'
+        legacy['oos_windows']['oosFormula'] = 'boos-1/2'
+        self.assertEqual(w.apply_to_batch_spec(legacy, now=SATURDAY)[1]['oosFormula'], 'boos-1/2')
 
     def test_bad_requests_refuse(self):
         for bad in (dict(), dict(optimization_months=12, extra=1), dict(optimization_months=12, optimization_weeks=52),
@@ -462,6 +568,45 @@ class RetestTests(RetestFixture, unittest.TestCase):
     def test_without_a_complete_capture_the_rule_cannot_pass(self):
         self.assertEqual(self.judge(capture=False)['status'], 'no_data')
 
+    def test_lenient_boos_compares_with_rolling_in_sample_windows_of_its_own_length(self):
+        # O = 13 weeks: BOOS 5 weeks, SAMPLE 8 weeks -> 4 rolling 5-week SAMPLE windows, one week apart. Every SAMPLE trade
+        # loses 5 (30 trades on its first 30 weekdays): window results -125, -125, -100, -75, so p10 = -125.
+        losing_sample = dict(sample=30)
+        result = self.judge(trades=dict(boos=30), losers=dict(boos=21, **losing_sample))        # BOOS 9x10 - 21x5 = -15
+        boos = result['windows']['boos']
+        self.assertEqual((result['status'], boos['in_sample_p10'], boos['in_sample_windows']), ('pass', -125.0, 4), result['plain'])
+        self.assertAlmostEqual(boos['pl'], -15.0)
+        self.assertEqual((result['oosFormula'], result['boosGate']), ('boos-1/3', 'lenient_p10'))
+        worse = self.judge(trades=dict(boos=30), losers=dict(boos=30, **losing_sample))         # -150 < -125
+        self.assertEqual(worse['status'], 'fail')
+        self.assertIn('in-sample 10th-percentile window', worse['plain'])
+        # A profitable in-sample history makes any BOOS loss worse than its p10.
+        self.assertEqual(self.judge(losers=dict(boos=21))['status'], 'fail')
+
+    def test_an_export_stamped_under_half_o_is_judged_as_it_was(self):
+        # Nothing is re-judged: a pre-lock export keeps its 1/2 O windows and its PF/DD BOOS bar.
+        self.record = w.compute(13, '2026-10-02', 'boos-1/2')
+        self.assertEqual(self.record['weeks']['boos'], 7)
+        result = self.judge()
+        self.assertEqual((result['status'], result['oosFormula'], result['boosGate']), ('pass', 'boos-1/2', 'pf_dd'), result['plain'])
+        self.assertEqual(result['windows_dates']['boos'], dict(first_day='2026-04-18', last_day='2026-06-05'))
+        self.assertEqual(self.judge(losers=dict(boos=21, sample=30))['status'], 'fail')     # a BOOS loss fails the PF bar
+
+    def test_ambiguous_dates_keep_the_pre_lock_gate_unless_the_stamp_says_otherwise(self):
+        # O = 4 weeks (also optimization_months=1): 1/2 O and 1/3 O both round up to a 2-week BOOS, so the dates alone
+        # cannot tell the formulas apart. Without a stamp the export keeps the pre-lock gate; a stamp decides.
+        self.record = w.compute(4, '2026-10-02')
+        self.assertEqual(w.split(4), w.split(4, 'boos-1/2'))
+        back = self.record['export']['BackOOSDate']
+        self.assertEqual(w.formula_of(self.record['tester'], back)['oosFormula'], 'boos-1/2')
+        self.assertEqual(w.formula_of(self.record['tester'], back, 'boos-1/3'), self.record)
+        original, retest = self.build(losers=dict(boos=21))                                      # a BOOS loss
+        legacy = w.judge_retest(original, retest, tester=self.record['tester'])
+        self.assertEqual((legacy['oosFormula'], legacy['boosGate'], legacy['status']), ('boos-1/2', 'pf_dd', 'fail'))
+        stamped = w.judge_retest(original, retest, tester=self.record['tester'], oos_formula='boos-1/3')
+        self.assertEqual((stamped['oosFormula'], stamped['boosGate']), ('boos-1/3', 'lenient_p10'))
+        self.assertEqual(stamped['windows']['boos']['in_sample_windows'], 1)
+
     def test_measurement_definitions_are_stated(self):
         result = self.judge()
         self.assertEqual(result['definitions'], w.DEFINITIONS)
@@ -574,12 +719,13 @@ class BatchFormulaTests(unittest.TestCase):
         native = plan['native_batch']
         record = native['oos_windows']
         self.assertEqual((record['export_friday'], record['o_weeks'], record['optimization_end']), ('2026-10-02', 52, '2026-07-03'))
-        self.assertEqual((native['back_oos_date'], native['forward_start']), ('2025.01.04', '2026.02.28'))
+        self.assertEqual((native['back_oos_date'], native['forward_start']), ('2025.03.01', '2026.02.28'))
+        self.assertEqual(record['oosFormula'], 'boos-1/3')
         for job in plan['jobs']:
             self.assertEqual((job['conditions']['from_date'], job['conditions']['to_date'], job['conditions']['forward_mode']),
                              ('2025.07.05', '2026.07.04', 4))
         self.assertIn('EvidenceEnd=2026.07.04\r\n', export)
-        self.assertIn('BackOOSDate=2025.01.04\r\n', export)
+        self.assertIn('BackOOSDate=2025.03.01\r\n', export)
         self.assertIn('IncludeBackOOS=1\r\n', export)
         self.assertEqual(manifest['export_evidence_end'], '2026.07.04')
         self.assertEqual(native['evidence_end']['target'], '2026-07-04')
@@ -647,7 +793,25 @@ class BatchFormulaTests(unittest.TestCase):
         successor = resume_batch(self.controller, 'formula-batch', 'formula-batch-r1', now=SATURDAY + timedelta(days=7))
         plan, _, export = self.plan(successor)
         self.assertEqual(plan['native_batch']['oos_windows']['export_friday'], '2026-10-02')
+        self.assertEqual(plan['native_batch']['oos_windows']['oosFormula'], 'boos-1/3')
         self.assertIn('EvidenceEnd=2026.07.04\r\n', export)
+
+    def test_successor_of_a_half_o_batch_keeps_its_formula(self):
+        from activate_research_campaign import verify_export_policy
+        from studio_batch import batch_status, resume_batch
+        self.observe()
+        spec = json.loads(json.dumps(self.spec))
+        spec['oos_windows']['oosFormula'] = 'boos-1/2'
+        self.prepare('formula-batch', spec)
+        self.controller.cancel('formula-batch')
+        successor = resume_batch(self.controller, 'formula-batch', 'formula-batch-r1', now=SATURDAY + timedelta(days=7))
+        plan, manifest, export = self.plan(successor)
+        record = plan['native_batch']['oos_windows']
+        self.assertEqual((record['oosFormula'], record['weeks']['boos'], plan['native_batch']['back_oos_date']),
+                         ('boos-1/2', 26, '2025.01.04'))
+        self.assertIn('BackOOSDate=2025.01.04\r\n', export)
+        verify_export_policy(Path(successor['package']), plan, manifest)      # activation accepts its own 1/2 O windows
+        self.assertEqual(batch_status(self.controller, 'formula-batch-r1')['oos_windows']['oosFormula'], 'boos-1/2')
 
 
 class SeedFormulaTests(unittest.TestCase):

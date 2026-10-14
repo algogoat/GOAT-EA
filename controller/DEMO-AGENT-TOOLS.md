@@ -1111,14 +1111,14 @@ such SETs on purpose, on the installed newer build, as new evidence. It uses the
 Banker batches, demo Algo research and seed hunts derive every date from O and the
 export Friday (`goat-oos-windows-v1`; full rule, rounding and worked example:
 [docs/operations/OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md)).
-O = SAMPLE + FWD in whole weeks (a month = 13/3 weeks). BOOS = 1/2 O before SAMPLE,
+O = SAMPLE + FWD in whole weeks (a month = 13/3 weeks). BOOS = 1/3 O before SAMPLE,
 SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
 `auto`, the latest closed Friday). BOOS, FWD and FOOS round up; SAMPLE takes the rest.
 
 - Plan: add `"oos_windows":{"optimization_months":12}` (or `optimization_weeks`,
   optional `export_friday`) to a batch or seed plan and leave the dates out; dates
   you do give must equal the formula. O = 12 months at export Friday 2026-10-02 gives
-  `BackOOSDate=2025.01.04`, `FromDate=2025.07.05`, `ForwardDate=2026.02.28`,
+  `BackOOSDate=2025.03.01`, `FromDate=2025.07.05`, `ForwardDate=2026.02.28`,
   `ToDate=2026.07.04`, `EvidenceEnd=2026.07.04`; FOOS is 2026-07-04 to 2026-10-02.
   Seed jobs read SAMPLE only (`ToDate` = `ForwardDate`, `ForwardMode=0`).
 - FOOS is held out with existing EA inputs: the batch export stops at the optimization
@@ -1130,7 +1130,9 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   (`not_applicable` for non-formula exports). Catch-up weeks after the export\r
   Friday count toward FOOS.
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
-  shorten a window or change O to reach it), then PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD.
+  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD;
+  BOOS is lenient (fails only on that DD bar or a loss worse than the in-sample p10 of rolling
+  SAMPLE windows of its own length). Records stamp `oosFormula`; 1/2 O batches keep theirs.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
   `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:
   the EA's export trim partly selects on BOOS, so show "BOOS: partial" and lead with FOOS.

@@ -2,3 +2,7 @@
 # CPython 3.13, Windows x64 only. Direct URLs and hashes prevent resolution drift.
 MetaTrader5 @ https://files.pythonhosted.org/packages/00/cb/edc9bd6efff880c65b63ceffaa971f0cf70b8e4ec781eafd4fdee6c3c26c/metatrader5-5.0.6180-cp313-cp313-win_amd64.whl --hash=sha256:41a89f9c87ab690f7c404ca0dd1bbdfd41630fff3860d4145ed464547860fb97
 numpy @ https://files.pythonhosted.org/packages/cb/3b/d58c12eafcb298d4e6d0d40216866ab15f59e55d148a5658bb3132311fcf/numpy-2.2.6-cp313-cp313-win_amd64.whl --hash=sha256:b0544343a702fa80c95ad5d3d608ea3599dd54d4632df855e4c8d24eb6ecfa1c
+# House manifest ed25519 verify (GOAT-EA#228 round 5 F2; mirror in suiteRuntimeDependencies.cjs). cryptography is abi3 (cp311+).
+cryptography @ https://files.pythonhosted.org/packages/9a/4f/adfc442765721292fff86d314ce385d3249d22db42295c0dd057727b60f3/cryptography-50.0.2-cp311-abi3-win_amd64.whl --hash=sha256:7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c
+cffi @ https://files.pythonhosted.org/packages/60/a6/8b149b2c3f2e11aaa1618ef64500b45f50f22c57a977a4dff1aff1f91042/cffi-2.1.1-cp313-cp313-win_amd64.whl --hash=sha256:1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d
+pycparser @ https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

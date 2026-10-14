@@ -398,6 +398,10 @@ def batch_status(controller, batch_id):
         # The EA journal says why the native queue ended in Error (read-only quote).
         no_edge = [item.get('index') for item in (job.get('completion') or {}).get('research_outcomes') or [] if isinstance(item, dict)]
         extra['native_error_evidence'] = for_job(controller, job, observed, no_edge)
+    # The EA's own refusal of this attempt, quoted from the terminal's Experts log (never the tester journal,
+    # which says only "OnTesterInit failed"): null when none, the log is missing or unreadable.
+    from studio_ea_refusal import for_controller
+    extra['ea_refusal'] = for_controller(controller, batch_id) if 'launch_intent' in job else None
     evidence = oos = None
     plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
     if plan_path.is_file():

@@ -773,14 +773,17 @@ class Cli(Base):
             self.assertEqual(self.main('deploy-load', '--plan', str(self.plan()), '--timing-profile', 'vps-cold-36')[0], 0)
             self.assertEqual(self.main('deploy-stop', '--attempt-id', 'stop-1', '--timing-profile', 'vps-cold-36')[0], 0)
             code, reply = self.main('close-terminal', '--attempt-id', 'close-1', '--timing-profile', 'vps-cold-36')
-            self.assertEqual(seen['load'], dict(timing=VPS, timing_source='builtin')); self.assertEqual(seen['stop'], seen['load'])
+            # deploy-load also gets the broker-fit flags from the base (#228), None without them.
+            self.assertEqual(seen['load'], dict(manifest_sha256=None, server_time_utc=None, timing=VPS, timing_source='builtin'))
+            self.assertEqual(seen['stop'], dict(timing=VPS, timing_source='builtin'))
             self.assertEqual(seen['close'], dict(build_id=None, wait_seconds=180, timing_record=timing.load_profile('vps-cold-36')[1]))
             self.assertEqual(code, 0)
             # Without the flag every call is exactly today's.
             self.main('deploy-load', '--plan', str(self.plan()))
             self.main('deploy-stop', '--attempt-id', 'stop-2')
             code, reply = self.main('close-terminal', '--attempt-id', 'close-2')
-        self.assertEqual((seen['load'], seen['stop'], seen['close']), ({}, {}, dict(build_id=None, timing_record=timing.default_record())))
+        self.assertEqual((seen['load'], seen['stop'], seen['close']), (dict(manifest_sha256=None, server_time_utc=None), {},
+                                                                       dict(build_id=None, timing_record=timing.default_record())))
         self.assertEqual(seen['close']['timing_record']['sha256'], SHAS['desktop'])
 
 

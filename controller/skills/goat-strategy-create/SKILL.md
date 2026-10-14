@@ -43,7 +43,11 @@ currency. The starter's 500 is only a placeholder (half of a 1,000 demo). Never 
 the placeholder into the spec yourself: write the amount the user said, even if it
 is 500. Until a change sets `Risk`, every descendant of a starter carries a "Risk not
 chosen" marker, and any of them that sizes or closes by Risk is refused with
-`RISK_NOT_CHOSEN`.
+`RISK_NOT_CHOSEN`. Settings the EA itself refuses at start (for example Smart Rescue
+without `RiskperSeq`, `Risk` under 10 with risk sizing or a hard close, a zero pip gap,
+LP and TP both off) are refused with `EA_INIT_REFUSED`, which names the rule, the
+first failing combination and the EA's own message: change the setting or narrow the
+search range, then build again.
 
 **5. Catalog check before building.** Read `Desktop 'strategy.matrix'` and compare
 the answers with each template's description, support notes and SET (enabled

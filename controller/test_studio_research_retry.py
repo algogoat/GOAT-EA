@@ -71,6 +71,20 @@ class ResearchRetryTests(unittest.TestCase):
                 path.unlink()
         predecessor(self.c.store.db,self.c.state(),self.scope)
 
+    def test_an_archived_predecessor_run_folder_is_named_not_counted_as_work(self):
+        """Review on GOAT-EA#237: ARCHIVED.json is not a work artifact; the refusal says what happened."""
+        import studio_run_folder_archive as runs
+        from studio_report_paths import report_paths
+        package=self.c.root/'packages/original'
+        common=report_paths(read_json(package/'studio-plan.json'),read_json(package/'manifest.json'))['common_run']
+        write_json(common/runs.STUB,dict(schema=runs.STUB_SCHEMA,run_id=common.name,state='archived',
+            archive_dir=str(self.c.root/'archive'/common.name),manifest_sha256='0'*64,file_count=0,bytes=0))
+        runs._STUBS.clear()
+        with self.assertRaisesRegex(ValueError,'moved by evidence-archive --run-folders'):
+            predecessor(self.c.store.db,self.c.state(),self.scope)
+        (common/runs.STUB).unlink();runs._STUBS.clear()
+        predecessor(self.c.store.db,self.c.state(),self.scope)
+
     def test_direct_start_without_inherited_driver_and_extended_deadline_refuse(self):
         with operation('prepare-batch'):prepare_batch(self.c,'replacement',self.plan)
         with operation('start'),self.assertRaisesRegex(ValueError,'live bounded'):before_native_dispatch(self.c,self.c.job('replacement'))

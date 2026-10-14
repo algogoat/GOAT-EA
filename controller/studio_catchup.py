@@ -66,6 +66,8 @@ from studio_bridge import write_json
 from studio_evidence import RunContext, read_export, read_json_bounded, scan, server_date, server_msc, weekdays
 from studio_catchup_verdict import CAVEAT, model_tag, validate_rules
 import studio_build_migration as migration
+import studio_run_folder_archive as run_archive
+from studio_evidence_archive import ArchiveUnreachable
 import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
 import studio_installed_build as installed_build
@@ -791,6 +793,8 @@ class CatchupRunner(SeedRunner):
             entry = self.migration['originals'][migration.key(path)] if self.migration else None
             try:
                 export = read_export(path, runs=runs)
+            except ArchiveUnreachable:
+                raise                 # an archived export that cannot be read refuses the plan, never one unit fewer
             except (OSError, ValueError, UnicodeError) as exc:
                 rows.append(dict(set_path=path, status='ineligible', reasons=['Unreadable export: ' + str(exc)]))
                 continue
@@ -939,11 +943,13 @@ class CatchupRunner(SeedRunner):
                                 % (build_id, installed))
         elif not run_ea:
             problems.append('The EA build that made this export is unknown (no run manifest or capture), so a re-test could not be compared')
-        values = read_values(Path(export['set_path']).read_bytes())
+        values = read_values(run_archive.read_bytes(export['set_path']))
         if values.get('Mode_Operation') != OP_STANDARD:
             problems.append('Exported SET is not in standard operation mode (Mode_Operation=9)')
         try:
-            validate_raw(Path(export['set_path']).read_bytes(), self.c.schema, self.c.policy)
+            validate_raw(run_archive.read_bytes(export['set_path']), self.c.schema, self.c.policy)
+        except ArchiveUnreachable:
+            raise                     # the archive dropped between the two reads: refuse, never a misleading problem
         except ValueError as exc:
             problems.append('SET does not match the installed EA inputs: ' + str(exc))
         return problems, bridge
@@ -966,7 +972,7 @@ class CatchupRunner(SeedRunner):
         # The closed day must be fully covered: MT5 ToDate is exclusive, so ToDate = evidence end + 1 day.
         if evidence_end.effective_end(tester['ToDate']) != target['iso']:
             raise ValueError('Catch-up ToDate %s would not cover the evidence end %s' % (tester['ToDate'], target['iso']))
-        raw = Path(export['set_path']).read_bytes()
+        raw = run_archive.read_bytes(export['set_path'])
         if hashlib.sha256(raw).hexdigest() != export['set_sha256']:
             raise ValueError('Export SET changed while planning: ' + export['set_path'])
         text = raw.decode('utf-16')

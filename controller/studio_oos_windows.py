@@ -13,9 +13,10 @@ Optimization end = export Friday - FOOS. Every date comes from O and the export 
 BOOS = 1/3 O was locked by Vince on 2026-10-11 (goatai#2350, 6106946678; Claude-Mac 6106961195,
 6162820519: P-beta38-oos-formula-boos-third). Until then BOOS was 1/2 O. Every record stamps
 ``oosFormula`` (``OOS_FORMULA`` = 'boos-1/3'); a record stamped before the key existed is
-'boos-1/2' (``LEGACY_OOS_FORMULA``). Recorded windows are always re-derived and judged with
-their OWN formula, never the current one, so nothing prepared, run or judged before the lock
-is refused or re-judged; a ``batch-resume`` successor keeps its source's formula.
+'boos-1/2' (``LEGACY_OOS_FORMULA``). Recorded windows are always re-derived and measured on
+their OWN formula, never the current one, so nothing prepared or run before the lock is
+refused; a ``batch-resume`` successor keeps its source's formula. The BOOS bar is the locked
+lenient rule for EVERY BOOS, 1/2 O windows included (Claude-Mac, goatai#2350 6165051704).
 
 Units and rounding (deterministic, no month-length rounding)
 ------------------------------------------------------------
@@ -57,12 +58,12 @@ the desktop sift (goatai#2274) uses the same constants, result names and ``DEFIN
 the shared fixture ``controller/fixtures/oos-holdout-gate-cases.json`` pins both to identical
 results. Each OOS window needs at least 30 trades (positions opened in the window). Fewer is
 ``not_eligible_yet``; a window is never shortened to reach the floor. With the floor met
-FOOS passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). BOOS ('boos-1/3') is the
-lenient "not broken" gate (Vince 6106946678, Claude-Mac 6106961195): it fails only on DD >
-1.5 x in-sample DD, or on a BOOS net result worse than ``in_sample_p10``, the 10th percentile
-of the net results of every rolling SAMPLE window of BOOS's own length (1-week step). It is
-never a profit requirement and never a ranking input. A 'boos-1/2' record keeps the PF/DD
-BOOS bar it was judged with. Results:
+FOOS passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). BOOS is the lenient "not
+broken" gate (Vince 6106946678, Claude-Mac 6106961195), for 'boos-1/2' windows too (Claude-Mac
+6165051704): it fails only on DD > 1.5 x in-sample DD, or on a BOOS net result worse than
+``in_sample_p10``, the 10th percentile of the net results of every rolling SAMPLE window of
+BOOS's own length (1-week step). It is never a profit requirement and never a ranking input.
+Results:
 ``pass | fail | not_eligible_yet | no_data | not_measured``; a missing measurement is
 ``no_data`` or ``not_measured``, never a pass.
 
@@ -98,11 +99,12 @@ BOOS_CONTAMINATED_BY = 'ea_trim'
 # every oos_rule says so, and the desktop and house manifest show it as "BOOS: partial". The planned EA fix
 # (export SR/ARF/trim on SAMPLE+FWD only) is Claude-Mac's to admit; until then house portfolios rest mainly on FOOS. = 'ea_trim'
 FRACTIONS = dict(boos='1/3', sample='2/3', fwd='1/3', foos='1/4')
-# The formula version every record stamps (``oosFormula``). Only the BOOS share and the BOOS bar differ.
+# The formula version every record stamps (``oosFormula``). Only the BOOS share differs.
 OOS_FORMULA = 'boos-1/3'                # Vince, locked 2026-10-11: BOOS = FWD = 1/3 O, lenient BOOS gate
-LEGACY_OOS_FORMULA = 'boos-1/2'         # records stamped before oosFormula existed: BOOS 1/2 O, PF/DD BOOS bar
+LEGACY_OOS_FORMULA = 'boos-1/2'         # records stamped before oosFormula existed: BOOS 1/2 O windows
 BOOS_SHARE = {OOS_FORMULA: Fraction(1, 3), LEGACY_OOS_FORMULA: Fraction(1, 2)}
-BOOS_GATE = {OOS_FORMULA: 'lenient_p10', LEGACY_OOS_FORMULA: 'pf_dd'}
+# The window length follows the stamp; the bar is the locked lenient rule for EVERY BOOS (Claude-Mac 6165051704).
+BOOS_GATE = {OOS_FORMULA: 'lenient_p10', LEGACY_OOS_FORMULA: 'lenient_p10'}
 BOOS_LOSS_QUANTILE = Fraction(1, 10)    # lenient BOOS: no worse than the in-sample 10th-percentile window
 FIXTURE = 'fixtures/oos-holdout-gate-cases.json'
 # The measurement definitions the desktop must match exactly (this controller is the source of truth).
@@ -123,8 +125,8 @@ DEFINITIONS = dict(
     foos='FOOS runs from the Saturday after the optimization end through the export Friday; a catch-up re-test that '
          'runs later extends it to the re-test end (catch-up weeks count toward the 30-trade floor). FOOS is never '
          'judged before its full 1/4 O has been tested.',
-    in_sample_p10='Lenient BOOS bar (oosFormula boos-1/3): the 10th percentile (linear interpolation, as numpy "linear" '
-                  'and Excel PERCENTILE.INC) of the pl of every window of BOOS\'s own length inside SAMPLE, the first '
+    in_sample_p10='Lenient BOOS bar (every BOOS, 1/3 O and 1/2 O windows alike): the 10th percentile (linear '
+                  'interpolation, as numpy "linear" and Excel PERCENTILE.INC) of the pl of every window of BOOS\'s own length inside SAMPLE, the first '
                   'starting on SAMPLE\'s first day and each next one week later. BOOS fails only on DD above the dd_bar '
                   'or a loss (pl < 0) below it, worse than that in-sample window; BOOS needs no profit and never ranks.')
 
@@ -328,8 +330,8 @@ def formula_of(tester, back_oos_date, formula=None):
     the stamped ``oosFormula`` when the caller has it, is the only one tried. Without it both
     are tried and the record says which matched in ``oosFormula``. Where both give the same
     dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up to the same BOOS), the pre-lock
-    'boos-1/2' wins, so an export that carries only its dates is never moved onto the newer
-    BOOS gate (nothing is re-judged).
+    'boos-1/2' is stamped: the windows are identical and both are judged with the same
+    lenient BOOS gate, so only the stamp differs.
     """
     days = tester_from_mt5(tester or {})
     try:
@@ -515,7 +517,7 @@ def _lenient_loss_test(window):
 def judge_window(name, window, in_sample_dd, *, lenient=False):
     """One OOS window's gate: ``pass | fail | not_eligible_yet | no_data | not_measured`` with reasons.
 
-    ``lenient`` (BOOS under 'boos-1/3'): the PF bar is replaced by the loss leg, so the window
+    ``lenient`` (every BOOS): the PF bar is replaced by the loss leg, so the window
     fails only on DD above 1.5x in-sample or a loss worse than ``window['in_sample_p10']``.
 
     ``window``: ``trades`` (positions opened in the window), ``pf`` (or ``pf_note`` 'no losing
@@ -597,7 +599,7 @@ def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY
     pass only when both windows pass. A set with fewer than 30 FOOS trades is not eligible yet.
     FWD and SAMPLE never change this verdict except through the in-sample drawdown (and, for the
     lenient BOOS gate, the in-sample p10), and neither BOOS nor FOOS is ever a ranking input.
-    ``oos_formula`` picks the BOOS gate: lenient for 'boos-1/3', the PF/DD bar for 'boos-1/2'.
+    ``oos_formula`` names the window formula (stamped); the BOOS gate is lenient for both.
     """
     gate = BOOS_GATE[_formula(oos_formula)]
     parts = dict(boos=judge_window('BOOS', boos, in_sample_dd, lenient=gate == 'lenient_p10'),

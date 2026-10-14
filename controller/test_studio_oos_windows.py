@@ -236,10 +236,13 @@ class EvaluationTests(unittest.TestCase):
         result = w.judge(window(), window(pf=0.999), in_sample_dd=100.0)
         self.assertEqual(result['status'], 'fail')
         self.assertIn('profit factor below 1.0 (1.00)', result['plain'])
-        # The PF bar is FOOS's; BOOS needs it only under the pre-lock 1/2 O formula.
-        legacy = w.judge(window(pf=0.999), window(), in_sample_dd=100.0, oos_formula='boos-1/2')
-        self.assertEqual((legacy['status'], legacy['boosGate']), ('fail', 'pf_dd'))
-        self.assertIn('profit factor below 1.0 (1.00)', legacy['plain'])
+        # The PF bar is FOOS's only: every BOOS is lenient, 1/2 O windows too (Claude-Mac 6165051704).
+        for formula in ('boos-1/3', 'boos-1/2'):
+            with self.subTest(formula=formula):
+                result = w.judge(window(pf=0.999, pl=-0.5, in_sample_p10=-10.0), window(), in_sample_dd=100.0,
+                                 oos_formula=formula)
+                self.assertEqual((result['status'], result['boosGate'], result['oosFormula']), ('pass', 'lenient_p10', formula))
+                self.assertNotIn('profit factor', result['plain'])
         self.assertEqual(w.judge(window(pf=None, pf_note='no losing deals'), window(), in_sample_dd=100.0)['status'], 'pass')
 
     def test_lenient_boos_is_never_a_profit_requirement(self):
@@ -583,29 +586,40 @@ class RetestTests(RetestFixture, unittest.TestCase):
         # A profitable in-sample history makes any BOOS loss worse than its p10.
         self.assertEqual(self.judge(losers=dict(boos=21))['status'], 'fail')
 
-    def test_an_export_stamped_under_half_o_is_judged_as_it_was(self):
-        # Nothing is re-judged: a pre-lock export keeps its 1/2 O windows and its PF/DD BOOS bar.
-        self.record = w.compute(13, '2026-10-02', 'boos-1/2')
-        self.assertEqual(self.record['weeks']['boos'], 7)
-        result = self.judge()
-        self.assertEqual((result['status'], result['oosFormula'], result['boosGate']), ('pass', 'boos-1/2', 'pf_dd'), result['plain'])
-        self.assertEqual(result['windows_dates']['boos'], dict(first_day='2026-04-18', last_day='2026-06-05'))
-        self.assertEqual(self.judge(losers=dict(boos=21, sample=30))['status'], 'fail')     # a BOOS loss fails the PF bar
+    def test_a_half_o_export_keeps_its_windows_and_gets_the_lenient_bar(self):
+        # Claude-Mac 6165051704: the window length follows the stamp, the bar is the lenient rule for EVERY BOOS.
+        # O = 26 weeks under 1/2 O: BOOS 13 weeks (2025-11-15..2026-02-13), SAMPLE 17 weeks -> 5 rolling 13-week
+        # SAMPLE windows. Every SAMPLE trade loses 5 (30 trades on its first 30 weekdays): -150, -125, -100, -75, -50,
+        # so p10 = -150 + 0.4 x 25 = -140.
+        self.record = w.compute(26, '2026-10-02', 'boos-1/2')
+        self.assertEqual((self.record['weeks']['boos'], self.record['export']['BackOOSDate']), (13, '2025.11.15'))
+        losing_sample = dict(sample=30)
+        result = self.judge(losers=dict(boos=21, **losing_sample))                    # BOOS 9x10 - 21x5 = -15, PF 0.86
+        boos = result['windows']['boos']
+        self.assertEqual((result['status'], result['oosFormula'], result['boosGate']), ('pass', 'boos-1/2', 'lenient_p10'),
+                         result['plain'])
+        self.assertEqual(result['windows_dates']['boos'], dict(first_day='2025-11-15', last_day='2026-02-13'))
+        self.assertEqual((boos['gate'], boos['in_sample_p10'], boos['in_sample_windows']), ('lenient_p10', -140.0, 5))
+        self.assertLess(boos['pf'], 1.0)                                                 # PF < 1 no longer fails BOOS
+        worse = self.judge(losers=dict(boos=30, **losing_sample))                      # -150 < -140
+        self.assertEqual((worse['status'], worse['oosFormula']), ('fail', 'boos-1/2'))
+        self.assertIn('in-sample 10th-percentile window', worse['plain'])
 
-    def test_ambiguous_dates_keep_the_pre_lock_gate_unless_the_stamp_says_otherwise(self):
+    def test_ambiguous_dates_only_change_the_stamp(self):
         # O = 4 weeks (also optimization_months=1): 1/2 O and 1/3 O both round up to a 2-week BOOS, so the dates alone
-        # cannot tell the formulas apart. Without a stamp the export keeps the pre-lock gate; a stamp decides.
+        # cannot tell the formulas apart. Without a stamp 'boos-1/2' is stamped; the windows and the gate are the same.
         self.record = w.compute(4, '2026-10-02')
         self.assertEqual(w.split(4), w.split(4, 'boos-1/2'))
         back = self.record['export']['BackOOSDate']
         self.assertEqual(w.formula_of(self.record['tester'], back)['oosFormula'], 'boos-1/2')
         self.assertEqual(w.formula_of(self.record['tester'], back, 'boos-1/3'), self.record)
         original, retest = self.build(losers=dict(boos=21))                                      # a BOOS loss
-        legacy = w.judge_retest(original, retest, tester=self.record['tester'])
-        self.assertEqual((legacy['oosFormula'], legacy['boosGate'], legacy['status']), ('boos-1/2', 'pf_dd', 'fail'))
+        inferred = w.judge_retest(original, retest, tester=self.record['tester'])
         stamped = w.judge_retest(original, retest, tester=self.record['tester'], oos_formula='boos-1/3')
-        self.assertEqual((stamped['oosFormula'], stamped['boosGate']), ('boos-1/3', 'lenient_p10'))
-        self.assertEqual(stamped['windows']['boos']['in_sample_windows'], 1)
+        self.assertEqual((inferred['oosFormula'], stamped['oosFormula']), ('boos-1/2', 'boos-1/3'))
+        for result in (inferred, stamped):
+            self.assertEqual((result['boosGate'], result['status'], result['windows']['boos']['in_sample_windows']),
+                             ('lenient_p10', 'fail', 1))
 
     def test_measurement_definitions_are_stated(self):
         result = self.judge()

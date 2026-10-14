@@ -430,7 +430,7 @@ R1. **The manifest sha is mandatory at deploy** (the stopgap until the signature
      numbers as ECMAScript Number-to-String of the double a JSON reader holds, so `1e21` is `1e+21` and an integer like
      `2**53 + 1` reads as `2**53`; non-finite numbers and lone surrogates are refused). Vectors:
      `controller/contracts/house-manifest/house-manifest-jcs-cases.json`, vendored byte-identical from goatai
-     `docs/fixtures/` (sha256 `c78e21fd...3a33`, `-text`); every case, refused case and manifest case passes.
+     `docs/fixtures/` (sha256 `3123da50...270f`, `-text`); every case, refused case and manifest case passes.
    - broker-fit reports it (`manifestSha256`, additive). `deploy-load --manifest-sha256 <hex>`: a plan with a
      `brokerFit` block refuses `MANIFEST_UNVERIFIED` before anything is written (no journal) unless the flag is given
      and equals it. Every deploy path goes through `validate_plan`, the CLI included; a plan without `brokerFit` is

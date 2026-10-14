@@ -318,6 +318,39 @@ class MoveTests(RunFolderFixture):
         self.assertEqual(caught.exception.code, 'ARCHIVE_VERIFY_FAILED')
         self.assertEqual((run2 / last2).read_bytes(), original2[last2])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows share modes')
+    def test_the_verified_copy_is_held_until_its_source_unlink_returns(self):
+        """Review r2 item 4 on #237: the re-hash handle (CreateFileW, FILE_SHARE_READ only) stays open across the source
+        unlink, so between the last check and the unlink the archive copy can be neither deleted, renamed nor written."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        real, attempts = runs._remove_source, []
+
+        def try_to_break_the_copy_then_remove(source, folder, path):
+            copy = self.archive_root / run.name / Path(path).relative_to(run)
+            for name, action in (('delete', lambda: os.remove(copy)),
+                                 ('rename', lambda: os.rename(copy, str(copy) + '.moved')),
+                                 ('write', lambda: open(copy, 'r+b').close())):
+                try:
+                    action()
+                    attempts.append((name, 'allowed'))
+                except PermissionError:
+                    attempts.append((name, 'denied'))
+            return real(source, folder, path)
+        with patch('studio_run_folder_archive._remove_source', side_effect=try_to_break_the_copy_then_remove):
+            self.complete()
+        self.assertEqual(len(attempts), 3 * len(original))
+        self.assertEqual({outcome for _, outcome in attempts}, {'denied'})
+        self.assertEqual({k: v for k, v in self.tree(self.archive_root / run.name).items() if k != runs.MANIFEST}, original)
+        # Once the handle is closed the file is an ordinary file again.
+        probe = self.archive_root / run.name / 'log.GOAT'
+        with runs.open_held(probe) as held:
+            with self.assertRaises(PermissionError):
+                os.remove(probe)
+            self.assertEqual(held.read(), original['log.GOAT'])
+        open(probe, 'r+b').close()
+
     def test_a_read_only_source_refuses_by_name_and_resumes(self):
         run = self.make_run(1, 'banker-done-1')
         self.apply()

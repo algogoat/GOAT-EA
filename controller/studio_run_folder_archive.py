@@ -68,6 +68,7 @@ Directory readers (``run_dir``) open files of an archive folder through ``checke
 consume (size, and sha256 once per process) against the manifest, so a same-size corruption refuses instead of being
 read.
 """
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -1107,10 +1108,52 @@ def _identity(stat):
     return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
 
 
-def _copy_still_verified(stub, run, folder, entry, identity, removed):
-    """Right before ONE source goes: its archive copy is still the very file verified earlier (same size, mtime, volume
-    and file ID) and still hashes to the manifest. Refuses ARCHIVE_VERIFY_FAILED, keeping that source and every later one
-    (``removed`` sources went before it, each after its own copy was re-verified)."""
+# CreateFileW flags of the held re-hash handle (review r2 item 4 on #237).
+GENERIC_READ = 0x80000000
+FILE_SHARE_READ = 0x00000001          # the ONLY share flag: no FILE_SHARE_WRITE (0x2), no FILE_SHARE_DELETE (0x4)
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x00000080
+FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+
+
+def open_held(path):
+    """A read handle on ``path`` that, while open, keeps the file from being deleted, renamed or opened for writing.
+
+    Windows: ``CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL |
+    FILE_FLAG_SEQUENTIAL_SCAN, NULL)``. With FILE_SHARE_READ as the only share flag, any DeleteFile / MoveFile (they need
+    FILE_SHARE_DELETE) or write open (needs FILE_SHARE_WRITE) of the file fails with ERROR_SHARING_VIOLATION until this
+    handle closes; Python's own ``open()`` (``_wopen``) would share read and write. Off Windows (no share modes) a plain
+    read handle."""
+    if os.name != 'nt':
+        return open(_io(path), 'rb')
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                                     wintypes.DWORD, wintypes.HANDLE)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.CreateFileW(str(_io(path)), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        error = ctypes.get_last_error()
+        raise OSError(error, ctypes.FormatError(error).strip(), str(path))
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, 'O_BINARY', 0))
+    except OSError:
+        kernel32.CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, 'rb')
+
+
+@contextmanager
+def _held_copy(stub, run, folder, entry, identity, removed):
+    """Right before ONE source goes: open its archive copy with ``open_held`` (write/delete/rename denied), check it is
+    still the very file verified earlier (same size, mtime, volume and file ID), re-hash it THROUGH that handle against
+    the manifest, and keep the handle open until the caller has removed the source (review r2 item 4: no window between
+    the last check and the unlink). Refuses ARCHIVE_VERIFY_FAILED, keeping that source and every later one (``removed``
+    sources went before it, each after its own copy was re-verified and held)."""
     target = folder / entry['relative_path']
 
     def fail(why):
@@ -1118,22 +1161,26 @@ def _copy_still_verified(stub, run, folder, entry, identity, removed):
                        'each after its own copy was re-verified). Reconnect or repair the archive, then re-run --complete, or '
                        'bring the run back with --restore.' % (target, why, removed), 'ARCHIVE_VERIFY_FAILED',
                        run_id=run.name, relative_path=entry['relative_path'], archive_dir=str(folder), removed=removed)
-    try:
-        stat = _io(target).stat()
-    except OSError as error:
-        raise fail('cannot be read now (%s)' % str(error)[:200]) from None
     if same_file(Path(run) / entry['relative_path'], target):
         raise fail('is the same file as its source')
-    if _identity(stat) != identity:
-        raise fail('changed since it was verified (size, mtime or file ID)')
     try:
-        digest = archive.file_sha256(target)
+        handle = open_held(target)
     except OSError as error:
-        raise fail('cannot be read now (%s)' % str(error)[:200]) from None
-    if digest != entry['sha256']:
-        raise fail('no longer hashes to its manifest')
-    if _identity(_io(target).stat()) != identity:
-        raise fail('changed while it was re-verified')
+        raise fail('cannot be opened now (%s)' % str(error)[:200]) from None
+    with handle:
+        try:
+            if _identity(_io(target).stat()) != identity:
+                raise fail('changed since it was verified (size, mtime or file ID)')
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(archive.CHUNK), b''):
+                digest.update(chunk)
+            if digest.hexdigest() != entry['sha256']:
+                raise fail('no longer hashes to its manifest')
+            if _identity(_io(target).stat()) != identity:
+                raise fail('changed while it was re-verified')
+        except OSError as error:
+            raise fail('cannot be read now (%s)' % str(error)[:200]) from None
+        yield handle
 
 
 def complete_run(source, run, *, now, completed_by='demo_agent'):
@@ -1200,20 +1247,21 @@ def complete_run(source, run, *, now, completed_by='demo_agent'):
         _write_record(stub_path(run), dict(stub, state='removing', removing_at=_utc(now), removing_by=completed_by))
     removed = 0
     for path, size, mtime, key in sources:
-        # One file at a time: its archive copy is re-verified right before its source goes, never "verify all, delete all".
-        _copy_still_verified(stub, run, folder, entries[key], identities[key], removed)
-        current = _io(path).stat()
-        if (current.st_size, current.st_mtime_ns) != (size, mtime):
-            raise Refusal('The source %s changed while the archive was being completed; it is kept (%d removed before it). '
-                          'Inspect it, then re-run --complete.' % (path, removed), 'ARCHIVE_SOURCE_CHANGED', run_id=run.name,
-                          removed=removed)
-        try:
-            _remove_source(source, run, path)
-        except OSError as error:
-            raise Refusal('The source %s cannot be removed (%s: read-only, locked or in use); it is kept, %d removed before it. '
-                          'ARCHIVED.json stays "removing" and readers use the verified archive. Clear the read-only flag or '
-                          'close what holds it, then re-run --complete.' % (path, str(error)[:200], removed),
-                          'ARCHIVE_SOURCE_LOCKED', run_id=run.name, path=str(path), removed=removed) from None
+        # One file at a time: its archive copy is re-verified right before its source goes, never "verify all, delete all",
+        # and the verified copy stays held (delete/rename/write denied) until the source unlink has returned.
+        with _held_copy(stub, run, folder, entries[key], identities[key], removed):
+            current = _io(path).stat()
+            if (current.st_size, current.st_mtime_ns) != (size, mtime):
+                raise Refusal('The source %s changed while the archive was being completed; it is kept (%d removed before it). '
+                              'Inspect it, then re-run --complete.' % (path, removed), 'ARCHIVE_SOURCE_CHANGED',
+                              run_id=run.name, removed=removed)
+            try:
+                _remove_source(source, run, path)
+            except OSError as error:
+                raise Refusal('The source %s cannot be removed (%s: read-only, locked or in use); it is kept, %d removed before '
+                              'it. ARCHIVED.json stays "removing" and readers use the verified archive. Clear the read-only '
+                              'flag or close what holds it, then re-run --complete.' % (path, str(error)[:200], removed),
+                              'ARCHIVE_SOURCE_LOCKED', run_id=run.name, path=str(path), removed=removed) from None
         removed += 1
     _remove_empty_folders(run)
     stub = load_stub(run)

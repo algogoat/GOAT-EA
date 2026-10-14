@@ -729,18 +729,21 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
     return journal
 
 
-def _unwind_summary(journal):
+def _unwind_summary(journal, launched=True):
     rollback = journal.get('rollback') or {}
     if rollback.get('profile_restored'):
         profile = 'restored the previous chart profile ' + str(rollback.get('previous_profile'))
     else:
         profile = 'left the chart profile selection unchanged (' + str(rollback.get('reason', 'no previous profile')) + ')'
-    summary = 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    if launched:
+        summary = 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    else:
+        summary = 'Nothing was closed or launched: GOAT set this deployment aside and ' + profile + '.'
     return summary + (' ' + rollback['select_profile_instruction'] if rollback.get('select_profile_instruction') else '')
 
 
 def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic,
-         manifest_sha256=None, server_time_utc=None):
+         manifest_sha256=None, server_time_utc=None, utc_clock=time.time):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     plan = read_json(plan_path)
@@ -796,8 +799,15 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         record.update(phase=name, **extra); record['updated_utc'] = datetime.now(timezone.utc).isoformat()
         write_json(where['journal'], record)
 
-    def fail_and_unwind(code, message, failed=()):
-        """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path."""
+    def fail_and_unwind(code, message, failed=(), refusal=None):
+        """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path. A never-launched
+        journal ('staged', 'closed') is set aside the same way without touching MT5. With `refusal` (a broker-fit
+        FIT_STALE) the error keeps its code and fields."""
+        launched = record['phase'] not in ('validated', 'staged', 'closed')
+
+        def refuse(text):
+            return Refusal(text, refusal.code, **refusal.fields) if refusal is not None else ValueError(text)
+
         record.update(failure=dict(code=code, message=message[:400], utc=utc_now()), rows_failed=list(failed))
         write_json(where['journal'], record)
         try:
@@ -806,10 +816,20 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         except (OSError, ValueError) as exc:
             record['auto_unwind'] = dict(status='failed', error=str(exc)[:300], utc=utc_now())
             write_json(where['journal'], record)
-            raise ValueError(message + ' GOAT could not unload it: ' + str(exc) + ' Then run deploy-stop.') from exc
+            raise refuse(message + ' GOAT could not ' + ('unload' if launched else 'set aside') + ' it: ' + str(exc)
+                         + ' Then run deploy-stop.') from exc
         record['auto_unwind'] = dict(status='unwound', utc=utc_now())
         write_json(where['journal'], record)
-        raise ValueError(message + ' ' + _unwind_summary(record) + ' Run deploy-load again to retry.')
+        raise refuse(message + ' ' + _unwind_summary(record, launched)
+                     + (' Run deploy-load again to retry.' if launched else ' Check again to re-plan.'))
+
+    # A broker-fit plan is re-checked on the live broker in 'validated', before anything is staged. A call that resumes
+    # the journal past it re-checks too (GOAT-EA#229 review 6160002799: a plan reviewed at 50k, resumed at 'staged' at
+    # 20k, reached 'ready' at scale 0.5): check_live before MT5 is closed; with MT5 already closed, the plan TTL before
+    # the launch and check_live once the relaunched dashboard answers. A stale fit unwinds (fail_and_unwind): a
+    # never-launched journal sets itself aside like deploy-stop, so the next check re-plans instead of meeting
+    # "Another demo deployment is live" (review 6160692543).
+    fit_unchecked = BROKER_FIT_KEY in plan and record['phase'] != 'validated'
 
     if record['phase'] == 'validated':
         try:
@@ -847,6 +867,15 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if running is not None:
             # Demo proof and inert state come first; closing never touches positions.
             broker_proof(controller, session, mt5=mt5)
+            if fit_unchecked:
+                import studio_broker_fit as broker_fit
+                try:
+                    broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
+                except Refusal as stale:
+                    if stale.code != broker_fit.FIT_STALE:
+                        raise
+                    fail_and_unwind(stale.code, str(stale), refusal=stale)
+                fit_unchecked = False
             attempt_id = 'deploy-' + deployment_id[:24] + suffix
             closed = (close or close_terminal)(controller, attempt_id, build_id=plan['buildId'])
             if closed.get('phase') not in ('stopped', 'already_stopped'):
@@ -856,6 +885,15 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         phase('closed', previous_terminal=previous, previous_profile=capture_previous_profile(controller, where))
 
     if record['phase'] == 'closed':
+        if fit_unchecked:
+            # MT5 is closed, so the broker cannot be read: an expired plan refuses and sets this deployment aside (a
+            # fresh attempt re-plans). Inside the TTL MT5 is relaunched with Algo Trading off (Enabled=0) and check_live
+            # runs once the dashboard answers, before any child is linked; a stale fit then unwinds.
+            import studio_broker_fit as broker_fit
+            try:
+                broker_fit.check_plan_age(plan, utc_now=max(utc_clock(), server_time_utc or 0), outcome='')
+            except Refusal as expired:
+                fail_and_unwind(broker_fit.PLAN_EXPIRED, str(expired), refusal=expired)
         with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
             check_started = utc_now()
             present = process.inspect()
@@ -903,6 +941,18 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             fail_and_unwind('not_inert_after_start', 'Algo Trading is already on (or the account has positions or orders) after MT5 started; '
                             'GOAT does not load a portfolio then.')
         phase('dashboard_ready')
+
+    if fit_unchecked and record['phase'] in ('dashboard_ready', 'attached', 'policy_applied'):
+        # The post-launch re-check of a resumed broker-fit deploy (above): stale -> the inert-only unwind (Algo Trading
+        # stays off, positions are never closed). Any other read failure leaves the journal here for the next resume.
+        import studio_broker_fit as broker_fit
+        try:
+            broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
+        except Refusal as stale:
+            if stale.code != broker_fit.FIT_STALE:
+                raise
+            fail_and_unwind(stale.code, str(stale), refusal=stale)
+        fit_unchecked = False
 
     if record['phase'] == 'dashboard_ready':
         # A beta.24 journal launched by the template deploy resumes here too; its profile holds no children,

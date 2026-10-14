@@ -30,7 +30,12 @@ class StudioStore:
             # the controller to open (and create) an empty database in its place.
             from studio_db_maintenance import recover_interrupted
             recover_interrupted(path)
-        self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        if str(path) != ':memory:' and Path(path).is_file():
+            # An existing store is opened mode=rw: it can never be (re)created here, even if the file vanishes
+            # between this check and the open. Only a first bootstrap creates the file.
+            self.db = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=rw', uri=True, timeout=10, isolation_level=None)
+        else:
+            self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         # A new store gives freed pages back (studio_db_maintenance): only possible before the first table.
         from studio_db_maintenance import enable_incremental

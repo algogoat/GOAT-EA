@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -431,14 +432,54 @@ class CompactTests(Thresholds, unittest.TestCase):
                     seen.append('opened')
                 except Refusal as error:
                     seen.append(error.code)
-                except sqlite3.OperationalError:
-                    seen.append('no such file')
                 self.assertFalse(Path(target).exists(), 'nothing created in the gap')
             return real_place(source, target)
         with patch.object(maint, '_place', side_effect=gap):
             self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_000)['applied'])
-        self.assertEqual(seen, ['DB_COMPACT_IN_PROGRESS', 'no such file'])
+        self.assertEqual(seen, ['DB_COMPACT_IN_PROGRESS', 'DB_COMPACT_IN_PROGRESS'])
         self.assertEqual(pragma(self.path, 'auto_vacuum'), 2)
+
+    def test_rw_post_no_writer_reaches_the_placed_copy_while_the_swap_runs(self):
+        """Claude-Mac on #239 @ aa9b97d (rw_post): owner alive, paused after _place; a connect_existing writer
+        (historical pointers, build or installation upgrade) must refuse, never commit into the placed copy."""
+        real_place = maint._place
+        seen = []
+
+        def paused(source, target):
+            real_place(source, target)
+            self.assertTrue(Path(target).exists())                                  # the placed copy is there
+            for opener in (lambda: StudioStore(target), lambda: maint.connect_existing(target)):
+                try:
+                    db = opener()
+                    seen.append('opened')
+                    (db.db if hasattr(db, 'db') else db).close()
+                except Refusal as error:
+                    seen.append(error.code)
+        for mismatch in (False, True):
+            seen.clear()
+            real = maint.differences
+            calls = []
+
+            def differs(a, b):
+                calls.append(1)
+                return real(a, b) + (['tables'] if mismatch and len(calls) == 3 else [])   # the placed-copy verify
+            with patch.object(maint, '_place', side_effect=paused), patch.object(maint, 'differences', side_effect=differs):
+                if mismatch:
+                    with self.assertRaises(Refusal) as caught:
+                        maint.compact(self.path, apply=True, now=1_760_000_000 + mismatch)
+                    self.assertEqual(caught.exception.code, 'DB_COMPACT_MISMATCH')
+                else:
+                    self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_000)['applied'])
+            self.assertEqual(seen, ['DB_COMPACT_IN_PROGRESS', 'DB_COMPACT_IN_PROGRESS'], mismatch)
+            for rejected in self.root.glob('studio.sqlite.compact-rejected-*'):
+                with maint._closing(maint._ro(rejected)) as db:                       # nothing extra was written there
+                    self.assertEqual(db.execute('SELECT count(*) FROM studio_receipts').fetchone()[0], 4)
+            if not mismatch:
+                self.assertTrue(maint.retire_pre_vacuum(self.root)['removed'])
+                for path in self.root.glob('studio.sqlite.pre-vacuum-*'):
+                    path.unlink()
+                self.path.unlink()
+                legacy_db(self.path)                                                    # a fresh legacy store again
 
     def test_an_unprovable_restore_keeps_the_swap_record_for_the_next_open(self):
         before = self.content()
@@ -450,32 +491,95 @@ class CompactTests(Thresholds, unittest.TestCase):
         self.assertFalse(self.path.exists())
         sidecar = Path(caught.exception.fields['sidecar'])
         self.assertEqual(json.loads(sidecar.read_text(encoding='utf-8'))['phase'], 'swapping')
-        StudioStore(self.path).close()                                                  # the next open puts it back
+        with self.assertRaises(Refusal) as missing:
+            maint.connect_existing(self.path.with_name('other.sqlite'))
+        self.assertEqual(missing.exception.code, 'CONTROLLER_DB_MISSING')
+        maint.connect_existing(self.path).close()                                       # an opener puts it back first
         after = self.content()
         self.assertEqual({key: after['tables'][key] for key in before['tables']}, before['tables'])
         self.assertFalse(sidecar.exists())
 
-    def test_a_live_foreign_owner_refuses_recovery_and_a_dead_one_allows_it(self):
+    def swap_record(self, owner, *, age=0, aside_original=True):
         stamp = maint._stamp(1_760_000_000)
         aside = self.root / ('studio.sqlite' + maint.ASIDE + stamp)
-        os.rename(self.path, aside)
+        with maint._closing(maint._ro(self.path)) as db:
+            identity = {key: value for key, value in maint.snapshot(db, integrity=False).items() if key in maint.IDENTITY}
+        if aside_original:
+            os.rename(self.path, aside)
         sidecar = aside.with_name(aside.name + '.json')
-        record = dict(schema=maint.SIDECAR_SCHEMA, phase='swapping', original_bytes=os.path.getsize(aside),
-                      owner=dict(pid=os.getppid(), nonce='x'))
+        record = dict(schema=maint.SIDECAR_SCHEMA, phase='swapping', original_bytes=os.path.getsize(aside if aside_original else self.path),
+                      identity=identity, owner=owner)
         sidecar.write_text(json.dumps(record), encoding='utf-8')
-        with self.assertRaises(Refusal) as caught:
-            StudioStore(self.path)
-        self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
-        self.assertFalse(self.path.exists(), 'never creates while the owner swaps')
-        with patch.object(maint, '_pid_alive', return_value=False):
-            self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
+        if age:
+            stale = time.time() - age
+            os.utime(sidecar, (stale, stale))
+        return sidecar
+
+    def test_takeover_needs_a_stale_heartbeat_and_a_dead_or_reused_owner(self):
+        import time as clock
+        live_pid = os.getppid()
+        alive, started = maint._process_identity(live_pid)
+        self.assertTrue(alive)
+        sidecar = self.swap_record(dict(pid=live_pid, nonce='x', started=started), age=maint.SWAP_STALE_SECONDS + 60)
+        for identity, refuses in (((True, started), True),            # hung owner past the bound: never raced
+                                  ((False, None), False)):           # stale heartbeat and dead owner: recovered
+            with patch.object(maint, '_process_identity', return_value=identity):
+                if refuses:
+                    with self.assertRaises(Refusal) as caught:
+                        StudioStore(self.path)
+                    self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
+                    self.assertIn('minutes', str(caught.exception))
+                    self.assertFalse(self.path.exists(), 'never creates while the owner may still swap')
+                else:
+                    self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
         self.assertEqual(pragma(self.path, 'user_version'), 7)
         self.assertFalse(sidecar.exists())
+        # PID reused: alive, but another process (different creation time), and a stale heartbeat.
+        sidecar = self.swap_record(dict(pid=live_pid, nonce='x', started=(started or 0) + 1),
+                                   age=maint.SWAP_STALE_SECONDS + 60)
+        with patch.object(maint, '_process_identity', return_value=(True, (started or 0) + 2)):
+            self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
+        # A fresh heartbeat refuses even when the owner looks dead.
+        sidecar = self.swap_record(dict(pid=live_pid, nonce='x', started=started))
+        with patch.object(maint, '_process_identity', return_value=(False, None)), self.assertRaises(Refusal) as caught:
+            maint.connect_existing(self.path)
+        self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
+        old = clock.time() - maint.SWAP_STALE_SECONDS - 60
+        os.utime(sidecar, (old, old))
+        with patch.object(maint, '_process_identity', return_value=(False, None)):
+            maint.connect_existing(self.path).close()
+        self.assertFalse(sidecar.exists())
+
+    def test_a_record_left_after_the_original_was_back_is_retired_even_if_the_store_changed(self):
+        sidecar = self.swap_record(dict(pid=os.getppid(), nonce='x'), age=maint.SWAP_STALE_SECONDS + 60,
+                                   aside_original=False)
+        with maint._closing(sqlite3.connect(self.path, isolation_level=None)) as db:   # later legitimate writes
+            db.execute("INSERT INTO studio_receipts VALUES('b','later','h','x')")
+        with patch.object(maint, '_process_identity', return_value=(False, None)):
+            self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
+        self.assertFalse(sidecar.exists())
+
+    def test_the_owner_stops_cleanly_when_another_process_recovered_its_swap(self):
+        real_place = maint._place
+
+        def raced(source, target):
+            real_place(source, target)
+            sidecar = next(self.root.glob('studio.sqlite.pre-vacuum-*.json'))         # another process takes over
+            aside = sidecar.with_name(sidecar.name[:-len('.json')])
+            maint._put_back(Path(target), aside, 'elsewhere')
+            sidecar.unlink()
+        before = self.content()
+        with patch.object(maint, '_place', side_effect=raced), self.assertRaises(Refusal) as caught:
+            maint.compact(self.path, apply=True, now=1_760_000_000)
+        self.assertEqual(caught.exception.code, 'DB_COMPACT_RECOVERED_ELSEWHERE')
+        self.assertEqual(maint.differences(before, self.content()), [])
+        self.assertEqual(pragma(self.path, 'auto_vacuum'), 0)
 
     def test_connect_existing_never_creates(self):
         missing = self.root / 'none.sqlite'
-        with self.assertRaises(sqlite3.OperationalError):
+        with self.assertRaises(Refusal) as caught:
             maint.connect_existing(missing)
+        self.assertEqual(caught.exception.code, 'CONTROLLER_DB_MISSING')
         self.assertFalse(missing.exists())
 
     def test_refuses_a_missing_database(self):

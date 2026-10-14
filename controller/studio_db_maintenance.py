@@ -162,18 +162,17 @@ def _gate_held(gate):
 
     The OS drops the owner's handle when the owner exits however it exits, so a successful acquire proves the
     owner is gone, whatever its PID now names (Claude-Mac on #239 @ a0c8f25: a reused PID that cannot be
-    inspected kept a swap "live" forever). A missing gate folder cannot be held.
+    inspected kept a swap "live" forever). A missing gate folder cannot be held. Fails closed (Claude-Mac on
+    #239 @ a59e67d): any OSError from the acquire counts as held, never as "owner gone".
     """
-    from studio_native_gate import GateBusy, exclusive_gate
+    from studio_native_gate import exclusive_gate
     if not isinstance(gate, str) or not gate or not Path(gate).is_dir():
         return False
     try:
         with exclusive_gate(gate):
             return False
-    except GateBusy:
+    except OSError:              # GateBusy (a PermissionError) or anything else the acquire raised
         return True
-    except OSError:
-        return False
 
 
 def _heartbeat_age(sidecar, now=None):
@@ -279,41 +278,75 @@ def recover_interrupted(path):
     A swap that may still have a working owner refuses (DB_COMPACT_IN_PROGRESS) rather than racing it; so
     does an original that cannot be proven back (DB_COMPACT_RECOVERY_REQUIRED). Either way the caller must
     not open the database. An I/O error raises too.
+
+    The recovery itself runs inside the swap gate (Claude-Mac on #239 @ a59e67d): one non-blocking exclusive
+    acquire of ``<db>.swap-gate``, held until the records are retired, so a live owner (which holds it for
+    its whole swap) and a second recoverer both make this refuse DB_COMPACT_IN_PROGRESS; only one opener can
+    ever move files. Any error taking the gate refuses the same way (fail closed). The records are re-read
+    under the gate, and a record whose heartbeat is still fresh is not taken over.
     """
     path = Path(path)
     recovered = []
-    for sidecar, record in list(_swapping_records(path)):
-        aside = sidecar.with_name(sidecar.name[:-len('.json')])
-        in_progress, hung = _swap_state(sidecar, record)
-        if in_progress:
-            raise _in_progress_refusal(sidecar, record, hung)
-        moved = aside.exists()
-        rejected = _put_back(path, aside, aside.name[len(path.name + ASIDE):])
-        proven = path.is_file() and not aside.exists()
-        if proven and moved:
-            identity = record.get('identity')
-            if isinstance(identity, dict):
-                try:
-                    with _closing(_ro(path)) as back:
-                        proven = not differences(identity, snapshot(back, integrity=False))
-                except sqlite3.Error:
-                    proven = False
-            else:
-                size = record.get('original_bytes')
-                proven = type(size) is not int or path.stat().st_size == size
-        if not proven:
-            raise Refusal('An interrupted studio.sqlite compaction left the original at ' + str(aside) + ' and it could '
-                          'not be proven back at ' + str(path) + '; nothing was opened. Inspect ' + str(sidecar) + '.',
-                          'DB_COMPACT_RECOVERY_REQUIRED', sidecar=str(sidecar))
-        copy = Path(str(record.get('copy') or ''))
-        if copy.name.startswith(path.name + '.compact-') and copy.name.endswith('.tmp') and copy.parent == path.parent:
-            copy.unlink(missing_ok=True)
-        sidecar.unlink(missing_ok=True)
-        recovered.append(dict(original_restored=str(path), from_aside=str(aside) if moved else None,
-                              rejected_copy=str(rejected) if rejected else None))
+    pending = list(_swapping_records(path))
+    if not pending:
+        return recovered
+    for sidecar, record in pending:
+        owner = record.get('owner') if isinstance(record.get('owner'), dict) else {}
+        if owner.get('pid') == os.getpid() and owner.get('nonce') in _ACTIVE_SWAPS:
+            raise _in_progress_refusal(sidecar, record)          # this process's own swap is running
+    from studio_native_gate import exclusive_gate
+    try:
+        swap_gate(path).mkdir(exist_ok=True)
+        hold = exclusive_gate(swap_gate(path))
+        hold.__enter__()
+    except OSError:
+        sidecar, record = pending[0]
+        age = _heartbeat_age(sidecar)
+        raise _in_progress_refusal(sidecar, record, hung=age is not None and age > SWAP_STALE_SECONDS) from None
+    try:
+        for sidecar, record in list(_swapping_records(path)):    # re-read: another recoverer may have finished
+            recovered.extend(_recover_one(path, sidecar, record))
+    finally:
+        hold.__exit__(None, None, None)
     if recovered:
         _log(path.parent, dict(operation='recover_interrupted_compaction', recovered=recovered))
     return recovered
+
+
+def _recover_one(path, sidecar, record):
+    """Put one interrupted swap back. Called only while this process holds the swap gate."""
+    owner = record.get('owner') if isinstance(record.get('owner'), dict) else {}
+    own_stopped = owner.get('pid') == os.getpid() and owner.get('nonce') and owner.get('nonce') not in _ACTIVE_SWAPS
+    age = _heartbeat_age(sidecar)
+    if age is None:
+        return []                                                  # retired meanwhile
+    if not own_stopped and age <= SWAP_STALE_SECONDS:
+        raise _in_progress_refusal(sidecar, record)                # gate free, but the heartbeat is still fresh
+    aside = sidecar.with_name(sidecar.name[:-len('.json')])
+    moved = aside.exists()
+    rejected = _put_back(path, aside, aside.name[len(path.name + ASIDE):])
+    proven = path.is_file() and not aside.exists()
+    if proven and moved:
+        identity = record.get('identity')
+        if isinstance(identity, dict):
+            try:
+                with _closing(_ro(path)) as back:
+                    proven = not differences(identity, snapshot(back, integrity=False))
+            except sqlite3.Error:
+                proven = False
+        else:
+            size = record.get('original_bytes')
+            proven = type(size) is not int or path.stat().st_size == size
+    if not proven:
+        raise Refusal('An interrupted studio.sqlite compaction left the original at ' + str(aside) + ' and it could '
+                      'not be proven back at ' + str(path) + '; nothing was opened. Inspect ' + str(sidecar) + '.',
+                      'DB_COMPACT_RECOVERY_REQUIRED', sidecar=str(sidecar))
+    copy = Path(str(record.get('copy') or ''))
+    if copy.name.startswith(path.name + '.compact-') and copy.name.endswith('.tmp') and copy.parent == path.parent:
+        copy.unlink(missing_ok=True)
+    sidecar.unlink(missing_ok=True)
+    return [dict(original_restored=str(path), from_aside=str(aside) if moved else None,
+                 rejected_copy=str(rejected) if rejected else None)]
 
 
 def connect_existing(path, *, timeout=1):
@@ -754,12 +787,12 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
                       owner=dict(pid=os.getpid(), nonce=nonce, started=_process_identity(os.getpid())[1]))
         # The swap gate is held for the whole swap: the OS releases it when this process exits, however it exits,
         # so another opener can tell a gone owner from a live one without trusting a PID.
-        from studio_native_gate import GateBusy, exclusive_gate
-        swap_gate(path).mkdir(exist_ok=True)
-        swap_hold = exclusive_gate(swap_gate(path))
+        from studio_native_gate import exclusive_gate
         try:
+            swap_gate(path).mkdir(exist_ok=True)
+            swap_hold = exclusive_gate(swap_gate(path))
             swap_hold.__enter__()
-        except GateBusy:
+        except OSError:                # held by a recoverer or another compaction, or not takeable: fail closed
             temporary.unlink(missing_ok=True)
             raise Refusal('Another compaction holds the swap lock of this database; nothing was changed.',
                           'DB_COMPACT_IN_PROGRESS') from None

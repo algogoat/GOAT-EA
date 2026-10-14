@@ -551,6 +551,49 @@ class CompactTests(Thresholds, unittest.TestCase):
         self.assertFalse(sidecar.exists())
         self.assertEqual(pragma(self.path, 'user_version'), 7)
 
+    def test_the_gate_check_fails_closed_on_any_os_error(self):
+        """Claude-Mac on #239 @ a59e67d: an OSError taking the gate means "held", never "owner gone"."""
+        sidecar = self.swap_record(dict(pid=os.getppid(), nonce='x'), age=maint.SWAP_STALE_SECONDS + 60)
+        aside = sidecar.with_name(sidecar.name[:-len('.json')])
+        with patch('studio_native_gate.exclusive_gate', side_effect=OSError('odd volume error')):
+            self.assertTrue(maint._gate_held(str(maint.swap_gate(self.path))))
+            with self.assertRaises(Refusal) as caught:
+                maint.recover_interrupted(self.path)
+        self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
+        self.assertTrue(sidecar.exists() and aside.exists() and not self.path.exists(), 'no takeover')
+        self.assertEqual(len(maint.recover_interrupted(self.path)), 1)                 # the gate works again
+
+    def test_two_concurrent_recoveries_exactly_one_proceeds(self):
+        import threading
+        sidecar = self.swap_record(dict(pid=os.getppid(), nonce='x'), age=maint.SWAP_STALE_SECONDS + 60)
+        inside, release, outcome = threading.Event(), threading.Event(), {}
+        real_put_back = maint._put_back
+
+        def slow_put_back(*args):
+            inside.set()
+            release.wait(10)
+            return real_put_back(*args)
+
+        def first():
+            try:
+                outcome['first'] = len(maint.recover_interrupted(self.path))
+            except Exception as error:      # surfaced through the assertion below
+                outcome['first'] = error
+        with patch.object(maint, '_put_back', side_effect=slow_put_back):
+            worker = threading.Thread(target=first)
+            worker.start()
+            self.assertTrue(inside.wait(10), 'the first recovery reached the restore under the gate')
+            try:
+                maint.recover_interrupted(self.path)
+                outcome['second'] = 'proceeded'
+            except Refusal as error:
+                outcome['second'] = error.code
+            release.set()
+            worker.join(10)
+        self.assertEqual(outcome, dict(first=1, second='DB_COMPACT_IN_PROGRESS'))
+        self.assertFalse(sidecar.exists())
+        self.assertEqual(pragma(self.path, 'user_version'), 7)
+
     def test_a_heartbeat_in_the_future_is_not_fresh_forever(self):
         sidecar = self.swap_record(dict(pid=os.getppid(), nonce='x'), future=3600)        # the clock stepped back
         self.assertEqual(len(maint.recover_interrupted(self.path)), 1)

@@ -52,13 +52,15 @@ MUTATIONS = [
      "fresh = compute(record.get('o_weeks'), record.get('export_friday'), record_formula(record))",
      "fresh = compute(record.get('o_weeks'), record.get('export_friday'), OOS_FORMULA)"),
     ('pre-lock exports not recognised', RULE, 'else (LEGACY_OOS_FORMULA, OOS_FORMULA))', 'else (OOS_FORMULA,))'),
-    ('ambiguous dates moved onto the new BOOS gate', RULE, 'else (LEGACY_OOS_FORMULA, OOS_FORMULA))',
+    ('ambiguous dates stamped with the new formula', RULE, 'else (LEGACY_OOS_FORMULA, OOS_FORMULA))',
      'else (OOS_FORMULA, LEGACY_OOS_FORMULA))'),
     ('stamped formula ignored by the catch-up judge', RULE, 'record = formula_of(tester, back, oos_formula)',
      'record = formula_of(tester, back)'),
     ('successor drops its stamped formula', RULE, ", oosFormula=record_formula(record))", ")"),
     # The lenient BOOS gate (Claude-Mac 6106961195): no profit bar, loss vs rolling in-sample windows of BOOS's length.
     ('BOOS needs a profit again', RULE, "lenient=gate == 'lenient_p10'", 'lenient=False'),
+    # Every BOOS is lenient, 1/2 O windows too (Claude-Mac 6165051704).
+    ('1/2 O BOOS back on the PF bar', RULE, "LEGACY_OOS_FORMULA: 'lenient_p10'}", "LEGACY_OOS_FORMULA: 'pf_dd'}"),
     ('BOOS loss leg dropped', RULE, '        if loss_ok is False:\n', '        if False:\n'),
     ('p10 windows are not BOOS long', RULE, "days = 7 * record['weeks']['boos']", "days = 7 * record['weeks']['sample']"),
     ('p10 windows step two weeks', RULE, '            first += timedelta(days=7)\n', '            first += timedelta(days=14)\n'),

@@ -72,10 +72,10 @@ The table above is pinned in `test_studio_oos_windows.py`; so are O = 3, 6 and 2
 a FOOS that spans the 2024-02-29 leap day. A test also pins BOOS = FWD for every O from 2 to 520
 weeks, so the fraction cannot drift back to 1/2.
 
-### Stamped windows keep their formula (nothing is re-judged)
+### Stamped windows keep their formula
 
 Before the 2026-10-11 lock reached the controller, BOOS was 1/2 O (3 months: 7 weeks; 6: 13;
-12: 26; 24: 52). Plans, prepared batches, runs and judged catch-ups from that time keep it:
+12: 26; 24: 52). Plans, prepared batches, runs and catch-ups from that time keep those windows:
 
 - Every record (`native_batch.oos_windows`, the seed manifest's `oos_windows`, `batch-status`)
   stamps `oosFormula`: `boos-1/3` from now on. A record without the key was stamped under 1/2 O
@@ -87,12 +87,14 @@ Before the 2026-10-11 lock reached the controller, BOOS was 1/2 O (3 months: 7 w
   successor plan), so a 1/2 O batch resumes with its own 1/2 O dates. New plans leave
   `oosFormula` out.
 - Catch-up judging recognises an export's formula from its dates, because the export and its
-  run folder carry only dates. It judges a 1/2 O export with the BOOS bar it had (PF >= 1.0 and
-  DD). Where both formulas give the same dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up
-  to the same BOOS), the pre-lock 1/2 O wins unless the caller passes the stamped formula
-  (`judge_retest(..., oos_formula=...)`), so no export moves onto the newer gate by inference.
-  `oos_rule` stamps `oosFormula` and `boosGate`. The SAMPLE, FWD and FOOS dates are identical under both
-  formulas; only BOOS differs.
+  run folder carry only dates. A 1/2 O export is measured on its own 1/2 O windows, but its BOOS
+  is judged with the same **lenient** bar as every BOOS (Claude-Mac, goatai#2350 6165051704: the
+  window length follows the stamp, the bar is the locked rule). Where both formulas give the same
+  dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up to the same BOOS), `boos-1/2` is stamped
+  unless the caller passes the stamped formula (`judge_retest(..., oos_formula=...)`); the windows
+  and the bar are the same either way. `oos_rule` stamps `oosFormula` (which windows) and
+  `boosGate: "lenient_p10"`. The SAMPLE, FWD and FOOS dates are identical under both formulas;
+  only BOOS differs.
 
 ## How FOOS is held out with the EA's existing inputs (no EA change)
 
@@ -161,7 +163,8 @@ For each OOS window (BOOS and FOOS):
    `in_sample_p10` and `in_sample_windows`; every `oos_rule` carries `oosFormula`, `boosGate` and
    `oosUsedForSelection: "gate_only"`. (`controller/studio_oos_windows.py`: `percentile`,
    `_lenient_loss_test`, `judge_window(..., lenient=True)`, and `in_sample_p10` in `judge_retest`.)
-   A 1/2 O export stamped before the lock keeps the PF/DD bar on BOOS.
+   The same lenient bar applies to a 1/2 O export stamped before the lock, on its own 1/2 O
+   windows (Claude-Mac 6165051704).
 
 Window results, in this order:
 

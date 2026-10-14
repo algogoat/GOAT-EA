@@ -21,7 +21,12 @@ import studio_demo_deploy as deploy
 import studio_deploy_timing as timing
 from studio_refusal import Refusal
 
-CASES = json.loads((Path(__file__).resolve().parent / 'contracts' / 'deploy-timing-fixtures' / 'profile-cases.json').read_text(encoding='utf-8'))
+CASES_PATH = Path(__file__).resolve().parent / 'contracts' / 'deploy-timing-fixtures' / 'profile-cases.json'
+CASES = json.loads(CASES_PATH.read_text(encoding='utf-8'))
+# goatai vendors these exact bytes (docs/fixtures/deploy-timing-fixtures/profile-cases.json) and runs every case through
+# the .cjs reference (tools/remote-deploy/test_deploy_timing_profile_parity.cjs pins the same sha256). Changing a case
+# here fails this pin until both copies move together: re-vendor in goatai and update both pins (Claude-Mac 6161742880).
+CASES_SHA256 = '789a2050ed631c6ca7bc611dff9c51fe89b398e2ed9932958dc26bbcd70992d9'
 
 
 def build(case):
@@ -69,6 +74,13 @@ class ReferenceChecks(unittest.TestCase):
                 self.assertEqual('ok' if answer['ok'] else answer['code'], case['expect'])
         self.assertEqual(len([c for c in CASES['validate'] + CASES['resume'] if c['check'] is not None]), 17,
                          'every assertion of the reference checks 1 and 4-10 is a case')
+
+    def test_the_shared_cases_are_the_bytes_goatai_vendors(self):
+        import hashlib
+        raw = CASES_PATH.read_bytes().replace(b'\r\n', b'\n')   # the git blob (LF), whatever the checkout's line endings
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), CASES_SHA256,
+                         'profile-cases.json changed: re-vendor it into goatai docs/fixtures/deploy-timing-fixtures/ and update '
+                         'both pins (here and tools/remote-deploy/test_deploy_timing_profile_parity.cjs)')
 
     def test_10_resume_details_match_the_reference(self):
         profile = timing.PROFILES['vps-cold-36']

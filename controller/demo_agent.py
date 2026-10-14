@@ -1029,6 +1029,7 @@ class DemoAgent:
             if result.get('applied'):
                 self._append('compact_evidence', 'applied', jobs=[job['job_id'] for job in result['jobs']],
                              queue_bytes_before=result['queue_bytes_before'], queue_bytes_after=result['queue_bytes_after'])
+                result['db_reclaim'] = self._reclaim_after_compaction(controller)
             return result
 
     def compact_receipts(self, apply=False):
@@ -1040,6 +1041,45 @@ class DemoAgent:
                 self._append('compact_receipts', 'applied', receipts=[item['request_id'] for item in result['receipts']],
                              receipt_bytes_before=result['receipt_bytes_before'],
                              receipt_bytes_after=result['receipt_bytes_after'])
+                result['db_reclaim'] = self._reclaim_after_compaction(controller)
+            return result
+
+    @staticmethod
+    def _reclaim_after_compaction(controller):
+        """A digest/evidence pass frees the pages of the rows it shrank: an incremental store gives them back now
+        (bounded, studio_db_maintenance); a legacy store reports that studio-db-compact is offered."""
+        from studio_db_maintenance import after_batch
+        return after_batch(controller, max_seconds=30.0)
+
+    def studio_db_compact(self, *, apply=False, confirm=False):
+        """``studio-db-compact``: one-time compaction of a legacy controller database (studio_db_maintenance.compact).
+
+        Preview unless ``apply``. ``apply`` needs ``confirm``, takes the terminal lease and requires an idle terminal
+        (no running batch, seed slot, unreleased fixed task or live driver); it never opens the controller through
+        ``_studio`` (the swap needs every handle closed) and has no MT5 effect. VACUUM INTO a temp file beside the
+        database, verify it (integrity, schema, user_version, rows, rowids, content hashes), swap, and keep the
+        original as ``studio.sqlite.pre-vacuum-<ts>`` until the next successful batch start.
+        """
+        from studio_db_maintenance import compact
+        database = self.root / 'studio.sqlite'
+        if not apply:
+            try:
+                busy = self._close_busy()
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                busy = 'the terminal state cannot be read (' + str(exc)[:200] + ')'
+            return compact(database, busy=busy, apply=False, now=self.clock())
+        if confirm is not True:
+            raise Refusal('studio-db-compact --apply replaces the controller database with a verified compact copy; '
+                          'pass --confirm.', 'DB_COMPACT_CONFIRM_REQUIRED')
+        stack = ExitStack()
+        try:
+            stack.enter_context(self._exclusive())
+        except ValueError as exc:
+            raise Refusal('This terminal is busy (' + str(exc) + '); nothing was changed.', 'DB_COMPACT_LANE_BUSY') from None
+        with stack:
+            result = compact(database, busy=self._close_busy(), apply=True, now=self.clock())
+            self._append('studio_db_compact', 'swapped', original=result['original'], bytes_before=result['bytes_before'],
+                         bytes_after=result['bytes_after'], tables=result['tables'])
             return result
 
     def cancel_pending(self, batch_id):
@@ -3894,6 +3934,12 @@ def main(argv=None):
     receipts = commands.add_parser('compact-receipts',
                                    help='Preview, then --apply: archive legacy full-queue receipts and keep only their queue digest')
     receipts.add_argument('--apply', action='store_true')
+    db_compact = commands.add_parser('studio-db-compact',
+                                     help='Preview, then --apply --confirm while idle: give a legacy controller database\'s '
+                                          'free pages back (verified VACUUM INTO copy + swap; original kept until the next '
+                                          'successful batch start)')
+    db_compact.add_argument('--apply', action='store_true')
+    db_compact.add_argument('--confirm', action='store_true')
     begin =commands.add_parser('start', help='Start any prepared batch under the bounded driver')
     begin.add_argument('--batch-id', required=True)
     begin.add_argument('--max-seconds', type=int)
@@ -4157,6 +4203,7 @@ def main(argv=None):
         elif args.command == 'start': result = agent.start(args.batch_id, args.max_seconds)
         elif args.command == 'compact-evidence': result = agent.compact_evidence(args.apply)
         elif args.command == 'compact-receipts': result = agent.compact_receipts(args.apply)
+        elif args.command == 'studio-db-compact': result = agent.studio_db_compact(apply=args.apply, confirm=args.confirm)
         elif args.command == 'continue': result = agent.continue_batch(args.batch_id, new_batch_id=args.new_batch_id,
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
             include_no_edge=args.include_no_edge, accept_news_change=args.accept_news_change)

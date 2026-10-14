@@ -27,6 +27,9 @@ class StudioStore:
         self.dependency_policy = None if dependency_policy is None else json.loads(packed(dependency_policy))
         self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
+        # A new store gives freed pages back (studio_db_maintenance): only possible before the first table.
+        from studio_db_maintenance import enable_incremental
+        enable_incremental(self.db)
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS studio_native_gate(id INTEGER PRIMARY KEY CHECK(id=1), root TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS studio_authorities(binding TEXT PRIMARY KEY, kind TEXT NOT NULL, provenance TEXT NOT NULL);

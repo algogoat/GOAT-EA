@@ -1026,9 +1026,19 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                              blocker=monitor.get('blocker')),
                 activity=activity, driver=driver, owner_stop=bool(owner_stop),
                 disk=disk(install, root, minimum), queue_error=jobs_error,
+                # Size, free pages and the one-time studio-db-compact offer (studio_db_maintenance); never fails the read.
+                controller_db=_controller_db(root),
                 heldout_locks=_heldout(install, root, activity.get('batch_id'), now),
                 research_launch=research_launch, enabled_mt5_workers=research_launch.get('enabled_mt5_workers'),
                 read_only=True, launch_permitted=False)
+
+
+def _controller_db(root):
+    try:
+        from studio_db_maintenance import facts
+        return facts(Path(root) / 'studio.sqlite')
+    except Exception as error:
+        return dict(error=str(error)[:240])
 
 
 def _research_launch(install, root, now):

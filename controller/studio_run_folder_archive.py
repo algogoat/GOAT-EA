@@ -108,7 +108,9 @@ SUCCESSOR = re.compile(r'-r[1-9][0-9]{0,3}$')
 CODES = frozenset((
     'ARCHIVE_RUN_ACTIVE', 'ARCHIVE_DRIVER_LIVE', 'ARCHIVE_CONTINUABLE', 'ARCHIVE_SUCCESSOR_ACTIVE', 'ARCHIVE_OWNER_UNKNOWN',
     'ARCHIVE_KEPT_RECENT', 'ARCHIVE_ROOT_FLOOR', 'ARCHIVE_ACTIVE_UNVERIFIABLE', 'ARCHIVE_RUN_ARCHIVED',
-    'ARCHIVE_ARCHIVER_BUSY', 'ARCHIVE_STUB_INVALID'))
+    'ARCHIVE_ARCHIVER_BUSY', 'ARCHIVE_STUB_INVALID',
+    # Claude-Mac's review of #237: removable/RAM targets, a source that cannot be removed.
+    'ARCHIVE_ROOT_REMOVABLE', 'ARCHIVE_SOURCE_LOCKED'))
 
 
 def _utc(now):
@@ -815,6 +817,21 @@ def missing_bytes(archive_root, run_id, files):
     return sum(item['bytes'] for item in files if not _io(folder / item['relative_path']).is_file())
 
 
+REMOVABLE_DRIVE_TYPES = {2: 'a removable drive', 6: 'a RAM disk'}
+
+
+def removable_blockers(target):
+    """The archive becomes the only copy of a run folder: a removable drive (GetDriveTypeW 2: an NTFS USB stick can be
+    pulled mid-run) or a RAM disk (6: empty after a reboot) refuses ARCHIVE_ROOT_REMOVABLE (review item 1 on #237)."""
+    import studio_build_migration as migration
+    kind = migration._drive_type(archive.volume_root_of(os.path.abspath(_plain(str(target)))))
+    if kind in REMOVABLE_DRIVE_TYPES:
+        return [_blocker('ARCHIVE_ROOT_REMOVABLE', 'The archive root %s is on %s; run folders are archived only to a fixed '
+                         'local NTFS/ReFS drive.' % (target, REMOVABLE_DRIVE_TYPES[kind]), archive_root=str(target),
+                         drive_type=kind)]
+    return []
+
+
 def target_blockers(source, archive_root, size, floor_bytes, eligible=()):
     """Archive-root checks: absolute, existing, local NTFS/ReFS, another volume than the run folders, writable, and
     ``floor_bytes`` still free after the copy. Returns (blockers, free bytes, target)."""
@@ -828,7 +845,7 @@ def target_blockers(source, archive_root, size, floor_bytes, eligible=()):
     if _norm(target).startswith(_norm(source) + os.sep) or _norm(target) == _norm(source):
         return [_blocker('ARCHIVE_ROOT_INVALID', 'The archive root %s lies inside the run folders\' own folder.' % target,
                          archive_root=str(target))], None, target
-    found = archive.durability_blockers(target)
+    found = archive.durability_blockers(target) or removable_blockers(target)
     if found:
         return found, None, target
     try:
@@ -971,12 +988,48 @@ def _remove_empty_folders(run):
             pass
 
 
+def _identity(stat):
+    """What must not change between a file's verification and the removal that relies on it."""
+    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
+
+
+def _copy_still_verified(stub, run, folder, entry, identity, removed):
+    """Right before ONE source goes: its archive copy is still the very file verified earlier (same size, mtime, volume
+    and file ID) and still hashes to the manifest. Refuses ARCHIVE_VERIFY_FAILED, keeping that source and every later one
+    (``removed`` sources went before it, each after its own copy was re-verified)."""
+    target = folder / entry['relative_path']
+
+    def fail(why):
+        return Refusal('The archive copy %s %s; its source and every source not yet removed are kept (%d removed before it, '
+                       'each after its own copy was re-verified). Reconnect or repair the archive, then re-run --complete, or '
+                       'bring the run back with --restore.' % (target, why, removed), 'ARCHIVE_VERIFY_FAILED',
+                       run_id=run.name, relative_path=entry['relative_path'], archive_dir=str(folder), removed=removed)
+    try:
+        stat = _io(target).stat()
+    except OSError as error:
+        raise fail('cannot be read now (%s)' % str(error)[:200]) from None
+    if _identity(stat) != identity:
+        raise fail('changed since it was verified (size, mtime or file ID)')
+    try:
+        digest = archive.file_sha256(target)
+    except OSError as error:
+        raise fail('cannot be read now (%s)' % str(error)[:200]) from None
+    if digest != entry['sha256']:
+        raise fail('no longer hashes to its manifest')
+    if _identity(_io(target).stat()) != identity:
+        raise fail('changed while it was re-verified')
+
+
 def complete_run(source, run, *, now, completed_by='demo_agent'):
     """Remove an archived run folder's sources (``--complete``), leaving ARCHIVED.json.
 
-    The manifest must hash to the stub's; EVERY archived file is re-read and re-hashed from disk (no cache) and the
-    archive folder must hold exactly the manifest's files; every present source must be listed and hash to it. Any
-    mismatch refuses with nothing removed. Then the stub turns ``removing``, the sources go, and it turns ``removed``.
+    First, with nothing removed: the manifest must hash to the stub's, EVERY archived file is re-read and re-hashed from
+    disk (no cache) and its identity (size, mtime, volume, file ID) recorded, the archive folder must hold exactly the
+    manifest's files, and every present source must be listed and hash to it. Then the stub turns ``removing`` and the
+    sources go ONE AT A TIME: right before each removal its archive copy is checked again (still the same file, still
+    hashing to the manifest), so a copy that vanished or changed mid-run keeps its source (review item 1 on #237). A
+    source that cannot be removed (read-only, locked) refuses ARCHIVE_SOURCE_LOCKED naming it; the stub stays
+    ``removing`` and a re-run resumes. Finally the stub turns ``removed``.
     """
     run = Path(run)
     stub = load_stub(run)
@@ -984,11 +1037,17 @@ def complete_run(source, run, *, now, completed_by='demo_agent'):
         raise Refusal('Run folder %s has no ARCHIVED.json; run --apply first. Nothing was removed.' % run.name,
                       'ARCHIVE_NOT_ARCHIVED', run_id=run.name)
     folder, entries = open_archive(stub, strict=True)
-    for entry in entries.values():
+    identities = {}
+    for key, entry in entries.items():
         try:
-            _verify_file(stub, folder, entry, full=True, cache=False)
+            target = _verify_file(stub, folder, entry, full=True, cache=False)
+            identities[key] = _identity(_io(target).stat())
         except ArchiveUnreachable as error:
             raise Refusal('%s Every source is kept; nothing was removed.' % error, 'ARCHIVE_VERIFY_FAILED', run_id=run.name,
+                          relative_path=entry['relative_path'], archive_dir=str(folder)) from None
+        except OSError as error:
+            raise Refusal('The archive copy %s cannot be read (%s); every source is kept, nothing was removed.'
+                          % (folder / entry['relative_path'], str(error)[:200]), 'ARCHIVE_VERIFY_FAILED', run_id=run.name,
                           relative_path=entry['relative_path'], archive_dir=str(folder)) from None
     held = _archive_walk(folder)
     if set(held) != set(entries):
@@ -1012,7 +1071,7 @@ def complete_run(source, run, *, now, completed_by='demo_agent'):
         if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
             changed.append(item['relative_path'])
         else:
-            sources.append((path, after.st_size, after.st_mtime_ns))
+            sources.append((path, after.st_size, after.st_mtime_ns, _key(item['relative_path'])))
     if changed:
         raise Refusal('%d source file(s) of run folder %s are not the archived ones (first: %s); nothing was removed. Inspect '
                       'them.' % (len(changed), run.name, changed[0]), 'ARCHIVE_SOURCE_CHANGED', run_id=run.name,
@@ -1020,13 +1079,21 @@ def complete_run(source, run, *, now, completed_by='demo_agent'):
     if stub['state'] != 'removed' and (sources or stub['state'] == 'archived'):
         _write_record(stub_path(run), dict(stub, state='removing', removing_at=_utc(now), removing_by=completed_by))
     removed = 0
-    for path, size, mtime in sources:
+    for path, size, mtime, key in sources:
+        # One file at a time: its archive copy is re-verified right before its source goes, never "verify all, delete all".
+        _copy_still_verified(stub, run, folder, entries[key], identities[key], removed)
         current = _io(path).stat()
         if (current.st_size, current.st_mtime_ns) != (size, mtime):
             raise Refusal('The source %s changed while the archive was being completed; it is kept (%d removed before it). '
                           'Inspect it, then re-run --complete.' % (path, removed), 'ARCHIVE_SOURCE_CHANGED', run_id=run.name,
                           removed=removed)
-        _remove_source(source, run, path)
+        try:
+            _remove_source(source, run, path)
+        except OSError as error:
+            raise Refusal('The source %s cannot be removed (%s: read-only, locked or in use); it is kept, %d removed before it. '
+                          'ARCHIVED.json stays "removing" and readers use the verified archive. Clear the read-only flag or '
+                          'close what holds it, then re-run --complete.' % (path, str(error)[:200], removed),
+                          'ARCHIVE_SOURCE_LOCKED', run_id=run.name, path=str(path), removed=removed) from None
         removed += 1
     _remove_empty_folders(run)
     stub = load_stub(run)

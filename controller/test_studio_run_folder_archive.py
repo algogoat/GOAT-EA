@@ -232,8 +232,9 @@ class MoveTests(RunFolderFixture):
             removed.append(path)
             return real(source, folder, path)
         with patch('studio_run_folder_archive._remove_source', side_effect=crash_after_two):
-            with self.assertRaises(OSError):
+            with self.assertRaises(Refusal) as caught:              # a removal that fails is named, never left unexplained
                 self.complete()
+        self.assertEqual((caught.exception.code, caught.exception.fields['removed']), ('ARCHIVE_SOURCE_LOCKED', 2))
         self.assertEqual(json.loads((run / runs.STUB).read_text())['state'], 'removing')
         # Mid-removal, readers already read the archive: the archive is the truth once removal starts.
         cited = run / ('deploy/%s/EURUSD/%s.set' % (alias(10), STEM))
@@ -265,6 +266,68 @@ class MoveTests(RunFolderFixture):
         (run / 'log.GOAT').write_bytes(b'changed')
         self.refused('ARCHIVE_SOURCE_CHANGED', self.complete)
         (run / 'log.GOAT').write_bytes(original['log.GOAT'])
+        self.complete()
+        self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
+
+    def test_probe_an_archive_copy_lost_mid_complete_keeps_its_source(self):
+        """Review item 1 on #237 (toctou237.py): an archive copy removed while --complete hashes the sources used to end
+        "removed" with the file gone from both places. Now each copy is re-verified right before its own source goes."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        last = sorted(original)[-1]
+        victim = self.archive_root / run.name / last
+        real = archive.file_sha256
+
+        def hash_then_pull_the_copy(path):
+            if victim.exists() and os.path.normcase(str(path)).startswith(os.path.normcase(str(run))):
+                victim.unlink()                                  # the archive drive loses one copy mid-run
+            return real(path)
+        with patch('studio_evidence_archive.file_sha256', side_effect=hash_then_pull_the_copy):
+            with self.assertRaises(Refusal) as caught:
+                self.complete()
+        self.assertEqual(caught.exception.code, 'ARCHIVE_VERIFY_FAILED')
+        self.assertEqual(caught.exception.fields['removed'], len(original) - 1)
+        self.assertEqual((run / last).read_bytes(), original[last])           # its source is kept
+        self.assertEqual(json.loads((run / runs.STUB).read_text())['state'], 'removing')
+        # No file is lost from both places: every source that went has its verified copy.
+        for relative, raw in original.items():
+            self.assertTrue((run / relative).is_file() or (self.archive_root / run.name / relative).read_bytes() == raw, relative)
+        # A copy changed in place (same size) right before its removal is refused the same way.
+        run2 = self.make_run(2, 'banker-done-2')
+        original2 = self.tree(run2)
+        self.apply()
+        last2 = sorted(original2)[-1]
+        copy2 = self.archive_root / run2.name / last2
+        state = dict(done=False)
+
+        def hash_then_flip(path):
+            digest = real(path)
+            if not state['done'] and os.path.normcase(str(path)).startswith(os.path.normcase(str(run2 / last2))):
+                raw = bytearray(copy2.read_bytes())
+                raw[0] ^= 0x01
+                copy2.write_bytes(bytes(raw))
+                state['done'] = True
+            return digest
+        with patch('studio_evidence_archive.file_sha256', side_effect=hash_then_flip):
+            with self.assertRaises(Refusal) as caught:
+                self.complete(run_ids=[run2.name])
+        self.assertEqual(caught.exception.code, 'ARCHIVE_VERIFY_FAILED')
+        self.assertEqual((run2 / last2).read_bytes(), original2[last2])
+
+    def test_a_read_only_source_refuses_by_name_and_resumes(self):
+        run = self.make_run(1, 'banker-done-1')
+        self.apply()
+        locked = run / 'log.GOAT'
+        os.chmod(locked, 0o444)
+        self.addCleanup(lambda: os.chmod(locked, 0o666) if locked.exists() else None)
+        with self.assertRaises(Refusal) as caught:
+            self.complete()
+        self.assertEqual(caught.exception.code, 'ARCHIVE_SOURCE_LOCKED')
+        self.assertEqual(caught.exception.fields['path'], str(locked))
+        self.assertTrue(locked.is_file())
+        self.assertEqual(json.loads((run / runs.STUB).read_text())['state'], 'removing')
+        os.chmod(locked, 0o666)
         self.complete()
         self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
 
@@ -398,6 +461,17 @@ class TargetTests(RunFolderFixture):
                     pass
             self.assertEqual(caught.exception.code, 'ARCHIVE_ARCHIVER_BUSY')
             self.refused('ARCHIVE_ARCHIVER_BUSY', self.complete)
+
+    def test_removable_drives_and_ram_disks_refuse(self):
+        """Review item 1 on #237: GetDriveTypeW 2 (removable) and 6 (RAM disk) are never an archive root."""
+        self.make_run(1, 'banker-done-1')
+        import studio_build_migration as migration
+        for kind in (2, 6):
+            with self.subTest(drive_type=kind), patch.object(migration, '_drive_type', return_value=kind):
+                self.assertEqual(self.preview()['blockers'][0]['code'], 'ARCHIVE_ROOT_REMOVABLE')
+                self.refused('ARCHIVE_ROOT_REMOVABLE', self.apply)
+        with patch.object(migration, '_drive_type', return_value=3):          # a fixed drive is fine
+            self.assertEqual(self.preview()['blockers'], [])
 
     def test_the_same_volume_refuses(self):
         self.make_run(1, 'banker-done-1')

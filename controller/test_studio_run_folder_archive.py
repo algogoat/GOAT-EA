@@ -478,6 +478,37 @@ class MoveTests(RunFolderFixture):
         self.assertEqual(self.tree(self.archive_root / run.name), {})       # nothing copied for this run
         self.assertEqual(self.tree(run), original)
 
+    def test_reset_run_sets_a_stale_partial_archive_aside(self):
+        """Review (also in this PR): an apply resumed after the source gained a file met the stale manifest
+        (ARCHIVE_MANIFEST_CONFLICT) and needed a hand edit. --reset-run sets the partial archive aside, deleting nothing."""
+        run = self.make_run(1, 'banker-done-1')
+        real = runs._write_record
+
+        def crash_on_the_stub(path, value):
+            if Path(path).name == runs.STUB:
+                raise OSError(5, 'simulated crash between the manifest and the stub')
+            return real(path, value)
+        with patch('studio_run_folder_archive._write_record', side_effect=crash_on_the_stub):
+            with self.assertRaises(OSError):
+                self.apply()
+        self.assertTrue((self.archive_root / run.name / runs.MANIFEST).is_file())
+        (run / 'late.txt').write_bytes(b'a file the source gained afterwards')
+        with self.assertRaises(Refusal) as caught:
+            self.apply()
+        self.assertEqual(caught.exception.code, 'ARCHIVE_MANIFEST_CONFLICT')
+        stale = self.tree(self.archive_root / run.name)
+        self.refused('ARCHIVE_CONFIRM_REQUIRED', self.agent.run_folder_archive, self.archive_root, reset_run=run.name)
+        result = self.agent.run_folder_archive(self.archive_root, reset_run=run.name, confirm=True)['result']
+        aside = Path(result['moved_to'])
+        self.assertEqual(aside.parent, self.archive_root / runs.RESET_FOLDER)
+        self.assertEqual(self.tree(aside), stale)                            # nothing deleted, only set aside
+        self.assertFalse((self.archive_root / run.name).exists())
+        done = self.apply()
+        self.assertEqual([r['run_id'] for r in done['results']], [run.name])
+        self.assertIn('late.txt', self.tree(self.archive_root / run.name))
+        # A run with a stub is never reset: its archive may be the only complete copy.
+        self.refused('ARCHIVE_RESET_REFUSED', self.agent.run_folder_archive, self.archive_root, reset_run=run.name, confirm=True)
+
     def test_removal_never_leaves_the_run_folder(self):
         run = self.make_run(1, 'banker-done-1')
         outside = self.source / 'keep-me.txt'

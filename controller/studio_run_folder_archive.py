@@ -1335,6 +1335,40 @@ def repoint_run(root, source, run, new_root, *, now, repointed_by='demo_agent'):
                 file_count=len(entries), retired_stub=str(retired), repointed=True)
 
 
+RESET_FOLDER = '.reset'
+
+
+def reset_run(source, run, archive_root, *, now):
+    """``--reset-run R...``: set aside a partial archive of a run that has NO stub (its source is still whole: --complete
+    never ran), so the next ``--apply`` starts fresh, e.g. after the source gained a file and a resumed apply met the
+    stale manifest (ARCHIVE_MANIFEST_CONFLICT). Nothing is deleted: ``<root>/<run id>`` is renamed to
+    ``<root>/.reset/<run id>.<time>.<8 hex>`` on the same drive; remove that folder by hand once satisfied."""
+    import uuid
+    run = Path(run)
+    stub = load_stub(run)
+    if stub is not None:
+        raise Refusal('Run folder %s is archived (ARCHIVED.json, %s); its archive is the only complete copy once removal '
+                      'starts, so it is never reset. Use --restore to bring it back.' % (run.name, stub['state']),
+                      'ARCHIVE_RESET_REFUSED', run_id=run.name, state=stub['state'])
+    if not _io(run).is_dir() or _norm(run.parent) != _norm(source) or not RUN_NAME.fullmatch(run.name):
+        raise Refusal('%s is not a run folder below %s; nothing was changed.' % (run, source), 'ARCHIVE_RESET_REFUSED',
+                      run_id=run.name)
+    root = Path(os.path.abspath(_plain(str(archive_root))))
+    folder = root / run.name
+    if not _io(folder).is_dir():
+        raise Refusal('%s holds no partial archive of %s; nothing was changed.' % (root, run.name), 'ARCHIVE_NOTHING_TO_MOVE',
+                      run_id=run.name)
+    refusal = run_target_refusal(run, root, folder)
+    if refusal is not None:
+        raise refusal
+    stamp = datetime.fromtimestamp(now, timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    aside = root / RESET_FOLDER / ('%s.%s.%s' % (run.name, stamp, uuid.uuid4().hex[:8]))
+    _io(aside.parent).mkdir(parents=True, exist_ok=True)
+    os.replace(_io(folder), _io(aside))
+    return dict(run_id=run.name, moved_to=str(aside), reset=True,
+                plain='The partial archive of %s was set aside at %s; the next --apply copies it fresh.' % (run.name, aside))
+
+
 def public(value, applied=False):
     """The preview/result for a reply: at most MAX_PUBLIC rows per list; eligible runs without their file lists."""
     result = dict(value, applied=applied)

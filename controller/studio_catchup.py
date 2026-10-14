@@ -67,6 +67,7 @@ from studio_evidence import RunContext, read_export, read_json_bounded, scan, se
 from studio_catchup_verdict import CAVEAT, model_tag, validate_rules
 import studio_build_migration as migration
 import studio_run_folder_archive as run_archive
+from studio_evidence_archive import ArchiveUnreachable
 import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
 import studio_installed_build as installed_build
@@ -792,6 +793,8 @@ class CatchupRunner(SeedRunner):
             entry = self.migration['originals'][migration.key(path)] if self.migration else None
             try:
                 export = read_export(path, runs=runs)
+            except ArchiveUnreachable:
+                raise                 # an archived export that cannot be read refuses the plan, never one unit fewer
             except (OSError, ValueError, UnicodeError) as exc:
                 rows.append(dict(set_path=path, status='ineligible', reasons=['Unreadable export: ' + str(exc)]))
                 continue
@@ -945,6 +948,8 @@ class CatchupRunner(SeedRunner):
             problems.append('Exported SET is not in standard operation mode (Mode_Operation=9)')
         try:
             validate_raw(run_archive.read_bytes(export['set_path']), self.c.schema, self.c.policy)
+        except ArchiveUnreachable:
+            raise                     # the archive dropped between the two reads: refuse, never a misleading problem
         except ValueError as exc:
             problems.append('SET does not match the installed EA inputs: ' + str(exc))
         return problems, bridge

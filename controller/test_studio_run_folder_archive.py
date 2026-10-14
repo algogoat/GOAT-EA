@@ -919,6 +919,38 @@ class B43MigGateTests(VolumePatches, MigrationCase):
         archive_root.mkdir()
         self.patch_volumes(archive_root)
 
+    def archive_run(self):
+        preview = runs.plan(self.controller.root, self.controller.install, self.archive_root, keep=[], keep_last=0,
+                            floor_bytes=0, now=self.now)
+        run = next(r for r in preview['eligible'] if r['run_id'] == self.RUN)
+        runs.apply_run(Path(run['path']), self.archive_root, run['files'], install=self.controller.install, now=self.now)
+        runs.complete_run(runs.source_root(self.controller.install), self.run, now=self.now)
+
+    def test_catchup_planning_refuses_with_the_archive_offline(self):
+        """Review r2 item 3 on #237: studio_catchup.py read_export (an "ineligible: Unreadable export" row, one unit fewer)
+        and the validate_raw re-read (a misleading problem) re-raise ArchiveUnreachable."""
+        plan = self.plan(sets=[self.cited])
+        self.archive_run()
+        self.assertEqual(self.runner.validate(plan)['exports'][0]['set_path'], str(self.cited))   # readable through the stub
+        real = runs.read_bytes
+        calls = []
+
+        def drop_on_the_second_read(path):
+            calls.append(path)
+            if len(calls) == 2:
+                raise archive.ArchiveUnreachable('simulated: the archive drive dropped between the two reads')
+            return real(path)
+        with patch('studio_run_folder_archive.read_bytes', side_effect=drop_on_the_second_read):
+            with self.assertRaises(Refusal) as caught:
+                self.runner.validate(plan)
+        self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
+        self.assertEqual(len(calls), 2)
+        (self.archive_root / self.RUN).rename(self.archive_root / 'offline')
+        runs._clear_caches()
+        with self.assertRaises(Refusal) as caught:
+            self.runner.validate(plan)
+        self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
+
     def test_gate_b43mig_1_cited_set_resolves_after_archive(self):
         plan = self.mplan(sets=[self.cited])
         state, manifest = self.run_all('b43mig-1', plan)

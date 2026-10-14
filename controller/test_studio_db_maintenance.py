@@ -66,7 +66,7 @@ class NewDatabaseTests(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def test_a_new_store_is_incremental(self):
-        store = StudioStore(self.root / 'new.sqlite'); store.close()
+        store = StudioStore(self.root / 'new.sqlite', create=True); store.close()
         self.assertEqual(pragma(self.root / 'new.sqlite', 'auto_vacuum'), 2)
 
     def test_a_portable_controller_store_is_incremental(self):
@@ -499,7 +499,7 @@ class CompactTests(Thresholds, unittest.TestCase):
         self.assertEqual({key: after['tables'][key] for key in before['tables']}, before['tables'])
         self.assertFalse(sidecar.exists())
 
-    def swap_record(self, owner, *, age=0, aside_original=True):
+    def swap_record(self, owner, *, age=0, aside_original=True, future=0):
         stamp = maint._stamp(1_760_000_000)
         aside = self.root / ('studio.sqlite' + maint.ASIDE + stamp)
         with maint._closing(maint._ro(self.path)) as db:
@@ -507,47 +507,53 @@ class CompactTests(Thresholds, unittest.TestCase):
         if aside_original:
             os.rename(self.path, aside)
         sidecar = aside.with_name(aside.name + '.json')
+        gate = maint.swap_gate(self.path); gate.mkdir(exist_ok=True)
         record = dict(schema=maint.SIDECAR_SCHEMA, phase='swapping', original_bytes=os.path.getsize(aside if aside_original else self.path),
-                      identity=identity, owner=owner)
+                      identity=identity, owner=owner, gate=str(gate))
         sidecar.write_text(json.dumps(record), encoding='utf-8')
-        if age:
-            stale = time.time() - age
-            os.utime(sidecar, (stale, stale))
+        if age or future:
+            stamp_time = time.time() - age + future
+            os.utime(sidecar, (stamp_time, stamp_time))
         return sidecar
 
-    def test_takeover_needs_a_stale_heartbeat_and_a_dead_or_reused_owner(self):
-        import time as clock
-        live_pid = os.getppid()
-        alive, started = maint._process_identity(live_pid)
-        self.assertTrue(alive)
-        sidecar = self.swap_record(dict(pid=live_pid, nonce='x', started=started), age=maint.SWAP_STALE_SECONDS + 60)
-        for identity, refuses in (((True, started), True),            # hung owner past the bound: never raced
-                                  ((False, None), False)):           # stale heartbeat and dead owner: recovered
-            with patch.object(maint, '_process_identity', return_value=identity):
-                if refuses:
-                    with self.assertRaises(Refusal) as caught:
-                        StudioStore(self.path)
-                    self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
-                    self.assertIn('minutes', str(caught.exception))
-                    self.assertFalse(self.path.exists(), 'never creates while the owner may still swap')
-                else:
-                    self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
-        self.assertEqual(pragma(self.path, 'user_version'), 7)
-        self.assertFalse(sidecar.exists())
-        # PID reused: alive, but another process (different creation time), and a stale heartbeat.
-        sidecar = self.swap_record(dict(pid=live_pid, nonce='x', started=(started or 0) + 1),
-                                   age=maint.SWAP_STALE_SECONDS + 60)
-        with patch.object(maint, '_process_identity', return_value=(True, (started or 0) + 2)):
-            self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
-        # A fresh heartbeat refuses even when the owner looks dead.
-        sidecar = self.swap_record(dict(pid=live_pid, nonce='x', started=started))
-        with patch.object(maint, '_process_identity', return_value=(False, None)), self.assertRaises(Refusal) as caught:
-            maint.connect_existing(self.path)
-        self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
-        old = clock.time() - maint.SWAP_STALE_SECONDS - 60
-        os.utime(sidecar, (old, old))
-        with patch.object(maint, '_process_identity', return_value=(False, None)):
+    def held_gate(self):
+        from studio_native_gate import exclusive_gate
+        return exclusive_gate(maint.swap_gate(self.path))   # held here as a live owner process would hold it
+
+    def test_takeover_is_decided_by_the_swap_lock_not_the_pid(self):
+        """Claude-Mac on #239 @ a0c8f25: a crashed owner whose PID was reused by a process GOAT cannot inspect
+        (ACCESS_DENIED, unknown start time) kept every open refusing forever. Liveness is now the swap lock."""
+        uninspectable = dict(pid=os.getppid(), nonce='x', started=None)
+        stale = maint.SWAP_STALE_SECONDS + 60
+        with patch.object(maint, '_process_identity', return_value=(True, None)):            # the PID tells nothing
+            # Lock still held, heartbeat stale: a live owner that stopped working. Refused, never raced.
+            sidecar = self.swap_record(uninspectable, age=stale)
+            with self.held_gate(), self.assertRaises(Refusal) as caught:
+                StudioStore(self.path)
+            self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
+            self.assertTrue(caught.exception.fields['hung'])
+            self.assertEqual(caught.exception.fields['pid'], os.getppid())
+            self.assertIn('Stop process ' + str(os.getppid()), str(caught.exception))
+            self.assertFalse(self.path.exists(), 'never creates while the owner holds the lock')
+            # Lock held, heartbeat fresh: an owner at work.
+            os.utime(sidecar)
+            with self.held_gate(), self.assertRaises(Refusal) as caught:
+                maint.connect_existing(self.path)
+            self.assertFalse(caught.exception.fields['hung'])
+            # Lock released, heartbeat fresh: still waits for the stale-heartbeat rule.
+            with self.assertRaises(Refusal) as caught:
+                maint.connect_existing(self.path)
+            self.assertEqual(caught.exception.code, 'DB_COMPACT_IN_PROGRESS')
+            # Lock released and heartbeat stale: the owner is gone whatever its PID now names. Recovered.
+            old = time.time() - stale
+            os.utime(sidecar, (old, old))
             maint.connect_existing(self.path).close()
+        self.assertFalse(sidecar.exists())
+        self.assertEqual(pragma(self.path, 'user_version'), 7)
+
+    def test_a_heartbeat_in_the_future_is_not_fresh_forever(self):
+        sidecar = self.swap_record(dict(pid=os.getppid(), nonce='x'), future=3600)        # the clock stepped back
+        self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
         self.assertFalse(sidecar.exists())
 
     def test_a_record_left_after_the_original_was_back_is_retired_even_if_the_store_changed(self):
@@ -555,9 +561,29 @@ class CompactTests(Thresholds, unittest.TestCase):
                                    aside_original=False)
         with maint._closing(sqlite3.connect(self.path, isolation_level=None)) as db:   # later legitimate writes
             db.execute("INSERT INTO studio_receipts VALUES('b','later','h','x')")
-        with patch.object(maint, '_process_identity', return_value=(False, None)):
-            self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
+        self.assertEqual(len(maint.recover_interrupted(self.path)), 1)
         self.assertFalse(sidecar.exists())
+
+    def test_the_swap_lock_is_held_for_the_whole_swap_and_released_after(self):
+        real_place = maint._place
+        seen = []
+
+        def during(source, target):
+            seen.append(maint._gate_held(str(maint.swap_gate(self.path))))
+            return real_place(source, target)
+        with patch.object(maint, '_place', side_effect=during):
+            self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_000)['applied'])
+        self.assertEqual(seen, [True])
+        self.assertFalse(maint._gate_held(str(maint.swap_gate(self.path))))
+
+    def test_store_creates_only_when_asked(self):
+        missing = self.root / 'fresh.sqlite'
+        with self.assertRaises(Refusal) as caught:
+            StudioStore(missing)
+        self.assertEqual(caught.exception.code, 'CONTROLLER_DB_MISSING')
+        self.assertFalse(missing.exists())
+        StudioStore(missing, create=True).close()
+        self.assertTrue(missing.exists())
 
     def test_the_owner_stops_cleanly_when_another_process_recovered_its_swap(self):
         real_place = maint._place

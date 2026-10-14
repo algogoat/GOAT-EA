@@ -143,7 +143,8 @@ def bootstrap(c, record_id, plan_path):
         human = c.local/run/'human'
         if human.exists():
             human_clear(folder,human)
-        store = StudioStore(c.root/'studio.sqlite',input_schema=c.schema,dependency_policy=c.policy)
+        # A continuation bootstrap builds the replacement root's store: the second (and last) creating open.
+        store = StudioStore(c.root/'studio.sqlite',input_schema=c.schema,dependency_policy=c.policy,create=True)
         try:
             configure_gate(store,c.local/'native-gate')
             with store.transaction(require_clear_controls=True):

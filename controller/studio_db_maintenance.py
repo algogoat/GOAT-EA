@@ -151,37 +151,65 @@ def _process_identity(pid):
         return True, None
 
 
-def _pid_alive(pid):
-    return _process_identity(pid)[0]
+def swap_gate(path):
+    """The folder of the lock a compaction's owner holds for its whole swap (studio_native_gate.exclusive_gate)."""
+    path = Path(path)
+    return path.with_name(path.name + '.swap-gate')
 
 
-def _owner_running(owner):
-    """The swap's owner process is still the same running process (same PID and creation time)."""
-    if owner.get('pid') == os.getpid():
-        return owner.get('nonce') in _ACTIVE_SWAPS          # this process: exactly while the swap runs
-    alive, started = _process_identity(owner.get('pid'))
-    if not alive:
+def _gate_held(gate):
+    """Whether a live process holds the swap gate now: one non-blocking exclusive acquire, released at once.
+
+    The OS drops the owner's handle when the owner exits however it exits, so a successful acquire proves the
+    owner is gone, whatever its PID now names (Claude-Mac on #239 @ a0c8f25: a reused PID that cannot be
+    inspected kept a swap "live" forever). A missing gate folder cannot be held.
+    """
+    from studio_native_gate import GateBusy, exclusive_gate
+    if not isinstance(gate, str) or not gate or not Path(gate).is_dir():
         return False
-    return started is None or owner.get('started') is None or started == owner.get('started')
+    try:
+        with exclusive_gate(gate):
+            return False
+    except GateBusy:
+        return True
+    except OSError:
+        return False
+
+
+def _heartbeat_age(sidecar, now=None):
+    """Seconds since the owner's last heartbeat; None if the record is gone. A heartbeat more than 60 s in the
+    future (the wall clock stepped back) counts as old, so it can never hold a swap fresh forever."""
+    now = time.time() if now is None else now
+    try:
+        mtime = sidecar.stat().st_mtime
+    except OSError:
+        return None
+    if mtime > now + 60:
+        return float('inf')
+    return now - mtime
+
+
+def _swap_state(sidecar, record):
+    """``(in_progress, hung)`` for a ``swapping`` record.
+
+    In progress while the owner may still be working: this process's own swap is known exactly (its nonce);
+    for another process, while the swap gate is held OR the heartbeat is younger than SWAP_STALE_SECONDS.
+    Takeover needs both: the gate released (the owner is gone) and a stale heartbeat. ``hung``: the gate is
+    still held but the heartbeat is stale (a live owner that stopped working; never taken over).
+    """
+    owner = record.get('owner') if isinstance(record.get('owner'), dict) else {}
+    if owner.get('pid') == os.getpid() and owner.get('nonce'):
+        return owner.get('nonce') in _ACTIVE_SWAPS, False
+    age = _heartbeat_age(sidecar)
+    if age is None:
+        return False, False
+    stale = age > SWAP_STALE_SECONDS
+    held = _gate_held(record.get('gate'))
+    return (held or not stale), (held and stale)
 
 
 def _swap_in_progress(sidecar, record):
-    """Whether a ``swapping`` record may still have a working owner, so nobody else may touch the files.
-
-    Its owner refreshes the record's mtime (the heartbeat) at every swap phase. Another process takes the
-    swap over only when the heartbeat is older than SWAP_STALE_SECONDS AND the owner is dead or its PID now
-    names another process (creation time differs). This process's own swap is known exactly (its nonce).
-    """
-    owner = record.get('owner')
-    if not isinstance(owner, dict):
-        return False
-    if owner.get('pid') == os.getpid():
-        return owner.get('nonce') in _ACTIVE_SWAPS
-    try:
-        fresh = time.time() - sidecar.stat().st_mtime <= SWAP_STALE_SECONDS
-    except OSError:
-        return False
-    return fresh or _owner_running(owner)
+    return _swap_state(sidecar, record)[0]
 
 
 def _heartbeat(sidecar):
@@ -223,11 +251,18 @@ def _swapping_records(path):
             yield sidecar, record
 
 
-def _in_progress_refusal(sidecar):
-    return Refusal('A studio.sqlite compaction is swapping files right now, so the database was not opened. Retry in '
-                   'a few seconds; if the compacting process hung or its PID was reused, this clears by itself within '
+def _in_progress_refusal(sidecar, record=None, hung=False):
+    owner = (record or {}).get('owner') if isinstance((record or {}).get('owner'), dict) else {}
+    pid = owner.get('pid') if type(owner.get('pid')) is int else None
+    if hung:
+        return Refusal('A studio.sqlite compaction stopped reporting while its process still holds the swap lock, so '
+                       'the database was not opened. Stop process ' + str(pid) + ' (the compacting GOAT process); the '
+                       'next open then puts the original back.', 'DB_COMPACT_IN_PROGRESS', sidecar=str(sidecar),
+                       pid=pid, hung=True)
+    return Refusal('A studio.sqlite compaction is swapping files right now, so the database was not opened. Retry in a '
+                   'few seconds; if the compacting process stopped, this clears by itself within '
                    + str(SWAP_STALE_SECONDS // 60) + ' minutes of its last heartbeat.', 'DB_COMPACT_IN_PROGRESS',
-                   sidecar=str(sidecar))
+                   sidecar=str(sidecar), pid=pid, hung=False)
 
 
 def recover_interrupted(path):
@@ -249,8 +284,9 @@ def recover_interrupted(path):
     recovered = []
     for sidecar, record in list(_swapping_records(path)):
         aside = sidecar.with_name(sidecar.name[:-len('.json')])
-        if _swap_in_progress(sidecar, record):
-            raise _in_progress_refusal(sidecar)
+        in_progress, hung = _swap_state(sidecar, record)
+        if in_progress:
+            raise _in_progress_refusal(sidecar, record, hung)
         moved = aside.exists()
         rejected = _put_back(path, aside, aside.name[len(path.name + ASIDE):])
         proven = path.is_file() and not aside.exists()
@@ -713,8 +749,20 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
         original_bytes = path.stat().st_size
         record = dict(schema=SIDECAR_SCHEMA, phase='swapping', at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
                       database=str(path), original=str(aside), copy=str(temporary), original_bytes=original_bytes,
-                      identity={key: original[key] for key in IDENTITY},
+                      identity={key: original[key] for key in IDENTITY}, gate=str(swap_gate(path)),
+                      # pid + creation time are diagnostics only; liveness is the gate (_swap_state).
                       owner=dict(pid=os.getpid(), nonce=nonce, started=_process_identity(os.getpid())[1]))
+        # The swap gate is held for the whole swap: the OS releases it when this process exits, however it exits,
+        # so another opener can tell a gone owner from a live one without trusting a PID.
+        from studio_native_gate import GateBusy, exclusive_gate
+        swap_gate(path).mkdir(exist_ok=True)
+        swap_hold = exclusive_gate(swap_gate(path))
+        try:
+            swap_hold.__enter__()
+        except GateBusy:
+            temporary.unlink(missing_ok=True)
+            raise Refusal('Another compaction holds the swap lock of this database; nothing was changed.',
+                          'DB_COMPACT_IN_PROGRESS') from None
 
         def taken_over():
             return Refusal('Another process recovered this compaction while it was swapping (its heartbeat went stale); '
@@ -792,6 +840,7 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
             _write_json(sidecar, record)
         finally:
             _ACTIVE_SWAPS.discard(nonce)
+            swap_hold.__exit__(None, None, None)
     finally:
         gate_scope.__exit__(None, None, None)
     result = dict(plan, applied=True, original=str(aside), sidecar=str(sidecar), bytes_before=record['original_bytes'],

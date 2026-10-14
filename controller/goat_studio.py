@@ -275,7 +275,8 @@ class Controller:
         terminal='terminal-'+sha(self.install['terminal_data_root'])[:16]
         run='session-'+uuid.uuid4().hex
         self.local.mkdir(parents=True,exist_ok=True)
-        self.store=StudioStore(self.root/'studio.sqlite',input_schema=self.schema,dependency_policy=self.policy)
+        # The only open that may create studio.sqlite (studio_db_maintenance.connect_existing for every other).
+        self.store=StudioStore(self.root/'studio.sqlite',input_schema=self.schema,dependency_policy=self.policy,create=True)
         self.store.bind(terminal,run)
         configure_gate(self.store,self.local/'native-gate')
         bridge=StudioBridge(self.local/run,self.store,terminal,run);bridge.pump()

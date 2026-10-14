@@ -330,7 +330,7 @@ class UpdateKeepsLaneTests(unittest.TestCase):
         store.write_bytes(b'not a database at all' * 100)
         refused('RESTORE_STORE_UNREADABLE', 'Controller store unreadable')
         store.unlink()
-        StudioStore(store).close()
+        StudioStore(store, create=True).close()
         refused('RESTORE_NO_CUSTOMER_AUTHORITY', 'no customer-lane authority')
         store.unlink(); store.with_suffix('.held').rename(store)
         log = agent.state_root / 'actions.jsonl'
@@ -444,7 +444,7 @@ class UpdateKeepsLaneTests(unittest.TestCase):
             self.f.agent.restore_lane(apply=True)
         store = self.f.root / 'studio.sqlite'
         store.rename(store.with_suffix('.held'))
-        StudioStore(store).close()   # a store with no customer-lane authority for this binding
+        StudioStore(store, create=True).close()   # a store with no customer-lane authority for this binding
         with self.assertRaisesRegex(ValueError, 'no customer-lane authority'):
             self.f.agent.restore_lane(apply=True)
         self.assertEqual(self.session()['authority_kind'], 'demo_direct')
@@ -489,7 +489,7 @@ class UpdateKeepsLaneTests(unittest.TestCase):
         self.legacy_only_backups()
         store = self.f.root / 'studio.sqlite'
         store.rename(store.with_suffix('.held'))
-        StudioStore(store).close()   # no customer-lane authority for this binding
+        StudioStore(store, create=True).close()   # no customer-lane authority for this binding
         with self.assertRaisesRegex(ValueError, 'no customer-lane authority'):
             self.f.agent.restore_lane(apply=True)
         self.assertEqual(self.session()['authority_kind'], 'demo_direct')
@@ -500,7 +500,7 @@ class UpdateKeepsLaneTests(unittest.TestCase):
         binding = packed(dict(terminal_id='terminal-one', run_id='session-one'))
         store = self.f.root / 'studio.sqlite'
         store.rename(store.with_suffix('.held'))
-        StudioStore(store).close()   # authorities are immutable: a fresh store holding another kind for this binding
+        StudioStore(store, create=True).close()   # authorities are immutable: a fresh store holding another kind for this binding
         with closing(sqlite3.connect(store)) as db, db:
             db.execute('INSERT INTO studio_authorities VALUES(?,?,?)',
                        (binding, 'demo_direct', json.dumps(dict(kind='demo_direct', binding=json.loads(binding)))))

@@ -463,7 +463,7 @@ class DemoAgentTests(unittest.TestCase):
         (self.agent.local / 'active.json').write_text(json.dumps(dict(
             directory_id='session-one', terminal_id='terminal-one', run_id='session-one',
             terminal_data_path=str(self.data))))
-        store = StudioStore(self.root / 'studio.sqlite')
+        store = StudioStore(self.root / 'studio.sqlite', create=True)
         try:
             initial = store.bind('terminal-one', 'session-one')
             store.submit(dict(schema_version=1, request_id='human-give-for-install',
@@ -528,7 +528,7 @@ class DemoAgentTests(unittest.TestCase):
         (self.agent.local / 'active.json').write_text(json.dumps(dict(
             directory_id='session-one', terminal_id='terminal-one', run_id='session-one',
             terminal_data_path=str(self.data))))
-        store = StudioStore(self.root / 'studio.sqlite')
+        store = StudioStore(self.root / 'studio.sqlite', create=True)
         try:
             initial = store.bind('terminal-one', 'session-one')
             store.submit(dict(schema_version=1, request_id='human-give-for-install',
@@ -655,7 +655,7 @@ class DemoAgentTests(unittest.TestCase):
         original_session = read_json(self.root / 'session.json')
         original_session['authority_kind'] = 'native_human_control'
         (self.root / 'session.json').write_text(json.dumps(original_session))
-        store = StudioStore(self.root / 'studio.sqlite')
+        store = StudioStore(self.root / 'studio.sqlite', create=True)
         try:
             initial = store.bind('terminal-one', 'session-one')
             request = dict(schema_version=1, request_id='fixture-human-give',

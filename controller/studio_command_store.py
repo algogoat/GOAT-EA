@@ -21,21 +21,22 @@ class Conflict(ValueError):
 
 
 class StudioStore:
-    def __init__(self, path, *, input_schema=None, dependency_policy=None):
+    def __init__(self, path, *, input_schema=None, dependency_policy=None, create=False):
+        """Open the controller store. ``create=True`` only from the first bootstrap (goat_studio.bootstrap): every
+        other open uses ``connect_existing`` (mode=rw after any interrupted compaction is recovered, refusing while
+        one is swapping), so no open can ever create an empty store in place of the real one."""
         self.input_schema = None if input_schema is None else json.loads(packed(input_schema))
         self.input_schema_hash = None if input_schema is None else sha(self.input_schema)
         self.dependency_policy = None if dependency_policy is None else json.loads(packed(dependency_policy))
-        if str(path) != ':memory:':
-            # A compaction interrupted mid-swap puts the original back first, so a stop can never leave
-            # the controller to open (and create) an empty database in its place.
+        if str(path) == ':memory:':
+            self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        elif create:
             from studio_db_maintenance import recover_interrupted
             recover_interrupted(path)
-        if str(path) != ':memory:' and Path(path).is_file():
-            # An existing store is opened mode=rw: it can never be (re)created here, even if the file vanishes
-            # between this check and the open. Only a first bootstrap creates the file.
-            self.db = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=rw', uri=True, timeout=10, isolation_level=None)
-        else:
             self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        else:
+            from studio_db_maintenance import connect_existing
+            self.db = connect_existing(path, timeout=10)
         self.db.row_factory = sqlite3.Row
         # A new store gives freed pages back (studio_db_maintenance): only possible before the first table.
         from studio_db_maintenance import enable_incremental

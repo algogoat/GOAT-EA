@@ -146,6 +146,34 @@ def enable_incremental(db):
     return False
 
 
+# ------------------------------------------------------------------ queue row writes
+
+def write_queue(db, binding, raw, *, create=False):
+    """Replace one ``studio_queues`` row without growing the file; returns the rows written (0 or 1).
+
+    An ``UPDATE`` of a large row whose size changes builds the new overflow chain BEFORE it frees the
+    old one, so a store with no free pages grows by one whole queue copy (Banker 2026-10-14: 136 MB ->
+    272 MB at round 3 member 1's finish, a reconcile write; flat afterwards because later writes reuse
+    that copy's pages). Deleting the row first, then inserting it in the same savepoint, puts the old
+    chain on the freelist before the new one is allocated, so the new copy reuses those pages.
+
+    Same semantics as the UPDATE of ``jobs`` by binding it replaces (no row: nothing written), or as an
+    insert-or-replace with ``create``. Atomic inside or outside the caller's transaction.
+    """
+    db.execute('SAVEPOINT goat_queue_write')
+    try:
+        # A connection stand-in without a cursor (timing fixtures) counts as "row present".
+        deleted = getattr(db.execute('DELETE FROM studio_queues WHERE binding=?', (binding,)), 'rowcount', -1)
+        if deleted or create:
+            db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)', (binding, raw))
+        db.execute('RELEASE goat_queue_write')
+    except BaseException:
+        db.execute('ROLLBACK TO goat_queue_write')
+        db.execute('RELEASE goat_queue_write')
+        raise
+    return 1 if (deleted or create) else 0
+
+
 # ------------------------------------------------------------------ idle reclaim
 
 def queue_busy(db):

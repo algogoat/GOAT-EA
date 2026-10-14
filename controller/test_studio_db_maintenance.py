@@ -425,6 +425,112 @@ class GrowthTests(unittest.TestCase):
         self.assertGreater(sizes[-1] - sizes[0], (self.RUNS - 1) * self.queue_bytes, sizes)
 
 
+def footprint(db):
+    page_count = db.execute('PRAGMA page_count').fetchone()[0]
+    freelist = db.execute('PRAGMA freelist_count').fetchone()[0]
+    return dict(page_count=page_count, freelist=freelist, total=page_count + freelist)
+
+
+OLD_UPDATE = 'UPDATE studio_queues SET jobs=? WHERE binding=?'
+
+
+class MemberBoundaryTests(unittest.TestCase):
+    """Banker 2026-10-14 (#2350 6160566397): right after compaction, round 3 member 1's finish grew the 136 MB store
+    to 272 MB in one step, then it stayed flat. A member boundary writes no receipt: reconcile rewrites the queue row
+    (studio_reconcile). An UPDATE of a large row whose size changes allocates the new overflow chain before it frees
+    the old one, so a store with no free pages grows by one whole queue copy. write_queue deletes, then inserts."""
+    QUEUE = 4 * MB
+    BOUNDARIES = 8
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+
+    def compacted(self, name, auto_vacuum):
+        """A store just after compaction: one large queue row and no free pages."""
+        path = Path(self.temp.name) / name
+        with maint._closing(sqlite3.connect(path, isolation_level=None)) as db:
+            db.execute('PRAGMA auto_vacuum=%d' % auto_vacuum)
+            db.execute('CREATE TABLE studio_queues(binding TEXT PRIMARY KEY, jobs TEXT NOT NULL)')
+            db.execute('CREATE TABLE studio_state(binding TEXT PRIMARY KEY, revision INTEGER NOT NULL)')
+            db.execute("INSERT INTO studio_state VALUES('b',0)")
+            db.execute("INSERT INTO studio_queues VALUES('b',?)", ('q' * self.QUEUE,))
+            db.execute('VACUUM')
+        db = sqlite3.connect(path, isolation_level=None); self.addCleanup(db.close)
+        self.assertEqual(footprint(db)['freelist'], 0)
+        return db
+
+    def boundaries(self, db, write):
+        """Each boundary: one reconcile-shaped transaction that rewrites the queue (a little longer) and the revision."""
+        trace = [footprint(db)]
+        for i in range(1, self.BOUNDARIES + 1):
+            db.execute('BEGIN IMMEDIATE')
+            write(db, 'b', 'q' * (self.QUEUE + 997 * i))
+            db.execute("UPDATE studio_state SET revision=revision+1 WHERE binding='b'")
+            db.execute('COMMIT')
+            trace.append(footprint(db))
+        return trace
+
+    def test_before_an_update_grows_the_store_by_a_queue_copy_after_write_queue_does_not(self):
+        queue_pages = self.QUEUE // 4096
+        for auto_vacuum in (0, 2):
+            before = self.boundaries(self.compacted('update-%d.sqlite' % auto_vacuum, auto_vacuum),
+                                     lambda db, b, raw: db.execute(OLD_UPDATE, (raw, b)))
+            after = self.boundaries(self.compacted('write-%d.sqlite' % auto_vacuum, auto_vacuum), maint.write_queue)
+            # Before: the first boundary adds a whole queue copy (page_count + freelist_count grows by ~2 copies),
+            # then later boundaries reuse it.
+            self.assertGreater(before[1]['page_count'] - before[0]['page_count'], 0.95 * queue_pages, before)
+            self.assertGreater(before[1]['total'] - before[0]['total'], 1.9 * queue_pages, before)
+            self.assertGreater(before[-1]['freelist'], 0.95 * queue_pages, before)
+            # After: every boundary reuses the pages it frees; growth is only the few pages the row itself grew.
+            self.assertLess(after[-1]['total'] - after[0]['total'], 16, after)
+            self.assertLess(after[-1]['freelist'], 4, after)
+
+    def test_write_queue_keeps_update_and_replace_semantics_and_is_atomic(self):
+        db = sqlite3.connect(':memory:', isolation_level=None); self.addCleanup(db.close)
+        db.execute('CREATE TABLE studio_queues(binding TEXT PRIMARY KEY, jobs TEXT NOT NULL)')
+        self.assertEqual(maint.write_queue(db, 'b', '[]'), 0)                          # UPDATE: no row, no write
+        self.assertIsNone(db.execute('SELECT jobs FROM studio_queues').fetchone())
+        self.assertEqual(maint.write_queue(db, 'b', '[1]', create=True), 1)           # INSERT OR REPLACE
+        self.assertEqual(maint.write_queue(db, 'b', '[2]'), 1)
+        self.assertEqual(maint.write_queue(db, 'b', '[3]', create=True), 1)
+        self.assertEqual(db.execute('SELECT binding,jobs FROM studio_queues').fetchall(), [('b', '[3]')])
+        for in_transaction in (False, True):
+            if in_transaction:
+                db.execute('BEGIN IMMEDIATE')
+            with self.assertRaises(sqlite3.IntegrityError):
+                maint.write_queue(db, 'b', None)                                     # NOT NULL: the insert fails
+            self.assertEqual(db.execute('SELECT jobs FROM studio_queues').fetchall(), [('[3]',)], 'old row kept')
+            self.assertEqual(db.in_transaction, in_transaction)
+            if in_transaction:
+                db.execute('ROLLBACK')
+
+    def test_no_production_module_rewrites_the_queue_row_with_update_or_replace(self):
+        controller = Path(__file__).resolve().parent
+        offenders = [path.name for path in controller.glob('*.py') if not path.name.startswith('test_')
+                     and ('UPDATE studio_queues SET' in path.read_text(encoding='utf-8')
+                          or 'INSERT OR REPLACE INTO studio_queues' in path.read_text(encoding='utf-8'))]
+        self.assertEqual(offenders, [])
+
+    def test_a_portable_controller_queue_write_reuses_its_pages(self):
+        fixture = fixtures.PortableControllerTests(); fixture.setUp(); self.addCleanup(fixture.tearDown)
+        c = fixture.bound(); fixture.grant(c)
+        prepare_batch(c, 'old', synthetic(fixture, c, 2))
+        binding = packed(dict(terminal_id=c.terminal, run_id=c.run))
+        state = c.state()
+        state['queue'][0].update(status='completed', completion=dict(report='r' * self.QUEUE))
+        maint.write_queue(c.store.db, binding, packed(state['queue']))
+        c.store.db.execute('VACUUM')                                                # as after tonight's compaction
+        start = footprint(c.store.db)
+        for i in range(self.BOUNDARIES):                                             # a member observation per boundary
+            state = c.state()
+            state['queue'][0]['native_observation'] = dict(member=i, members=['m'] * (50 * i))
+            with c.store.transaction():
+                maint.write_queue(c.store.db, binding, packed(state['queue']))
+        end = footprint(c.store.db)
+        self.assertLess(end['total'] - start['total'], 16, (start, end))
+        self.assertEqual(c.state()['queue'][0]['native_observation']['member'], self.BOUNDARIES - 1)
+
+
 class SurfaceTests(Thresholds, unittest.TestCase):
     def setUp(self):
         super().setUp()

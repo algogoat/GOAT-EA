@@ -182,7 +182,8 @@ def phase(c,job_id,generation,expected,next_phase,**values):
         job['restart_intent']=intent
         state['queue']=[job if row['job_id']==job_id else row for row in state['queue']]
         binding=packed(dict(terminal_id=c.terminal,run_id=c.run))
-        c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))
+        from studio_db_maintenance import write_queue
+        write_queue(c.store.db,binding,packed(state['queue']))
         c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
     c.bridge.pump()
 

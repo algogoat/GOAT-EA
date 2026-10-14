@@ -211,7 +211,8 @@ class StudioStore:
                     else:
                         jobs = change_queue(command,request['payload'],state,self.input_schema,self.dependency_policy)
                     raw_queue = packed(jobs)
-                    self.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',(binding,raw_queue))
+                    from studio_db_maintenance import write_queue
+                    write_queue(self.db,binding,raw_queue,create=True)
                     state['queue'] = jobs
                 elif command == 'draft.replace_strategy':
                     self.db.execute('INSERT OR REPLACE INTO studio_strategy_drafts VALUES(?,?)',

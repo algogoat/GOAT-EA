@@ -2659,7 +2659,7 @@ class DemoAgent:
         ``confirm``, ``keep_list`` and ``archive_root``) copies and sha256-verifies each folder, writes its manifest and
         ARCHIVED.json, and keeps every source; ``complete`` (a separate invocation, needs ``confirm``) re-verifies every
         archived file and only then removes the sources, leaving ARCHIVED.json, which every controller reader follows.
-        Demo lane only. It holds its own lock, not the terminal lease (a long copy never blocks research), and re-checks
+        Demo lane only. It holds its own lock (shared by every installation of these Common Files), not the terminal lease (a long copy never blocks research), and re-checks
         each run before it copies or removes it. No MT5 effect.
         """
         import studio_evidence_archive as archive
@@ -2700,7 +2700,7 @@ class DemoAgent:
                 'run folders to the archive, verifies every file, and writes ARCHIVED.json in each; every source stays. '
                 'Then evidence-archive --run-folders --complete --confirm re-verifies every archived file and only then '
                 'removes the sources.')))
-        with runs.ArchiverLock(self.root):
+        with runs.ArchiverLock(self.install):
             preview = runs.plan(self.root, self.install, archive_root, now=self.clock(), **options)
             if preview['blockers']:
                 first = preview['blockers'][0]
@@ -2719,7 +2719,7 @@ class DemoAgent:
                                         [c for row in again['skipped'] for c in row['codes']]))
                     continue
                 free = shutil.disk_usage(preview['archive_root']).free
-                if free - run['bytes'] < floor:
+                if free - runs.missing_bytes(preview['archive_root'], run['run_id'], run['files']) < floor:
                     skipped.append(dict(run_id=run['run_id'], codes=['ARCHIVE_ROOT_FLOOR']))
                     break
                 result = runs.apply_run(Path(run['path']), preview['archive_root'], run['files'], install=self.install,
@@ -2737,7 +2737,7 @@ class DemoAgent:
         ``run_ids``) whose stub is ``archived`` or ``removing``, each only after re-verifying its whole archive."""
         import studio_run_folder_archive as runs
         source = runs.source_root(self.install)
-        with runs.ArchiverLock(self.root):
+        with runs.ArchiverLock(self.install):
             try:
                 pointers = runs.active_pointers(source)
             except ValueError as exc:

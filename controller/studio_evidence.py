@@ -66,7 +66,8 @@ def weekdays(first, last):
 
 
 def _read(path, limit):
-    path = Path(path)
+    from studio_run_folder_archive import checked     # a file of an archived run folder is verified before it is read
+    path = Path(checked(path))
     with path.open('rb') as stream:
         raw = stream.read(limit + 1)
     if len(raw) > limit:
@@ -154,7 +155,8 @@ def parse_stem(stem, symbol=None):
 
 def csv_last_date(csv_path):
     """Date of the equity CSV's last row, reading only its tail."""
-    path = Path(csv_path)
+    from studio_run_folder_archive import checked
+    path = Path(checked(csv_path))
     size = path.stat().st_size
     with path.open('rb') as stream:
         head = stream.read(2)
@@ -263,10 +265,13 @@ def read_export(set_path, *, runs=None):
     A unit inside a run folder moved by ``evidence-archive --run-folders`` is read from its archive copy
     (studio_run_folder_archive): ``set_path`` stays the cited path, ``archived_set_path`` names the copy read, and
     ``csv_path`` / ``capture.path`` are where those files are read now."""
-    from studio_run_folder_archive import locate
+    from studio_evidence_archive import ArchiveUnreachable
+    from studio_run_folder_archive import checked, locate
     cited = unit_paths(set_path)['set']
     physical, moved = locate(cited)
     paths = unit_paths(physical)
+    if moved and (paths['goatseq'] / 'deals.csv').is_file():
+        checked(paths['goatseq'] / 'deals.csv')     # later readers open it by capture.path: verified once here
     raw = _read(paths['set'], MAX_SET_BYTES)
     info = inspect_set(raw)
     text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
@@ -278,6 +283,8 @@ def read_export(set_path, *, runs=None):
     if paths['goatseq'].is_dir():
         try:
             capture = read_capture(paths['goatseq'], info['sha256'])
+        except ArchiveUnreachable:
+            raise                                     # an archived copy that cannot be trusted refuses, never "unreadable"
         except (OSError, ValueError) as exc:
             problems.append('Sequence package unreadable: ' + str(exc))
     if capture and not capture['set_binding_matches']:

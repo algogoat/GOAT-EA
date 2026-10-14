@@ -29,6 +29,9 @@ import hashlib
 from pathlib import Path
 import re
 
+# A file of a run folder moved by evidence-archive --run-folders is verified before it is read (a no-op otherwise).
+from studio_run_folder_archive import checked as archived_checked
+
 SCHEMA = 'goat-export-qualification-v1'
 BASIS = 'export_file_name_metrics'
 MAX_SETTINGS_BYTES = 64 * 1024
@@ -127,7 +130,7 @@ def read_run_thresholds(run_root):
             return unavailable_thresholds('No export_settings.GOAT in the run folder', source='none')
         if path.stat().st_size > MAX_SETTINGS_BYTES:
             return unavailable_thresholds('export_settings.GOAT exceeds its byte bound', source='none')
-        text = _decode(path.read_bytes())
+        text = _decode(archived_checked(path).read_bytes())
     except (OSError, UnicodeError) as error:
         return unavailable_thresholds('export_settings.GOAT unreadable: ' + str(error)[:160], source='none')
     return thresholds_from_settings_text(text, path=str(path))
@@ -297,7 +300,7 @@ def stamp_set(set_path, thresholds, *, with_sha256=True):
 
     def raw():
         if not raw_cache:
-            with path.open('rb') as stream:
+            with archived_checked(path).open('rb') as stream:
                 data = stream.read(MAX_SET_BYTES + 1)
             if len(data) > MAX_SET_BYTES:
                 raise ValueError('SET exceeds its byte bound: ' + path.name)
@@ -424,7 +427,7 @@ def read_log(log_path):
     try:
         if not path.is_file() or path.stat().st_size > MAX_LOG_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
     except OSError:
         return None
     return raw.decode('utf-16', errors='replace') if raw.startswith(b'\xff\xfe') or b'\x00' in raw[:400] else \
@@ -460,7 +463,7 @@ def scan_run(run_root, *, generated_at=None):
     try:
         settings_path = run_root / 'export_settings.GOAT'
         if settings_path.is_file() and settings_path.stat().st_size <= MAX_SETTINGS_BYTES:
-            settings_text = _decode(settings_path.read_bytes())
+            settings_text = _decode(archived_checked(settings_path).read_bytes())
     except (OSError, UnicodeError):
         settings_text = ''
     adjust_lots = (ea_setting(settings_text, 'AdjustLots') or '0').strip() not in ('', '0')

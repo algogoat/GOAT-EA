@@ -21,6 +21,8 @@ import time
 from campaign_ledger import packed
 from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, public_thresholds, read_run_thresholds, stamp_set,
                                          summarize, threshold_words)
+# A file of a run folder moved by evidence-archive --run-folders is verified before it is read (a no-op otherwise).
+from studio_run_folder_archive import checked as archived_checked
 
 HEARTBEAT_FRESH_SECONDS = 20
 RELAUNCH_GRACE_SECONDS = 240
@@ -57,7 +59,7 @@ def _bounded_json(path, limit=MAX_JSON_BYTES):
         before = path.stat()
         if before.st_size > limit:
             return None, None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
         return json.loads(text), before.st_mtime
     except (OSError, ValueError, UnicodeError):
@@ -188,7 +190,7 @@ def timeline(native_run, aliases):
     try:
         if not path.is_file() or path.stat().st_size > MAX_TIMELINE_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
     except OSError:
         return None
     try:
@@ -344,7 +346,7 @@ def _log_lines(native_run):
     try:
         if not path.is_file() or path.stat().st_size > MAX_LOG_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     except (OSError, UnicodeError):
         return None
@@ -475,7 +477,7 @@ def item_outcomes(native_run, members, timing=None):
     try:
         if not path.is_file() or path.stat().st_size > MAX_ITEM_STATS_BYTES:
             return {}
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     except (OSError, UnicodeError):
         return {}

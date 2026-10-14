@@ -152,8 +152,9 @@ def baseline_paths(set_path):
 
 
 def _sha_file(path):
+    from studio_run_folder_archive import checked     # a file of an archived run folder is verified before it is read
     digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
+    with Path(checked(path)).open('rb') as stream:
         for block in iter(lambda: stream.read(1 << 20), b''):
             digest.update(block)
     return digest.hexdigest()

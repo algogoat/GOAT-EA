@@ -138,14 +138,14 @@ def batch_exports(run):
     """Every export SET under the run's deploy folder: [{set_path, set_sha256}], sorted by path.
 
     A run folder moved by evidence-archive --run-folders is read from its archive; ``set_path`` stays the cited path."""
-    from studio_run_folder_archive import logical, run_dir
+    from studio_run_folder_archive import checked, logical, run_dir
     physical = run_dir(run)
     deploy = physical / 'deploy'
     found = []
     for path in sorted(deploy.rglob('*.set')) if deploy.is_dir() else []:
         if len(found) >= MAX_EXPORTS:
             raise ValueError('more than %d export SETs under %s' % (MAX_EXPORTS, Path(run) / 'deploy'))
-        found.append(dict(set_path=str(logical(path, physical, run)), set_sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+        found.append(dict(set_path=str(logical(path, physical, run)), set_sha256=hashlib.sha256(checked(path).read_bytes()).hexdigest()))
     return found
 
 

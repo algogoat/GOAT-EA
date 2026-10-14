@@ -171,7 +171,8 @@ SURVIVAL_DEFINITION = {
 
 # ---------------------------------------------------------------- reading
 def _read(path, limit):
-    path = Path(path)
+    from studio_run_folder_archive import checked     # a file of an archived run folder is verified before it is read
+    path = Path(checked(path))
     with path.open('rb') as stream:
         raw = stream.read(limit + 1)
     if len(raw) > limit:

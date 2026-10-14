@@ -61,7 +61,12 @@ Safety: a preview by default (eligible folders, bytes to free, the target's free
 volume than the run folders (ARCHIVE_ROOT_SAME_VOLUME) and keep ``--free-floor-gb`` (default 50 GB) free after the
 copy (ARCHIVE_ROOT_FLOOR). Unlike batch evidence it does not need an idle terminal (a finished run folder is never
 read by MT5) and does not hold the terminal lease during a long copy; it holds its own lock
-(``demo-agent/run-folder-archive.lock``) and re-checks every run's eligibility before it copies or removes it.
+(``<Common Files>\\GOAT\\.run-folder-archive.lock``, shared by every installation of these Common Files) and re-checks
+every run's eligibility before it copies or removes it.
+
+Directory readers (``run_dir``) open files of an archive folder through ``checked``, which verifies each file they
+consume (size, and sha256 once per process) against the manifest, so a same-size corruption refuses instead of being
+read.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -88,7 +93,7 @@ TERMINAL = ('completed', 'cancelled', 'failed')
 UNRUN_MEMBERS = ('native_cancelled', 'native_pending', 'native_queued')
 POINTER_NAME = 'active_optimization_run.ini'
 POINTER_DEPTH = 3
-LOCK_NAME = 'run-folder-archive.lock'
+LOCK_NAME = '.run-folder-archive.lock'
 DEFAULT_KEEP_LAST = 10
 DEFAULT_FLOOR_GB = 50
 GB = 1024 ** 3
@@ -173,6 +178,7 @@ def stub_problem(value, run_id):
 _STUBS = {}       # normcase stub path -> ((size, mtime_ns, ino), stub)
 _MANIFESTS = {}   # normcase manifest path -> ((size, mtime_ns, ino, manifest sha256), entries)
 _VERIFIED = set()
+_OPEN = {}        # normcase archive folder -> (stub, folder, entries): folders run_dir/locate handed to a reader
 
 
 def stub_path(run):
@@ -249,7 +255,10 @@ def open_archive(stub, *, strict=False):
         except OSError as error:
             errors.append(str(error)[:200])
             continue
-        return folder, _entries(stub, folder, manifest, stat, strict)
+        entries = _entries(stub, folder, manifest, stat, strict)
+        if not strict:
+            _OPEN[os.path.normcase(os.path.abspath(_plain(str(folder))))] = (stub, folder, entries)
+        return folder, entries
     raise ArchiveUnreachable('Run folder %s was archived to %s, which cannot be read now (%s)%s. Reconnect the archive '
                              'drive, then retry; nothing is read in its place.'
                              % (stub['run_id'], stub['archive_dir'], errors[0] if errors else 'not found',
@@ -350,8 +359,30 @@ def resolve(path, verify='full'):
 
 
 def run_dir(run):
-    """The folder to read a native run folder's files from: itself, or its archive folder."""
+    """The folder to read a native run folder's files from: itself, or its archive folder. A reader that opens a file
+    below an archive folder passes it through ``checked`` first, so every file it consumes is verified."""
     return locate(run, None)[0]
+
+
+def checked(path):
+    """``path`` itself, after verifying it when it lies below an archive folder this process opened (run_dir, locate):
+    its size against the manifest on every call and its sha256 on its first in a process. A file there that the
+    manifest does not list refuses (EVIDENCE_ARCHIVE_UNREACHABLE); a missing one is left for the read to report."""
+    if not _OPEN:
+        return path
+    text = os.path.normcase(os.path.abspath(_plain(str(path))))
+    for base, (stub, folder, entries) in _OPEN.items():
+        if not text.startswith(base + os.sep):
+            continue
+        entry = entries.get(_key(text[len(base) + 1:]))
+        if entry is not None:
+            _verify_file(stub, folder, entry, full=True)
+        elif _io(path).is_file():
+            raise ArchiveUnreachable('%s lies in the archive of run folder %s but its manifest does not list it; nothing is '
+                                     'read from it. Inspect the archive.' % (path, stub['run_id']), run_id=stub['run_id'],
+                                     archive_dir=str(folder))
+        return path
+    return path
 
 
 def read_bytes(path):
@@ -777,6 +808,13 @@ def plan(root, install, archive_root=None, *, keep=None, keep_last=DEFAULT_KEEP_
                 blockers=global_blockers + root_blockers, ready=not (global_blockers + root_blockers) and bool(eligible))
 
 
+def missing_bytes(archive_root, run_id, files):
+    """Bytes of ``files`` not yet in ``<archive root>/<run id>/``: what a copy still needs (an interrupted run's
+    copies are reused, so they are not needed again)."""
+    folder = Path(os.path.abspath(str(archive_root))) / run_id
+    return sum(item['bytes'] for item in files if not _io(folder / item['relative_path']).is_file())
+
+
 def target_blockers(source, archive_root, size, floor_bytes, eligible=()):
     """Archive-root checks: absolute, existing, local NTFS/ReFS, another volume than the run folders, writable, and
     ``floor_bytes`` still free after the copy. Returns (blockers, free bytes, target)."""
@@ -807,9 +845,7 @@ def target_blockers(source, archive_root, size, floor_bytes, eligible=()):
         return [_blocker('ARCHIVE_ROOT_NOT_WRITABLE', 'The archive root %s is not writable (%s).' % (target, str(error)[:200]),
                          archive_root=str(target))], None, target
     free = shutil.disk_usage(_io(target)).free
-    # Bytes already copied by an interrupted run are not needed again.
-    needed = sum(item['bytes'] for run in eligible for item in run.get('files') or []
-                 if not _io(target / run['run_id'] / item['relative_path']).is_file()) if eligible else size
+    needed = sum(missing_bytes(target, run['run_id'], run.get('files') or []) for run in eligible) if eligible else size
     if free - needed < floor_bytes:
         return [_blocker('ARCHIVE_ROOT_FLOOR', 'The archive root has %s free; copying %s would leave %s, under the %s floor '
                          '(--free-floor-gb). Archive fewer runs (--max-runs / --run-id) or pick a larger drive.'
@@ -1013,11 +1049,12 @@ def public(value, applied=False):
 
 
 class ArchiverLock:
-    """This scope's own lock (``<controller state>/demo-agent/run-folder-archive.lock``): one archiver at a time,
-    without holding the terminal lease through a long copy. Taken without waiting; busy refuses."""
+    """This scope's own lock, in the run folders' own folder (``<Common Files>\\GOAT\\.run-folder-archive.lock``), so
+    every installation sharing these Common Files takes the same one: one archiver at a time per PC, without holding
+    the terminal lease through a long copy. Taken without waiting; busy refuses."""
 
-    def __init__(self, root):
-        self.path = Path(root) / 'demo-agent' / LOCK_NAME
+    def __init__(self, install):
+        self.path = source_root(install) / LOCK_NAME
         self.handle = None
 
     def __enter__(self):

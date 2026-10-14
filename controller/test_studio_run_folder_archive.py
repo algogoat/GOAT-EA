@@ -53,7 +53,7 @@ class VolumePatches:
             patcher = patch('studio_evidence_archive.' + name, **kw)
             patcher.start()
             self.addCleanup(patcher.stop)
-        runs._STUBS.clear(); runs._MANIFESTS.clear(); runs._VERIFIED.clear()
+        runs._STUBS.clear(); runs._MANIFESTS.clear(); runs._VERIFIED.clear(); runs._OPEN.clear()
 
 
 class RunFolderFixture(VolumePatches, G20Fixture):
@@ -365,6 +365,40 @@ class TargetTests(RunFolderFixture):
             self.refused('ARCHIVE_ROOT_FLOOR', self.apply, free_floor_gb=50)
             self.assertEqual(self.preview(free_floor_gb=39)['blockers'], [])
 
+    def test_a_resumed_copy_needs_only_the_missing_bytes_above_the_floor(self):
+        """Codex on #237: after a crash mid-copy, the per-run floor check counts only what is still to copy."""
+        run = self.make_run(1, 'banker-done-1')
+        total = sum(len(raw) for raw in self.tree(run).values())
+        real, calls = archive.copy_verified, []
+
+        def crash_after_three(source, target, expected=None):
+            calls.append(target)
+            if len(calls) == 4:
+                raise OSError(28, 'simulated crash mid-copy')
+            return real(source, target, expected)
+        with patch('studio_evidence_archive.copy_verified', side_effect=crash_after_three):
+            with self.assertRaises(OSError):
+                self.apply()
+        missing = runs.missing_bytes(self.archive_root, run.name, runs.walk(run)[0])
+        self.assertLess(missing, total)
+        usage = SimpleNamespace(total=10 * missing, used=0, free=missing + 1)   # room for the rest, not for all of it again
+        with patch('studio_run_folder_archive.shutil.disk_usage', return_value=usage):
+            result = self.apply()
+        self.assertEqual(result['skipped_at_copy'], [])
+        self.assertEqual([(r['run_id'], r['reused']) for r in result['results']], [(run.name, 3)])
+
+    def test_installations_sharing_common_files_share_one_lock(self):
+        other = dict(self.agent.install, controller_state_root=str(self.f.base / 'other-installation'))
+        first, second = runs.ArchiverLock(self.agent.install), runs.ArchiverLock(other)
+        self.assertEqual(first.path, second.path)
+        self.assertEqual(first.path.parent, self.source)
+        with first:
+            with self.assertRaises(Refusal) as caught:
+                with second:
+                    pass
+            self.assertEqual(caught.exception.code, 'ARCHIVE_ARCHIVER_BUSY')
+            self.refused('ARCHIVE_ARCHIVER_BUSY', self.complete)
+
     def test_the_same_volume_refuses(self):
         self.make_run(1, 'banker-done-1')
         with patch('studio_evidence_archive.volume_of', return_value=1):
@@ -410,6 +444,42 @@ class ResolverTests(RunFolderFixture):
                 call()
             self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
 
+    def test_a_same_size_corruption_refuses_every_directory_reader(self):
+        """Codex on #237: files handed out through run_dir are verified when consumed, never read unchecked."""
+        from studio_batch_close import batch_exports
+        from studio_export_qualification import scan_run
+        from studio_native_observe import observe
+        run = self.make_run(1, 'banker-done-1')
+        package = self.root / 'packages' / 'banker-done-1'
+        cited = run / 'deploy' / alias(10) / 'EURUSD' / (STEM + '.set')
+        self.apply()
+        self.complete()
+        target = self.archive_root / run.name
+
+        def flip(relative):
+            path = target / relative
+            raw = bytearray(path.read_bytes())
+            raw[-1] ^= 0x01
+            path.write_bytes(bytes(raw))                       # same size, different bytes
+            runs._VERIFIED.clear()                             # as a new process would
+        for relative, calls in (('queue.GOAT', (lambda: observe(package),)),
+                                (cited.relative_to(run).as_posix(),
+                                 (lambda: batch_exports(run), lambda: scan_run(run, generated_at='t'), lambda: read_export(cited))),
+                                ('export_settings.GOAT', (lambda: scan_run(run, generated_at='t'),))):
+            original = (target / relative).read_bytes()
+            flip(relative)
+            for call in calls:
+                with self.subTest(file=relative), self.assertRaises(Refusal) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
+            (target / relative).write_bytes(original)
+            runs._VERIFIED.clear()
+        # A file in the archive folder that its manifest does not list is never read either.
+        (target / 'deploy' / alias(10) / 'EURUSD' / 'planted.set').write_bytes(b'EA_Desc=x\r\n')
+        with self.assertRaises(Refusal) as caught:
+            batch_exports(run)
+        self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
+
     def test_a_path_outside_any_run_folder_is_never_touched(self):
         for path in (self.common / 'GOAT' / 'Workers' / 'x.set', self.common / 'GOAT' / 'R0123456789ab_x' / 'y.set',
                      self.common / 'Rabcdef012345' / 'y.set', Path('relative.set')):
@@ -453,6 +523,36 @@ class CliTests(RunFolderFixture):
         code, done = self.cli('evidence-archive', '--run-folders', '--complete', '--confirm')
         self.assertEqual((code, [r['state'] for r in done['result']['results']]), (0, ['removed']))
         self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
+
+
+class StudioPrepareTests(VolumePatches, unittest.TestCase):
+    """Codex on #237: goat_studio prepare --set from an export in a completed archive still prepares it."""
+
+    def setUp(self):
+        import test_goat_studio
+        self.p = test_goat_studio.PortableControllerTests('test_human_archive_name_collision_preserves_original_request')
+        self.p.setUp()
+        self.addCleanup(self.p.tearDown)
+        self.patch_volumes(self.p.root / 'archive-volume')
+        self.archive_root.mkdir()
+
+    def test_prepare_reads_an_archived_export_and_records_its_cited_path(self):
+        run = self.p.common / 'GOAT' / 'Rabcdef012345'
+        source = run / 'deploy' / alias(1) / 'BROKER_EURUSD' / 'strategy.set'
+        source.parent.mkdir(parents=True)
+        source.write_bytes('EA_Desc=Customer Template\r\nLots=0.1||0.1||0.1||0.3||Y\r\n'.encode('utf-16'))
+        install = json.loads(self.p.path.read_text())
+        runs.apply_run(run, self.archive_root, runs.walk(run)[0], install=install, now=1.0)
+        runs.complete_run(self.p.common / 'GOAT', run, now=1.0)
+        self.assertFalse(source.exists())
+        c = self.p.bound()
+        self.p.grant(c)
+        config = self.p.root / 'settings.json'
+        config.write_text(json.dumps(dict(tester=self.p.tester, export=self.p.exports)))
+        c.prepare('beta-job', source, config)
+        recorded = read_json(Path(c.root) / 'packages' / 'beta-job.source.json')
+        self.assertEqual(recorded['set_path'], str(source.resolve()))
+        self.assertEqual(recorded['set_sha256'], hashlib.sha256(runs.read_bytes(source)).hexdigest())
 
 
 class B43MigGateTests(VolumePatches, MigrationCase):

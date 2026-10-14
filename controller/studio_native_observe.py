@@ -31,13 +31,13 @@ def observe(package):
                   process_liveness='not_observed', export_qualification='not_evaluated')
     # A run folder moved by evidence-archive --run-folders is read from its archive (studio_run_folder_archive);
     # every path reported stays the run folder's own.
-    from studio_run_folder_archive import run_dir
+    from studio_run_folder_archive import checked, run_dir
     physical = run_dir(run)
     queue = physical/'queue.GOAT'
     if not queue.exists():
         return result | dict(status='native_evidence_missing',
                              next_action='Inspect activation and process ownership; absence does not prove stopped')
-    raw = queue.read_bytes()
+    raw = checked(queue).read_bytes()
     text = raw.decode('utf-16' if raw.startswith(b'\xff\xfe') else 'utf-8-sig')
     entries = [entry.strip() for entry in text.split('\x1f') if entry.strip()]
     if len(entries)!=len(manifest['jobs']):
@@ -52,7 +52,7 @@ def observe(package):
         expected={k:str(v) for k,v in item['tester'].items()}
         if parser.defaults() or parser.sections()!=['Tester'] or dict(parser['Tester'])!=expected:
             raise ValueError('Native tester configuration differs from frozen member')
-        inputs=run/'inputs'/alias/'Inputs.GOAT';input_raw=(physical/'inputs'/alias/'Inputs.GOAT').read_bytes()
+        inputs=run/'inputs'/alias/'Inputs.GOAT';input_raw=checked(physical/'inputs'/alias/'Inputs.GOAT').read_bytes()
         if hashlib.sha256(input_raw).hexdigest()!=item['staged_sha256']:
             raise ValueError('Native strategy input drift')
         artifact=dict(path=str(inputs),sha256=hashlib.sha256(input_raw).hexdigest());artifacts.append(artifact)

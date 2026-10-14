@@ -331,6 +331,51 @@ class CompactTests(Thresholds, unittest.TestCase):
         error = self.refused('DB_COMPACT_NOT_NEEDED')
         self.assertIn('DB_COMPACT_ORIGINAL_KEPT', [b['code'] for b in error.fields['blockers']])
 
+    def test_a_stop_at_any_swap_point_leaves_a_canonical_database(self):
+        """Codex P1 on #239: a stop between the rename and the placement, or before the sidecar says kept."""
+        class HostStop(BaseException):
+            pass
+        before = self.content()
+        real_rename, real_place, real_write = os.rename, maint._place, maint._write_json
+
+        def stop_first_rename(source, target):
+            raise HostStop()
+
+        def stop_place(source, target):
+            raise HostStop()
+
+        writes = []
+
+        def stop_second_write(path, value):
+            writes.append(value.get('phase'))
+            if len(writes) == 2:
+                raise HostStop()
+            return real_write(path, value)
+
+        for name, target, replacement in (('before the rename', 'studio_db_maintenance.os.rename', stop_first_rename),
+                                          ('after the rename, before placing', 'studio_db_maintenance._place', stop_place),
+                                          ('placed, before the sidecar says kept', 'studio_db_maintenance._write_json',
+                                           stop_second_write)):
+            writes.clear()
+            with patch(target, side_effect=replacement), self.assertRaises(HostStop):
+                maint.compact(self.path, apply=True, now=1_760_000_000)
+            sidecars = list(self.root.glob('studio.sqlite.pre-vacuum-*.json'))
+            self.assertEqual(len(sidecars), 1, name)
+            self.assertEqual(json.loads(sidecars[0].read_text(encoding='utf-8'))['phase'], 'swapping', name)
+            self.assertEqual(maint.retire_pre_vacuum(self.root)['removed'], [], name)   # never removes mid-swap
+            StudioStore(self.path).close()                                              # the next open recovers
+            after = self.content()        # StudioStore adds its own missing tables to this small fixture; compare ours
+            self.assertEqual({key: after['tables'][key] for key in before['tables']}, before['tables'], name)
+            self.assertEqual((after['user_version'], after['integrity_check']), (7, ['ok']), name)
+            before = after
+            self.assertEqual(pragma(self.path, 'auto_vacuum'), 0, name)
+            self.assertEqual([p.name for p in self.root.iterdir() if '.pre-vacuum-' in p.name or p.name.endswith('.tmp')],
+                             [], name)
+            for rejected in self.root.glob('studio.sqlite.compact-rejected-*'):
+                rejected.unlink()
+        self.assertEqual(real_rename, os.rename); self.assertEqual(real_place, maint._place)
+        self.assertTrue(maint.compact(self.path, apply=True, now=1_760_000_000)['applied'])   # and it can run again
+
     def test_refuses_a_missing_database(self):
         with self.assertRaises(Refusal) as caught:
             maint.compact(self.root / 'none.sqlite', apply=True)

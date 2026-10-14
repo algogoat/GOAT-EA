@@ -25,6 +25,11 @@ class StudioStore:
         self.input_schema = None if input_schema is None else json.loads(packed(input_schema))
         self.input_schema_hash = None if input_schema is None else sha(self.input_schema)
         self.dependency_policy = None if dependency_policy is None else json.loads(packed(dependency_policy))
+        if str(path) != ':memory:':
+            # A compaction interrupted mid-swap puts the original back first, so a stop can never leave
+            # the controller to open (and create) an empty database in its place.
+            from studio_db_maintenance import recover_interrupted
+            recover_interrupted(path)
         self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         # A new store gives freed pages back (studio_db_maintenance): only possible before the first table.

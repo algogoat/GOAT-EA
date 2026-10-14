@@ -98,9 +98,46 @@ def kept_originals(path):
         if not isinstance(record, dict) or record.get('schema') != SIDECAR_SCHEMA:
             continue
         aside = sidecar.with_name(sidecar.name[:-len('.json')])
-        kept.append(dict(path=str(aside), sidecar=str(sidecar), exists=aside.is_file(),
+        kept.append(dict(path=str(aside), sidecar=str(sidecar), exists=aside.is_file(), phase=record.get('phase', 'kept'),
                          bytes=aside.stat().st_size if aside.is_file() else None, compacted_at=record.get('at')))
     return kept
+
+
+def recover_interrupted(path):
+    """Undo a compaction that a stop interrupted mid-swap (its sidecar still says ``swapping``).
+
+    Until the sidecar says ``kept`` the original is the truth: it goes back to ``studio.sqlite`` (a copy
+    already placed there is moved aside to ``.compact-rejected-<stamp>``), the temp copy is removed and
+    the sidecar is retired. StudioStore runs this before it opens the database, so an interruption can
+    never leave the controller without its database or open an empty new one in its place. Raises on
+    an I/O error (the caller must not open the database then).
+    """
+    path = Path(path)
+    recovered = []
+    for sidecar in sorted(path.parent.glob(path.name + ASIDE + '*.json')):
+        try:
+            record = json.loads(sidecar.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get('schema') != SIDECAR_SCHEMA or record.get('phase') != 'swapping':
+            continue
+        aside = sidecar.with_name(sidecar.name[:-len('.json')])
+        stamp = aside.name[len(path.name + ASIDE):]
+        rejected = None
+        if aside.exists():
+            if path.exists():
+                rejected = path.with_name(path.name + '.compact-rejected-' + stamp)
+                os.rename(path, rejected)
+            os.rename(aside, path)
+        copy = Path(str(record.get('copy') or ''))
+        if copy.name.startswith(path.name + '.compact-') and copy.name.endswith('.tmp') and copy.parent == path.parent \
+                and copy.exists():
+            copy.unlink()
+        sidecar.unlink()
+        recovered.append(dict(original_restored=str(path), from_aside=str(aside), rejected_copy=str(rejected) if rejected else None))
+    if recovered:
+        _log(path.parent, dict(operation='recover_interrupted_compaction', recovered=recovered))
+    return recovered
 
 
 def facts(path):
@@ -397,6 +434,8 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
     margin (DB_COMPACT_LOW_SPACE); the copy differs in any checked way (DB_COMPACT_MISMATCH).
     """
     path = Path(path)
+    if apply:
+        recover_interrupted(path)       # a preview never moves files
     if not path.is_file():
         raise Refusal('No controller database at ' + str(path) + '; nothing to compact.', 'DB_COMPACT_MISSING')
     now = time.time() if now is None else now
@@ -492,11 +531,17 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
                 lock.execute('ROLLBACK')
             lock.close()
         # Swap: every handle of this process is closed now. Windows refuses the rename while any other
-        # process has the file open, which is exactly "held".
+        # process has the file open, which is exactly "held". The swap is journaled first (sidecar phase
+        # "swapping", fsynced): a stop anywhere until the sidecar says "kept" is undone by recover_interrupted,
+        # which StudioStore runs before it opens the database, so there is always a canonical studio.sqlite.
+        record = dict(schema=SIDECAR_SCHEMA, phase='swapping', at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
+                      database=str(path), original=str(aside), copy=str(temporary))
+        _write_json(sidecar, record)
         try:
             os.rename(path, aside)
         except OSError as error:
             temporary.unlink()
+            sidecar.unlink()
             raise Refusal('The controller database is held (' + str(error)[:200] + '); the copy was removed and '
                           'nothing was changed.', 'DB_COMPACT_DB_HELD') from None
         try:
@@ -513,6 +558,7 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
                 os.rename(aside, path)
             if temporary.exists():
                 temporary.unlink()
+            sidecar.unlink()
             code = 'DB_COMPACT_MISMATCH' if isinstance(error, ValueError) else 'DB_COMPACT_SWAP_FAILED'
             raise Refusal('Compaction was rolled back: ' + str(error)[:240] + '. The original is in place.', code) from None
         try:
@@ -525,15 +571,16 @@ def compact(path, *, busy=None, apply=False, now=None, disk_free=None, gate=None
             rejected = path.with_name(path.name + '.compact-rejected-' + stamp)
             os.rename(path, rejected)
             os.rename(aside, path)
+            sidecar.unlink()
             raise Refusal('The placed copy did not verify (' + ', '.join(found) + '); the original was put back and '
                           'the copy kept at ' + str(rejected) + '.', 'DB_COMPACT_MISMATCH', differences=found)
-        record = dict(schema=SIDECAR_SCHEMA, at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
-                      database=str(path), original=str(aside), original_bytes=aside.stat().st_size,
+        record.update(phase='kept', original_bytes=aside.stat().st_size,
                       compacted_bytes=path.stat().st_size, live_bytes=info['live_bytes'],
                       auto_vacuum_after=placed_pages['auto_vacuum'],
                       tables={name: value['rows'] for name, value in original['tables'].items()},
                       schema_sha256=original['schema_sha256'],
                       retire='after the next successful batch start (retire_pre_vacuum)')
+        record.pop('copy')
         _write_json(sidecar, record)
     finally:
         gate_scope.__exit__(None, None, None)
@@ -559,6 +606,8 @@ def retire_pre_vacuum(root):
     try:
         database = Path(root) / 'studio.sqlite'
         for item in kept_originals(database):
+            if item['phase'] != 'kept':
+                continue                    # an interrupted swap is recover_interrupted's, never removed here
             aside, sidecar = Path(item['path']), Path(item['sidecar'])
             if not _STAMP.fullmatch(aside.name[len(database.name + ASIDE):]):
                 continue

@@ -67,6 +67,23 @@ class BenchmarkTests(unittest.TestCase):
 
     def report(self):return benchmark.benchmark_report(self.c,'customer-batch')
 
+    def test_benchmark_report_follows_an_archived_run_folder(self):
+        """Review on GOAT-EA#237: benchmark-report read queue.GOAT (and every native file) from the raw run path."""
+        import os
+        import studio_run_folder_archive as runs
+        before=self.report()
+        archive_root=self.root/'archive-volume';archive_root.mkdir()
+        volume=lambda path:2 if os.path.normcase(os.path.abspath(path)).startswith(os.path.normcase(str(archive_root))) else 1
+        for name,kw in (('volume_of',dict(side_effect=volume)),('volume_guid_of',dict(return_value=None)),('volume_mounts',dict(return_value=[]))):
+            patcher=patch('studio_evidence_archive.'+name,**kw);patcher.start();self.addCleanup(patcher.stop)
+        runs._clear_caches();self.addCleanup(runs._clear_caches)
+        runs.apply_run(self.native,archive_root,runs.walk(self.native)[0],install=self.c.install,now=1.0)
+        runs.complete_run(self.native.parent,self.native,now=1.0)
+        self.assertEqual(sorted(p.name for p in self.native.iterdir()),[runs.STUB])
+        after=self.report()
+        for value in (before,after):value.pop('observed_at')
+        self.assertEqual(after,before)
+
     def test_exact_member_observations_and_gap_are_not_forecasts(self):
         report=self.report()
         self.assertEqual([m['elapsed_seconds'] for m in report['members']],[120,180])

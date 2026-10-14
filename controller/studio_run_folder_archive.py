@@ -394,6 +394,21 @@ def read_bytes(path):
     return (_io(physical) if moved else Path(physical)).read_bytes()
 
 
+def cite(value, physical_base, logical_base):
+    """``value`` (a reader's result: dicts, lists, strings) with every path string below ``physical_base`` (a run
+    folder's archive copy) given back as the cited path below ``logical_base``. Unchanged when nothing was archived."""
+    physical, cited = str(physical_base), str(logical_base)
+    if physical == cited:
+        return value
+    if isinstance(value, dict):
+        return {key: cite(item, physical_base, logical_base) for key, item in value.items()}
+    if isinstance(value, list):
+        return [cite(item, physical_base, logical_base) for item in value]
+    if isinstance(value, str) and (value == physical or value.startswith(physical + os.sep)):
+        return cited + value[len(physical):]
+    return value
+
+
 def logical(path, physical_base, logical_base):
     """``path`` (found below ``physical_base``, a run folder's archive copy) as the cited path below ``logical_base``."""
     try:

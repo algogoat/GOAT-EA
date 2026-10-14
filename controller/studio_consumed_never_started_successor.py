@@ -89,6 +89,11 @@ def proof(c,state,scope,first_proof,*,successor_id=None,require_released=True):
         .decode('utf-16').replace(';Pending_',';Queued_',1).encode('utf-16')).hexdigest()
     expected['queue.GOAT']=native['artifacts'][0]['sha256']
     common=safe_path(paths['common_run'])
+    from studio_run_folder_archive import STUB
+    if (common/STUB).exists():
+        # Not "work artifacts": evidence-archive --run-folders moved this run folder (review on GOAT-EA#237).
+        raise ValueError('Consumed replacement run folder was moved by evidence-archive --run-folders ('+STUB+'); bring it '
+                         'back with evidence-archive --run-folders --restore first')
     actual={p.relative_to(common).as_posix():_digest(p) for p in common.rglob('*') if p.is_file()}
     if actual!=expected:raise ValueError('Consumed replacement has work artifacts or changed native material')
     cache=safe_path(Path(plan['research_binding']['research_data_root'])/'Tester/cache')

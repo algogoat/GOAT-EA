@@ -53,8 +53,9 @@ LIMITATIONS=[
 ]
 
 def source_bytes(path):
+    from studio_run_folder_archive import read_bytes   # a source SET may live in an archived run folder
     path=Path(path).resolve()
-    raw=path.read_bytes()
+    raw=read_bytes(path)
     if not raw or len(raw)>MAX_SET_BYTES: raise ValueError('SET must be nonempty and at most 2 MB')
     if not raw.startswith(b'\xff\xfe'): raise ValueError('GOAT template requires UTF-16 LE BOM; clone an original released SET')
     text=raw[2:].decode('utf-16-le')

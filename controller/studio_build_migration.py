@@ -152,8 +152,9 @@ def baseline_paths(set_path):
 
 
 def _sha_file(path):
+    from studio_run_folder_archive import checked     # a file of an archived run folder is verified before it is read
     digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
+    with Path(checked(path)).open('rb') as stream:
         for block in iter(lambda: stream.read(1 << 20), b''):
             digest.update(block)
     return digest.hexdigest()
@@ -164,15 +165,19 @@ def check_original(entry, set_path):
 
     Returns the pinned baseline: ``{set, csv, deals}`` SHA-256s (deals None when the export has no deals.csv).
     """
+    # An original inside a run folder moved by evidence-archive --run-folders is read from its archive copy
+    # (studio_run_folder_archive); the recorded original_path stays the citation.
+    from studio_run_folder_archive import resolve
     try:
-        raw = Path(entry['original_path']).read_bytes()
+        physical = resolve(entry['original_path'])
+        raw = Path(physical).read_bytes()
     except OSError as exc:
         raise ValueError('build_migration: the recorded original of SET %s cannot be read (%s)' % (set_path, exc)) from None
     actual = hashlib.sha256(raw).hexdigest()
     if actual != entry['original_sha256']:
         raise ValueError('build_migration: SET %s no longer matches its recorded original (sha256 %s, recorded %s)'
                          % (set_path, actual[:12], entry['original_sha256'][:12]))
-    csv_path, deals_path = baseline_paths(entry['original_path'])
+    csv_path, deals_path = baseline_paths(physical)
     try:
         csv_sha = _sha_file(csv_path)
     except OSError as exc:

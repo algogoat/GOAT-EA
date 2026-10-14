@@ -156,10 +156,17 @@ skipped phases proved. It records the result in `resume_check`.
      and the same content apart from the expiry. Otherwise the code is `RESUME_REGISTRATION_CHANGED`.
    - **A fresh status read.** It must be observed (`RESUME_DASHBOARD_NOT_READY`) and inert (`RESUME_NOT_INERT`).
 
-Any other refusal **unwinds** (D3), journals `failure` and `resume_check`, and raises a `Refusal` with the code. The
-unwind passes the proven identity to `close_terminal` (`expected_process`), which re-checks it right before its close.
-A retained registration that is not byte for byte the one this deployment wrote (its journaled sha256) is left in place
-with its request, and the journal says `mailbox_left_in_place`. The next
+Any other refusal **unwinds** (D3), journals `failure` and `resume_check`, and raises a `Refusal` with the code.
+
+**Every unwind after the launch** (a resume refusal, a timeout, a child that did not start, a stale broker fit, a
+controller crash; Claude-Mac 6161835586) passes the journaled `launched_process` as `expected_process`. The unwind
+first compares it with the MT5 running now and, if it is not the same pid, image and creation time, closes nothing,
+sets nothing aside and journals why in `auto_unwind.error`; `close_terminal` re-checks the same identity under its gate
+right before its close. The same pid without a recorded (or with another) creation time reads "GOAT can't prove the MT5
+running now ... is the one this deployment launched", never "a different MT5"; the person's step is deploy-stop. A
+retained registration that is not byte for byte the one this deployment wrote (its journaled sha256) is left in place
+with its request, and the journal says `mailbox_left_in_place`. `deploy-stop` (the person's own command, Algo off and
+flat) is the one close of a loaded deploy without `expected_process`. The next
 `deploy-load` is then a fresh attempt with a new 4 h registration, once MT5 is open again: the same rule as every
 auto-unwind. **Decided here (open question M5):** v0 unwinds and never registers again on resume, because a new
 registration would touch the EA's registration contract.
@@ -187,7 +194,9 @@ so no loaded MT5 is left with Algo Trading off. An ack or audit that ends on a r
 the plain refusal and its durable phase, so the next `deploy-load` resumes there (with the broker-fit re-check of
 GOAT-EA#240 for a broker-fit plan). **`deploy-status`** during a dashboard, ack or audit wait answers
 `dashboard: {result: pending, reason: request_still_live | mutation_started}`, as the link step treats the same
-refusals, instead of a `dashboard_error`.
+refusals, instead of a `dashboard_error`. The other direction holds too: inside deploy-load's own dashboard, ack and
+audit polls, a request a concurrent `deploy-status` left live (`RequestStillLive`) is pending until the poll's deadline,
+never a refusal or an unwind.
 
 A process kill runs no handler. The journal then stays at its phase, and section 3 covers the resume.
 

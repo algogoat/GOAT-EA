@@ -628,7 +628,16 @@ def _poll_until(controller, ident, action, accept, *, seconds, step_timeout=20, 
     deadline = clock() + seconds
     last = None
     while clock() < deadline:
-        last = request(controller, ident, action, timeout=min(step_timeout, max(1, int(deadline - clock()))))
+        try:
+            last = request(controller, ident, action, timeout=min(step_timeout, max(1, int(deadline - clock()))))
+        except ValueError as exc:
+            if not _is_request_still_live(exc):
+                raise
+            # Another caller's request (a concurrent deploy-status) is still live: pending, as the link step treats it
+            # (Claude-Mac 6161835586 item 2). Asked again after it can have been answered; at the deadline it is a timeout.
+            last = dict(result='receipt_timeout', request_still_live=True)
+            sleep(LINK_POLL_SECONDS)
+            continue
         if accept(last):
             return last
         if last['result'] not in ('receipt_timeout', 'observed', 'child_attached'):
@@ -819,6 +828,17 @@ def _named_rows(failed):
     return shown + (f'; and {len(failed) - 5} more' if len(failed) > 5 else '')
 
 
+def _not_proven(running, launched):
+    """Why the running MT5 is not proven to be the one this deployment launched, in plain words. The same pid with no
+    recorded (or another) creation time cannot be proven ours; another pid is another MT5 (Claude-Mac 6161835586)."""
+    if running.get('pid') == launched.get('pid'):
+        return ('GOAT can\'t prove the MT5 running now (pid ' + str(running.get('pid')) + ', started ' + str(running.get('created_utc'))
+                + ') is the one this deployment launched: ' + ('no creation time was recorded at the launch' if not launched.get('created_utc')
+                                                             else 'it was launched at ' + str(launched.get('created_utc'))))
+    return ('The MT5 running now (pid ' + str(running.get('pid')) + ', started ' + str(running.get('created_utc'))
+            + ') is not the one this deployment launched (pid ' + str(launched.get('pid')) + ', started ' + str(launched.get('created_utc')) + ')')
+
+
 def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason, clock=time.monotonic,
             close_key='unwind_close', expected_process=None, keep_mailbox=False):
     """Unload the deployment from an inert terminal: close MT5 normally, rename the dashboard state, the deploy
@@ -833,9 +853,7 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
         from studio_research_profile import _same_identity
         running = process.inspect()
         if running is not None and not _same_identity(running, expected_process):
-            raise ValueError('The MT5 running now (pid ' + str(running.get('pid')) + ', started ' + str(running.get('created_utc'))
-                             + ') is not the one this deployment launched (pid ' + str(expected_process.get('pid')) + ', started '
-                             + str(expected_process.get('created_utc')) + '); GOAT did not close it or set anything aside')
+            raise ValueError(_not_proven(running, expected_process) + '; GOAT closed nothing and set nothing aside')
     if launched and process.inspect() is not None:
         proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
         if proof['algo_trading']:
@@ -1007,12 +1025,25 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         time, so an unwind given it refuses to close anything rather than guess."""
         return record.get('launched_process') or dict(pid=record.get('pid'), executable=None, created_utc=None)
 
+    def registration_owned():
+        """The retained registration is byte for byte the one this deployment wrote (its journaled sha256)."""
+        try:
+            _, digest = read(portfolio_root(controller) / 'registration.json', 131072)
+        except (OSError, ValueError):
+            return False
+        return digest is not None and digest == record.get('registration_sha256')
+
     def fail_and_unwind(code, message, failed=(), *, refusal=None, refusal_code=None, unwind=None, **facts):
         """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path. A never-launched
         journal ('staged', 'closed') is set aside the same way without touching MT5. With `refusal` (a broker-fit
         FIT_STALE) the error keeps its code and fields; ``refusal_code`` (the remote deploy v0 codes) makes the final
         refusal a typed Refusal; the older codes keep their plain one. ``unwind``: _unwind's expected_process /
-        keep_mailbox for a resume refusal."""
+        keep_mailbox when a caller has its own.
+
+        Every unwind after the launch (Claude-Mac 6161835586 item 1) closes only the MT5 this deployment launched: it
+        passes the journaled launched_process, which _unwind and close_terminal re-check (pid, image, creation time).
+        A journal without a creation time cannot prove it, so nothing is closed and the refusal says so (deploy-stop
+        is the person's step). A registration that is not this deployment's own is never renamed aside."""
         launched = record['phase'] not in ('validated', 'staged', 'closed')
 
         def refuse(text):
@@ -1025,9 +1056,9 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         write_json(where['journal'], record)
         unwinding.append(code)
         options = dict(unwind or {})
-        if launched and 'expected_process' not in options and (record.get('launched_process') or {}).get('created_utc'):
-            # Review 6161742880: every unwind after a launch whose identity was read closes only that MT5.
-            options['expected_process'] = record['launched_process']
+        if launched:
+            options.setdefault('expected_process', launched_identity())
+            options.setdefault('keep_mailbox', not registration_owned())
         try:
             _unwind(controller, session, record, where, 'unwind-' + deployment_id[:24] + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
                     mt5=mt5, process=process, close=closer, reason=code, clock=clock, **options)
@@ -1066,20 +1097,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         launched = launched_identity()
         mailbox_root = portfolio_root(controller)
 
-        def registration_owned():
-            """The retained registration is byte for byte the one this deployment wrote (its journaled sha256)."""
-            try:
-                _, digest = read(mailbox_root / 'registration.json', 131072)
-            except (OSError, ValueError):
-                return False
-            return digest is not None and digest == record.get('registration_sha256')
-
         def refuse(code, message):
             # The unwind closes only the MT5 this deployment launched (close_terminal re-checks it right before its close)
-            # and never renames aside a registration (or its request) that is not this deployment's own.
+            # and never renames aside a registration (or its request) that is not this deployment's own (fail_and_unwind).
             facts.update(ok=False, code=code)
-            fail_and_unwind(code, message, refusal_code=code,
-                            unwind=dict(expected_process=launched, keep_mailbox=not registration_owned()))
+            fail_and_unwind(code, message, refusal_code=code)
 
         def refuse_untouched(code, message):
             """A refusal about an MT5 GOAT did not launch: journaled, nothing closed, renamed or unloaded (review item 3)."""
@@ -1090,7 +1112,6 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             raise Refusal(message + ' GOAT closed, unloaded and renamed nothing. Check which MT5 this is; run deploy-stop to unload '
                           'this deployment from it once it is inert, then deploy-load again.', code)
 
-        expected = launched.get('pid')
         begin('launch_observe')
         deadline = clock() + profile['launchObserveSeconds']
         while True:
@@ -1106,8 +1127,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             refuse('RESUME_TERMINAL_GONE', 'The MT5 this deployment launched is no longer running, so GOAT did not resume it.')
         if not _same_identity(running, launched):
             facts['terminal_created_utc'] = running.get('created_utc')
-            refuse_untouched('RESUME_TERMINAL_CHANGED', 'A different MT5 process is running than the one this deployment launched (pid '
-                             + str(expected) + ', started ' + str(launched.get('created_utc')) + '), so GOAT did not resume it.')
+            refuse_untouched('RESUME_TERMINAL_CHANGED', _not_proven(running, launched) + ', so GOAT did not resume it.')
         changed = [m['name'] for m in members if not _same_bytes(m['path'], m['raw'])]
         if changed:
             refuse('RESUME_BYTES_CHANGED', 'A staged SET changed after the launch (' + ', '.join(changed[:3]) + '), so GOAT did not resume it.')
@@ -1190,7 +1210,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                                                     or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]):
                         raise ValueError('This terminal already has a saved GOAT dashboard portfolio; stop or remove it before deploying another')
                     if (portfolio_root(controller) / 'registration.json').exists():
-                        raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying')
+                        # The person's step, named (Claude-Mac 6161835586): a crash between writing registration.json and
+                        # journaling 'registered', or an unwind that could not prove the registration was its own, keeps it.
+                        raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying: '
+                                         'with deploy-status showing no live deployment, rename '
+                                         + str(portfolio_root(controller) / 'registration.json')
+                                         + ' aside (never delete it), then run deploy-load again')
                     if namespace_conflict(controller):
                         raise ValueError('Another MT5 terminal with the same data folder name already uses GOAT\'s dashboard files; GOAT will not deploy here')
                     if process.inspect() is None:
@@ -1310,8 +1335,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                 broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
             except Refusal as stale:
                 if stale.code != broker_fit.FIT_STALE:
-                    raise
-                fail_and_unwind(stale.code, str(stale), refusal=stale, unwind=dict(expected_process=launched_identity()))
+                    # The person's step, named (Claude-Mac 6161835586): the fit could not be read, so the deploy goes no
+                    # further and is not unloaded; MT5 stays loaded with Algo Trading off at this phase.
+                    raise Refusal(str(stale) + ' The deploy stays loaded at ' + record['phase'] + ' with Algo Trading off and '
+                                  'nothing traded: run deploy-load again to re-check the fit, or deploy-stop to unload it.',
+                                  stale.code, **stale.fields) from stale
+                fail_and_unwind(stale.code, str(stale), refusal=stale)
             fit_unchecked = False
 
         if record['phase'] == 'dashboard_ready':

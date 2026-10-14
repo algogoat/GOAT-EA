@@ -17,7 +17,7 @@ scripted dashboard on real mailbox files and fake clocks. No MT5 terminal is tou
 - The CLI's --timing-profile on deploy-load, deploy-stop and close-terminal.
 """
 import copy
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 import hashlib
 from io import StringIO
 import json
@@ -777,6 +777,164 @@ class CrashJournal(Base):
         journal = self.journal()
         self.assertEqual(journal['phase'], 'dashboard_ready')
         self.assertNotIn('failure', journal)
+
+
+LAUNCHED = dict(pid=77, executable='terminal64.exe', created_utc='2026-10-02T01:00:00+00:00')   # the relaunch fixture's MT5
+FOREIGN = dict(pid=91, executable='terminal64.exe', created_utc='2026-10-02T05:00:00+00:00')
+
+
+class UnwindIdentity(Base):
+    """Claude-Mac 6161835586 item 1: every unwind after the launch passes the journaled launched_process (close_terminal
+    re-checks pid, image and creation time) and keeps a registration that is not this deployment's own."""
+
+    def failing_load(self, scenario):
+        clock, state = Clock(), dict(applied=False)
+        def request(controller, ident, action, timeout=60):
+            if scenario == 'dashboard_not_ready' and action == 'status':
+                clock.t += timeout
+                return dict(result='receipt_timeout', id='0' * 32, requestRetained=True)
+            if scenario == 'controller_crash' and action == 'link_children':
+                raise RuntimeError('bug in a fake')
+            if scenario == 'audit_timeout' and action == 'audit':
+                clock.t += timeout
+                return dict(result='receipt_timeout', id='0' * 32, requestRetained=True)
+            receipt = mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+            if action == 'apply_policy':
+                state['applied'] = True
+            elif scenario == 'not_inert_after_start' and action == 'status':
+                receipt = receipt | dict(tradingAllowed=True)
+            elif scenario == 'ack_timeout' and action == 'status' and state['applied']:
+                clock.t += 5
+                receipt = receipt | dict(commandPending=True)
+            return receipt
+        ea = self.start_ea(pairing='none', **(dict(unstarted={1}) if scenario == CHILD else {}))
+        refusal = patch.object(deploy, 'portfolio_register', side_effect=ValueError('refused for the test')) \
+            if scenario == 'registration_refused' else nullcontext()
+        calls, real = [], deploy._unwind
+        def unwind(*args, **kwargs):
+            calls.append((args[2]['phase'], kwargs.get('expected_process'), kwargs.get('keep_mailbox')))
+            return real(*args, **kwargs)
+        with patch.object(deploy, '_unwind', unwind), refusal, self.relaunch(), self.assertRaises(ValueError):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=request, sleep=clock.sleep, clock=clock)
+        return ea, calls
+
+    def unwinds_with_the_launched_identity(self, scenario, at_phase, keep, closed=True):
+        ea, calls = self.failing_load(scenario)
+        # One unwind, from this phase, closing only the launched MT5; a registration GOAT never wrote is kept.
+        self.assertEqual(calls, [(at_phase, LAUNCHED, keep)])
+        journal = self.journal()
+        self.assertEqual((journal['failure']['code'], journal['launched_process']), (scenario, LAUNCHED))
+        if closed:
+            self.assertEqual((journal['phase'], journal['auto_unwind']['status']), ('stopped', 'unwound'))
+            self.assertEqual(ea.shutdowns, 2, 'the proven MT5 was closed once more')
+        return journal
+
+    def test_registration_refused_at_launched(self):
+        self.unwinds_with_the_launched_identity('registration_refused', 'launched', True)
+
+    def test_dashboard_not_ready_at_registered(self):
+        self.unwinds_with_the_launched_identity('dashboard_not_ready', 'registered', False)
+
+    def test_not_inert_after_start_at_registered(self):
+        # The dashboard reported Algo on; the broker read (Algo off) admits the unwind, and close_terminal closes the
+        # proven MT5 (in this fixture through its controller close, so the fake EA's shutdown count is not the check).
+        journal = self.unwinds_with_the_launched_identity('not_inert_after_start', 'registered', False, closed=False)
+        self.assertEqual((journal['phase'], journal['auto_unwind']['status']), ('stopped', 'unwound'))
+        self.assertIsNone(self.process.identity, 'the proven MT5 was closed')
+
+    def test_child_not_started_at_dashboard_ready(self):
+        self.unwinds_with_the_launched_identity(CHILD, 'dashboard_ready', False)
+
+    def test_controller_crash_at_dashboard_ready(self):
+        self.unwinds_with_the_launched_identity('controller_crash', 'dashboard_ready', False)
+
+    def test_ack_timeout_at_attached(self):
+        self.unwinds_with_the_launched_identity('ack_timeout', 'attached', False)
+
+    def test_audit_timeout_at_policy_applied(self):
+        self.unwinds_with_the_launched_identity('audit_timeout', 'policy_applied', False)
+
+    def resume_ack_timeout(self):
+        clock = Clock()
+        def unacknowledged(controller, ident, action, timeout=60):
+            receipt = mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+            if action == 'status':
+                clock.t += 5
+                receipt = receipt | dict(commandPending=True)
+            return receipt
+        with self.relaunch() as launch, self.assertRaises(ValueError) as caught:
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=unacknowledged, sleep=clock.sleep, clock=clock)
+        launch.assert_not_called()
+        return str(caught.exception)
+
+    def assert_nothing_touched(self, ea, message, why):
+        self.assertIn(why, message)
+        journal = self.journal()
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['auto_unwind']['status']), ('attached', 'ack_timeout', 'failed'))
+        self.assertIn(why, journal['auto_unwind']['error'])
+        self.assertEqual((ea.shutdowns, self.process.closed), (1, []), 'nothing was closed')
+        self.assertTrue(deploy.paths(self.c, 'e' * 32)['state'].exists() and self.registration_path().exists(), 'nothing set aside')
+
+    def test_a_resume_at_attached_never_closes_a_foreign_mt5(self):
+        ea = self.start_ea(pairing='none')
+        self.crash_at('apply_policy')
+        self.assertEqual(self.journal()['phase'], 'attached')
+        self.process.identity = dict(FOREIGN)
+        message = self.resume_ack_timeout()
+        self.assert_nothing_touched(ea, message, '(pid 91, started 2026-10-02T05:00:00+00:00) is not the one this deployment launched')
+        self.assertEqual(self.process.identity, FOREIGN, 'the foreign MT5 keeps running')
+
+    def test_a_journal_without_a_creation_time_cannot_prove_the_mt5_is_ours(self):
+        ea = self.start_ea(pairing='none')
+        self.crash_at('apply_policy')
+        journal = self.journal()
+        del journal['launched_process']   # a journal written before the identity was recorded
+        deploy.paths(self.c, 'e' * 32)['journal'].write_text(json.dumps(journal))
+        message = self.resume_ack_timeout()
+        self.assert_nothing_touched(ea, message, "GOAT can't prove the MT5 running now (pid 77, started 2026-10-02T01:00:00+00:00) is the one "
+                                                 'this deployment launched: no creation time was recorded at the launch')
+        self.assertNotIn('is not the one', message)
+        self.assertIn('Then run deploy-stop', message)
+
+
+CHILD = 'child_not_started'
+
+
+class PollStillLive(Base):
+    """Claude-Mac 6161835586 item 2: a concurrent deploy-status request is pending inside _poll_until, never a refusal."""
+
+    def still_live_once(self, at):
+        seen = dict(applied=False, raised=0)
+        def request(controller, ident, action, timeout=60):
+            if action == 'apply_policy':
+                seen['applied'] = True
+            elif action == 'status' and not seen['raised'] and (at == 'dashboard' or seen['applied']):
+                seen['raised'] += 1
+                raise mailbox.RequestStillLive(mailbox.REQUEST_STILL_LIVE_MESSAGE)
+            return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+        ea = self.start_ea(pairing='none')
+        with self.relaunch():
+            result = deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=request, sleep=lambda s: None)
+        self.assertEqual((result['phase'], seen['raised'], ea.shutdowns), ('ready', 1, 1), 'pending, then ready, never unwound')
+        self.assertNotIn('failure', result)
+
+    def test_a_live_status_request_at_the_first_ack_poll_is_pending(self):
+        self.still_live_once('ack')
+
+    def test_a_live_status_request_during_the_dashboard_wait_is_pending(self):
+        self.still_live_once('dashboard')
+
+    def test_still_live_until_the_deadline_is_a_timeout(self):
+        clock = Clock()
+        def request(controller, ident, action, timeout=60):
+            raise mailbox.RequestStillLive(mailbox.REQUEST_STILL_LIVE_MESSAGE)
+        last = deploy._poll_until(self.c, None, 'status', lambda r: False, seconds=30, request=request, sleep=clock.sleep, clock=clock)
+        self.assertEqual(last['result'], 'receipt_timeout')
+        self.assertTrue(deploy._timed_out(last))
+        def other(controller, ident, action, timeout=60):
+            raise ValueError('Retained portfolio request belongs to another registration')
+        with self.assertRaisesRegex(ValueError, 'another registration'):
+            deploy._poll_until(self.c, None, 'status', lambda r: False, seconds=30, request=other, sleep=clock.sleep, clock=clock)
 
 
 class DeployStatus(Base):

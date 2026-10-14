@@ -336,7 +336,8 @@ def compact(controller, *, apply=False):
     outcome = dict(applied=bool(done), receipts=done, receipt_bytes_before=sum(r['bytes_before'] for r in done),
                    receipt_bytes_after=sum(r['bytes_after'] for r in done), already_compact=compact_rows,
                    skipped=skipped, journal=journal,
-                   next_action=('Receipts compacted. studio.sqlite keeps its size until a separate reviewed VACUUM.'
+                   next_action=('Receipts compacted. An incremental studio.sqlite gives the freed pages back after this '
+                                'pass; an older one keeps its size until studio-db-compact (studio_db_maintenance).'
                                 if done else 'Nothing was compacted'))
     if journal_errors:
         outcome['journal_errors'] = journal_errors

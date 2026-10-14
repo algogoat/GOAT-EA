@@ -259,7 +259,8 @@ def compact(controller, *, apply=False):
         raw = packed(current['queue'])
         revision = current['revision'] + 1
         del current
-        controller.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?', (raw, binding))
+        from studio_db_maintenance import write_queue
+        write_queue(controller.store.db, binding, raw)
         controller.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?', (binding,))
         after = len(raw)                    # packed() is ASCII: characters == stored bytes
         del raw

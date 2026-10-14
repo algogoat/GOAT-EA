@@ -642,6 +642,10 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 record['attempt_id'] = intent['attempt_id']
                 record['status'] = 'observing'
                 _save(path, record, clock)
+                # A successful start on a compacted store: the original kept by studio-db-compact is no longer
+                # needed (studio_db_maintenance). Never raises.
+                from studio_db_maintenance import retire_pre_vacuum
+                retire_pre_vacuum(controller.root)
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
                 if getattr(error, 'code', None):
@@ -700,6 +704,10 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                                   pause_id=done['pause_id'])
                     _save(path, record, clock)
                 _end_state(controller, job_id, record, path, clock, end_state_fn)
+                # The lane's idle point: finish verified, terminal lease still held, no member in flight. A bounded
+                # incremental vacuum gives free pages back (studio_db_maintenance); it never raises.
+                from studio_db_maintenance import after_batch
+                after_batch(controller)
                 return _summary(path, record)
             except Exception as error:
                 record['last_error'] = str(error)

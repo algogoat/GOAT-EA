@@ -244,7 +244,8 @@ def maintenance(c):
         sources=known_sources(c)
         for p in sorted({safe_path(name) for name in sources['databases']+sources['registries']}):
             if not p.is_file():raise ValueError('Known controller database is missing')
-            db=stack.enter_context(closing(sqlite3.connect(p,timeout=1,isolation_level=None)))
+            from studio_db_maintenance import connect_existing   # mode=rw: never creates a missing database
+            db=stack.enter_context(closing(connect_existing(p,timeout=1)))
             db.execute('BEGIN IMMEDIATE')
         yield sources
 

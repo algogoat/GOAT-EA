@@ -126,7 +126,7 @@ class ResearchAuthorityTests(unittest.TestCase):
 
     def test_legacy_human_grant_classifies_atomically_without_agent_fallback(self):
         from studio_command_store import StudioStore
-        db=StudioStore(self.folder/'legacy.sqlite')
+        db=StudioStore(self.folder/'legacy.sqlite',create=True)
         self.addCleanup(db.close)
         state=db.bind('legacy','run')
         db.db.execute('DROP TRIGGER IF EXISTS studio_authority_immutable_delete')

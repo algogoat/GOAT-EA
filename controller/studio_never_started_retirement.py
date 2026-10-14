@@ -246,7 +246,8 @@ def retire(c,job_id,*,process=None,clock=time):
                 if current==old:
                     current.update(status='failed',completion=result,completion_path=str(result_path))
                     binding=packed(dict(terminal_id=c.terminal,run_id=c.run))
-                    c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))
+                    from studio_db_maintenance import write_queue
+                    write_queue(c.store.db,binding,packed(state['queue']))
                     c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
                 elif current.get('completion')!=result:raise ValueError('Canonical completion changed')
                 c.store.db.execute('COMMIT')

@@ -320,12 +320,16 @@ def tester_from_mt5(tester):
         return None
 
 
-def formula_of(tester, back_oos_date):
+def formula_of(tester, back_oos_date, formula=None):
     """The formula record whose dates these are, or None when they are not formula dates.
 
-    Reads O from ToDate - FromDate and checks FWD and BOOS against the formula (the current
-    one first, then BOOS 1/2 O for exports stamped before the lock; the record says which in
-    ``oosFormula``); the export Friday follows from ToDate and FOOS (it is not checked against any clock).
+    Reads O from ToDate - FromDate and checks FWD and BOOS against the formula; the export
+    Friday follows from ToDate and FOOS (it is not checked against any clock). ``formula``,
+    the stamped ``oosFormula`` when the caller has it, is the only one tried. Without it both
+    are tried and the record says which matched in ``oosFormula``. Where both give the same
+    dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up to the same BOOS), the pre-lock
+    'boos-1/2' wins, so an export that carries only its dates is never moved onto the newer
+    BOOS gate (nothing is re-judged).
     """
     days = tester_from_mt5(tester or {})
     try:
@@ -338,13 +342,13 @@ def formula_of(tester, back_oos_date):
     span = (to_date - start).days
     if to_date.weekday() != SATURDAY or span <= 0 or span % 7:
         return None
-    for formula in (OOS_FORMULA, LEGACY_OOS_FORMULA):
+    for candidate in ((formula,) if formula is not None else (LEGACY_OOS_FORMULA, OOS_FORMULA)):
         try:
-            weeks = split(span // 7, formula)
+            weeks = split(span // 7, candidate)
         except ValueError:
             return None
         friday = to_date - timedelta(days=1) + timedelta(days=7 * weeks['foos'])
-        record = compute(span // 7, friday, formula)
+        record = compute(span // 7, friday, candidate)
         if record['tester'] == dict(FromDate=mt5(start), ToDate=mt5(to_date), ForwardMode=4, ForwardDate=mt5(forward)) \
                 and record['export']['BackOOSDate'] == mt5(back):
             return record
@@ -630,7 +634,7 @@ def not_applicable(reason):
                 plain='The OOS window rule does not apply: ' + reason + '.')
 
 
-def judge_retest(original, retest, *, tester, evidence_end=None):
+def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=None):
     """Score one OOS catch-up re-test (the FOOS held-out replay) with the window rule.
 
     ``original``/``retest``: studio_evidence.read_export records; ``tester``: the original
@@ -643,7 +647,8 @@ def judge_retest(original, retest, *, tester, evidence_end=None):
     after the export Friday count toward FOOS (they follow the optimization end and are never
     ranked), but FOOS is never judged before its full 1/4 O has been tested. `evidence_end` is the catch-up's
     resolved end (it may be any closed trading day, `auto_day`); the re-test is judged through the earlier of it
-    and the re-test's own end, and the result stamps it as `evidenceEnd`.
+    and the re-test's own end, and the result stamps it as `evidenceEnd`. ``oos_formula``: the export's stamped
+    formula when known (``formula_of``); otherwise it is read from the dates.
     """
     from pathlib import Path
     from studio_build_migration import refuse
@@ -657,7 +662,7 @@ def judge_retest(original, retest, *, tester, evidence_end=None):
         back = mt5(_day(back)) if back else None
     except ValueError:
         back = None
-    record = formula_of(tester, back)
+    record = formula_of(tester, back, oos_formula)
     if record is None:
         return not_applicable('the optimization dates were not set by the OOS window formula')
     original_end = _day(original['evidence_end'])

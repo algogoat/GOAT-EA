@@ -86,9 +86,12 @@ Before the 2026-10-11 lock reached the controller, BOOS was 1/2 O (3 months: 7 w
 - `batch-resume` successors keep their source's formula (`oos_windows.oosFormula` in the
   successor plan), so a 1/2 O batch resumes with its own 1/2 O dates. New plans leave
   `oosFormula` out.
-- Catch-up judging recognises an export's formula from its dates (1/3 O first, then 1/2 O) and
-  judges a 1/2 O export with the BOOS bar it had (PF >= 1.0 and DD); `oos_rule` stamps
-  `oosFormula` and `boosGate`. The SAMPLE, FWD and FOOS dates are identical under both
+- Catch-up judging recognises an export's formula from its dates, because the export and its
+  run folder carry only dates. It judges a 1/2 O export with the BOOS bar it had (PF >= 1.0 and
+  DD). Where both formulas give the same dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up
+  to the same BOOS), the pre-lock 1/2 O wins unless the caller passes the stamped formula
+  (`judge_retest(..., oos_formula=...)`), so no export moves onto the newer gate by inference.
+  `oos_rule` stamps `oosFormula` and `boosGate`. The SAMPLE, FWD and FOOS dates are identical under both
   formulas; only BOOS differs.
 
 ## How FOOS is held out with the EA's existing inputs (no EA change)

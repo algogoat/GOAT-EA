@@ -592,6 +592,21 @@ class RetestTests(RetestFixture, unittest.TestCase):
         self.assertEqual(result['windows_dates']['boos'], dict(first_day='2026-04-18', last_day='2026-06-05'))
         self.assertEqual(self.judge(losers=dict(boos=21, sample=30))['status'], 'fail')     # a BOOS loss fails the PF bar
 
+    def test_ambiguous_dates_keep_the_pre_lock_gate_unless_the_stamp_says_otherwise(self):
+        # O = 4 weeks (also optimization_months=1): 1/2 O and 1/3 O both round up to a 2-week BOOS, so the dates alone
+        # cannot tell the formulas apart. Without a stamp the export keeps the pre-lock gate; a stamp decides.
+        self.record = w.compute(4, '2026-10-02')
+        self.assertEqual(w.split(4), w.split(4, 'boos-1/2'))
+        back = self.record['export']['BackOOSDate']
+        self.assertEqual(w.formula_of(self.record['tester'], back)['oosFormula'], 'boos-1/2')
+        self.assertEqual(w.formula_of(self.record['tester'], back, 'boos-1/3'), self.record)
+        original, retest = self.build(losers=dict(boos=21))                                      # a BOOS loss
+        legacy = w.judge_retest(original, retest, tester=self.record['tester'])
+        self.assertEqual((legacy['oosFormula'], legacy['boosGate'], legacy['status']), ('boos-1/2', 'pf_dd', 'fail'))
+        stamped = w.judge_retest(original, retest, tester=self.record['tester'], oos_formula='boos-1/3')
+        self.assertEqual((stamped['oosFormula'], stamped['boosGate']), ('boos-1/3', 'lenient_p10'))
+        self.assertEqual(stamped['windows']['boos']['in_sample_windows'], 1)
+
     def test_measurement_definitions_are_stated(self):
         result = self.judge()
         self.assertEqual(result['definitions'], w.DEFINITIONS)

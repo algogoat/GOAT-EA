@@ -51,7 +51,11 @@ MUTATIONS = [
     ('stamped record re-derived with the current formula', RULE,
      "fresh = compute(record.get('o_weeks'), record.get('export_friday'), record_formula(record))",
      "fresh = compute(record.get('o_weeks'), record.get('export_friday'), OOS_FORMULA)"),
-    ('pre-lock exports not recognised', RULE, 'for formula in (OOS_FORMULA, LEGACY_OOS_FORMULA):', 'for formula in (OOS_FORMULA,):'),
+    ('pre-lock exports not recognised', RULE, 'else (LEGACY_OOS_FORMULA, OOS_FORMULA))', 'else (OOS_FORMULA,))'),
+    ('ambiguous dates moved onto the new BOOS gate', RULE, 'else (LEGACY_OOS_FORMULA, OOS_FORMULA))',
+     'else (OOS_FORMULA, LEGACY_OOS_FORMULA))'),
+    ('stamped formula ignored by the catch-up judge', RULE, 'record = formula_of(tester, back, oos_formula)',
+     'record = formula_of(tester, back)'),
     ('successor drops its stamped formula', RULE, ", oosFormula=record_formula(record))", ")"),
     # The lenient BOOS gate (Claude-Mac 6106961195): no profit bar, loss vs rolling in-sample windows of BOOS's length.
     ('BOOS needs a profit again', RULE, "lenient=gate == 'lenient_p10'", 'lenient=False'),

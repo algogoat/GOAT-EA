@@ -300,7 +300,8 @@ class Controller:
         tester=validate_tester(config['tester']);exports=validate_export(config['export'],tester)
         if tester['Expert']!=self.install['ea_relative_path']: raise ValueError('Tester Expert must match installation')
         if tester['ForwardMode']!=4: raise ValueError('Beta native pipeline requires custom forward mode 4')
-        raw=Path(set_path).read_bytes();info=inspect_set(raw);values=read_values(raw)
+        from studio_run_folder_archive import read_bytes as archived_read   # a cited export in an archived run folder
+        raw=archived_read(set_path);info=inspect_set(raw);values=read_values(raw)
         from studio_template_tools import check_risk_chosen
         check_risk_chosen(raw,values,self.schema)   # the bytes' lineage marker; validate_strategy sees values only
         package=self.root/'packages'/job_id

@@ -325,7 +325,8 @@ def _native(controller, job, now):
     manifest, _ = _bounded_json(package / 'manifest.json', MAX_MANIFEST_BYTES)
     if not isinstance(manifest, dict) or not isinstance(manifest.get('jobs'), list):
         return native, [], None, None
-    common_run = Path(controller.install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/')
+    from studio_run_folder_archive import run_dir
+    common_run = run_dir(Path(controller.install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/'))
     timing = timeline(common_run, [item['run_alias'] for item in manifest['jobs']])
     member = pace(timing, statuses, now=now)['member_minutes_median']
     return native, statuses, timing, None if member is None else member * 60

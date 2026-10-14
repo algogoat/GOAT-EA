@@ -289,7 +289,8 @@ def reproduction(original_rows, retest_rows, *, original_deals=None, retest_deal
 
 def inputs_match(original_set, retest_set):
     """Same trading inputs (every value except EA_Desc and comments)?"""
-    a, b = inspect_set(Path(original_set).read_bytes()), inspect_set(Path(retest_set).read_bytes())
+    from studio_run_folder_archive import read_bytes      # a cited SET may live in an archived run folder
+    a, b = inspect_set(read_bytes(original_set)), inspect_set(read_bytes(retest_set))
     return a['canonical_sha256'] == b['canonical_sha256']
 
 

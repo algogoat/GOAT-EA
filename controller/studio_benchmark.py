@@ -39,6 +39,17 @@ def artifact(path,root):
     return dict(path=str(path),sha256=digest.hexdigest(),size_bytes=count)
 
 
+def native_artifact(path,run):
+    """``artifact`` of a file inside a native run folder, named by its run-folder path; once evidence-archive
+    --run-folders moved the run it is read (verified) from the archive copy (review on GOAT-EA#237)."""
+    from studio_run_folder_archive import checked,run_dir
+    physical=run_dir(run)
+    if Path(physical)==Path(run):return artifact(path,run)
+    copy=Path(physical)/Path(path).relative_to(run)
+    if copy.is_file():checked(copy)
+    return dict(artifact(copy,physical),path=str(path))
+
+
 def package_inventory(package):
     package=Path(package)
     if package.resolve()!=package:raise ValueError('Linked benchmark package is unsupported')
@@ -130,7 +141,7 @@ def benchmark_report(controller,batch_id):
     if not re.fullmatch(r'GOAT\\R[0-9a-f]{12}',manifest['native_run_relative']):raise ValueError('Invalid native run path')
     native_run=Path(plan['research_binding']['common_files_root'])/manifest['native_run_relative'].replace('\\','/')
     native_paths=[native_run/'queue.GOAT']+[native_run/'inputs'/item['run_alias']/'Inputs.GOAT' for item in manifest['jobs']]
-    native_before=[artifact(path,native_run) for path in native_paths]
+    native_before=[native_artifact(path,native_run) for path in native_paths]
     if sum(item['size_bytes'] for item in native_before)>MAX_TOTAL_BYTES:raise ValueError('Native files exceed 512 MiB bound')
     native=observe(package)
     if native['status']!='native_completed' or native['members']!=completion.get('member_outcomes') or native['artifacts']!=completion.get('native',{}).get('artifacts'):
@@ -141,32 +152,38 @@ def benchmark_report(controller,batch_id):
     for index in range(len(members)):
         paths=report_paths(plan,manifest,index)
         for key in ('common_back','common_forward'):
-            report_artifacts.append(artifact(paths[key],paths['common_run']))
+            report_artifacts.append(native_artifact(paths[key],paths['common_run']))
             if sum(item['size_bytes'] for item in report_artifacts)>MAX_TOTAL_BYTES:raise ValueError('Benchmark reports exceed 512 MiB bound')
         export_root=paths['common_run']/'deploy'/manifest['jobs'][index]['run_alias']/members[index]['tester']['Symbol']
-        export_roots.append(export_root)
-        if export_root.exists():
-            if export_root.resolve()!=export_root:raise ValueError('Linked export root is unsupported')
-            for entry in export_root.iterdir():
+        from studio_run_folder_archive import run_dir as archived_run_dir
+        held_root=archived_run_dir(paths['common_run'])/export_root.relative_to(paths['common_run'])
+        export_roots.append((export_root,held_root))
+        if held_root.exists():
+            if held_root.resolve()!=held_root:raise ValueError('Linked export root is unsupported')
+            for entry in held_root.iterdir():
                 if entry.suffix.lower() in ('.set','.csv'):
-                    checked=artifact(entry,export_root);export_artifacts.append(checked);export_bytes+=checked['size_bytes']
+                    checked=native_artifact(export_root/entry.name,paths['common_run']);export_artifacts.append(checked);export_bytes+=checked['size_bytes']
                     if len(export_artifacts)>MAX_FILES or export_bytes>MAX_TOTAL_BYTES:raise ValueError('Exports exceed bounded read budget')
     reports=observe_reports(package,job['configuration'],controller.schema,member_statuses=['native_completed']*len(members))
     if reports.get('status') not in ('report_pair_verified','report_batch_verified') or reports!=completion.get('reports'):
         raise ValueError('Verified completion reports changed or no longer verify')
     for item in native['artifacts']:
-        checked=artifact(Path(item['path']),Path(native['native_run']))
+        checked=native_artifact(Path(item['path']),Path(native['native_run']))
         if checked['sha256']!=item['sha256']:raise ValueError('Native evidence changed during benchmark read')
         known.append(checked)
+    from studio_evidence_archive import ArchiveUnreachable
     timeline=Path(native['native_run'])/'timeline.tsv'
     timing_artifact=None
     try:
-        timing_artifact=artifact(timeline,Path(native['native_run']))
-        raw=timeline.read_bytes()
+        timing_artifact=native_artifact(timeline,Path(native['native_run']))
+        from studio_run_folder_archive import resolve as archived_resolve
+        raw=Path(archived_resolve(timeline)).read_bytes()
         if hashlib.sha256(raw).hexdigest()!=timing_artifact['sha256']:raise ValueError('Timeline changed while reading')
         queue=(package/'queue.GOAT').read_bytes().decode('utf-16')
         titles=[entry.strip().splitlines()[0].strip(';') for entry in queue.split('\x1f') if entry.strip()]
         timing=timeline_timings(raw,titles)
+    except ArchiveUnreachable:
+        raise                         # an archived timeline that cannot be read refuses, never 'timing_unknown'
     except (OSError,ValueError,UnicodeError) as exc:
         timing=dict(status='timing_unknown',reason=str(exc),members=[],observed_batch_span_seconds=None,member_processing_seconds=None,between_member_seconds=None)
     observed_rows=reports['members'] if 'members' in reports else [reports]
@@ -184,14 +201,14 @@ def benchmark_report(controller,batch_id):
             timing=time_rows.get(index),report_xml_bytes=sum(a['size_bytes'] for a in report_artifacts[index*2:index*2+2])))
     # Recheck the exact files after parsing; never promote a changing evidence read.
     for item in inventory+report_artifacts+export_artifacts+[result_artifact]+native_before+known+([timing_artifact] if timing_artifact else []):
-        current=artifact(Path(item['path']),Path(item['path']).parent)
+        current=native_artifact(Path(item['path']),Path(item['path']).parent)
         if current!=item:raise ValueError('Benchmark artifact changed during verification')
     after_package={str(p) for p in package.rglob('*') if p.is_file()}
     if after_package!={row['path'] for row in inventory}:raise ValueError('Package inventory changed during verification')
     with closing(sqlite3.connect((controller.root/'studio.sqlite').as_uri()+'?mode=ro',uri=True)) as db:
         after=db.execute('SELECT jobs FROM studio_queues WHERE binding=?',(packed(dict(terminal_id=controller.terminal,run_id=controller.run)),)).fetchone()
     if after!=row:raise ValueError('Retained queue changed during verification')
-    after_exports={str(p) for root in export_roots if root.exists() for p in root.iterdir() if p.suffix.lower() in ('.set','.csv')}
+    after_exports={str(root/p.name) for root,held in export_roots if held.exists() for p in held.iterdir() if p.suffix.lower() in ('.set','.csv')}
     if after_exports!={row['path'] for row in export_artifacts}:raise ValueError('Export inventory changed during verification')
     return dict(schema_version=1,observed_at=datetime.now(timezone.utc).isoformat(),batch_id=batch_id,attempt_id=attempt,
         status='completed_evidence_verified',configuration_sha256=job['configuration_sha256'],member_count=len(rows),

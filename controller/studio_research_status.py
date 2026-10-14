@@ -21,6 +21,8 @@ import time
 from campaign_ledger import packed
 from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, public_thresholds, read_run_thresholds, stamp_set,
                                          summarize, threshold_words)
+# A file of a run folder moved by evidence-archive --run-folders is verified before it is read (a no-op otherwise).
+from studio_run_folder_archive import checked as archived_checked
 
 HEARTBEAT_FRESH_SECONDS = 20
 RELAUNCH_GRACE_SECONDS = 240
@@ -57,7 +59,7 @@ def _bounded_json(path, limit=MAX_JSON_BYTES):
         before = path.stat()
         if before.st_size > limit:
             return None, None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
         return json.loads(text), before.st_mtime
     except (OSError, ValueError, UnicodeError):
@@ -188,7 +190,7 @@ def timeline(native_run, aliases):
     try:
         if not path.is_file() or path.stat().st_size > MAX_TIMELINE_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
     except OSError:
         return None
     try:
@@ -344,7 +346,7 @@ def _log_lines(native_run):
     try:
         if not path.is_file() or path.stat().st_size > MAX_LOG_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     except (OSError, UnicodeError):
         return None
@@ -475,7 +477,7 @@ def item_outcomes(native_run, members, timing=None):
     try:
         if not path.is_file() or path.stat().st_size > MAX_ITEM_STATS_BYTES:
             return {}
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     except (OSError, UnicodeError):
         return {}
@@ -567,8 +569,11 @@ def batch_progress(root, install, job, *, now, journal=None):
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
         result['evidence'] = 'not_started' if 'launch_intent' not in job else 'package_unreadable'
         return result
+    from studio_evidence_archive import ArchiveUnreachable
     try:
         native = observe(package)
+    except ArchiveUnreachable:
+        raise                     # an archived run folder that cannot be read refuses loudly, never "unreadable"
     except (OSError, ValueError, KeyError) as error:
         result.update(evidence='native_unreadable', evidence_reason=str(error)[:240])
         return result
@@ -577,7 +582,9 @@ def batch_progress(root, install, job, *, now, journal=None):
         return result
     statuses = [m['status'] for m in native['members']]
     aliases = [item['run_alias'] for item in manifest['jobs']]
-    common_run = Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/')
+    from studio_run_folder_archive import run_dir
+    # A run folder moved by evidence-archive --run-folders is read from its archive.
+    common_run = run_dir(Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/'))
     timing = timeline(common_run, aliases)
     # "Qualifying" = passed this run's own export thresholds (goat-export-qualification-v1). The EA
     # also keeps its best set when nothing passed (SortAndTrimExports: Passing=0 Kept=1); those are
@@ -599,6 +606,8 @@ def batch_progress(root, install, job, *, now, journal=None):
         for path in paths:
             try:
                 stamps.append(stamp_set(path, run_thresholds(), with_sha256=False))
+            except ArchiveUnreachable:
+                raise
             except (OSError, ValueError, UnicodeError):
                 stamps.append(dict(status='unknown', missed=['metrics_unavailable']))
         return summarize(stamps)

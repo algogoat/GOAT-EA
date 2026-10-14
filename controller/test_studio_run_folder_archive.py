@@ -557,6 +557,64 @@ class MoveTests(RunFolderFixture):
         # A run with a stub is never reset: its archive may be the only complete copy.
         self.refused('ARCHIVE_RESET_REFUSED', self.agent.run_folder_archive, self.archive_root, reset_run=run.name, confirm=True)
 
+    def adopt(self, *run_ids, **kw):
+        return self.agent.run_folder_archive(kw.pop('archive_root', self.archive_root), adopt=True, confirm=True,
+                                             run_ids=list(run_ids), **kw)
+
+    def test_probe_a_lost_stub_never_lets_reset_strand_the_only_copy_and_adopt_reattaches_it(self):
+        """Review r2 item 1 on #237: after --complete, delete ARCHIVED.json ("an empty run folder"); --reset-run used to move
+        the ONLY copy aside. It now refuses, and --adopt rebuilds the stub from the verified archive."""
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        self.complete()
+        (run / runs.STUB).unlink()                                         # the stub is lost
+        runs._clear_caches()
+        before = self.tree(self.archive_root / run.name)
+        error = self.refused('ARCHIVE_RESET_REFUSED', self.agent.run_folder_archive, self.archive_root, reset_run=run.name,
+                             confirm=True)
+        self.assertIn('--adopt --run-id ' + run.name, str(error))
+        self.assertEqual(self.tree(self.archive_root / run.name), before)   # the only copy stays where it is
+        self.assertFalse((self.archive_root / runs.RESET_FOLDER).exists())
+        self.refused('ARCHIVE_RUN_ID_REQUIRED', self.adopt)
+        result = self.adopt(run.name)
+        self.assertEqual([(r['run_id'], r['state'], r['local_files']) for r in result['results']], [(run.name, 'removed', 0)])
+        stub = json.loads((run / runs.STUB).read_text())
+        self.assertEqual((stub['state'], stub['file_count'], stub['archive_dir']),
+                         ('removed', len(original), str(self.archive_root / run.name)))
+        cited = run / 'deploy' / alias(10) / 'EURUSD' / (STEM + '.set')
+        self.assertEqual(runs.read_bytes(cited), original[cited.relative_to(run).as_posix()])   # readers follow it again
+        self.refused('ARCHIVE_RUN_ARCHIVED', self.adopt, run.name)
+        self.restore(run.name, source_floor_gb=0)
+        self.assertEqual(self.tree(run), original)
+
+    def test_adopt_rebuilds_a_stub_for_a_run_folder_deleted_whole_and_checks_everything(self):
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        # A local file that is not the archived one refuses.
+        (run / runs.STUB).unlink()
+        (run / 'log.GOAT').write_bytes(b'edited')
+        self.refused('ARCHIVE_ADOPT_CONFLICT', self.adopt, run.name)
+        (run / 'log.GOAT').write_bytes(original['log.GOAT'])
+        # A corrupt archive copy refuses; no stub is written.
+        copy = self.archive_root / run.name / 'timeline.tsv'
+        good = copy.read_bytes()
+        copy.write_bytes(b'Z' * len(good))
+        self.refused('ARCHIVE_VERIFY_FAILED', self.adopt, run.name)
+        self.assertFalse((run / runs.STUB).exists())
+        copy.write_bytes(good)
+        # All files still local: the stub is rebuilt as "archived".
+        self.assertEqual(self.adopt(run.name)['results'][0]['state'], 'archived')
+        # The run folder deleted whole after --complete: --adopt recreates it with only the stub.
+        self.complete()
+        (run / runs.STUB).unlink()
+        run.rmdir()
+        runs._clear_caches()
+        self.refused('ARCHIVE_RESET_REFUSED', self.agent.run_folder_archive, self.archive_root, reset_run=run.name, confirm=True)
+        self.assertEqual(self.adopt(run.name)['results'][0]['state'], 'removed')
+        self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
+
     def test_removal_never_leaves_the_run_folder(self):
         run = self.make_run(1, 'banker-done-1')
         outside = self.source / 'keep-me.txt'

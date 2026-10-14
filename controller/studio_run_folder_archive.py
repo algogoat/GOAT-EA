@@ -970,7 +970,8 @@ def run_target_refusal(run, archive_root, folder):
         return Refusal('%s is a symbolic link or junction; a run folder\'s archive must be a real folder on the archive '
                        'drive. Nothing was changed.' % link, 'ARCHIVE_TARGET_LINK', run_id=Path(run).name, link=str(link))
     try:
-        same = _io(folder).exists() and archive.volume_of(folder) == archive.volume_of(run)
+        home = run if _io(run).exists() else Path(run).parent           # --adopt may meet a run folder deleted whole
+        same = _io(folder).exists() and archive.volume_of(folder) == archive.volume_of(home)
     except OSError as error:
         return Refusal('The archive folder %s cannot be inspected (%s); nothing was changed.' % (folder, str(error)[:200]),
                        'ARCHIVE_ROOT_UNAVAILABLE', run_id=Path(run).name, archive_dir=str(folder))
@@ -1435,12 +1436,121 @@ def reset_run(source, run, archive_root, *, now):
     refusal = run_target_refusal(run, root, folder)
     if refusal is not None:
         raise refusal
+    # Review r2 item 1 on #237: with a manifest there, the archive may be the ONLY copy (a stub lost after --complete).
+    # Reset only when every file the manifest lists is present locally with its size and sha256.
+    manifest = folder / MANIFEST
+    if _io(manifest).exists():
+        def only_copy(why):
+            return Refusal('The archive %s holds a manifest for %s and %s; it may be the only copy (an ARCHIVED.json lost after '
+                           '--complete?), so it is never set aside. Reattach it with --adopt --run-id %s, then --restore if '
+                           'needed. Nothing was changed.' % (folder, run.name, why, run.name), 'ARCHIVE_RESET_REFUSED',
+                           run_id=run.name, archive_dir=str(folder))
+        try:
+            value = archive._bounded_json(manifest, MAX_MANIFEST_BYTES)
+            files = value.get('files') if isinstance(value, dict) else None
+            if not isinstance(files, list) or any(_bad_relative((e or {}).get('relative_path') if isinstance(e, dict) else None)
+                                                  for e in files):
+                raise ValueError('its file list is not valid')
+        except (OSError, ValueError, UnicodeError) as error:
+            raise only_copy('that manifest cannot be read (%s)' % str(error)[:200]) from None
+        missing = []
+        for entry in files:
+            local = run / entry['relative_path']
+            try:
+                same = (_io(local).is_file() and _io(local).stat().st_size == entry.get('bytes')
+                        and archive.file_sha256(local) == entry.get('sha256'))
+            except OSError:
+                same = False
+            if not same:
+                missing.append(entry['relative_path'])
+        if missing:
+            raise only_copy('%d listed file(s) are not in the source as archived (first: %s)' % (len(missing), missing[0]))
     stamp = datetime.fromtimestamp(now, timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     aside = root / RESET_FOLDER / ('%s.%s.%s' % (run.name, stamp, uuid.uuid4().hex[:8]))
     _io(aside.parent).mkdir(parents=True, exist_ok=True)
     os.replace(_io(folder), _io(aside))
     return dict(run_id=run.name, moved_to=str(aside), reset=True,
                 plain='The partial archive of %s was set aside at %s; the next --apply copies it fresh.' % (run.name, aside))
+
+
+def adopt_run(root, source, run, archive_root, *, install, now, adopted_by='demo_agent'):
+    """``--adopt --run-id R... --archive-root <root>``: rebuild a lost ARCHIVED.json from a verified archive (review r2 item
+    1 on #237), so a stub deleted after --complete never strands the only copy.
+
+    ``<root>/<run id>`` must pass every archive-root check and the per-run link/volume checks; its manifest must be a
+    valid manifest of this run; EVERY listed file is re-hashed (no cache), the folder must hold exactly those files and
+    none may be the source file itself. Any local file of the run must be listed and hash to the manifest
+    (ARCHIVE_ADOPT_CONFLICT otherwise). The stub's state follows what is local: all files ``archived``, none ``removed``,
+    some ``removing`` (--complete finishes it, --restore brings it back). Nothing is copied or removed."""
+    run = Path(run)
+    if _norm(run.parent) != _norm(source) or not RUN_NAME.fullmatch(run.name):
+        raise Refusal('%s is not a run folder below %s; nothing was changed.' % (run, source), 'ARCHIVE_ROOT_INVALID',
+                      run_id=run.name)
+    stub = load_stub(run)
+    if stub is not None:
+        raise Refusal('Run folder %s already has ARCHIVED.json (%s); nothing to adopt.' % (run.name, stub['state']),
+                      'ARCHIVE_RUN_ARCHIVED', run_id=run.name, state=stub['state'])
+    found, _, target_root = target_blockers(source, archive_root, 0, 0)
+    if found:
+        raise Refusal(found[0]['plain'] + ' Nothing was changed.', found[0]['code'], run_id=run.name,
+                      **{k: v for k, v in found[0].items() if k not in ('code', 'plain')})
+    folder = target_root / run.name
+    refusal = run_target_refusal(run, target_root, folder)
+    if refusal is not None:
+        raise refusal
+    manifest = folder / MANIFEST
+    if not _io(manifest).is_file():
+        raise Refusal('%s holds no archive manifest of %s; nothing was changed.' % (folder, run.name), 'ARCHIVE_NOTHING_TO_MOVE',
+                      run_id=run.name, archive_dir=str(folder))
+    raw = _io(manifest).read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        value = json.loads(raw.decode('utf-8-sig'))
+    except ValueError as error:
+        raise Refusal('The manifest at %s cannot be read (%s); nothing was changed.' % (manifest, str(error)[:200]),
+                      'ARCHIVE_MANIFEST_INVALID', run_id=run.name) from None
+    draft = dict(schema=STUB_SCHEMA, schema_version=SCHEMA_VERSION, run_id=run.name, state='removed', archive_dir=str(folder),
+                 manifest_sha256=digest, file_count=value.get('file_count') if isinstance(value, dict) else None,
+                 bytes=value.get('bytes') if isinstance(value, dict) else None)
+    problem = stub_problem(draft, run.name) or manifest_problem(draft, value)
+    if problem:
+        raise Refusal('The manifest at %s cannot be trusted (%s); nothing was changed.' % (manifest, problem),
+                      'ARCHIVE_MANIFEST_INVALID', run_id=run.name, archive_dir=str(folder))
+    entries = {_key(entry['relative_path']): entry for entry in value['files']}
+    for entry in entries.values():
+        _refuse_same_file(run, folder, entry['relative_path'], 'nothing was changed.')
+        try:
+            _verify_file(draft, folder, entry, full=True, cache=False)
+        except ArchiveUnreachable as error:
+            raise Refusal('%s Nothing was adopted.' % error, 'ARCHIVE_VERIFY_FAILED', run_id=run.name,
+                          relative_path=entry['relative_path'], archive_dir=str(folder)) from None
+    if set(_archive_walk(folder)) != set(entries):
+        raise Refusal('%s does not hold exactly the manifest\'s files; nothing was adopted.' % folder, 'ARCHIVE_VERIFY_FAILED',
+                      run_id=run.name, archive_dir=str(folder))
+    present, links = walk(run) if _io(run).is_dir() else ([], [])
+    if links:
+        raise Refusal('Run folder %s holds a symbolic link or junction (%s); nothing was adopted.' % (run.name, links[0]),
+                      'ARCHIVE_SOURCE_LINK', run_id=run.name, links=links[:50])
+    conflicts = [item['relative_path'] for item in present
+                 if _key(item['relative_path']) not in entries
+                 or item['bytes'] != entries[_key(item['relative_path'])]['bytes']
+                 or archive.file_sha256(run / item['relative_path']) != entries[_key(item['relative_path'])]['sha256']]
+    if conflicts:
+        raise Refusal('%d local file(s) of run folder %s are not the archived ones (first: %s); nothing was adopted. Inspect '
+                      'them.' % (len(conflicts), run.name, conflicts[0]), 'ARCHIVE_ADOPT_CONFLICT', run_id=run.name,
+                      relative_path=conflicts[0], relative_paths=conflicts[:50])
+    state = 'archived' if len(present) == len(entries) else ('removed' if not present else 'removing')
+    _io(run).mkdir(exist_ok=True)
+    _write_record(stub_path(run), dict(
+        draft, state=state, archive_root=str(target_root), manifest=str(manifest), archived_at=value.get('created_at'),
+        adopted_at=_utc(now), adopted_by=adopted_by, owners=list(value.get('owners') or []),
+        controller_revision=archive.controller_revision(install),
+        plain='This run folder\'s files live in %s; controller readers follow this file. Do not delete it. (Rebuilt by '
+              '--adopt from the verified archive.)' % folder,
+        **archive._volume_fields(folder)))
+    _clear_caches()
+    return dict(run_id=run.name, archive_dir=str(folder), state=state, file_count=len(entries), local_files=len(present),
+                manifest_sha256=digest, adopted=True)
 
 
 def public(value, applied=False):

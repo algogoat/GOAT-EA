@@ -506,7 +506,18 @@ Moves finished native run folders (`Common Files\GOAT\R<12 hex>`) to
   root> --confirm` accepts `<new root>\<run id>` only when it passes every archive-root
   check and its manifest and every file verify (`ARCHIVE_REPOINT_MISMATCH`), then rewrites
   each stub (old one retired). A drive that only changed letter needs neither: readers
-  find it by its volume GUID.
+  find it by its volume GUID. `--restore` refuses `ARCHIVE_SOURCE_FLOOR` unless C: keeps
+  `--source-floor-gb` (default 10) free after the copy.
+- `--reset-run R... --archive-root <root> --confirm` sets a stale partial archive of a run
+  without a stub aside to `<root>\.reset\` (nothing deleted), but refuses
+  `ARCHIVE_RESET_REFUSED` whenever that archive holds a manifest whose files are not all
+  in the source as archived (it may be the only copy). `--adopt --run-id R...
+  --archive-root <root> --confirm` rebuilds a lost `ARCHIVED.json` from the verified
+  archive (every file re-hashed, link/volume/same-file checks; a differing local file
+  refuses `ARCHIVE_ADOPT_CONFLICT`); the state follows what is still local.
+- `--complete` holds each verified archive copy open (`CreateFileW`, `FILE_SHARE_READ`
+  only) until its source unlink returns, so it cannot be deleted, renamed or written in
+  between.
 
 ### Protected peer restarts
 

@@ -221,9 +221,9 @@ When the user wants their own idea rather than a catalog template, follow [goat-
 3. **Seed hunt** ("Seed loop" below) on an in-sample window that ends **before** the later proof's `BackOOSDate`, about 400 frames per member, the 3 most likely assets first.
 4. **Read the seed honestly**: count each member's profitable qualifiers in its `result_path`, candidates with `qualifies: true` and `Profit` > 0 and `Profit Factor` ≥ 1.05 (seed step 4), and record that count (seed step 5). None on any asset: drop the strategy and record it.
 5. **Promote the winners only** with `seed-promote` (seed step 6).
-6. **Prove** each promoted `robustness.set` (never `fixed.set`, which has no search axis) in an ordinary batch (steps 13-19) with a forward window, on dates after the seed window; judge forward, then FOOS. Only then can they enter a portfolio pool.
+6. **Prove** each promoted `robustness.set` (never `fixed.set`, which has no search axis) in an ordinary batch (steps 13-19) with a forward window, on dates after the seed window; judge forward, then FOOS. Its files enter a pool by the product's qualifying rule (step 20), like every file.
 
-**Never** put hand-written SETs or unseeded ranges into a production batch. In GOAT's own house research on 2026-10-13, designs sent with hand-picked ranges straight into full runs found no profitable setting at all in 18 of their first 31 runs. The controller checks each file, not this order: `prepare-batch` accepts any validated SET, so keeping the order is your job.
+This order is how to get more qualifying files; it is not a pool rule. A file that qualifies counts however it was built. **Advice:** don't put hand-written SETs or unseeded ranges into a production batch. In GOAT's own house research on 2026-10-13, designs sent with hand-picked ranges straight into full runs found no profitable setting at all in 18 of their first 31 runs. The controller checks each file, not this order: `prepare-batch` accepts any validated SET.
 
 `starter-set`, `build-set` and `validate-set` run with the same `Studio` CLI on every installation, a demo-only (`demo_direct`) one included: they only read SETs and write new, create-only files (the SET, its `.md` notes and `.build.json` or `.starter.json` receipt) outside the catalog, with no store, queue or terminal effect.
 

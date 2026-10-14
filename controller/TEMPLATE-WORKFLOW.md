@@ -28,12 +28,14 @@ agent drafts to fill a gap. Each step is one of GOAT's own tools, so any agent c
 repeat it exactly. The installed agent guide (`goat-beta-agent-guide.md`, "A new
 strategy, start to finish") gives the same order for the desktop side.
 
-**Never put hand-written SETs or unseeded ranges into a production batch** (house
-research, a FAT run or a customer batch). Don't skip the seed hunt: ranges that were
-never hunted mostly measure the guess. In GOAT's own house research on 2026-10-13,
-designs sent with hand-picked ranges straight into full runs found no profitable
-setting at all in 18 of their first 31 runs. A design that skipped this order goes
-back to step 1 as a new variant.
+This order is how to get more qualifying files; it is not a pool rule. A file that
+qualifies counts however it was built: pool membership is the product's qualifying
+rule only (AGENT-START-HERE step 20). **Advice:** don't put hand-written SETs or
+unseeded ranges into a production batch (house research, a FAT run or a customer
+batch), and don't skip the seed hunt: ranges that were never hunted mostly measure
+the guess. In GOAT's own house research on 2026-10-13, designs sent with hand-picked
+ranges straight into full runs found no profitable setting at all in 18 of their
+first 31 runs.
 
 1. **Build from a real parent.** Clone the closest catalog template, or a blank from
    `starter-set --shape single|sequence` ("Start from blank" below). Never hand-write a
@@ -80,8 +82,9 @@ back to step 1 as a new variant.
    forward, then FOOS. Never put `fixed.set` in that batch: `prepare-batch` validates
    every member as an optimization template and refuses a SET with no active axis.
    `fixed.set` is the exact candidate for a single test only, such as a hold-up test. Declare
-   the held-out lock (`heldOut.declare`) as it enters Prove. Only then can its files
-   enter a portfolio pool. Each promoted or changed version counts as its own variant.
+   the held-out lock (`heldOut.declare`) as it enters Prove. Its files enter a pool by
+   the product's qualifying rule (AGENT-START-HERE step 20), like every file. Each
+   promoted or changed version counts as its own variant.
 
 The controller checks each file (validate-set, `EA_INIT_REFUSED`, the
 risk rules), but it does not check this order: `prepare-batch` accepts any validated

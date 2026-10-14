@@ -101,7 +101,10 @@ start to finish" (Explore, then Refine, then Prove):
   goes into that batch (it has no search axis, and `prepare-batch` refuses it); it is
   the exact candidate, for a single test only.
 
-Never put a hand-written SET or unseeded ranges into a production batch. Hand-built
+This order is how to get more qualifying files, not a pool rule: a file that
+qualifies counts however it was built. Advice: don't put a hand-written SET or
+unseeded ranges into a production batch (in GOAT's house research on 2026-10-13,
+hand-picked ranges found no profitable setting in 18 of their first 31 runs). Hand-built
 ideas overfit easily, because every filter the user picked is part of the search, so
 the 13-week held-out lock matters even more: declare it with `heldOut.declare` as the
 strategy enters Prove, let those unseen weeks close, and never tune against them.

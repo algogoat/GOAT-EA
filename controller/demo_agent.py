@@ -2790,18 +2790,41 @@ class DemoAgent:
             if not chosen:
                 raise Refusal('No archived run folder to repoint; nothing was changed.', 'ARCHIVE_NOTHING_TO_MOVE')
             results = []
+
+            def elsewhere():
+                """Archived runs whose stub does NOT point below the new root yet: never retire the old drive while any."""
+                target = os.path.normcase(os.path.abspath(str(new_root)))
+                found = []
+                for name in names:
+                    try:
+                        stub = runs.load_stub(source / name)
+                    except ValueError:
+                        found.append(dict(run_id=name, archive_dir=None))
+                        continue
+                    if stub is not None and not os.path.normcase(os.path.abspath(stub['archive_dir'])).startswith(target + os.sep):
+                        found.append(dict(run_id=name, archive_dir=stub['archive_dir']))
+                return found
             for run_id in chosen:
                 if new_root is None:
                     result = runs.restore_run(self.root, source, source / run_id, now=self.clock(), floor_bytes=source_floor)
                     self._append('run_folder_archive', 'restored', run_id=run_id, archive_dir=result['archive_dir'],
                                  restored=result['restored'], retired_stub=result['retired_stub'])
                 else:
-                    result = runs.repoint_run(self.root, source, source / run_id, new_root, now=self.clock())
+                    try:
+                        result = runs.repoint_run(self.root, source, source / run_id, new_root, now=self.clock())
+                    except Refusal as exc:
+                        left = elsewhere()
+                        raise Refusal('%s %d run(s) were repointed before it; %d stub(s) still point at another root (listed in '
+                                      'still_pointing_elsewhere): keep that drive until they are repointed.'
+                                      % (exc, len(results), len(left)), exc.code, **dict(
+                                          exc.fields, repointed=[r['run_id'] for r in results],
+                                          still_pointing_elsewhere=left[:500])) from None
                     self._append('run_folder_archive', 'repointed', run_id=run_id, archive_dir=result['archive_dir'],
                                  previous_archive_dir=result['previous_archive_dir'], retired_stub=result['retired_stub'])
                 results.append(result)
             return dict(scope='run_folders', applied=True, restored=new_root is None, repointed=new_root is not None,
-                        results=results)
+                        results=results,
+                        **(dict(still_pointing_elsewhere=elsewhere()[:500]) if new_root is not None else {}))
 
     def _run_folder_complete(self, run_ids, keep, keep_last):
         """``evidence-archive --run-folders --complete``: remove the sources of every archived run folder (or of

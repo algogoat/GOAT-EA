@@ -615,6 +615,34 @@ class MoveTests(RunFolderFixture):
         self.assertEqual(self.adopt(run.name)['results'][0]['state'], 'removed')
         self.assertEqual(sorted(p.name for p in run.iterdir()), [runs.STUB])
 
+    def test_repoint_names_the_stubs_still_on_another_root(self):
+        """Review r2 nit: after a repoint that stopped midway, nobody may retire the old drive early."""
+        import shutil
+        first, second = self.make_run(1, 'banker-done-1'), self.make_run(2, 'banker-done-2')
+        self.apply()
+        clone_root = self.archive_root / 'clone'
+        shutil.copytree(self.archive_root / first.name, clone_root / first.name)   # only the first run was cloned
+        with self.assertRaises(Refusal) as caught:
+            self.agent.run_folder_archive(clone_root, repoint=True, confirm=True)
+        self.assertEqual(caught.exception.code, 'ARCHIVE_REPOINT_MISMATCH')
+        self.assertEqual(caught.exception.fields['repointed'], [first.name])
+        self.assertEqual([row['run_id'] for row in caught.exception.fields['still_pointing_elsewhere']], [second.name])
+        result = self.agent.run_folder_archive(clone_root, repoint=True, confirm=True, run_ids=[first.name])
+        self.assertEqual([row['run_id'] for row in result['still_pointing_elsewhere']], [second.name])
+
+    def test_complete_names_a_run_whose_owner_package_vanished(self):
+        """Review r2 nit: a named refusal at --complete, never a silent skip."""
+        import shutil
+        run = self.make_run(1, 'banker-done-1')
+        original = self.tree(run)
+        self.apply()
+        shutil.rmtree(self.root / 'packages' / 'banker-done-1')
+        result = self.complete()
+        self.assertEqual(result['results'], [])
+        self.assertEqual(result['skipped'][0]['codes'], ['ARCHIVE_OWNER_UNKNOWN'])
+        self.assertIn('cannot be proven finished', result['skipped'][0]['plain'])
+        self.assertEqual({k: v for k, v in self.tree(run).items() if k != runs.STUB}, original)
+
     def test_removal_never_leaves_the_run_folder(self):
         run = self.make_run(1, 'banker-done-1')
         outside = self.source / 'keep-me.txt'

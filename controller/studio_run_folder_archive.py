@@ -764,6 +764,13 @@ def plan(root, install, archive_root=None, *, keep=None, keep_last=DEFAULT_KEEP_
         if stub is None and recheck_archived:
             continue
         group = owned.get(run_id)
+        if not group and stub is not None:
+            # --complete of a run whose owning package vanished after --apply: a named refusal, never a silent skip.
+            runs.append(dict(run_id=run_id, path=str(run), owners=[], eligible=False, files=[], file_count=None, bytes=None,
+                             cited_by=[], blockers=[_blocker('ARCHIVE_OWNER_UNKNOWN', 'No package of these installations names '
+                                                             'archived run folder %s any more, so it cannot be proven finished; '
+                                                             'its sources stay.' % run_id)]))
+            continue
         if not group:
             not_attributable.append(dict(run_id=run_id, path=str(run),
                                          reason='no package of these installations names this run folder'))

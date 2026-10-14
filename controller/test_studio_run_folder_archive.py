@@ -99,7 +99,7 @@ class RunFolderFixture(VolumePatches, G20Fixture):
             path = run / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
-        job = dict(job_id=job_id, status=status, configuration_sha256='c' * 64,
+        job = dict(job_id=job_id, status=status, configuration_sha256='c' * 64, configuration=dict(batch_members=[{} for _ in aliases]),
                    launch_intent=dict(attempt_id='a' * 64, package=str(package), recorded_at=recorded_at),
                    completion=dict(status=status, member_outcomes=[dict(index=i, run_alias=a, status=s)
                                                                   for i, (a, s) in enumerate(zip(aliases, outcomes))]))
@@ -480,6 +480,45 @@ class ResolverTests(RunFolderFixture):
             batch_exports(run)
         self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
 
+    def test_readers_refuse_loudly_while_the_archive_is_offline_or_corrupt(self):
+        """Review item 5 on #237: scan, research-status and window metrics re-raise ArchiveUnreachable instead of
+        reading one unit fewer, "unknown" or "native_unreadable"."""
+        from studio_evidence import scan
+        from studio_research_status import batch_progress
+        run = self.make_run(1, 'banker-done-1')
+        job = self.queue[-1]
+        cited = run / 'deploy' / alias(10) / 'EURUSD' / (STEM + '.set')
+        before = batch_progress(self.root, self.agent.install, job, now=1.0)
+        self.assertEqual(before['evidence'], 'native_queue')
+        self.apply()
+        self.complete()
+        target = self.archive_root / run.name
+        for name, relative, call in (
+                ('scan', cited.relative_to(run), lambda: scan([str(run)])),
+                ('research-status thresholds', Path('export_settings.GOAT'),
+                 lambda: batch_progress(self.root, self.agent.install, job, now=1.0))):
+            copy = target / relative
+            original = copy.read_bytes()
+            flipped = bytearray(original)
+            flipped[-1] ^= 0x01
+            copy.write_bytes(bytes(flipped))
+            runs._VERIFIED.clear()
+            with self.subTest(reader=name):
+                with self.assertRaises(Refusal) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
+            copy.write_bytes(original)
+            runs._VERIFIED.clear()
+        self.assertEqual(batch_progress(self.root, self.agent.install, job, now=1.0)['qualifying'], before['qualifying'])
+        target.rename(self.archive_root / 'offline')            # the archive drive unplugged
+        runs._MANIFESTS.clear()
+        for name, call in (('scan', lambda: scan([str(run)])),
+                           ('research-status', lambda: batch_progress(self.root, self.agent.install, job, now=1.0))):
+            with self.subTest(reader=name + ' offline'):
+                with self.assertRaises(Refusal) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
+
     def test_a_path_outside_any_run_folder_is_never_touched(self):
         for path in (self.common / 'GOAT' / 'Workers' / 'x.set', self.common / 'GOAT' / 'R0123456789ab_x' / 'y.set',
                      self.common / 'Rabcdef012345' / 'y.set', Path('relative.set')):
@@ -631,6 +670,18 @@ class B43MigGateTests(VolumePatches, MigrationCase):
         from studio_catchup import evidence_scan
         scanned = evidence_scan([self.run], now=__import__('test_studio_catchup').AFTER_CLOSE)
         self.assertEqual([row['set_path'] for row in scanned['exports']], [str(self.cited)])
+        # Review item 5: window metrics never drop the capture's deals silently when its archived copy is untrusted.
+        from studio_window_metrics import export_window_metrics
+        window = dict(from_date='2026.01.05', to_date='2026.09.25')
+        self.assertEqual(export_window_metrics(str(self.cited), **window)['tradeSource'], 'capture_deals')
+        capture = self.archive_root / self.RUN / self.cited.relative_to(self.run).parent / (self.cited.name[:-4] + '.goatseq') / 'manifest.json'
+        raw = bytearray(capture.read_bytes())
+        raw[-2] ^= 0x01
+        capture.write_bytes(bytes(raw))
+        runs._VERIFIED.clear()
+        with self.assertRaises(Refusal) as caught:
+            export_window_metrics(str(self.cited), **window)
+        self.assertEqual(caught.exception.code, 'EVIDENCE_ARCHIVE_UNREACHABLE')
 
 
 if __name__ == '__main__':

@@ -569,8 +569,11 @@ def batch_progress(root, install, job, *, now, journal=None):
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
         result['evidence'] = 'not_started' if 'launch_intent' not in job else 'package_unreadable'
         return result
+    from studio_evidence_archive import ArchiveUnreachable
     try:
         native = observe(package)
+    except ArchiveUnreachable:
+        raise                     # an archived run folder that cannot be read refuses loudly, never "unreadable"
     except (OSError, ValueError, KeyError) as error:
         result.update(evidence='native_unreadable', evidence_reason=str(error)[:240])
         return result
@@ -603,6 +606,8 @@ def batch_progress(root, install, job, *, now, journal=None):
         for path in paths:
             try:
                 stamps.append(stamp_set(path, run_thresholds(), with_sha256=False))
+            except ArchiveUnreachable:
+                raise
             except (OSError, ValueError, UnicodeError):
                 stamps.append(dict(status='unknown', missed=['metrics_unavailable']))
         return summarize(stamps)

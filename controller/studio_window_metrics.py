@@ -220,6 +220,7 @@ def boundaries(from_date, to_date, back_oos_date=None, include_back_oos=True):
 def export_window_metrics(set_path, *, from_date, to_date, back_oos_date=None, include_back_oos=True, csv_raw=None):
     """``preFoos``, ``selectionWindow`` and ``fullExport`` for one kept export unit (read only)."""
     from studio_evidence import parse_header, read_capture, unit_paths
+    from studio_evidence_archive import ArchiveUnreachable
     from studio_run_folder_archive import checked, resolve
     paths = unit_paths(resolve(set_path))     # the archive copy of a unit in a run folder evidence-archive moved
     raw = Path(paths['set']).read_bytes()
@@ -230,6 +231,8 @@ def export_window_metrics(set_path, *, from_date, to_date, back_oos_date=None, i
         import hashlib
         try:
             capture = read_capture(paths['goatseq'], hashlib.sha256(raw).hexdigest())
+        except ArchiveUnreachable:
+            raise                 # an archived capture that cannot be trusted refuses; deals are never dropped silently
         except (OSError, ValueError):
             capture = None
         candidate = Path(paths['goatseq']) / 'deals.csv'

@@ -466,6 +466,7 @@ def is_filler(file_metrics, settings, header=None):
 
 def load_run(run_dir):
     """Records for every finished sequence capture of one run, plus skipped reasons."""
+    from studio_evidence_archive import ArchiveUnreachable
     from studio_run_folder_archive import run_dir as archived_run_dir
     run_dir = archived_run_dir(Path(run_dir))   # its archive copy once evidence-archive --run-folders moved it (same name)
     manifest = json.loads(_text(run_dir / 'manifest.json', MAX_MANIFEST))
@@ -529,6 +530,8 @@ def load_run(run_dir):
                 filler=is_filler(file_metrics, settings, header=set_raw),
                 capture='complete' if complete else 'partial',
                 observed_end=datetime.fromtimestamp(observed_end / 1000, tz=timezone.utc).date().isoformat()))
+        except ArchiveUnreachable:
+            raise                 # an archived capture that cannot be read refuses; it is never skipped
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             skipped.append(dict(path=label, reason=str(exc) or type(exc).__name__))
     return dict(run=run_dir.name, export_settings=settings, records=records, skipped=skipped)

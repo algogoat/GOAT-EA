@@ -394,10 +394,13 @@ def collect_sets(sources, limit=MAX_SETS):
 
 def scan(sources):
     """Read every kept export under ``sources``. Unreadable units are reported, not skipped silently."""
+    from studio_evidence_archive import ArchiveUnreachable
     runs, exports, unreadable = RunContext(), [], []
     for set_path in collect_sets(sources):
         try:
             exports.append(read_export(set_path, runs=runs))
+        except ArchiveUnreachable:
+            raise                 # an archived unit that cannot be read refuses the scan; it is never one unit fewer
         except (OSError, ValueError, UnicodeError) as exc:
             unreadable.append(dict(set_path=str(set_path), reason=str(exc)))
     return exports, unreadable

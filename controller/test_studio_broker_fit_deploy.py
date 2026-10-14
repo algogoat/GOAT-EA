@@ -513,6 +513,40 @@ class BrokerFitDeployTests(DeployFixture):
         where, outcome, audits = self.resume_at('policy_applied', 50000.0)
         self.assertEqual((outcome['phase'], audits[:1]), ('ready', ['audit']))
 
+    def test_a_stale_fit_unwind_never_closes_an_mt5_this_deployment_did_not_launch(self):
+        # Claude-Mac 6161742880 (GOAT-EA#229): the post-launch stale unwind passes the journaled launched_process. A
+        # foreign MT5 (another pid and creation time) is refused and left running, and the journal says why.
+        members, raws, block = self.review(equity=50000)
+        where = self.stop_at('attached', members, block)
+        launched = json.loads(where['journal'].read_text())['launched_process']
+        self.assertEqual((launched['pid'], launched['created_utc']), (77, '2026-10-02T01:00:00+00:00'))
+        foreign = dict(pid=91, executable='terminal64.exe', created_utc='2026-10-02T05:00:00+00:00')
+        self.process.identity = foreign
+        closes = []
+        real = deploy.close_terminal
+        def close(controller, attempt_id, **kwargs):
+            closes.append(kwargs.get('expected_process'))
+            return real(controller, attempt_id, **kwargs)
+        with patch.object(deploy, 'close_terminal', close), self.relaunch() as popen, self.reads(20000.0), \
+                self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 20000.0), manifest_sha256=self.genuine,
+                        sleep=lambda s: None)
+        self.assertEqual(caught.exception.code, bf.FIT_STALE)
+        self.assertIn('GOAT could not unload it: The MT5 running now (pid 91', str(caught.exception))
+        self.assertEqual((closes, popen.call_count), ([], 0), 'close_terminal was never called')
+        self.assertEqual((self.process.closed, self.process.identity), ([], foreign), 'the foreign MT5 keeps running')
+        journal = json.loads(where['journal'].read_text())
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['auto_unwind']['status']), ('attached', bf.FIT_STALE, 'failed'))
+        self.assertIn('is not the one this deployment launched (pid 77, started 2026-10-02T01:00:00+00:00)', journal['auto_unwind']['error'])
+        self.assertTrue(where['state'].exists() and where['profile'].exists(), 'nothing was set aside')
+        # The MT5 it did launch is closed through the same proven identity.
+        self.process.identity = dict(launched)
+        with patch.object(deploy, 'close_terminal', close), self.relaunch(), self.reads(20000.0), self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 20000.0), manifest_sha256=self.genuine,
+                        sleep=lambda s: None)
+        self.assertIn('GOAT closed MT5 with Algo Trading off', str(caught.exception))
+        self.assertEqual(closes, [launched])
+
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')
         with self.relaunch(), patch('studio_broker_fit.read_broker', side_effect=AssertionError('no broker-fit read')):

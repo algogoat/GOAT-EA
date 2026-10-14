@@ -731,6 +731,27 @@ class CrashJournal(Base):
         self.assertIn('RuntimeError: bug in the unwind close', journal['auto_unwind']['error'])
         self.assertEqual(journal['phase'], 'registered')
 
+    def test_an_unwind_after_the_launch_never_closes_a_foreign_mt5(self):
+        # Review 6161742880: the MT5 this deployment launched was replaced (another pid and creation time) while the
+        # dashboard wait ran. The unwind refuses with nothing closed or set aside, and the journal says why.
+        clock = Clock()
+        foreign = dict(pid=91, executable='terminal64.exe', created_utc='2026-10-02T05:00:00+00:00')
+        def replaced(controller, ident, action, timeout=60):
+            if action == 'status':
+                self.process.identity = foreign
+                clock.t += timeout
+                return dict(result='receipt_timeout', id='0' * 32, requestRetained=True)
+            return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+        ea = self.start_ea(pairing='none')
+        with self.relaunch(), self.assertRaisesRegex(ValueError, 'is not the one this deployment launched'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=replaced, sleep=clock.sleep, clock=clock)
+        journal = self.journal()
+        self.assertEqual((journal['phase'], journal['failure']['code'], journal['auto_unwind']['status']),
+                         ('registered', 'dashboard_not_ready', 'failed'))
+        self.assertIn('(pid 91, started 2026-10-02T05:00:00+00:00) is not the one this deployment launched (pid 77', journal['auto_unwind']['error'])
+        self.assertEqual((ea.shutdowns, self.process.closed, self.process.identity), (1, [], foreign), 'the foreign MT5 keeps running')
+        self.assertTrue(deploy.paths(self.c, 'e' * 32)['state'].exists(), 'nothing was set aside')
+
     def test_a_popen_crash_keeps_the_inspect_mt5_stop_and_closes_nothing(self):
         # Review 6160002799 item 4: Popen itself raised, so MT5 may or may not have started. Another MT5 the user opened
         # meanwhile is never closed, and the next deploy-load keeps the old stop (never launched twice).

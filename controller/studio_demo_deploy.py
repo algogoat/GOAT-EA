@@ -827,6 +827,15 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
     right before its close. ``keep_mailbox``: the retained registration was not proven this deployment's, so it and the
     retained request are left in place for inspection (GOAT-EA#229 review item 3)."""
     launched = journal.get('phase') not in ('validated', 'staged', 'closed')
+    if launched and expected_process is not None:
+        # Review 6161742880: an unwind after the launch closes only the MT5 this deployment launched. Another one is
+        # refused here with nothing closed or renamed (close_terminal re-checks the same identity under its gate).
+        from studio_research_profile import _same_identity
+        running = process.inspect()
+        if running is not None and not _same_identity(running, expected_process):
+            raise ValueError('The MT5 running now (pid ' + str(running.get('pid')) + ', started ' + str(running.get('created_utc'))
+                             + ') is not the one this deployment launched (pid ' + str(expected_process.get('pid')) + ', started '
+                             + str(expected_process.get('created_utc')) + '); GOAT did not close it or set anything aside')
     if launched and process.inspect() is not None:
         proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
         if proof['algo_trading']:
@@ -993,6 +1002,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
 
     unwinding = []  # set once an auto-unwind has started: a crash inside it is recorded, never a second unwind
 
+    def launched_identity():
+        """The MT5 this deployment launched (pid, image, creation time). A journal that never read it has no creation
+        time, so an unwind given it refuses to close anything rather than guess."""
+        return record.get('launched_process') or dict(pid=record.get('pid'), executable=None, created_utc=None)
+
     def fail_and_unwind(code, message, failed=(), *, refusal=None, refusal_code=None, unwind=None, **facts):
         """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path. A never-launched
         journal ('staged', 'closed') is set aside the same way without touching MT5. With `refusal` (a broker-fit
@@ -1010,9 +1024,13 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         record.update(failure=dict(code=code, message=message[:400], utc=utc_now(), **facts), rows_failed=list(failed))
         write_json(where['journal'], record)
         unwinding.append(code)
+        options = dict(unwind or {})
+        if launched and 'expected_process' not in options and (record.get('launched_process') or {}).get('created_utc'):
+            # Review 6161742880: every unwind after a launch whose identity was read closes only that MT5.
+            options['expected_process'] = record['launched_process']
         try:
             _unwind(controller, session, record, where, 'unwind-' + deployment_id[:24] + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
-                    mt5=mt5, process=process, close=closer, reason=code, clock=clock, **(unwind or {}))
+                    mt5=mt5, process=process, close=closer, reason=code, clock=clock, **options)
         except (OSError, ValueError) as exc:
             record['auto_unwind'] = dict(status='failed', error=str(exc)[:300], utc=utc_now())
             write_json(where['journal'], record)
@@ -1045,7 +1063,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         facts = dict(from_phase=resumed_from, utc=utc_now())
         record['resume_check'] = facts
         # The MT5 this deployment launched: pid, image and creation time (a reused pid is another process).
-        launched = record.get('launched_process') or dict(pid=record.get('pid'), executable=None, created_utc=None)
+        launched = launched_identity()
         mailbox_root = portfolio_root(controller)
 
         def registration_owned():
@@ -1285,14 +1303,15 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if fit_unchecked and record['phase'] in ('dashboard_ready', 'attached', 'policy_applied'):
             # The post-launch re-check of a resumed broker-fit deploy (above), after the resume re-check proved the MT5,
             # bytes and registration: stale -> the inert-only unwind (Algo Trading stays off, positions are never closed).
-            # Any other read failure leaves the journal here for the next resume.
+            # Any other read failure leaves the journal here for the next resume. The unwind closes only the MT5 this
+            # deployment launched (review 6161742880): another one is refused, journaled and left running.
             import studio_broker_fit as broker_fit
             try:
                 broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
             except Refusal as stale:
                 if stale.code != broker_fit.FIT_STALE:
                     raise
-                fail_and_unwind(stale.code, str(stale), refusal=stale)
+                fail_and_unwind(stale.code, str(stale), refusal=stale, unwind=dict(expected_process=launched_identity()))
             fit_unchecked = False
 
         if record['phase'] == 'dashboard_ready':

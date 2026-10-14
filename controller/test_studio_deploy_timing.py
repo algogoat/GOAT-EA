@@ -111,6 +111,22 @@ class ReferenceChecks(unittest.TestCase):
         self.assertEqual(verdict(lambda: timing.validate_profile(copy.deepcopy(timing.PROFILES['desktop']))), 'ok')
         self.assertEqual(verdict(lambda: timing.validate_profile(dict(timing.PROFILES['desktop'], closeWaitSeconds=31))), 'TIMING_EVIDENCE_REQUIRED')
 
+    def test_null_evidence_is_a_named_exception_for_the_builtin_desktop_id_only(self):
+        # Claude-Mac 6161742880 point 1: `evidence: null` passes for the built-in `desktop` id with exactly its waits, and
+        # for nothing else: another id with null evidence, or the desktop values copied under another id, refuse.
+        desktop = copy.deepcopy(timing.PROFILES['desktop'])
+        self.assertIsNone(desktop['evidence'])
+        self.assertEqual(verdict(lambda: timing.validate_profile(desktop)), 'ok')
+        for other_id in ('my-desktop', 'desktop2', 'vps-cold-36'):
+            with self.subTest(copied_under=other_id):
+                self.assertEqual(verdict(lambda: timing.validate_profile(dict(desktop, id=other_id))), 'TIMING_EVIDENCE_REQUIRED')
+        self.assertEqual(verdict(lambda: timing.validate_profile(dict(timing.PROFILES['vps-cold-36'], evidence=None))), 'TIMING_EVIDENCE_REQUIRED')
+        # The same through --timing-profile <file>: a file copying the desktop waits under its own id is refused.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'copy.json'
+            path.write_text(json.dumps(dict(desktop, id='desktop-copy')), encoding='utf-8')
+            self.assertEqual(verdict(lambda: timing.load_profile(str(path))), 'TIMING_EVIDENCE_REQUIRED')
+
     def test_constants_match_the_reference(self):
         self.assertEqual((timing.SCHEMA, timing.PORTFOLIO_REQUEST_CAP_SECONDS, timing.REGISTRATION_SECONDS, timing.APPLY_POLICY_SECONDS,
                           timing.MIN_MARGIN), ('goat-deploy-timing-v1', 90, 14400, 60, 1.5))

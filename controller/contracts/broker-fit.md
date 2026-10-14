@@ -48,6 +48,10 @@ BrokerFitResult = {
   conversion: { rate, symbol, side }|null,               // additive: 1 account-currency unit in the reference currency
   minEquity: number|null,                                // account currency; smallest equity where >= 90% of the risk trades
   manifestMinEquity: number|null,                        // additive: the manifest's own floor (reference currency)
+  minEquitySource: 'computed_live_contract'|'manifest_minEquityByContract'|'manifest_minEquity'|null,   // additive (cent r2)
+  minEquityComputed: number|null,                        // additive (cent r2): broker-fit's own floor, account currency
+  contractClass: 'standard'|'cent'|'mixed',              // additive (cent r2): the live contract class
+  manifestMinEquityByContract: { standard?, cent? }|null,   // additive (cent r2): the manifest's optional field, verbatim
   offered: boolean,
   refusal: null|{ code, message },                       // additive: why offered is false
   tradableRiskShare: number,                             // 0..1 at this equity
@@ -188,9 +192,9 @@ risk can trade on this broker at any equity), `PORTFOLIO_NEEDS_LARGER_ACCOUNT` (
   member, `scale: null`, `offered: false`.
 - **minEquity / offered:** each member's minimum equity is found exactly on the cent grid by bisection over the same
   equity rules. minEquity = the smallest equity where members worth >= 90% of the risk are tradable (members excluded
-  for any non-equity reason, `MARGIN_UNKNOWN` included, never count), raised to the manifest's `minEquity` (converted,
-  rounded up to the cent) when that is stricter. Risk weights are each member's reference `Risk` when every member is
-  RiskperSeq, else equal.
+  for any non-equity reason, `MARGIN_UNKNOWN` included, never count), raised to the manifest's floors for the live
+  contract class (converted, rounded up to the cent) when they are stricter; see "Cent accounts", round 2. Risk weights
+  are each member's reference `Risk` when every member is RiskperSeq, else equal.
 - **Scaled SET bytes:** written only by the deploy. broker-fit reports `setSha256Deployed` computed in memory. The
   encoding (UTF-16LE or UTF-8), the BOM (or its absence) and every line end are kept byte for byte; only the first field
   of each edited input changes (`value||start||step||stop||N` keeps its ladder). Scale 1.0 on a reference-identical
@@ -302,7 +306,8 @@ signature itself (see Round 5 F2), at review and at deploy.
    `SERVER_OFFSET_MISMATCH`, `MARGIN_TOO_HIGH` (was `MARGIN_INSUFFICIENT`), `MARGIN_UNKNOWN`; portfolio `PORTFOLIO_BROKER_UNFIT` (< 90%
    tradable on this broker at any equity: "needs a larger account" would be false); deploy `FIT_STALE`.
 8. **Missing reference keys** (the manifest allows null "where unknown") -> `CONTRACT_MISMATCH`, never a guess.
-9. **The manifest's `minEquity`** is a floor: the effective minEquity is the stricter of it and the computed one.
+9. **The manifest's `minEquity`** is a floor: the effective minEquity is the stricter of it and the computed one
+   (on a standard contract; on a cent contract see "Cent accounts", round 2).
 10. **Offset measurement limit (updated round 3):** the offset is measured only from a tick seen arriving during the
     read (round 2 item 8), so an old last tick no longer reads as an offset. The residual risk is a skewed clock on this
     PC: the offset is the tick time minus the PC's UTC now. The app passes its own trusted server time
@@ -503,3 +508,57 @@ Codex review follow-up (inline findings on 8975f1b): the actual value-per-point 
 (min-lot feasibility, Risk' search, margin pick); the central estimate (`scaled.startLot`, `scaled.plannedLoss`) now also
 runs at that ratio rather than 1.0. Grid_Size converted inside (-0.5, 0.5) is `EA_INIT_REFUSED` (round 2); `digits: 0`
 is accepted (round 5 F1-impact).
+
+## Cent accounts (P-beta38-cent-accounts, goatai#2350 6156302597)
+
+- **Account currencies** (`CENT_CURRENCIES`): `USC` = US cents. Sources: XS's cent account page lists "Base Currency
+  USC" (xs.com/en/accounts/account-types/preferred/cent-account); PrimeXBT's MT5 cent account press release ("denominated
+  in US cents (USC)", fxstreet.com, 2026-08); PU Prime and Exness cent accounts in USC (compareforexbrokers.com,
+  brokerlistings.com reviews); Vantage's help centre ("US Dollar Cent (USC)"). Exness's other cent currencies `EUC`,
+  `GBC`, `CHC`, `AUC`, `CAC` (= EUR, GBP, CHF, AUD, CAD cents; third-party reviews of Exness, e.g. brokerlistings.com,
+  tradingbeasts.com). Not added: `USc` (no broker evidence found).
+- **Rate:** `USC` against a USD reference is exactly 0.01, no quote, no freshness check: `conversion.source:
+  'cent_account_fixed'`. Any other cent currency is its base currency's fresh-quote conversion x 0.01
+  (`'cent_account_quote'`). A normal pair is `'quote'`, the same currency `'same_currency'`.
+- **Lots are not special-cased:** the broker's cent contract (e.g. 1,000 units against 100,000) is read live and the
+  contract ratio carries the 1/100. A 50,000 USC account on a cent contract deploys exactly the bytes of a 50,000 USD
+  standard account, member by member.
+- **Money is in account units:** Risk' = scaled USD Risk / 0.01 (Risk x account equity / reference equity, floored to
+  the cent), checked against EA_MIN_RISK 10 in the account's units: the EA reads Risk in the account currency
+  (`Risk` input "Risk/Loss per Sequence", GOAT_Inputs_Definitions.mqh:644; compared with `CurrentSequencePL`, the sum
+  of POSITION_PROFIT in the account currency, mq5:1102-1113, 1161-1162; the solver's planned loss uses
+  SYMBOL_TRADE_TICK_VALUE, account currency, mq5:535-547; minimum 10 as written, mq5:3253). Margin (the SDK's, account
+  currency), the 50% cap and plannedLoss / plannedLossMax are in the same units.
+- **Output:** `accountUnit {currency, centOf, factor, note}` on the result and every member; for a cent account the note
+  is "Cent account: balances are shown in US cents (50,000 = $500)."; `centOf: null`, `factor: 1` otherwise.
+- **Spread** on a real cent account can only be judged by a real read.
+
+### Round 2: the portfolio floor on a cent contract (goatai#2350 6157285146, option (b))
+
+- **Not converted:** a manifest's `minEquity` is measured on the reference's standard contract; it follows from the
+  reference lot granularity, so it is not a money amount to convert onto a 1/100 contract (Exp 03's 95,000 USD is not
+  9,500,000 USC). On a cent contract broker-fit's own floor stands: the smallest equity where members worth >= 90% of
+  the risk trade, computed on the live contract by the same per-member bisection (`min_equity`) as everywhere.
+- **Contract class, from live facts only** (`contract_class`): the live contract ratio (reference `contractSize` / the
+  broker's `SYMBOL_TRADE_CONTRACT_SIZE`) of every member whose instrument matched the reference (inside the contract
+  value band). `cent` when every one is exactly 100, `standard` when none is, `mixed` otherwise. The contract decides,
+  not the account currency: a USD account on 1,000-unit contracts has the same lot granularity as a cent account
+  (`cent`; its floor is then set by its own rules, e.g. Risk >= 10 USD), and a USC account on 100,000-unit contracts
+  keeps the standard floor, converted exactly through the 0.01 rate. Only when no member's contract was read does the
+  account currency decide (a cent currency: `cent`); the floor is then moot (nothing reaches 90%).
+- **Manifest `minEquityByContract`** (optional): `{ "standard"?: number, "cent"?: number }`, each a positive finite
+  JSON number. `standard` is in the reference currency on the standard contract (like `minEquity`); `cent` is in cents of
+  the reference currency (USC for a USD reference, i.e. a USC account's own units) on a 1/100 contract, and converts
+  as amount x 0.01 / rate (exactly itself on a USC account). Present means well formed: anything else (null, an empty
+  object, another key, a string, a boolean, zero, a negative or non-finite number) refuses the file
+  (`PORTFOLIO_INVALID`, field `minEquityByContract`).
+- **Which floors apply:** `standard`: `minEquity` and `minEquityByContract.standard`; `cent`:
+  `minEquityByContract.cent` only; `mixed` (fail closed): all of them. The effective floor is the largest of the
+  computed floor and those, so a manifest floor can only be stricter. A standard account is unchanged.
+- **Output, in account units:** `minEquity` (the effective floor), `minEquitySource` (`computed_live_contract`,
+  `manifest_minEquityByContract` or `manifest_minEquity`; a manifest floor equal to the computed one is the source),
+  `minEquityComputed`, `contractClass`, `manifestMinEquityByContract` (verbatim). The deploy re-check re-runs the same
+  rule (stale_members), so a cent account offered at review is offered again at deploy.
+- **goatai:** the house manifest validator (`functions/serve-api/house_portfolio.js`, exact `TOP_KEYS`) refuses an
+  unknown top-level key, so publishing `minEquityByContract` needs it there (with the same shape check), a publish CLI
+  option in `scripts/house_portfolio.cjs`, and the JCS fixtures. The controller tolerates its absence.

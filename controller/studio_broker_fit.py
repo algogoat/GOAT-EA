@@ -397,13 +397,115 @@ def is_conversion_pair(facts, account_currency, reference_currency):
     return {facts.get('currency_base'), facts.get('currency_profit')} == {account_currency, reference_currency}
 
 
+# Cent accounts (P-beta38-cent-accounts, goatai#2350 6156302597): MT5 account currencies that are 1/100 of a base
+# currency. Only spellings with broker evidence are listed (contracts/broker-fit.md, "Cent accounts"): USC (XS, PrimeXBT,
+# PU Prime, Exness, Vantage) and Exness's EUC, GBC, CHC, AUC, CAC. A cent account's balance, equity, margin, profit and
+# every money input are in those cents; the 1/100 lot size comes from the broker's own cent contract size.
+CENT_CURRENCIES = dict(USC='USD', EUC='EUR', GBC='GBP', CHC='CHF', AUC='AUD', CAC='CAD')
+CENT_FACTOR = Decimal('0.01')
+CENT_UNIT_NAMES = dict(USD=('US cents', '$'), EUR=('euro cents', 'EUR '), GBP=('pence', 'GBP '), CHF=('Swiss cents', 'CHF '),
+                       AUD=('Australian cents', 'AUD '), CAD=('Canadian cents', 'CAD '))
+
+
+def account_unit(currency, equity=None):
+    """{currency, centOf, factor, note}: what one account unit is (the app's card). centOf/note only for a cent
+    account: 'Cent account: balances are shown in US cents (50,000 = $500).'"""
+    base = CENT_CURRENCIES.get(currency)
+    if base is None:
+        return dict(currency=currency, centOf=None, factor=1, note=None)
+    name, sign = CENT_UNIT_NAMES[base]
+    example = dec(equity) if dec(equity) is not None and dec(equity) > 0 else Decimal(50000)
+    whole = (example * CENT_FACTOR).quantize(CENT, rounding=ROUND_FLOOR).normalize()
+    note = 'Cent account: balances are shown in %s (%s = %s%s).' % (name, '{:,}'.format(int(example)) if example == example.to_integral_value()
+                                                                     else format(example, ','), sign, format(whole, ',f'))
+    return dict(currency=currency, centOf=base, factor=num(CENT_FACTOR), note=note)
+
+
+# The portfolio floor on a cent contract (P-beta38-cent-accounts round 2, goatai#2350 6157285146, option (b)). A
+# manifest's minEquity is measured on the reference's STANDARD contract: it follows from the reference lot granularity
+# (VOLUME_MIN of 100,000 units), so on a 1/100 contract it is not a money amount to convert (95,000 USD is not
+# 9,500,000 USC). There broker-fit's own floor (the smallest equity where >= 90% of the risk trades, computed on the
+# live contract) stands, raised only by an explicit manifest minEquityByContract.cent.
+CENT_CONTRACT_RATIO = Decimal(100)
+CONTRACT_CLASSES = ('standard', 'cent')
+FLOOR_COMPUTED = 'computed_live_contract'
+FLOOR_BY_CONTRACT = 'manifest_minEquityByContract'
+FLOOR_MANIFEST = 'manifest_minEquity'
+
+
+def contract_class(currency, ratios):
+    """'standard', 'cent' or 'mixed', from live facts only. `ratios`: the live contract ratio (reference contractSize /
+    the broker's SYMBOL_TRADE_CONTRACT_SIZE) of every member whose instrument matched the reference (contract value
+    band). 'cent' when every one is exactly 100 (the broker's lot is 1/100 of the reference's), 'standard' when none is,
+    'mixed' otherwise. The contract decides, not the account currency: the floor follows lot granularity, which a USD
+    account on 1,000-unit contracts shares with a cent account, while a USC account on 100,000-unit contracts keeps the
+    standard floor (converted exactly through the 0.01 rate). Only when no member's contract was read does the account
+    currency decide (a cent currency: 'cent')."""
+    ratios = list(ratios)
+    if not ratios:
+        return 'cent' if currency in CENT_CURRENCIES else 'standard'
+    cent = [ratio == CENT_CONTRACT_RATIO for ratio in ratios]
+    return 'cent' if all(cent) else 'standard' if not any(cent) else 'mixed'
+
+
+def valid_min_equity_by_contract(value):
+    """True for a manifest minEquityByContract: a non-empty object of 'standard' and/or 'cent', each a positive finite
+    JSON number. 'standard' is in the reference currency on the reference (standard) contract, like minEquity; 'cent' is
+    in cents of the reference currency (USC for a USD reference: a USC account's own units) on a 1/100 contract."""
+    return (type(value) is dict and bool(value) and all(key in CONTRACT_CLASSES for key in value)
+            and all(type(amount) in (int, float, Decimal) and dec(amount) is not None and dec(amount) > 0 for amount in value.values()))
+
+
+def needed_equity(thresholds, total):
+    """The smallest member minimum equity at which members worth >= TRADABLE_SHARE of `total` weight trade;
+    thresholds: [(member minimum equity, weight)]. None when they never reach it."""
+    running = Decimal(0)
+    for threshold, weight in sorted(thresholds):
+        running += weight
+        if total and running / total >= TRADABLE_SHARE:
+            return threshold
+    return None
+
+
+def portfolio_floor(computed, *, klass, rate, manifest):
+    """(floor in account units, source). The computed floor, raised by every manifest floor that applies to the live
+    contract class: on 'standard', minEquity and minEquityByContract.standard (reference currency / rate, exactly as
+    before round 2); on 'cent', minEquityByContract.cent only; on 'mixed' (fail closed) all of them. A manifest floor
+    equal to or above the computed one is the source. None when nothing reaches 90%."""
+    if computed is None:
+        return None, None
+    by_contract = manifest.get('minEquityByContract') or {}
+    candidates = []
+    if klass != 'cent':
+        candidates += [(dec(manifest.get('minEquity')), Decimal(1), FLOOR_MANIFEST),
+                       (dec(by_contract.get('standard')), Decimal(1), FLOOR_BY_CONTRACT)]
+    if klass != 'standard':
+        candidates.append((dec(by_contract.get('cent')), CENT_FACTOR, FLOOR_BY_CONTRACT))
+    value, source = computed, FLOOR_COMPUTED
+    for amount, unit, name in candidates:
+        if amount is not None:
+            amount = (amount * unit / rate).quantize(CENT, rounding=ROUND_CEILING)
+            if amount >= value:
+                value, source = amount, name
+    return value, source
+
+
 def conversion(account_currency, reference_currency, symbols, *, quotes=None, offset_minutes=None, utc_now=None):
-    """(rate, symbol, side): the value of 1 account-currency unit in the reference currency, from a quoted pair on the
-    terminal, taking the side that values the account LOWER (bid when the account currency is the base, 1/ask when it
-    is the quote). (1, None, None) for the same currency; None when no pair has a price at most FRESH_QUOTE_SECONDS old
-    (its last tick time in `quotes`, judged with the proven server offset; review 6130418265 item 3)."""
+    """(rate, symbol, side, source): the value of 1 account-currency unit in the reference currency, from a quoted pair
+    on the terminal, taking the side that values the account LOWER (bid when the account currency is the base, 1/ask
+    when it is the quote). (1, None, None, 'same_currency') for the same currency; None when no pair has a price at most
+    FRESH_QUOTE_SECONDS old (its last tick time in `quotes`, judged with the proven server offset; review 6130418265
+    item 3). A cent account (CENT_CURRENCIES) is its base currency x 0.01: exactly 0.01 with no quote when the base IS
+    the reference currency ('cent_account_fixed'), else the base's own fresh-quote conversion x 0.01
+    ('cent_account_quote')."""
+    base = CENT_CURRENCIES.get(account_currency)
+    if base is not None:
+        if base == reference_currency:
+            return CENT_FACTOR, None, None, 'cent_account_fixed'
+        inner = conversion(base, reference_currency, symbols, quotes=quotes, offset_minutes=offset_minutes, utc_now=utc_now)
+        return None if inner is None else (inner[0] * CENT_FACTOR, inner[1], inner[2], 'cent_account_quote')
     if account_currency == reference_currency:
-        return Decimal(1), None, None
+        return Decimal(1), None, None, 'same_currency'
     candidates = []
     for facts in symbols:
         base, profit = facts.get('currency_base'), facts.get('currency_profit')
@@ -420,7 +522,7 @@ def conversion(account_currency, reference_currency, symbols, *, quotes=None, of
     if not candidates:
         return None
     _, name, rate, side = sorted(candidates)[0]
-    return rate, name, side
+    return rate, name, side, 'quote'
 
 
 # ------------------------------------------------------------------ input semantics
@@ -1090,6 +1192,9 @@ def validate_manifest(manifest):
     floor = manifest.get('minEquity')
     if floor is not None and (dec(floor) is None or dec(floor) <= 0):
         _refuse('minEquity', 'minEquity')
+    # Optional (round 2, goatai#2350 6157285146); present means well formed, or the file is refused (fail closed).
+    if 'minEquityByContract' in manifest and not valid_min_equity_by_contract(manifest['minEquityByContract']):
+        _refuse('minEquityByContract', 'minEquityByContract')
     members = manifest.get('members')
     if type(members) is not list or not 1 <= len(members) <= 100:
         _refuse('members', 'members')
@@ -1211,6 +1316,10 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
                 inner['min_equity'] = None
                 members[index], internals[index] = row, inner
     used = any(inner.get('exempt') for inner in internals)
+    # P-beta38-cent-accounts: every member's money values (Risk, limits, margin, plannedLoss) are in this unit.
+    unit = account_unit(account.get('currency'), account_equity)
+    for row in members:
+        row['accountUnit'] = unit
     result = _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals,
                         clock)
     live = dec(account.get('equity'))
@@ -1293,6 +1402,7 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     if not CONTRACT_VALUE_BAND[0] <= ratio <= CONTRACT_VALUE_BAND[1]:
         return _excluded(row, CONTRACT_MISMATCH, message(CONTRACT_MISMATCH, symbol=symbol), inner)
     contract_ratio = reference['contractSize'] / broker['trade_contract_size']
+    inner['contract_ratio'] = contract_ratio            # the live contract class (contract_class), same instrument only
     # Point size: positive distances are value*10*Point(); convert them exactly or refuse.
     point_ratio = reference['point'] / broker['point']
     try:
@@ -1466,22 +1576,17 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
     total = sum(weights)
     fit_weight = sum(weight for weight, row in zip(weights, members) if row['status'] == 'fit')
     share = fit_weight / total if total else Decimal(0)
-    min_equity_value, refusal = None, None
+    min_equity_value, floor_source, needed, refusal = None, None, None, None
+    klass = contract_class(account.get('currency'), [inner['contract_ratio'] for inner in internals if inner.get('contract_ratio') is not None])
     if rate is not None:
         # Equity-dependent exclusions only: a member excluded for any other reason never becomes tradable by equity, and
         # margin grows with equity at the same rate, so MARGIN_TOO_HIGH does not either.
-        thresholds = sorted((inner['min_equity'], weight) for inner, weight, row in zip(internals, weights, members)
-                            if inner.get('min_equity') is not None and row['code'] in (None, BELOW_MIN_LOT))
-        running, needed = Decimal(0), None
-        for threshold, weight in thresholds:
-            running += weight
-            if total and running / total >= TRADABLE_SHARE:
-                needed = threshold
-                break
-        if needed is not None:
-            # The manifest's own minEquity (reference currency) is a floor the publisher set; the stricter one wins.
-            floor = dec(manifest.get('minEquity'))
-            min_equity_value = max(needed, (floor / rate).quantize(CENT, rounding=ROUND_CEILING)) if floor is not None else needed
+        thresholds = [(inner['min_equity'], weight) for inner, weight, row in zip(internals, weights, members)
+                      if inner.get('min_equity') is not None and row['code'] in (None, BELOW_MIN_LOT)]
+        needed = needed_equity(thresholds, total)
+        # The manifest's floors are publisher floors for one contract class; the stricter of them and the computed one
+        # wins, and a standard-contract floor never applies to a cent contract (round 2, goatai#2350 6157285146).
+        min_equity_value, floor_source = portfolio_floor(needed, klass=klass, rate=rate, manifest=manifest)
     fit_inner = [inner for inner, row in zip(internals, members) if row['status'] == 'fit']
     margin_total = sum(inner['margin'] for inner in fit_inner if inner['margin'] is not None)
     # Verified: computed for every fit member, or (never silently) stood in for by the reference account's evidence.
@@ -1505,8 +1610,14 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
                      equity=num(account_equity), leverage=account.get('leverage'), demo=True),
         reference=dict(equity=num(ref_equity), currency=ref_currency, server=manifest['referenceAccount']['server']),
         scale=num(scale), scaleMode='equity_linear',
-        conversion=None if converted is None else dict(rate=num(converted[0]), symbol=converted[1], side=converted[2]),
+        conversion=None if converted is None else dict(rate=num(converted[0]), symbol=converted[1], side=converted[2], source=converted[3]),
+        # P-beta38-cent-accounts: what one account unit is; every money value here is in it.
+        accountUnit=account_unit(account.get('currency'), account_equity),
         minEquity=num(min_equity_value), manifestMinEquity=num(dec(manifest.get('minEquity'))),
+        # Round 2 (goatai#2350 6157285146): the floor's source, broker-fit's own floor, and the live contract class, all
+        # in account units (accountUnit).
+        minEquitySource=floor_source, minEquityComputed=num(needed), contractClass=klass,
+        manifestMinEquityByContract=manifest.get('minEquityByContract'),
         offered=refusal is None, refusal=refusal,
         tradableRiskShare=num(share.quantize(Decimal('0.0001'))), riskWeighting=weighting,
         margin=dict(required=num(margin_total), equity=num(account_equity), limit=num(account_equity * MAX_MARGIN_SHARE),
@@ -2060,8 +2171,10 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=
             mapped = sorted({symbol for symbol, problem in (map_symbol(m['canonicalSymbol'], symbols) for m in manifest['members'])
                              if symbol})
             reference_currency = manifest['referenceAccount']['currency']
-            pairs = sorted({item['name'] for item in symbols if account['currency'] != reference_currency
-                            and is_conversion_pair(item, account['currency'], reference_currency)} - set(mapped))
+            # A cent account converts through its base currency (EUC through EURUSD); USC against USD needs no pair.
+            priced = CENT_CURRENCIES.get(account['currency'], account['currency'])
+            pairs = sorted({item['name'] for item in symbols if priced != reference_currency
+                            and is_conversion_pair(item, priced, reference_currency)} - set(mapped))
             first = {name: _tick_stamp(mt5.symbol_info_tick(name)) for name in mapped + pairs}
             quotes = {name: stamp[1] if stamp else None for name, stamp in first.items()}
             # Re-read the mapped symbols' last ticks until one ARRIVES: its age is then at most the time since the

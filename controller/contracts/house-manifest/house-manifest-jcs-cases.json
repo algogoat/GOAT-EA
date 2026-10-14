@@ -104,6 +104,13 @@
       "manifest": {"schema": "goat-house-portfolio-v1", "portfolioId": "goat-fx-core", "version": 1, "minEquity": 2500, "referenceAccount": {"server": "Darwinex-Demo", "currency": "USD", "startingBalance": 100000, "leverage": 200}, "members": [{"memberId": "EURUSD.M15.ea1b4daac5a52fde", "signature": "kept", "setName": "GOAT V1.49 EURUSD,M15_Trds=119.set"}], "signature": null},
       "canonical": "{\"members\":[{\"memberId\":\"EURUSD.M15.ea1b4daac5a52fde\",\"setName\":\"GOAT V1.49 EURUSD,M15_Trds=119.set\",\"signature\":\"kept\"}],\"minEquity\":2500,\"portfolioId\":\"goat-fx-core\",\"referenceAccount\":{\"currency\":\"USD\",\"leverage\":200,\"server\":\"Darwinex-Demo\",\"startingBalance\":100000},\"schema\":\"goat-house-portfolio-v1\",\"version\":1}",
       "manifestSha256": "4dcb75abc67431e457d9dd610556fba862869680a118c58ae2c667ec946c03b2"
+    },
+    {
+      "name": "min_equity_by_contract",
+      "note": "The optional minEquityByContract (GOAT-EA#236 cent accounts): standard and cent floors, hashed like any other field.",
+      "manifest": {"schema": "goat-house-portfolio-v1", "portfolioId": "goat-fx-core", "version": 1, "minEquity": 2500, "minEquityByContract": {"standard": 95000, "cent": 5000000}, "referenceAccount": {"server": "Darwinex-Demo", "currency": "USD", "startingBalance": 100000, "leverage": 200}, "members": [{"memberId": "EURUSD.M15.ea1b4daac5a52fde", "setName": "GOAT V1.49 EURUSD,M15_Trds=119.set"}], "signature": null},
+      "canonical": "{\"members\":[{\"memberId\":\"EURUSD.M15.ea1b4daac5a52fde\",\"setName\":\"GOAT V1.49 EURUSD,M15_Trds=119.set\"}],\"minEquity\":2500,\"minEquityByContract\":{\"cent\":5000000,\"standard\":95000},\"portfolioId\":\"goat-fx-core\",\"referenceAccount\":{\"currency\":\"USD\",\"leverage\":200,\"server\":\"Darwinex-Demo\",\"startingBalance\":100000},\"schema\":\"goat-house-portfolio-v1\",\"version\":1}",
+      "manifestSha256": "249c4ddb1146f9a9ab4da8e0aac28da9b2a02a181254102b9f28465f93eeb9b8"
     }
   ]
 }

@@ -1121,8 +1121,9 @@ class DeployRecordTests(unittest.TestCase):
 
 
 JCS_CASES = HERE / 'contracts' / 'house-manifest' / 'house-manifest-jcs-cases.json'
-# Vendored byte-identical from goatai docs/fixtures/house-manifest-jcs-cases.json (house feed v1.1, goatai 269152191).
-JCS_CASES_SHA256 = 'c78e21fdd4866870eebd8d0639c5f01e52ad1f32cf565f55237c50ea18fd3a33'
+# Vendored byte-identical from goatai docs/fixtures/house-manifest-jcs-cases.json (house feed v1.1, goatai 269152191; the
+# min_equity_by_contract case from goatai claude-pc/manifest-min-equity-by-contract 985ba6b6).
+JCS_CASES_SHA256 = '3123da50475d9f5a921eccea55dd1df88a8302726331631acff89fdaf896270f'
 
 
 class ManifestShaTests(unittest.TestCase):

@@ -19,6 +19,78 @@ Do not transfer the parent's performance claims to changed inputs or ranges.
 
 What this page covers is new work: a changed file is a new, untested candidate.
 
+## A new strategy, start to finish
+
+Every new strategy follows the same order: the user's own idea
+([goat-strategy-create](skills/goat-strategy-create/SKILL.md)), a fork of a catalog
+template ([goat-template-create](skills/goat-template-create/SKILL.md)) and designs an
+agent drafts to fill a gap. Each step is one of GOAT's own tools, so any agent can
+repeat it exactly. The installed agent guide (`goat-beta-agent-guide.md`, "A new
+strategy, start to finish") gives the same order for the desktop side.
+
+This order is how to get more qualifying files; it is not a pool rule. A file that
+qualifies counts however it was built: pool membership is the product's qualifying
+rule only (AGENT-START-HERE step 20). **Advice:** don't put hand-written SETs or
+unseeded ranges into a production batch (house research, a FAT run or a customer
+batch), and don't skip the seed hunt: ranges that were never hunted mostly measure
+the guess. In GOAT's own house research on 2026-10-13, designs sent with hand-picked
+ranges straight into full runs found no profitable setting at all in 18 of their
+first 31 runs.
+
+1. **Build from a real parent.** Clone the closest catalog template, or a blank from
+   `starter-set --shape single|sequence` ("Start from blank" below). Never hand-write a
+   SET. Write the spec ("Build a documented variant" below) with **wide, purposeful
+   hunt ranges**: where the strategy uses them, open the inputs that change its
+   behaviour most (ATR periods, indicator timeframes, lock-profit size and flexibility,
+   and for sequences the progression inputs).
+   ```powershell
+   & '<agent kit>\goat.exe' studio --installation '<receipt.json>' build-set --source '<parent.set>' --output '<My strategies>\<name>.set' --spec '<variant-spec.json>'
+   & '<agent kit>\goat.exe' studio --installation '<receipt.json>' validate-set --set '<My strategies>\<name>.set' --require-optimization
+   ```
+   Read `cartesian_combinations` in the reply to size the hunt before preparing it.
+2. **Register it** with the desktop: `strategy.forkTemplate` (`templateId` for a
+   catalog parent, `starter` for a blank), so it appears in Research as the user's
+   untested strategy. The controller has no register command of its own: build-set's
+   `.build.json` receipt is local provenance only.
+3. **Seed hunt** ([SEED-WORKFLOW.md](SEED-WORKFLOW.md); "Seed loop" in
+   AGENT-START-HERE.md): `seed-prepare`, `seed-start`, then `seed-resume` until it
+   ends, then `seed-report`.
+   - **Window:** in-sample only, ending **before** the earliest date the later proof
+     reads (its `BackOOSDate`). Give the seed jobs explicit `FromDate`/`ToDate`. A seed
+     plan with `oos_windows` reads that O's SAMPLE, which lies inside a proof batch on
+     the same O and export Friday, so don't share one `oos_windows` between the seed
+     and the proof.
+   - **Size:** about 400 frames per member (`frame_target`), on the strategy's 3 most
+     likely assets first.
+4. **Read the seed honestly.** `summary.qualifying_count` counts rows that meet the
+   plan's cutoff (`min_fitness`, `min_trades`); that cutoff admits net losers, and
+   health only means "traded". Open each member's `result_path` file and count its
+   **profitable qualifiers**: candidates with `qualifies: true` (it keeps both plan
+   cutoffs, so a one-trade candidate with a high profit factor never wins) **and**
+   `metrics.Profit` > 0 **and** `metrics."Profit Factor"` ≥ 1.05. A strategy with no
+   profitable qualifier on any asset is dropped and recorded, not re-hunted with small
+   tweaks. Record every member, failures included, with the profitable-qualifier
+   count as its qualifying count (AGENT-START-HERE, seed step 5).
+5. **Promote the winners only.** For each member that has one, `seed-promote` the
+   profitable qualifier (step 4) with the highest `Result`:
+   `seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--member <alias>]`.
+   It writes `fixed.set` (the exact candidate, no search axis) and `robustness.set`
+   (the candidate's neighbourhood, with search axes).
+6. **Prove in an ordinary batch.** Put each promoted **`robustness.set`** in a
+   `prepare-batch` plan with a forward window, on dates after the seed window
+   (`seed_window.to_date` in `promotion.json`), and judge it like any template:
+   forward, then FOOS. Never put `fixed.set` in that batch: `prepare-batch` validates
+   every member as an optimization template and refuses a SET with no active axis.
+   `fixed.set` is the exact candidate for a single test only, such as a hold-up test. Declare
+   the held-out lock (`heldOut.declare`) as it enters Prove. Its files enter a pool by
+   the product's qualifying rule (AGENT-START-HERE step 20), like every file. Each
+   promoted or changed version counts as its own variant.
+
+The controller checks each file (validate-set, `EA_INIT_REFUSED`, the
+risk rules), but it does not check this order: `prepare-batch` accepts any validated
+SET and does not compare a promoted SET's seed window with the batch dates. Following
+the order is the agent's job.
+
 ## Validate an existing SET
 
 ```powershell
@@ -34,8 +106,9 @@ with no active search axes; omit it when inspecting fixed settings.
 The shipped dependency policy covers indicator-mode gates. It rejects a searched
 indicator input whose controlling mode is disabled for the entire search and
 reports conditionally inactive modes. **Unchecked axes require further review.**
-A pass does not establish initialization compatibility for every combination,
-broker constraints, useful economic effects, profitability or native readiness.
+It refuses any reachable combination the EA's own `OnInit` refuses from input values
+(`EA_INIT_REFUSED`, below). A pass does not establish broker constraints, useful
+economic effects, profitability or native readiness.
 Use `discover` to inspect each input's own enum; never reuse numeric meanings
 from a different enum or assume every integer between valid endpoints is valid.
 

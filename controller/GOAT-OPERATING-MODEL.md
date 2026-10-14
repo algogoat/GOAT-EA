@@ -43,7 +43,7 @@ The matrix (`strategy.matrix`) is the scoreboard. Each template row has `eligibi
 The loop, every time:
 
 1. **Batch or seed run finishes.** Run `finish` (batches) or `seed-report` (seeds).
-2. **Decide what qualified.** Batch member: `exports.native_threshold_candidate_count >= 1` (export files that passed the native profit, ARF and SR thresholds). Seed member: `summary.qualifying_count >= 1` (frames meeting both seed cutoffs).
+2. **Decide what qualified.** Batch member: `exports.native_threshold_candidate_count >= 1` (export files that passed the native profit, ARF and SR thresholds). Seed member: at least one profitable qualifier in its `result_path`, a candidate with `qualifies: true` (both seed cutoffs) and `Profit` > 0 and `Profit Factor` ≥ 1.05; `summary.qualifying_count` (frames meeting both seed cutoffs) admits net losers, so it is not enough on its own, and the qualifying count you record for a seed is the profitable-qualifier count.
 3. **Record every member** with `strategy.recordResult`, including failures and interruptions, each with its own attempt ID (`<attempt_id>-m<index>` for batch members, `<seed batch id>-<alias>` for seeds). Put the qualifying count in `metrics`. A terminal result can never be changed; a retry is a new attempt.
 4. **Order the next batch** from the refreshed matrix. The app does not reorder anything for you; you build the member list in this order:
    - **Proven**: template/symbol pairs with the user's own `completed` result that had qualifying exports, or a qualifying seed.
@@ -52,7 +52,7 @@ The loop, every time:
    - Skip `deprecated` templates. Do not repeat a pair whose latest result is `no-qualifying-exports` with the same settings unless the user asks; change something (dates, range variant) and say why.
 5. **Show the user** the proposed order, why each pair is there, and the measured time per member from `benchmark-report`. Start only after their yes.
 
-Rules for honest results: a technical failure is not a bad strategy; seed results are in-sample only; an optimization winner is not out-of-sample proof; missing numbers are `null` or `unavailable`, never zero. Results for local variants (forks) cannot be recorded with `strategy.recordResult` in this beta because it only accepts installed catalog templates; keep them in the work folder and mention it in the handoff.
+Rules for honest results: a technical failure is not a bad strategy; seed results are in-sample only; an optimization winner is not out-of-sample proof; missing numbers are `null` or `unavailable`, never zero. Results for local variants (forks) are recorded with `strategy.recordResult` too: pass the `forkId` from `strategy.forkTemplate`, with `templateId` = that `forkId`, `templateRevision` = the fork's parent revision and `templateSha256` = the fork's sha256. `catalogRevision` must still name an installed catalog revision. The desktop refuses the record if the fork receipt is missing or the stored fork bytes no longer match; edited bytes are a new fork.
 
 ## Budget and pacing
 

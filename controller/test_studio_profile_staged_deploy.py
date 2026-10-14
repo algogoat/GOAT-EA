@@ -197,8 +197,10 @@ class ProfileStagedDeployTests(DeployFixture):
     def test_a_slow_dashboard_start_waits_out_the_unanswered_request_instead_of_failing(self):
         """The mailbox refuses a new request while an unanswered one is live (wait + 5 s, archivable 5 s later)."""
         now, live_until, answers = [0.0], [None], iter(['receipt_timeout', 'receipt_timeout', 'observed'])
+        refused = []
         def request(controller, ident, action, timeout=20):
             if live_until[0] is not None and now[0] <= live_until[0]:
+                refused.append(now[0])
                 raise ValueError('An unanswered portfolio request is still live; wait for it to expire')
             answer = next(answers)
             if answer == 'receipt_timeout':
@@ -211,6 +213,9 @@ class ProfileStagedDeployTests(DeployFixture):
                                     request=request, sleep=sleep, clock=lambda: now[0])
         self.assertEqual(status['result'], 'observed')
         self.assertLessEqual(now[0], deploy.DASHBOARD_WAIT_SECONDS)
+        # A still-live refusal is now pending inside _poll_until (Claude-Mac 6161835586), so the guard is held directly:
+        # the poll never asks again while its own unanswered request is still live.
+        self.assertEqual(refused, [], 'never asked again before its own request could expire')
 
     def test_an_auto_unwound_deploy_can_be_deployed_again_as_a_new_attempt(self):
         ea = self.start_ea(pairing='none', unstarted={1})

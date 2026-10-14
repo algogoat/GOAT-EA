@@ -183,7 +183,9 @@ two ways:
   `dashboard_not_ready`) stays the journal's `failure`.
 
 **Timeouts.** The ack and audit timeouts (`ack_timeout`, `audit_timeout`) unwind like the dashboard and link timeouts,
-so no loaded MT5 is left with Algo Trading off. **`deploy-status`** during a dashboard, ack or audit wait answers
+so no loaded MT5 is left with Algo Trading off. An ack or audit that ends on a refusal rather than at its deadline keeps
+the plain refusal and its durable phase, so the next `deploy-load` resumes there (with the broker-fit re-check of
+GOAT-EA#240 for a broker-fit plan). **`deploy-status`** during a dashboard, ack or audit wait answers
 `dashboard: {result: pending, reason: request_still_live | mutation_started}`, as the link step treats the same
 refusals, instead of a `dashboard_error`.
 

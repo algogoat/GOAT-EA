@@ -12,6 +12,8 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mutation_budget import MutantClock  # B47: per-mutant time budget (log only)
 
 CONTROLLER = Path(__file__).resolve().parent.parent / 'controller'
 RUNNER = ('import sys,unittest\n'
@@ -129,10 +131,12 @@ def main():
     # Each mutation is an isolated copy plus its own interpreter, so they run side by side;
     # results are printed in list order. GOAT_MUTATION_JOBS overrides the worker count.
     jobs = int(os.environ.get('GOAT_MUTATION_JOBS') or min(8, os.cpu_count() or 1))
+    clock = MutantClock(Path(__file__).stem)
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        results = list(pool.map(lambda m: run_mutation(m, scratch), MUTATIONS))
+        results = list(pool.map(lambda m: clock.timed(m[0], run_mutation, m, scratch), MUTATIONS))
     for (label, _, _, _), failed in zip(MUTATIONS, results):
-        print(('CAUGHT ' if failed else 'MISSED ') + label)
+        print(('CAUGHT ' if failed else 'MISSED ') + label + ' (%.1fs)' % clock.seconds(label))
+    clock.report()
     caught = sum(results)
     print(f'{caught}/{len(MUTATIONS)} mutations caught')
     return 0 if caught == len(MUTATIONS) else 1

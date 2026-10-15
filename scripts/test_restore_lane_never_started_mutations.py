@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mutation_budget import MutantClock  # B47: per-mutant time budget (log only)
 
 CONTROLLER = Path(__file__).resolve().parent.parent / 'controller'
 RUNNER = ('import sys,unittest\n'
@@ -111,7 +113,9 @@ MUTATIONS = [
 
 def main():
     caught = 0
+    clock = MutantClock(Path(__file__).stem)
     for label, name, *change in MUTATIONS:
+        started = clock.start()
         pairs = change[0] if len(change) == 1 else [tuple(change)]
         with tempfile.TemporaryDirectory() as work:
             copy = Path(work) / 'controller'
@@ -131,7 +135,8 @@ def main():
             # Caught means the tests ran and failed, not that the copy broke.
             failed = result.returncode == 1 and 'FAILED (' in report and 'ImportError' not in report and 'SyntaxError' not in report
             caught += failed
-            print(('CAUGHT ' if failed else 'MISSED ') + label)
+            print(('CAUGHT ' if failed else 'MISSED ') + label + clock.lap(label, started))
+    clock.report()
     print(f'{caught}/{len(MUTATIONS)} mutations caught')
     return 0 if caught == len(MUTATIONS) else 1
 

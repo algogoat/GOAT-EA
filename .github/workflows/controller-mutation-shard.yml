@@ -7,7 +7,7 @@ name: Controller mutation shard
 # `inputs.steps` is 'all' or names it as |step id|, where the step id is the script's stem.
 # scripts/ci_mutation_select.py reads this table (keep the `if:` form exactly as below), and
 # controller/test_ci_mutation_shards.py checks every step is in one shard, has a dependency map and
-# that the union is the full 25-step set.
+# that the union is the full 26-step set.
 #
 # The split is by MEASURED step time (GOAT-EA#204): per-step durations from the GitHub Actions jobs
 # API, every attempt of the 17 controller-tests runs from b7dedd2 (2026-10-08 10:14Z) to 2026-10-09
@@ -19,9 +19,30 @@ name: Controller mutation shard
 #   3/4    23.8    33.8    restore lane never-started 12.2 / 17.3, 6 more
 #   4/4    27.6    34.7    catch-up rebase (83 mutations) 10.1 / 13.0, OOS windows 6.5 / 9.1,
 #                          setup registration 6.9 / 8.0, 3 more
+#
+# B47 (Claude-Mac, goatai#2350 6186991728): the 45-min cap kept cancelling shards whose every mutant
+# was caught (run 38522134071 shard 3, 38689745736 shard 4 at 45.2 min). Re-measured on the 12
+# controller-tests runs 38514661762..38689745736 (11-13 samples per step), per-step median / p90 /
+# slowest in minutes:
+#   1/4  research outcome controller 12.95 / 14.77 / 18.25, switch hold 8.11 / 8.72 / 11.53, 7 more
+#        (2.43 / 2.45 the largest); sum of medians 27.4, of slowest 36.7; jobs 22.2-36.8
+#   2/4  process query 26.07 / 33.15 / 34.95, research launch 1.25, lane driver 0.78;
+#        sum 28.1 / 37.6; jobs 23.1-38.2
+#   3/4  restore lane never-started 14.75 / 17.38 / 29.53, seed member failure 4.64 / 5.97,
+#        peers 3.75 / 5.55, peer restart 2.23 / 4.92, hold-up 2.18, 2 more; sum 28.3 / 49.7;
+#        jobs 21.0-35.9, one cancelled at 45.2
+#   4/4  catch-up rebase 11.57 / 14.42 / 14.53, OOS windows 10.72 / 13.53 / 20.20, setup registration
+#        6.93 / 8.73, 3 more; sum 33.5 / 48.1; jobs 24.5-38.1, one cancelled at 45.2
+# Rebalancing cannot give every shard <= 30 min with margin: process query is one step of 26.1 min
+# median and 35.0 slowest, and the cancellations were single steps running ~2x their median on a slow
+# runner (restore lane 29.5 vs 14.8, OOS windows 20.2 vs 10.7), which a different split does not
+# absorb. So the cap is 60 min (the slowest observed job, 38.2, is 64% of it) and the slow steps log a
+# per-mutant time budget (scripts/mutation_budget.py: each mutant's seconds, a budget line per step and
+# a ::warning:: for any mutant over GOAT_MUTANT_BUDGET_SECONDS, default 60 s), so drift is visible in
+# the run summary before it cancels a shard. The B47 CID guard step (~3 s) is on shard 1.
 # A new mutation check goes in the shard with the most headroom, into STEP_SEEDS of
 # scripts/ci_mutation_select.py and into the expected set of controller/test_ci_mutation_shards.py;
-# keep each shard well under its timeout.
+# keep each shard's slowest-observed sum well under its timeout.
 
 on:
   workflow_call:
@@ -46,8 +67,8 @@ jobs:
   run:
     name: run
     runs-on: windows-2022
-    # Slowest observed per-step sums are 32.5-34.7 min per shard (see the table above).
-    timeout-minutes: 45
+    # B47: 60 min (see the table above): slowest observed job 38.2 min, slowest per-step sums 36.7-49.7 min.
+    timeout-minutes: 60
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"
@@ -129,6 +150,9 @@ jobs:
       - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
         if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_switch_hold_mutations|'))
         run: python scripts/test_switch_hold_mutations.py
+      - name: 'CID guard mutation check (B46/B47: stale record, claim heartbeat, unreadable claim, login 0, cid_duplicate add freeze, entry gate)'
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_cid_guard_mutations|'))
+        run: node scripts/test_cid_guard_mutations.cjs
 
       # ---- Shard 2/4 ----
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)

@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mutation_budget import MutantClock  # B47: per-mutant time budget (log only)
 
 CONTROLLER = Path(__file__).resolve().parent.parent / 'controller'
 RUNNER = ('import os,sys,unittest\n'
@@ -85,7 +87,9 @@ TESTS = ['test_studio_switch_hold']
 
 def main():
     caught = 0
+    clock = MutantClock(Path(__file__).stem)
     for label, name, old, new in MUTATIONS:
+        started = clock.start()
         with tempfile.TemporaryDirectory() as work:
             copy = Path(work) / 'controller'
             shutil.copytree(CONTROLLER, copy, ignore=shutil.ignore_patterns('__pycache__'))
@@ -106,7 +110,8 @@ def main():
             except subprocess.TimeoutExpired:
                 failed, label = True, label + ' (hang)'
             caught += failed
-            print(('CAUGHT ' if failed else 'MISSED ') + label, flush=True)
+            print(('CAUGHT ' if failed else 'MISSED ') + label + clock.lap(label, started), flush=True)
+    clock.report()
     print(f'{caught}/{len(MUTATIONS)} mutations caught')
     return 0 if caught == len(MUTATIONS) else 1
 

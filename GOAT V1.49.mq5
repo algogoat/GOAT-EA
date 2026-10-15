@@ -19,7 +19,7 @@
 // file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
 void GoatDeployNotice(const string goat_notice_text);
 #define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
-#define   GOAT_BUILD_ID "V1.49-BETA17-46"
+#define   GOAT_BUILD_ID "V1.49-BETA17-47"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -34,7 +34,7 @@ void GoatDeployNotice(const string goat_notice_text);
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B46"
+#define   GOAT_BUILD_MARKER "B47"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -317,11 +317,35 @@ int GoatDeriveChildMagic(const long magic_chart,const string magic_salt)
 // status. A running chart re-writes its own CID record when it is missing (a dashboard launch or removal deletes every
 // <Key>_ID_ record, GoatDeleteDashboardBusData), so that wipe does not orphan a sibling chart's positions for long.
 // Live charts only: tester, optimization and forward passes never evaluate it, so backtests are unchanged.
+// B47 (goatai#2350, Claude-Mac's B46 review) closes the paths that still masked an orphan:
+// - a CID record maps its magic only while its chart is open in this terminal with an EA on it (GoatCidGuardLiveCharts:
+//   ChartFirst/ChartNext, compared as the truncated ids the records store). A chart closed with trades open and reopened
+//   under a new chart id no longer exempts the old magic through its stale record;
+// - a claim carries a heartbeat: the running chart re-stamps it every GOAT_CID_CLAIM_HEARTBEAT_MS from OnTimer, and a
+//   claim older than GOAT_CID_CLAIM_STALE_SEC is unowned. The clock is TimeGMT(): the PC's own clock, the same for every
+//   terminal that shares this Common\Files folder (TimeCurrent is per broker and stops between ticks). A stamp more than
+//   GOAT_CID_CLAIM_FUTURE_SEC ahead (the clock stepped back) is unreadable; the writer re-stamps within 5 s either way;
+// - a claim file that cannot be opened or parsed is not "no claim": it is GOAT evidence with no owner, so it refuses;
+// - no claim is written while the account login is 0 (not yet connected);
+// - under cid_duplicate the running sequence's owner is ambiguous: its adds (grid and rescue, every real
+//   SEQUENCE::Add_Level) are frozen and logged once per side (add_frozen); closes, stops, trailing and MLPS still run.
 #define GOAT_CID_GUARD_RECHECK_MS 5000
+#define GOAT_CID_CLAIM_HEARTBEAT_MS 5000      // B47: a running chart re-stamps its claim this often (OnTimer)
+#define GOAT_CID_CLAIM_STALE_SEC    180       // B47: a claim not re-stamped for this long is unowned
+#define GOAT_CID_CLAIM_FUTURE_SEC   30        // B47: a stamp further ahead than this (clock stepped back) is unreadable
+#define GOAT_CID_CHART_WALK_MAX     1000      // B47: the open-chart walk stops after this many charts
+#define GOAT_CID_ADD_RECHECK_MS     1000      // B47: an add re-evaluates the guard when its last check is older than this
+#define GOAT_CID_CLAIM_NONE         0
+#define GOAT_CID_CLAIM_FRESH        1
+#define GOAT_CID_CLAIM_STALE        2
+#define GOAT_CID_CLAIM_UNREADABLE   3
 string g_GoatCidGuardReason="";        // "", "orphan_suspected" or "cid_duplicate"
 string g_GoatCidGuardDetail="";
 uint   g_GoatCidGuardCheckedMs=0;
 bool   g_GoatCidGuardChecked=false;
+uint   g_GoatCidGuardClaimedMs=0;
+bool   g_GoatCidGuardClaimed=false;
+bool   g_GoatCidGuardFreezeLogged[2]={false,false};
 bool GoatCidGuardHas(const long &cidg_list[],const long cidg_value)
   {
    for(int cidg_i=ArraySize(cidg_list)-1;cidg_i>=0;--cidg_i) if(cidg_list[cidg_i]==cidg_value) return true;
@@ -346,42 +370,82 @@ bool GoatCidGuardGoatComment(const string cidg_comment)
    if(StringLen(cidg_comment)<6) return false;
    return(StringFind(Strat+" Buy Lvl ",cidg_comment)==0 || StringFind(Strat+" Sell Lvl ",cidg_comment)==0);
   }
-// One claim file per login, magic and symbol, holding the terminal (GoatChildMagicSalt: login and data-path hash) whose
-// chart runs that magic. Written once by the running chart; read only for a position no CID record here maps.
+// One claim file per login, magic and symbol: line 1 the terminal (GoatChildMagicSalt: login and data-path hash) whose
+// chart runs that magic, line 2 the TimeGMT() of its last heartbeat (B47). Read only for a position no live chart's CID
+// record here maps.
 string GoatCidGuardClaimPath(const long cidg_magic,const string cidg_symbol)
   {
    return "GOAT\\CidGuard\\"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\\"+IntegerToString(cidg_magic)+"_"+cidg_symbol+".txt";
   }
-string GoatCidGuardClaimOwner(const long cidg_magic,const string cidg_symbol)
+// GOAT_CID_CLAIM_NONE (no file), _FRESH (cidg_owner set), _STALE (cidg_owner set, no heartbeat for
+// GOAT_CID_CLAIM_STALE_SEC) or _UNREADABLE (cannot be opened, no owner or stamp, or stamped in the future).
+int GoatCidGuardClaimRead(const long cidg_magic,const string cidg_symbol,string &cidg_owner)
   {
+   cidg_owner="";
    string cidg_path=GoatCidGuardClaimPath(cidg_magic,cidg_symbol);
-   if(!FileIsExist(cidg_path,FILE_COMMON)) return "";
+   if(!FileIsExist(cidg_path,FILE_COMMON)) return GOAT_CID_CLAIM_NONE;
    int cidg_h=FileOpen(cidg_path,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(cidg_h==INVALID_HANDLE) return "";
-   string cidg_owner=FileReadString(cidg_h);
+   if(cidg_h==INVALID_HANDLE) return GOAT_CID_CLAIM_UNREADABLE;
+   string cidg_who=FileReadString(cidg_h);
+   string cidg_when=(FileIsEnding(cidg_h) ? "" : FileReadString(cidg_h));
    FileClose(cidg_h);
-   return cidg_owner;
+   long cidg_stamp=StringToInteger(cidg_when);
+   if(cidg_who=="" || cidg_stamp<=0 || IntegerToString(cidg_stamp)!=cidg_when) return GOAT_CID_CLAIM_UNREADABLE;
+   long cidg_age=(long)TimeGMT()-cidg_stamp;
+   if(cidg_age<-GOAT_CID_CLAIM_FUTURE_SEC) return GOAT_CID_CLAIM_UNREADABLE;
+   cidg_owner=cidg_who;
+   return(cidg_age>GOAT_CID_CLAIM_STALE_SEC ? GOAT_CID_CLAIM_STALE : GOAT_CID_CLAIM_FRESH);
   }
-void GoatCidGuardClaim(const string cidg_terminal)
+string GoatCidGuardClaimState(const int cidg_state)
   {
-   string cidg_path=GoatCidGuardClaimPath(MAGIC1,Symbol());
-   if(FileIsExist(cidg_path,FILE_COMMON)) return;
+   if(cidg_state==GOAT_CID_CLAIM_FRESH)      return "this_terminal";
+   if(cidg_state==GOAT_CID_CLAIM_STALE)      return "stale";
+   if(cidg_state==GOAT_CID_CLAIM_UNREADABLE) return "unreadable";
+   return "none";
+  }
+// This chart's heartbeat: (re)writes its claim at most every GOAT_CID_CLAIM_HEARTBEAT_MS unless forced. Never while the
+// login is 0, and never over another terminal's fresh claim (a claim does not move between live terminals).
+void GoatCidGuardClaim(const string cidg_terminal,const bool cidg_force)
+  {
+   if(AccountInfoInteger(ACCOUNT_LOGIN)<=0 || MAGIC1<=0) return;
+   uint cidg_now=GetTickCount();
+   if(!cidg_force && g_GoatCidGuardClaimed && cidg_now-g_GoatCidGuardClaimedMs<GOAT_CID_CLAIM_HEARTBEAT_MS) return;
+   string cidg_owner="";
+   if(GoatCidGuardClaimRead(MAGIC1,Symbol(),cidg_owner)==GOAT_CID_CLAIM_FRESH && cidg_owner!=cidg_terminal) return;
    FolderCreate("GOAT",FILE_COMMON);
    FolderCreate("GOAT\\CidGuard",FILE_COMMON);
    FolderCreate("GOAT\\CidGuard\\"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)),FILE_COMMON);
-   int cidg_h=FileOpen(cidg_path,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+   int cidg_h=FileOpen(GoatCidGuardClaimPath(MAGIC1,Symbol()),FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
    if(cidg_h==INVALID_HANDLE) return;
-   FileWriteString(cidg_h,cidg_terminal);
+   FileWrite(cidg_h,cidg_terminal);
+   FileWrite(cidg_h,IntegerToString((long)TimeGMT()));
    FileClose(cidg_h);
+   g_GoatCidGuardClaimed=true;
+   g_GoatCidGuardClaimedMs=cidg_now;
+  }
+// The truncated ids (as CID records store them) of this terminal's open charts that run an EA.
+void GoatCidGuardLiveCharts(long &cidg_live[])
+  {
+   ArrayResize(cidg_live,0);
+   int cidg_walked=0;
+   for(long cidg_c=ChartFirst();cidg_c>=0 && cidg_walked<GOAT_CID_CHART_WALK_MAX;cidg_c=ChartNext(cidg_c))
+   {
+      cidg_walked++;
+      if(ChartGetString(cidg_c,CHART_EXPERT_NAME)=="") continue;
+      GoatCidGuardAdd(cidg_live,GoatTruncateCidValue(cidg_c));
+   }
   }
 bool GoatCidGuardOrphan(const long cidg_magic,const string cidg_comment,const long &cidg_mapped[],const long &cidg_known[],
-                        const string cidg_terminal)
+                        const string cidg_terminal,int &cidg_claim)
   {
+   cidg_claim=GOAT_CID_CLAIM_NONE;
    if(cidg_magic<=0 || cidg_magic>2147483647 || cidg_magic==MAGIC1) return false;
-   if(GoatCidGuardHas(cidg_mapped,cidg_magic)) return false;               // another chart's valid CID record here
-   string cidg_owner=GoatCidGuardClaimOwner(cidg_magic,Symbol());
-   if(cidg_owner!="" && cidg_owner!=cidg_terminal) return false;             // a chart of another terminal on this login
-   return(cidg_owner!="" || GoatCidGuardHas(cidg_known,cidg_magic) || GoatCidGuardGoatComment(cidg_comment));
+   if(GoatCidGuardHas(cidg_mapped,cidg_magic)) return false;               // a live chart's CID record here
+   string cidg_owner="";
+   cidg_claim=GoatCidGuardClaimRead(cidg_magic,Symbol(),cidg_owner);
+   if(cidg_claim==GOAT_CID_CLAIM_FRESH && cidg_owner!=cidg_terminal) return false;   // a live chart of another terminal
+   if(cidg_claim!=GOAT_CID_CLAIM_NONE) return true;                          // this terminal's, stale or unreadable: unowned
+   return(GoatCidGuardHas(cidg_known,cidg_magic) || GoatCidGuardGoatComment(cidg_comment));
   }
 // The refusal reason ("" when none) and its detail. Reads GlobalVariables, positions, orders and claim files; writes
 // only this chart's own CID record when it is missing, and this chart's claim file.
@@ -399,8 +463,10 @@ string GoatCidGuardEvaluate(string &cidg_detail)
       GlobalVariableSet(cidg_own,(double)cidg_chart);
       Print("GOAT CID guard v1: restored this chart's missing CID record "+cidg_own);
    }
-   GoatCidGuardClaim(cidg_terminal);
-   long cidg_mapped[],cidg_known[],cidg_mine[];
+   GoatCidGuardClaim(cidg_terminal,false);
+   long cidg_live[];
+   GoatCidGuardLiveCharts(cidg_live);
+   long cidg_mapped[],cidg_known[],cidg_mine[],cidg_recorded[];
    for(int cidg_i=GlobalVariablesTotal()-1;cidg_i>=0;--cidg_i)
    {
       string cidg_name=GlobalVariableName(cidg_i);
@@ -411,7 +477,8 @@ string GoatCidGuardEvaluate(string &cidg_detail)
       if(cidg_field!=GOAT_GV_FIELD_CID) continue;
       long cidg_value=GoatTruncateCidValue((long)GlobalVariableGet(cidg_name));
       if(cidg_value<=0) continue;
-      GoatCidGuardAdd(cidg_mapped,cidg_magic);
+      GoatCidGuardAdd(cidg_recorded,cidg_magic);
+      if(GoatCidGuardHas(cidg_live,cidg_value)) GoatCidGuardAdd(cidg_mapped,cidg_magic);   // only a live chart's record maps
       if(cidg_symbol==Symbol() && cidg_value==cidg_chart) GoatCidGuardAdd(cidg_mine,cidg_magic);
    }
    if(ArraySize(cidg_mine)>1 || (ArraySize(cidg_mine)==1 && cidg_mine[0]!=MAGIC1))
@@ -420,16 +487,19 @@ string GoatCidGuardEvaluate(string &cidg_detail)
                  +" records="+Key+"_ID_<magic>_"+Symbol()+"_"+GOAT_GV_FIELD_CID;
       return "cid_duplicate";
    }
-   long cidg_orphans[];
-   string cidg_positions="",cidg_orders="";
-   int cidg_listed=0;
+   long cidg_orphans[],cidg_stale[];
+   string cidg_positions="",cidg_orders="",cidg_claims="";
+   int cidg_listed=0,cidg_claim=GOAT_CID_CLAIM_NONE;
    for(int cidg_p=PositionsTotal()-1;cidg_p>=0;--cidg_p)
    {
       ulong cidg_ticket=PositionGetTicket(cidg_p);
       if(cidg_ticket==0 || PositionGetString(POSITION_SYMBOL)!=Symbol()) continue;
       long cidg_magic=PositionGetInteger(POSITION_MAGIC);
-      if(!GoatCidGuardOrphan(cidg_magic,PositionGetString(POSITION_COMMENT),cidg_mapped,cidg_known,cidg_terminal)) continue;
+      if(!GoatCidGuardOrphan(cidg_magic,PositionGetString(POSITION_COMMENT),cidg_mapped,cidg_known,cidg_terminal,cidg_claim)) continue;
+      if(!GoatCidGuardHas(cidg_orphans,cidg_magic) && cidg_claim!=GOAT_CID_CLAIM_NONE)
+         cidg_claims+=(cidg_claims=="" ? "" : ",")+IntegerToString(cidg_magic)+":"+GoatCidGuardClaimState(cidg_claim);
       GoatCidGuardAdd(cidg_orphans,cidg_magic);
+      if(GoatCidGuardHas(cidg_recorded,cidg_magic)) GoatCidGuardAdd(cidg_stale,cidg_magic);
       if(cidg_listed++<16) cidg_positions+=(cidg_positions=="" ? "" : ",")+IntegerToString((long)cidg_ticket);
    }
    for(int cidg_o=OrdersTotal()-1;cidg_o>=0;--cidg_o)
@@ -437,13 +507,18 @@ string GoatCidGuardEvaluate(string &cidg_detail)
       ulong cidg_ticket=OrderGetTicket(cidg_o);
       if(cidg_ticket==0 || OrderGetString(ORDER_SYMBOL)!=Symbol()) continue;
       long cidg_magic=OrderGetInteger(ORDER_MAGIC);
-      if(!GoatCidGuardOrphan(cidg_magic,OrderGetString(ORDER_COMMENT),cidg_mapped,cidg_known,cidg_terminal)) continue;
+      if(!GoatCidGuardOrphan(cidg_magic,OrderGetString(ORDER_COMMENT),cidg_mapped,cidg_known,cidg_terminal,cidg_claim)) continue;
+      if(!GoatCidGuardHas(cidg_orphans,cidg_magic) && cidg_claim!=GOAT_CID_CLAIM_NONE)
+         cidg_claims+=(cidg_claims=="" ? "" : ",")+IntegerToString(cidg_magic)+":"+GoatCidGuardClaimState(cidg_claim);
       GoatCidGuardAdd(cidg_orphans,cidg_magic);
+      if(GoatCidGuardHas(cidg_recorded,cidg_magic)) GoatCidGuardAdd(cidg_stale,cidg_magic);
       if(cidg_listed++<16) cidg_orders+=(cidg_orders=="" ? "" : ",")+IntegerToString((long)cidg_ticket);
    }
    if(ArraySize(cidg_orphans)==0) return "";
    cidg_detail="orphan_magics="+GoatCidGuardJoin(cidg_orphans)+" positions="+(cidg_positions=="" ? "none" : cidg_positions)
-              +" orders="+(cidg_orders=="" ? "none" : cidg_orders)+(cidg_listed>16 ? " listed=16/"+IntegerToString(cidg_listed) : "");
+              +" orders="+(cidg_orders=="" ? "none" : cidg_orders)+(cidg_listed>16 ? " listed=16/"+IntegerToString(cidg_listed) : "")
+              +(ArraySize(cidg_stale)>0 ? " stale_records="+GoatCidGuardJoin(cidg_stale) : "")
+              +(cidg_claims!="" ? " claims="+cidg_claims : "");
    return "orphan_suspected";
   }
 // True while new sequences are refused. cidg_force re-evaluates now (an entry decision); otherwise at most every 5 s.
@@ -479,6 +554,34 @@ string GoatCidGuardStatus(void)
    if(g_GoatCidGuardReason=="orphan_suspected") return "Orphan Suspected";
    if(g_GoatCidGuardReason=="cid_duplicate")    return "CID Duplicate";
    return "";
+  }
+// B47: this chart's claim heartbeat, from OnTimer (GoatTimerBody), so a claim stays fresh without ticks.
+void GoatCidGuardHeartbeat(void)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash || MAGIC1<=0) return;
+   GoatCidGuardClaim(GoatChildMagicSalt(),false);
+  }
+// B47: true while cid_duplicate freezes the adds (grid and rescue) of a running real sequence; logged once per side.
+// Re-evaluates when the last check is older than GOAT_CID_ADD_RECHECK_MS. Never in the tester.
+bool GoatCidGuardAddFrozen(const int cidg_dir,const int cidg_level)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+   GoatCidGuardRefuses(!g_GoatCidGuardChecked || GetTickCount()-g_GoatCidGuardCheckedMs>=GOAT_CID_ADD_RECHECK_MS);
+   int cidg_side=(cidg_dir==OP_SELL ? 1 : 0);
+   if(g_GoatCidGuardReason!="cid_duplicate")
+   {
+      g_GoatCidGuardFreezeLogged[cidg_side]=false;
+      return false;
+   }
+   if(!g_GoatCidGuardFreezeLogged[cidg_side])
+   {
+      g_GoatCidGuardFreezeLogged[cidg_side]=true;
+      Print("GOAT CID guard v1: add_frozen=cid_duplicate side="+(cidg_side==1 ? "SELL" : "BUY")+" magic="+IntegerToString(MAGIC1)
+            +" symbol="+Symbol()+" level="+IntegerToString(cidg_level)+" "+g_GoatCidGuardDetail+" closes_stops_trailing=continue");
+      GoatDeploymentPhase("add_frozen",ChartID(),Symbol()+" magic="+IntegerToString(MAGIC1)+" side="+(cidg_side==1 ? "SELL" : "BUY"));
+   }
+   return true;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // Atomic asset-direction ownership at the real-order boundary.
@@ -1890,6 +1993,7 @@ class SEQUENCE
    {
     if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
   //if(!IsLicensed())        {Alert("Trial Expired"); return false;}
+    if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: cid_duplicate freezes adds (grid and rescue) of a real sequence
     if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)
     {
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
@@ -5308,6 +5412,7 @@ void GoatTimerBody(void)
     GOATDeviceActivationTimer();
     return;
    }
+   GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)

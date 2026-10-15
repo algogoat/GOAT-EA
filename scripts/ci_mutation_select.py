@@ -185,6 +185,10 @@ STEP_SEEDS = {
         'scripts/test_profile_staged_deploy_mutations.py', 'controller/test_studio_deploy_profile.py',
         'controller/test_studio_profile_staged_deploy.py', 'controller/studio_deploy_profile.py',
         'controller/studio_demo_deploy.py', 'controller/studio_agent_mailbox.py'),
+    # B47: the CID guard (B46 + B47) in the EA entrypoint; ~3 s, on shard 1.
+    'test_cid_guard_mutations': (
+        'scripts/test_cid_guard_mutations.cjs', 'scripts/test_cid_guard.cjs', 'GOAT V1.49.mq5',
+        'GOAT_Inputs_Definitions.mqh'),
 }
 
 TEXT_SUFFIXES = {'.py', '.cjs', '.js', '.mjs', '.mq5', '.mqh', '.json', '.csv', '.md', '.txt', '.set', '.ini',

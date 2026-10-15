@@ -52,7 +52,10 @@ EXPECTED = frozenset({
     'test_setup_registration_mutations',
     'test_profile_staged_adoption_mutations',
     'test_profile_staged_deploy_mutations',
+    'test_cid_guard_mutations',
 })
+# Steps added after the 4-shard split (B47: the CID guard), not in the 3-shard layout below.
+ADDED_SINCE_THREE_SHARDS = frozenset({'test_cid_guard_mutations'})
 
 # The 3-shard layout this replaced (base da9e953), kept for comparison.
 THREE_SHARD_LAYOUT = {
@@ -133,11 +136,39 @@ class ShardTableTests(unittest.TestCase):
         self.text = SHARD_WORKFLOW.read_text(encoding='utf-8')
         self.shards = sel.parse_shard_workflow(self.text)
 
-    def test_four_shards_cover_every_step_once_with_the_unchanged_45_minute_timeout(self):
+    def test_four_shards_cover_every_step_once_with_the_60_minute_timeout(self):
+        # B47 (goatai#2350 6186991728): 60 min, the measured table and the budget helper are in the shard workflow.
         self.assertEqual(sorted(self.shards), [1, 2, 3, 4])
         self.assertEqual(coverage_problems(self.shards, EXPECTED), [])
-        self.assertIn('    timeout-minutes: 45\n', self.text)
-        self.assertEqual(coverage_problems(THREE_SHARD_LAYOUT, EXPECTED), [])
+        self.assertEqual(re.findall(r'\n    timeout-minutes: (\d+)\n', self.text), ['60'])
+        self.assertEqual(coverage_problems(THREE_SHARD_LAYOUT, EXPECTED - ADDED_SINCE_THREE_SHARDS), [])
+        self.assertIn('test_cid_guard_mutations', self.shards[1], 'the ~3 s CID guard step sits on shard 1')
+
+    def test_slow_steps_log_a_per_mutant_time_budget(self):
+        # Every step whose measured median is 5 min or more times each mutant (scripts/mutation_budget.py).
+        deps = sel.step_dependencies()
+        for step in ('test_process_query_mutations', 'test_research_outcome_controller_mutations',
+                     'test_restore_lane_never_started_mutations', 'test_catchup_rebase_controller_mutations',
+                     'test_oos_windows_controller_mutations', 'test_switch_hold_mutations', 'test_setup_registration_mutations'):
+            text = (ROOT / 'scripts' / (step + '.py')).read_text(encoding='utf-8')
+            self.assertIn('from mutation_budget import MutantClock', text, step)
+            self.assertIn('clock.report()', text, step)
+            self.assertIn('scripts/mutation_budget.py', deps[step], step + ': the helper is in the step''s dependency set')
+        spec = importlib.util.spec_from_file_location('mutation_budget', ROOT / 'scripts' / 'mutation_budget.py')
+        budget = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(budget)
+        self.assertEqual(budget.budget_seconds({}), 60.0)
+        self.assertEqual(budget.budget_seconds({'GOAT_MUTANT_BUDGET_SECONDS': '90'}), 90.0)
+        for bad in ('0', '-5', 'x', ''):
+            self.assertEqual(budget.budget_seconds({'GOAT_MUTANT_BUDGET_SECONDS': bad}), 60.0, bad)
+        ticks = iter([0.0, 12.5, 100.0, 171.0])
+        clock = budget.MutantClock('test_x_mutations', budget=60.0, clock=lambda: next(ticks))
+        self.assertEqual(clock.lap('fast', clock.start()), ' (12.5s)')
+        self.assertEqual(clock.lap('slow', clock.start()), ' (71.0s)')
+        lines = clock.report_lines()
+        self.assertEqual(lines[0], 'mutation budget test_x_mutations: 2 mutants, 83.5 s total, 41.8 s mean, budget 60 s per mutant, '
+                                   'slowest: slow 71.0s; fast 12.5s')
+        self.assertEqual(lines[1:], ['::warning title=Mutant over budget::test_x_mutations: \"slow\" took 71.0 s (budget 60 s)'])
 
     def test_every_step_runs_its_own_script(self):
         for step in EXPECTED:

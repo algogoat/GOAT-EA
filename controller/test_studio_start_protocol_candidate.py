@@ -1,11 +1,12 @@
-"""Keep the forward B46 candidate, and the retained B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward B47 candidate, and the retained B46, B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/beta17-B46'
+CANDIDATE = ROOT / 'candidate-builds/beta17-B47'
+RETAINED_B46 = ROOT / 'candidate-builds/beta17-B46'
 RETAINED_B45 = ROOT / 'candidate-builds/beta17-B45'
 RETAINED_B44 = ROOT / 'candidate-builds/beta17-B44'
 RETAINED_B43 = ROOT / 'candidate-builds/beta17-B43'
@@ -27,13 +28,19 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
-        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-46', 'B46'))
-        self.assertEqual(identity['supersedes_candidate'], 'beta17-B45')
+        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-47', 'B47'))
+        self.assertEqual(identity['supersedes_candidate'], 'beta17-B46')
+        # B47 is B46 plus Claude-Mac's B46 review items (goatai#2350): live-chart CID mappings, claim heartbeat expiry,
+        # the cid_duplicate add freeze, an unreadable claim refuses, no claim under login 0. Only the entrypoint differs.
+        self.assertEqual(sorted(identity['consolidates']), ['B47.1', 'B47.2', 'B47.3', 'B47.4', 'B47.5'])
+        b46 = json.loads((RETAINED_B46 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b46['sources'].get(name)), ['GOAT V1.49.mq5'])
+        self.assertEqual(sorted(identity['sources']), sorted(b46['sources']), 'same compile closure as B46')
         # B46 is B45 plus Claude-Mac's P1 from his B45 review (goatai#2350 6186284858): a missing CID record
         # (orphan_suspected) or a duplicate one (cid_duplicate) refuses new sequences. Only the entrypoint differs from B45.
-        self.assertEqual(sorted(identity['consolidates']), ['B46.1', 'B46.2'])
+        self.assertEqual(sorted(b46['consolidates']), ['B46.1', 'B46.2'])
         b45 = json.loads((RETAINED_B45 / 'identity.json').read_text(encoding='utf-8'))
-        self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b45['sources'].get(name)), ['GOAT V1.49.mq5'])
+        self.assertEqual(sorted(name for name in b46['sources'] if b46['sources'][name] != b45['sources'].get(name)), ['GOAT V1.49.mq5'])
         self.assertEqual(sorted(identity['sources']), sorted(b45['sources']), 'same compile closure as B45')
         # B45 is B44 plus Claude-Mac's GOAT-EA#227 review follow-ups: BlindExport window parity with studio_window_metrics,
         # BOOS-free blind outputs (and trd_FOOS from dt_Fwrd_OOS), non-FOOS sizing for AdjustLots, the per-terminal magic salt.
@@ -101,7 +108,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         policy = json.loads((ROOT / 'controller/contracts/v149/dependencies.json').read_text(encoding='utf-8-sig'))
         self.assertEqual(policy['main_sha256'], identity['sources']['GOAT V1.49.mq5'])
         self.assertEqual(policy['header_sha256'], identity['sources']['GOAT_Inputs_Definitions.mqh'])
-        # The pinned input header is SM32's, unchanged by EX33, B38, B39, B40, B41, B43, B44, B45 and B46, so SM32 batch packages stay valid.
+        # The pinned input header is SM32's, unchanged by EX33, B38, B39, B40, B41, B43, B44, B45, B46 and B47, so SM32 batch packages stay valid.
         sm32 = json.loads((RETAINED_SM32 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm32['sources']['GOAT_Inputs_Definitions.mqh'])
         self.assertEqual(hashlib.sha256((ROOT / 'GOAT V1.49.ex5').read_bytes()).hexdigest(), RETAINED_ROOT_BINARY)
@@ -138,7 +145,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_B45, 'B45', 'beta17-B44'), (RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
+        for folder, marker, supersedes in ((RETAINED_B46, 'B46', 'beta17-B45'), (RETAINED_B45, 'B45', 'beta17-B44'), (RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
                                            (RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'), (RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
                                            (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))

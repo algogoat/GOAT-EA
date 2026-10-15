@@ -195,7 +195,9 @@ const nextId=()=>{seed=(seed*6364136223846793005n+1442695040888963407n)&((1n<<64
  assert.deepEqual(lines,['long restored_magic=0;','bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);','if(restored_magic_found)',
   'MAGIC1=(int)restored_magic;','if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID(),GoatChildMagicSalt());','if(MAGIC1==0) MAGIC1 = MathRand()+9;']);
  assert.equal((main.match(/GoatDeriveChildMagic\(/g)||[]).length,2,'defined once, called once (OnInit)');
- assert.equal((main.match(/GoatChildMagicSalt\(/g)||[]).length,2,'the salt: defined once, called once (OnInit)');
+ // B46: the CID guard reads the salt too, as the terminal's identity in its claim files (test_cid_guard.cjs).
+ assert.equal((main.match(/GoatChildMagicSalt\(/g)||[]).length,3,'the salt: defined once, called in OnInit and by GoatCidGuardEvaluate');
+ assert.match(main,/^   string cidg_terminal=GoatChildMagicSalt\(\);$/m);
  // B44 item 10: no ChartWindowsHandle read is left in the entrypoint, and the unused MAGIC2 is no longer seeded.
  assert.equal((main.replace(/\/\/.*$/gm,'').match(/ChartWindowsHandle\s*\(|CHART_WINDOW_HANDLE/g)||[]).length,0,'no window-handle read in the entrypoint');
  assert.ok(!/MAGIC2\s*=/.test(main.replace(/\/\/.*$/gm,'')),'MAGIC2 is never assigned');

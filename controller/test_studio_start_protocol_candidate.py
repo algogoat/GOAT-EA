@@ -1,11 +1,12 @@
-"""Keep the forward B44 candidate, and the retained B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward B45 candidate, and the retained B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/beta17-B44'
+CANDIDATE = ROOT / 'candidate-builds/beta17-B45'
+RETAINED_B44 = ROOT / 'candidate-builds/beta17-B44'
 RETAINED_B43 = ROOT / 'candidate-builds/beta17-B43'
 RETAINED_B41 = ROOT / 'candidate-builds/beta17-B41'
 RETAINED_B40 = ROOT / 'candidate-builds/beta17-B40'
@@ -25,15 +26,22 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
-        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-44', 'B44'))
-        self.assertEqual(identity['supersedes_candidate'], 'beta17-B43')
+        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-45', 'B45'))
+        self.assertEqual(identity['supersedes_candidate'], 'beta17-B44')
+        # B45 is B44 plus Claude-Mac's GOAT-EA#227 review follow-ups: BlindExport window parity with studio_window_metrics,
+        # BOOS-free blind outputs (and trd_FOOS from dt_Fwrd_OOS), non-FOOS sizing for AdjustLots, the per-terminal magic salt.
+        # Only the entrypoint differs from B44.
+        self.assertEqual(sorted(identity['consolidates']), ['B45.1', 'B45.2', 'B45.3', 'B45.4'])
+        b44 = json.loads((RETAINED_B44 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b44['sources'].get(name)), ['GOAT V1.49.mq5'])
+        self.assertEqual(sorted(identity['sources']), sorted(b44['sources']), 'same compile closure as B44')
         # B44 is B43 plus the reviewed items of goatai#2350 (6126836633 / 6126880655, item 11 6127147178): child magic
         # from the chart id, AI wire fast retry, snapshot audit streaming and refusal reasons, the AI gate log, BlindExport,
         # the capture marks cap, the licence retry pin, the panel retry with no modal Alert in deploy mode, no window-handle
         # read, and FILE_SHARE_READ mailbox reads.
-        self.assertEqual(sorted(identity['consolidates']), ['B44.1', 'B44.10', 'B44.11', 'B44.2', 'B44.3', 'B44.4', 'B44.5', 'B44.6', 'B44.7', 'B44.9'])
+        self.assertEqual(sorted(b44['consolidates']), ['B44.1', 'B44.10', 'B44.11', 'B44.2', 'B44.3', 'B44.4', 'B44.5', 'B44.6', 'B44.7', 'B44.9'])
         b43 = json.loads((RETAINED_B43 / 'identity.json').read_text(encoding='utf-8'))
-        self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b43['sources'].get(name)),
+        self.assertEqual(sorted(name for name in b44['sources'] if b44['sources'][name] != b43['sources'].get(name)),
                          ['GOAT V1.49.mq5', 'GOATAIWireV2.mqh', 'GOATPortfolioChildAudit.mqh', 'GOATPortfolioSetupControl.mqh', 'GOATSetupControl.mqh', 'GOAT_SequenceExport.mqh'])
         self.assertEqual(sorted(identity['sources']), sorted(b43['sources']), 'same compile closure as B43')
         # B43 is B41 plus the EA half of the beta.25 profile-staged deploy (goatai#1885 6033450916): the
@@ -86,7 +94,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         policy = json.loads((ROOT / 'controller/contracts/v149/dependencies.json').read_text(encoding='utf-8-sig'))
         self.assertEqual(policy['main_sha256'], identity['sources']['GOAT V1.49.mq5'])
         self.assertEqual(policy['header_sha256'], identity['sources']['GOAT_Inputs_Definitions.mqh'])
-        # The pinned input header is SM32's, unchanged by EX33, B38, B39, B40, B41, B43 and B44, so SM32 batch packages stay valid.
+        # The pinned input header is SM32's, unchanged by EX33, B38, B39, B40, B41, B43, B44 and B45, so SM32 batch packages stay valid.
         sm32 = json.loads((RETAINED_SM32 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm32['sources']['GOAT_Inputs_Definitions.mqh'])
         self.assertEqual(hashlib.sha256((ROOT / 'GOAT V1.49.ex5').read_bytes()).hexdigest(), RETAINED_ROOT_BINARY)
@@ -123,7 +131,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
+        for folder, marker, supersedes in ((RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
                                            (RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'), (RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
                                            (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))

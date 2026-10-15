@@ -35,6 +35,12 @@ class PinnedTableTests(unittest.TestCase):
         derived = {}
         for path in sorted((ROOT / 'candidate-builds').glob('*/identity.json')):
             identity = json.loads(path.read_text(encoding='utf-8-sig'))
+            if identity['binary'] is None:
+                # A candidate whose compile is pending has no binary, so nothing to pin (test_studio_start_protocol_candidate
+                # checks that no binary or receipt is implied). It joins the table with the commit that adds its binary.
+                self.assertEqual(identity['compile'], 'pending', path.parent.name)
+                self.assertNotIn(identity['build_id'], ib.PINNED_BUILDS.values(), path.parent.name)
+                continue
             binary = path.parent / identity['binary']['name']
             self.assertEqual(hashlib.sha256(binary.read_bytes()).hexdigest(), identity['binary']['sha256'], path.parent.name)
             self.assertNotIn(identity['binary']['sha256'], derived, path.parent.name)

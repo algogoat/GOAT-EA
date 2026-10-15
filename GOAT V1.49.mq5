@@ -19,7 +19,7 @@
 // file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
 void GoatDeployNotice(const string goat_notice_text);
 #define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
-#define   GOAT_BUILD_ID "V1.49-BETA17-44"
+#define   GOAT_BUILD_ID "V1.49-BETA17-45"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -34,7 +34,7 @@ void GoatDeployNotice(const string goat_notice_text);
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B44"
+#define   GOAT_BUILD_MARKER "B45"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -237,12 +237,25 @@ bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
 // A new child's magic, unique by construction (B44; Exp 03, 2026-10-12: 36 charts cold-started together,
 // ChartWindowsHandle(0) returned 0 under load and two children seeded in one GetTickCount tick drew the same
 // MathRand()+9+ChartWindowsHandle(0) magic, so the dashboard refused one of them on every launch).
-// The value depends on the chart id alone: a polynomial hash of "<n>#<chart id>" modulo 2^31-1, a positive int.
-// n steps on while a <Key>_ID_<magic>_<symbol>_CID record of another chart already holds the value. A magic
-// restored from this chart's own CID record is found before this and still wins (live children keep theirs).
-int GoatChildMagicCandidate(const long magic_chart,const int magic_n)
+// The value is a polynomial hash of "<n>#<chart id>#<salt>" modulo 2^31-1, a positive int. n steps on while a
+// <Key>_ID_<magic>_<symbol>_CID record of another chart already holds the value. A magic restored from this chart's
+// own CID record is found before this and still wins (live children keep theirs).
+// B45 (GOAT-EA#227 review item 4): the salt (GoatChildMagicSalt) is the account login and a hash of this terminal's
+// data path. A saved profile carries fixed chart ids (id= in each .chr), so two terminals on one login loaded from
+// the same profile drew the same magic from the chart id alone; each terminal's CID records are its own, and the
+// open-position check only sees a magic once one of them has traded. Upgrade: a chart with a CID record restores its
+// magic before any derivation, so a running child keeps its magic and its open positions.
+string GoatChildMagicSalt(void)
   {
-   string magic_text=IntegerToString(magic_n)+"#"+IntegerToString(magic_chart);
+   string salt_path=TerminalInfoString(TERMINAL_DATA_PATH);
+   long salt_hash=0;
+   for(int salt_k=0;salt_k<StringLen(salt_path);salt_k++)
+      salt_hash=(salt_hash*48271+StringGetCharacter(salt_path,salt_k))%2147483647;
+   return IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"@"+IntegerToString(salt_hash);
+  }
+int GoatChildMagicCandidate(const long magic_chart,const int magic_n,const string magic_salt)
+  {
+   string magic_text=IntegerToString(magic_n)+"#"+IntegerToString(magic_chart)+"#"+magic_salt;
    long magic_hash=0;
    for(int magic_k=0;magic_k<StringLen(magic_text);magic_k++)
       magic_hash=(magic_hash*48271+StringGetCharacter(magic_text,magic_k))%2147483647;
@@ -270,15 +283,15 @@ bool GoatChildMagicHeld(const int magic_value,const long magic_chart)
    return false;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-int GoatDeriveChildMagic(const long magic_chart)
+int GoatDeriveChildMagic(const long magic_chart,const string magic_salt)
   {
    for(int magic_n=0;magic_n<1000;magic_n++)
    {
-      int magic_value=GoatChildMagicCandidate(magic_chart,magic_n);
+      int magic_value=GoatChildMagicCandidate(magic_chart,magic_n,magic_salt);
       if(magic_value>0 && !GoatChildMagicHeld(magic_value,magic_chart)) return magic_value;
    }
    // Unreachable short of 1000 held candidates; still a positive, chart-derived value.
-   int magic_last=GoatChildMagicCandidate(magic_chart,1000);
+   int magic_last=GoatChildMagicCandidate(magic_chart,1000,magic_salt);
    return (magic_last>0 ? magic_last : 1);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2835,14 +2848,19 @@ input bool BlindExport=false; // Exporter: rank exports on fit+FWD only (BOOS/FO
 // With BlindExport on, the exporter adds blind=1 to each export run's EA_Desc @{...}. That tester run then measures
 // the fit+FWD window (the SET header's SAMPLE window, dt_BOOS_end to dt_FOOS_start) on every tick and writes it on
 // a "; RANKED" header line; the exporter's profit floor, SR, ARF and SetsToExport trim read that line. Definitions
-// follow the controller's selectionWindow (studio_window_metrics.py): PL = closing - opening equity; ARF = the
-// OnTester ARF (top-5 drawdown episodes, monthly) on the window; SR = daily equity returns, mean / sample standard
-// deviation x sqrt(252), which is NOT MT5's STAT_SHARPE_RATIO. Measurement only: no trading decision reads it.
+// follow the controller's selectionWindow (studio_window_metrics.py equity_metrics): PL = closing - opening equity,
+// the opening being the last equity before the window (else its first); ARF = the OnTester ARF (top-5 drawdown
+// episodes, monthly) on the window over its Mon-Fri days; SR = returns of each Mon-Fri day's close (carried forward,
+// the first against the opening), mean / sample standard deviation x sqrt(252), which is NOT MT5's STAT_SHARPE_RATIO.
+// B45 (GOAT-EA#227 review item 2): the window is measured on the equity less the BOOS P/L, so every return and the
+// ARF denominator start from the equity the test started with, not from one that holds BOOS results. PL and the
+// drawdowns are differences, so the shift leaves them unchanged. Measurement only: no trading decision reads it.
 bool   g_GoatBlindExport=false;
-bool   g_GoatRankOpened=false,g_GoatRankFinished=false;
+bool   g_GoatRankOpened=false,g_GoatRankFinished=false,g_GoatRankHavePre=false,g_GoatRankHaveBase=false;
 double g_GoatRankOpen=0.0,g_GoatRankClose=0.0,g_GoatRankPeak=0.0,g_GoatRankEpisode=0.0,g_GoatRankMark=0.0,g_GoatRankMaxDD=0.0;
+double g_GoatRankBase=0.0,g_GoatRankPre=0.0,g_GoatRankShift=0.0,g_GoatRankSizePeak=0.0,g_GoatRankSizeDD=0.0;
 double g_GoatRankTop[5]={0,0,0,0,0};
-double g_GoatRankSum=0.0,g_GoatRankSquares=0.0,g_GoatRankSR=0.0,g_GoatRankARF=0.0;
+double g_GoatRankMean=0.0,g_GoatRankM2=0.0,g_GoatRankSR=0.0,g_GoatRankARF=0.0;
 int    g_GoatRankReturns=0,g_GoatRankDays=0;
 long   g_GoatRankDay=-1;
 void GoatRankEpisodeEnd(const double rank_episode)
@@ -2856,35 +2874,57 @@ void GoatRankEpisodeEnd(const double rank_episode)
          return;
         }
   }
-void GoatRankReturn(const double rank_equity)
+// Closes every day from g_GoatRankDay up to (not including) rank_until with the carried close. A Mon-Fri day
+// (1970-01-01, day 0, was a Thursday) adds its return against the previous close (Welford's mean and M2).
+void GoatRankCloseDays(const long rank_until)
   {
-   if(g_GoatRankMark<=0.0) return;
-   double rank_r=rank_equity/g_GoatRankMark-1.0;
-   g_GoatRankReturns++; g_GoatRankSum+=rank_r; g_GoatRankSquares+=rank_r*rank_r;
+   for(;g_GoatRankDay<rank_until;g_GoatRankDay++)
+     {
+      if((g_GoatRankDay+3)%7>=5) continue;
+      g_GoatRankDays++;
+      if(g_GoatRankMark>0.0)
+        {
+         double rank_r=(g_GoatRankClose-g_GoatRankMark)/g_GoatRankMark,rank_delta=rank_r-g_GoatRankMean;
+         g_GoatRankReturns++; g_GoatRankMean+=rank_delta/g_GoatRankReturns; g_GoatRankM2+=rank_delta*(rank_r-g_GoatRankMean);
+        }
+      g_GoatRankMark=g_GoatRankClose;
+     }
   }
+// Every tick before FOOS (FOOS is never read). The test's first equity is the base; BOOS ticks only keep the last
+// equity before the window and the sizing drawdown (item 3: the deepest fall below the running peak over all
+// non-FOOS ticks, which the blind file name's DD carries for AdjustLots).
 void GoatRankTick(void)
   {
    if(!g_GoatBlindExport) return;
    datetime rank_now=TimeCurrent();
-   if((dt_Back_OOS!=0 && rank_now<dt_Back_OOS) || (dt_Fwrd_OOS!=0 && rank_now>=dt_Fwrd_OOS)) return;
-   double rank_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(dt_Fwrd_OOS!=0 && rank_now>=dt_Fwrd_OOS) return;
+   double rank_raw=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(!g_GoatRankHaveBase) {g_GoatRankHaveBase=true; g_GoatRankBase=g_GoatRankSizePeak=rank_raw;}
+   if(rank_raw>g_GoatRankSizePeak) g_GoatRankSizePeak=rank_raw;
+   g_GoatRankSizeDD=MathMax(g_GoatRankSizeDD,g_GoatRankSizePeak-rank_raw);
+   if(dt_Back_OOS!=0 && rank_now<dt_Back_OOS) {g_GoatRankPre=rank_raw; g_GoatRankHavePre=true; return;}
    long rank_day=(long)rank_now/86400;
    if(!g_GoatRankOpened)
-     {g_GoatRankOpened=true; g_GoatRankOpen=g_GoatRankPeak=g_GoatRankMark=rank_equity; g_GoatRankDay=rank_day; g_GoatRankDays=1;}
-   else if(rank_day!=g_GoatRankDay)
-     {GoatRankReturn(rank_equity); g_GoatRankMark=rank_equity; g_GoatRankDay=rank_day; g_GoatRankDays++;}
+     {
+      g_GoatRankOpened=true;
+      g_GoatRankShift=(g_GoatRankHavePre ? g_GoatRankPre : rank_raw)-g_GoatRankBase; // the BOOS P/L (0 without BOOS)
+      g_GoatRankOpen=g_GoatRankPeak=g_GoatRankMark=g_GoatRankClose=g_GoatRankBase;
+      g_GoatRankDay=(dt_Back_OOS!=0 ? (long)dt_Back_OOS/86400 : rank_day);
+     }
+   double rank_equity=rank_raw-g_GoatRankShift;
+   if(rank_day>g_GoatRankDay) GoatRankCloseDays(rank_day);
    if(rank_equity>g_GoatRankPeak) {GoatRankEpisodeEnd(g_GoatRankEpisode); g_GoatRankPeak=rank_equity; g_GoatRankEpisode=0.0;}
    g_GoatRankEpisode=MathMax(g_GoatRankEpisode,g_GoatRankPeak-rank_equity);
    g_GoatRankMaxDD=MathMax(g_GoatRankMaxDD,g_GoatRankEpisode);
    g_GoatRankClose=rank_equity;
   }
-// Closes the window once (the last episode and the last daily return) and computes SR and ARF.
+// Closes the window once (the last episode and every day through the day before FOOS) and computes SR and ARF.
 void GoatRankFinish(void)
   {
    if(g_GoatRankFinished || !g_GoatRankOpened || g_GoatRankOpen<=0.0) return;
    g_GoatRankFinished=true;
    GoatRankEpisodeEnd(g_GoatRankEpisode); g_GoatRankEpisode=0.0;
-   GoatRankReturn(g_GoatRankClose); g_GoatRankMark=g_GoatRankClose;
+   GoatRankCloseDays((dt_Fwrd_OOS!=0 ? (long)(dt_Fwrd_OOS-1)/86400 : g_GoatRankDay)+1);
    double dds[5]; for(int i=0;i<5;i++) dds[i]=g_GoatRankTop[i];
    double mean_dd;   // OnTester's MeanDD, on the window
    if     (dds[0]==0)                                           mean_dd =  999999;
@@ -2900,9 +2940,8 @@ void GoatRankFinish(void)
    g_GoatRankSR=0.0;
    if(g_GoatRankReturns>=2)
      {
-      double rank_mean=g_GoatRankSum/g_GoatRankReturns;
-      double rank_var=(g_GoatRankSquares-g_GoatRankReturns*rank_mean*rank_mean)/(g_GoatRankReturns-1);
-      if(rank_var>0) g_GoatRankSR=rank_mean/MathSqrt(rank_var)*MathSqrt(252.0);
+      double rank_var=g_GoatRankM2/(g_GoatRankReturns-1);
+      if(rank_var>0) g_GoatRankSR=g_GoatRankMean/MathSqrt(rank_var)*MathSqrt(252.0);
      }
   }
 // The "; RANKED" header line, once at the end of a blind export run. B44 (goatai#2350 6128225191): the stamp and RANKED
@@ -2920,6 +2959,9 @@ string GoatRankLine(void)
 // B44 condition 1 (goatai#2350 6127809765): a blind export is blind. Its file-name metrics are the window's, so its
 // name, the AdjustLots scaling (on the file name's DD) and its SET never depend on a FOOS bar. PF: winning over losing
 // deal results (profit + swap + commission + fee) of the deals inside the window; 0 with no losing deal.
+// B45 (GOAT-EA#227 review item 3): the name's DD is the sizing drawdown over every non-FOOS tick (BOOS + fit + FWD),
+// never the window's alone, which can only be smaller and so made AdjustLots' lots larger. It is the one blind value
+// that reads BOOS; nothing ranks on it (SortAndTrimExports ranks ARF x SR, the floor reads PL).
 double GoatRankPF(void)
   {
    datetime rank_to=(dt_Fwrd_OOS!=0 ? dt_Fwrd_OOS-1 : TimeCurrent());
@@ -2942,11 +2984,12 @@ double GoatRankPF(void)
 string GoatRankMetrix(void)
   {
    GoatRankFinish();
-   return "_Trds="+IntegerToString(trd_IS)+"_Prf="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,0)+"_DD="+DoubleToString(g_GoatRankMaxDD,0)
+   return "_Trds="+IntegerToString(trd_IS)+"_Prf="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,0)+"_DD="+DoubleToString(g_GoatRankSizeDD,0)
           +"_PF="+DoubleToString(GoatRankPF(),2)+"_SR="+DoubleToString(g_GoatRankSR,2)+"_ARF="+DoubleToString(g_GoatRankARF,3);
   }
-// The blind export's SET header: of OnTester's description only the program line, the separators and the BOOS, SAMPLE
-// and FWD window lines (no full-span metric, FOOS, news or bias line), then the stamp and the RANKED line.
+// The blind export's SET header: of OnTester's description only the program line, the separators and the SAMPLE and
+// FWD window lines (no full-span metric, BOOS, FOOS, news or bias line), then the stamp and the RANKED line.
+// B45 (GOAT-EA#227 review item 2): the BOOS line (its PL and Trades are held out) is no longer kept.
 string GoatBlindDesc(const string rank_desc)
   {
    string rank_lines[],rank_kept="";
@@ -2955,7 +2998,7 @@ string GoatBlindDesc(const string rank_desc)
    for(int i=0;i<rank_count;i++)
      {
       string rank_line=rank_lines[i];
-      if(StringFind(rank_line,"; ---")==0 || StringFind(rank_line,rank_program)==0 || StringFind(rank_line,"; BOOS:")==0
+      if(StringFind(rank_line,"; ---")==0 || StringFind(rank_line,rank_program)==0
          || StringFind(rank_line,"; SAMPLE:")==0 || StringFind(rank_line,"; FWD:")==0)
          rank_kept+=(rank_kept=="" ? "" : "\n")+rank_line;
      }
@@ -3678,7 +3721,7 @@ int OnInit()
        MAGIC1=(int)restored_magic;
      // B44: a new live child's magic comes from its chart id, unique among this terminal's CID records
      // (GoatDeriveChildMagic, never 0). The tester keeps its per-run random magic (the export CSV name carries it).
-     if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID());
+     if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID(),GoatChildMagicSalt());
      // B44 item 10: nothing is seeded from a window handle any more (ChartWindowsHandle(0) gave 0 under load, MT5 error
      // 4102). This fallback is reached only in the tester (live always derives above); MAGIC2 was never read.
      if(MAGIC1==0) MAGIC1 = MathRand()+9;
@@ -5236,7 +5279,7 @@ void GoatTradeTransactionBody(const MqlTradeTransaction &trans,
    if(HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_EXPERT) return;
 
         if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
-   else if(TimeCurrent()>dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++;
+   else if(TimeCurrent()>=dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++; // B45 item 2: FOOS starts at dt_Fwrd_OOS, as days_FOOS and the RANKED window
    else                                                 trd_IS++;
    if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end) trd_FWD++;
    return;

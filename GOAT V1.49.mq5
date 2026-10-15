@@ -19,7 +19,7 @@
 // file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
 void GoatDeployNotice(const string goat_notice_text);
 #define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
-#define   GOAT_BUILD_ID "V1.49-BETA17-45"
+#define   GOAT_BUILD_ID "V1.49-BETA17-46"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -34,7 +34,7 @@ void GoatDeployNotice(const string goat_notice_text);
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B45"
+#define   GOAT_BUILD_MARKER "B46"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -295,6 +295,192 @@ int GoatDeriveChildMagic(const long magic_chart,const string magic_salt)
    return (magic_last>0 ? magic_last : 1);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B46 (goatai#2350 6186284858, Claude-Mac's B45 review): a missing or duplicate CID record fails closed.
+// Before B46 a chart with no CID record derived a fresh magic (GoatDeriveChildMagic skips the magics of open positions)
+// and could start a new sequence on top of positions it no longer manages, and two CID records naming one chart and
+// symbol were settled by GoatFindMagicByCid's first match. GoatCidGuardRefuses() now refuses NEW sequences while:
+// - cid_duplicate: this chart and symbol has more than one <Key>_ID_<magic>_<Symbol()>_CID record, or its one record
+//   names a magic other than the one it runs (MAGIC1);
+// - orphan_suspected: an open position or pending order on Symbol() carries a GOAT magic, other than MAGIC1, that no
+//   valid CID record of this terminal maps (a record of any symbol whose value is a chart id > 0) and that no other
+//   terminal on this login has claimed (GoatCidGuardClaimPath, in Common\Files: positions are the account's, and one
+//   login may run two terminals since B45).
+// GOAT magic: a positive 31-bit magic (every GOAT magic is: GoatChildMagicCandidate is mod 2^31-1, the tester's
+// MathRand()+9 is below 32777) that is GOAT's by evidence: a <Key>_ID_<magic>_* record of any field on this terminal, a
+// claim file for it, or a GOAT level comment on the position or order ("<Strat> Buy Lvl NN" / "<Strat> Sell Lvl NN",
+// OpenPosition's Desc_lvl, or a prefix of this chart's own tag where the broker cut the comment). Manual trades (magic
+// 0) and other EAs' trades carry none of that. A magic another chart's valid CID record maps is normal multi-chart use.
+// Only NEW sequences are refused: every new real or virtual sequence and every virtual-to-real promotion passes
+// DashboardEntryAllowed, and adds to a running sequence, trailing, TP/SL, MLPS and closes never do. The refusal is
+// re-checked every 5 s and at each entry decision and holds until the records are resolved. It is shown in the journal
+// ("GOAT CID guard v1:" once per change, plus the deployment diagnostics line), on the panel and as the dashboard row
+// status. A running chart re-writes its own CID record when it is missing (a dashboard launch or removal deletes every
+// <Key>_ID_ record, GoatDeleteDashboardBusData), so that wipe does not orphan a sibling chart's positions for long.
+// Live charts only: tester, optimization and forward passes never evaluate it, so backtests are unchanged.
+#define GOAT_CID_GUARD_RECHECK_MS 5000
+string g_GoatCidGuardReason="";        // "", "orphan_suspected" or "cid_duplicate"
+string g_GoatCidGuardDetail="";
+uint   g_GoatCidGuardCheckedMs=0;
+bool   g_GoatCidGuardChecked=false;
+bool GoatCidGuardHas(const long &cidg_list[],const long cidg_value)
+  {
+   for(int cidg_i=ArraySize(cidg_list)-1;cidg_i>=0;--cidg_i) if(cidg_list[cidg_i]==cidg_value) return true;
+   return false;
+  }
+void GoatCidGuardAdd(long &cidg_list[],const long cidg_value)
+  {
+   if(GoatCidGuardHas(cidg_list,cidg_value)) return;
+   int cidg_n=ArraySize(cidg_list);
+   ArrayResize(cidg_list,cidg_n+1);
+   cidg_list[cidg_n]=cidg_value;
+  }
+string GoatCidGuardJoin(const long &cidg_list[])
+  {
+   string cidg_text="";
+   for(int cidg_i=0;cidg_i<ArraySize(cidg_list);cidg_i++) cidg_text+=(cidg_i>0 ? "," : "")+IntegerToString(cidg_list[cidg_i]);
+   return cidg_text;
+  }
+bool GoatCidGuardGoatComment(const string cidg_comment)
+  {
+   if(StringFind(cidg_comment," Buy Lvl ")>=0 || StringFind(cidg_comment," Sell Lvl ")>=0) return true;
+   if(StringLen(cidg_comment)<6) return false;
+   return(StringFind(Strat+" Buy Lvl ",cidg_comment)==0 || StringFind(Strat+" Sell Lvl ",cidg_comment)==0);
+  }
+// One claim file per login, magic and symbol, holding the terminal (GoatChildMagicSalt: login and data-path hash) whose
+// chart runs that magic. Written once by the running chart; read only for a position no CID record here maps.
+string GoatCidGuardClaimPath(const long cidg_magic,const string cidg_symbol)
+  {
+   return "GOAT\\CidGuard\\"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\\"+IntegerToString(cidg_magic)+"_"+cidg_symbol+".txt";
+  }
+string GoatCidGuardClaimOwner(const long cidg_magic,const string cidg_symbol)
+  {
+   string cidg_path=GoatCidGuardClaimPath(cidg_magic,cidg_symbol);
+   if(!FileIsExist(cidg_path,FILE_COMMON)) return "";
+   int cidg_h=FileOpen(cidg_path,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(cidg_h==INVALID_HANDLE) return "";
+   string cidg_owner=FileReadString(cidg_h);
+   FileClose(cidg_h);
+   return cidg_owner;
+  }
+void GoatCidGuardClaim(const string cidg_terminal)
+  {
+   string cidg_path=GoatCidGuardClaimPath(MAGIC1,Symbol());
+   if(FileIsExist(cidg_path,FILE_COMMON)) return;
+   FolderCreate("GOAT",FILE_COMMON);
+   FolderCreate("GOAT\\CidGuard",FILE_COMMON);
+   FolderCreate("GOAT\\CidGuard\\"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)),FILE_COMMON);
+   int cidg_h=FileOpen(cidg_path,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+   if(cidg_h==INVALID_HANDLE) return;
+   FileWriteString(cidg_h,cidg_terminal);
+   FileClose(cidg_h);
+  }
+bool GoatCidGuardOrphan(const long cidg_magic,const string cidg_comment,const long &cidg_mapped[],const long &cidg_known[],
+                        const string cidg_terminal)
+  {
+   if(cidg_magic<=0 || cidg_magic>2147483647 || cidg_magic==MAGIC1) return false;
+   if(GoatCidGuardHas(cidg_mapped,cidg_magic)) return false;               // another chart's valid CID record here
+   string cidg_owner=GoatCidGuardClaimOwner(cidg_magic,Symbol());
+   if(cidg_owner!="" && cidg_owner!=cidg_terminal) return false;             // a chart of another terminal on this login
+   return(cidg_owner!="" || GoatCidGuardHas(cidg_known,cidg_magic) || GoatCidGuardGoatComment(cidg_comment));
+  }
+// The refusal reason ("" when none) and its detail. Reads GlobalVariables, positions, orders and claim files; writes
+// only this chart's own CID record when it is missing, and this chart's claim file.
+string GoatCidGuardEvaluate(string &cidg_detail)
+  {
+   cidg_detail="";
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return "";
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash || MAGIC1<=0) return "";
+   long cidg_chart=GoatTruncateCidValue(ChartID());
+   if(cidg_chart<=0) return "";
+   string cidg_terminal=GoatChildMagicSalt();
+   string cidg_own=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID);
+   if(!GlobalVariableCheck(cidg_own))
+   {
+      GlobalVariableSet(cidg_own,(double)cidg_chart);
+      Print("GOAT CID guard v1: restored this chart's missing CID record "+cidg_own);
+   }
+   GoatCidGuardClaim(cidg_terminal);
+   long cidg_mapped[],cidg_known[],cidg_mine[];
+   for(int cidg_i=GlobalVariablesTotal()-1;cidg_i>=0;--cidg_i)
+   {
+      string cidg_name=GlobalVariableName(cidg_i);
+      long cidg_magic=0;
+      string cidg_symbol="",cidg_field="";
+      if(!GoatParseChildGVName(cidg_name,cidg_magic,cidg_symbol,cidg_field) || cidg_magic<=0) continue;
+      GoatCidGuardAdd(cidg_known,cidg_magic);
+      if(cidg_field!=GOAT_GV_FIELD_CID) continue;
+      long cidg_value=GoatTruncateCidValue((long)GlobalVariableGet(cidg_name));
+      if(cidg_value<=0) continue;
+      GoatCidGuardAdd(cidg_mapped,cidg_magic);
+      if(cidg_symbol==Symbol() && cidg_value==cidg_chart) GoatCidGuardAdd(cidg_mine,cidg_magic);
+   }
+   if(ArraySize(cidg_mine)>1 || (ArraySize(cidg_mine)==1 && cidg_mine[0]!=MAGIC1))
+   {
+      cidg_detail="chart_cid="+IntegerToString(cidg_chart)+" record_magics="+GoatCidGuardJoin(cidg_mine)
+                 +" records="+Key+"_ID_<magic>_"+Symbol()+"_"+GOAT_GV_FIELD_CID;
+      return "cid_duplicate";
+   }
+   long cidg_orphans[];
+   string cidg_positions="",cidg_orders="";
+   int cidg_listed=0;
+   for(int cidg_p=PositionsTotal()-1;cidg_p>=0;--cidg_p)
+   {
+      ulong cidg_ticket=PositionGetTicket(cidg_p);
+      if(cidg_ticket==0 || PositionGetString(POSITION_SYMBOL)!=Symbol()) continue;
+      long cidg_magic=PositionGetInteger(POSITION_MAGIC);
+      if(!GoatCidGuardOrphan(cidg_magic,PositionGetString(POSITION_COMMENT),cidg_mapped,cidg_known,cidg_terminal)) continue;
+      GoatCidGuardAdd(cidg_orphans,cidg_magic);
+      if(cidg_listed++<16) cidg_positions+=(cidg_positions=="" ? "" : ",")+IntegerToString((long)cidg_ticket);
+   }
+   for(int cidg_o=OrdersTotal()-1;cidg_o>=0;--cidg_o)
+   {
+      ulong cidg_ticket=OrderGetTicket(cidg_o);
+      if(cidg_ticket==0 || OrderGetString(ORDER_SYMBOL)!=Symbol()) continue;
+      long cidg_magic=OrderGetInteger(ORDER_MAGIC);
+      if(!GoatCidGuardOrphan(cidg_magic,OrderGetString(ORDER_COMMENT),cidg_mapped,cidg_known,cidg_terminal)) continue;
+      GoatCidGuardAdd(cidg_orphans,cidg_magic);
+      if(cidg_listed++<16) cidg_orders+=(cidg_orders=="" ? "" : ",")+IntegerToString((long)cidg_ticket);
+   }
+   if(ArraySize(cidg_orphans)==0) return "";
+   cidg_detail="orphan_magics="+GoatCidGuardJoin(cidg_orphans)+" positions="+(cidg_positions=="" ? "none" : cidg_positions)
+              +" orders="+(cidg_orders=="" ? "none" : cidg_orders)+(cidg_listed>16 ? " listed=16/"+IntegerToString(cidg_listed) : "");
+   return "orphan_suspected";
+  }
+// True while new sequences are refused. cidg_force re-evaluates now (an entry decision); otherwise at most every 5 s.
+bool GoatCidGuardRefuses(const bool cidg_force=false)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+   uint cidg_now=GetTickCount();
+   if(!cidg_force && g_GoatCidGuardChecked && cidg_now-g_GoatCidGuardCheckedMs<GOAT_CID_GUARD_RECHECK_MS) return(g_GoatCidGuardReason!="");
+   g_GoatCidGuardChecked=true;
+   g_GoatCidGuardCheckedMs=cidg_now;
+   string cidg_detail="";
+   string cidg_reason=GoatCidGuardEvaluate(cidg_detail);
+   if(cidg_reason!=g_GoatCidGuardReason || cidg_detail!=g_GoatCidGuardDetail)
+   {
+      if(cidg_reason!="")
+      {
+         Print("GOAT CID guard v1: refusal="+cidg_reason+" magic="+IntegerToString(MAGIC1)+" symbol="+Symbol()+" "+cidg_detail
+               +" new_sequences=refused management=continues resolve="
+               +(cidg_reason=="cid_duplicate" ? "keep_one_CID_record_for_this_chart_then_reattach"
+                                              : "close_them_or_give_their_chart_a_CID_record_for_that_magic"));
+         GoatDeploymentPhase(cidg_reason,ChartID(),Symbol()+" magic="+IntegerToString(MAGIC1)+" "+cidg_detail);
+      }
+      else
+         Print("GOAT CID guard v1: refusal=none magic="+IntegerToString(MAGIC1)+" symbol="+Symbol()+" cleared="+g_GoatCidGuardReason);
+      g_GoatCidGuardReason=cidg_reason;
+      g_GoatCidGuardDetail=cidg_detail;
+   }
+   return(cidg_reason!="");
+  }
+// The dashboard row status and panel text for a refusal ("" when none).
+string GoatCidGuardStatus(void)
+  {
+   if(g_GoatCidGuardReason=="orphan_suspected") return "Orphan Suspected";
+   if(g_GoatCidGuardReason=="cid_duplicate")    return "CID Duplicate";
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 // Atomic asset-direction ownership at the real-order boundary.
 #include "GOAT_DirectionGuard.mqh"
 #include "GOAT_SequenceExport.mqh"
@@ -340,6 +526,7 @@ bool DashboardExposureConflict(const int op)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool DashboardEntryAllowed(const int op)
   {
+   if(GoatCidGuardRefuses(true)) return false; // B46: a missing or duplicate CID record refuses new sequences (GoatCidGuardEvaluate)
    if(!GoatStagedChildMayOpen(g_GoatStudioMonitorRunPath,MAGIC1,Symbol())) return false; // beta.25: a profile-staged child opens nothing before its dashboard policy (GOATPortfolioSetupControl.mqh)
    if(!DashboardTradeAllowed(op)) return false;
    if(DashboardExposureConflict(op)) return false;
@@ -5855,6 +6042,7 @@ void GoatTickBody()
      if(InActive) {Sequence_Pause_Close=false;}
     }
     else {Active=false; InActive=true; SetEdit(PanelDialog.m_edit_Info_2,"INACTIVE",clrRed,Font_Size);}//clr_Text=clrRed;}
+    if(GoatCidGuardRefuses()) SetEdit(PanelDialog.m_edit_Info_2,"REFUSED: "+g_GoatCidGuardReason,clrRed,Font_Size); // B46: CID refusal on the panel
 
     if(!Trade_Friday && (stm_cur.day_of_week==5 || stm_cur.day_of_week==5))      Sequence_New_Friday=false;
     else                                                                         Sequence_New_Friday=true;
@@ -6067,6 +6255,7 @@ void GoatTickBody()
      else if(!Active || InActive) dashboard_status="Inactive";
      if(!DashboardPortfolioPaused && (StopOut_Flag || Pause_Flag || Sequence_Pause_Close || Sequence_Pause_News || Sequence_Pause_Bias_B || Sequence_Pause_Bias_S))
         dashboard_status="Paused";
+     if(GoatCidGuardStatus()!="") dashboard_status=GoatCidGuardStatus(); // B46: the dashboard row shows a CID refusal
      DashboardBusSendStatus(dashboard_status);
     }
   //PartialClose();

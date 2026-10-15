@@ -14,7 +14,12 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-BETA17-43"
+// B44 item 9 (goatai#2350): no modal Alert() on a deploy-mode path. Every Alert(...) compiled after this line, in this
+// file and in every include below it, goes through GoatDeployNotice (defined, with #undef Alert, at the end of this
+// file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
+void GoatDeployNotice(const string goat_notice_text);
+#define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
+#define   GOAT_BUILD_ID "V1.49-BETA17-44"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -29,7 +34,7 @@
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B43"
+#define   GOAT_BUILD_MARKER "B44"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -227,6 +232,54 @@ bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
       return true;
    }
    return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// A new child's magic, unique by construction (B44; Exp 03, 2026-10-12: 36 charts cold-started together,
+// ChartWindowsHandle(0) returned 0 under load and two children seeded in one GetTickCount tick drew the same
+// MathRand()+9+ChartWindowsHandle(0) magic, so the dashboard refused one of them on every launch).
+// The value depends on the chart id alone: a polynomial hash of "<n>#<chart id>" modulo 2^31-1, a positive int.
+// n steps on while a <Key>_ID_<magic>_<symbol>_CID record of another chart already holds the value. A magic
+// restored from this chart's own CID record is found before this and still wins (live children keep theirs).
+int GoatChildMagicCandidate(const long magic_chart,const int magic_n)
+  {
+   string magic_text=IntegerToString(magic_n)+"#"+IntegerToString(magic_chart);
+   long magic_hash=0;
+   for(int magic_k=0;magic_k<StringLen(magic_text);magic_k++)
+      magic_hash=(magic_hash*48271+StringGetCharacter(magic_text,magic_k))%2147483647;
+   return (int)magic_hash;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatChildMagicHeld(const int magic_value,const long magic_chart)
+  {
+   // B44 condition 3 (goatai#2350 6127809765): a magic an open position or a pending order of this account already
+   // carries is held too, whether or not a CID record names it (a chart closed with trades left open).
+   for(int magic_p=PositionsTotal()-1;magic_p>=0;--magic_p)
+      if(PositionGetTicket(magic_p)>0 && PositionGetInteger(POSITION_MAGIC)==magic_value) return true;
+   for(int magic_o=OrdersTotal()-1;magic_o>=0;--magic_o)
+      if(OrderGetTicket(magic_o)>0 && OrderGetInteger(ORDER_MAGIC)==magic_value) return true;
+   long magic_cid=GoatTruncateCidValue(magic_chart);
+   for(int magic_i=GlobalVariablesTotal()-1;magic_i>=0;--magic_i)
+   {
+      string magic_gv=GlobalVariableName(magic_i);
+      long magic_held=0;
+      string magic_symbol="",magic_field="";
+      if(!GoatParseChildGVName(magic_gv,magic_held,magic_symbol,magic_field)) continue;
+      if(magic_field!=GOAT_GV_FIELD_CID || magic_held!=magic_value)           continue;
+      if(GoatTruncateCidValue((long)GlobalVariableGet(magic_gv))!=magic_cid)  return true;
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatDeriveChildMagic(const long magic_chart)
+  {
+   for(int magic_n=0;magic_n<1000;magic_n++)
+   {
+      int magic_value=GoatChildMagicCandidate(magic_chart,magic_n);
+      if(magic_value>0 && !GoatChildMagicHeld(magic_value,magic_chart)) return magic_value;
+   }
+   // Unreachable short of 1000 held candidates; still a positive, chart-derived value.
+   int magic_last=GoatChildMagicCandidate(magic_chart,1000);
+   return (magic_last>0 ? magic_last : 1);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // Atomic asset-direction ownership at the real-order boundary.
@@ -2285,6 +2338,41 @@ SEQUENCE       Seq_Buy,Seq_Sell,Seq_Buy_Virtual,Seq_Sell_Virtual;
 CPositionInfo  m_position;       // object of CPositionInfo class
 COrderInfo     m_order;          // object of COrderInfo class
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B44 item 4 (goatai#2350): the AI gate log. One Print per bias decision on a new entry signal: VETO where the
+// signal's onset is counted as skipped by the bias (Sequence_Skipped_Bias_*), ALLOW where it starts a sequence.
+// Fields come from the wire state the bias block read this evaluation, after the demo-raw rewrite (GetState).
+// Print only, live only (no tester, optimization or forward run): nothing here changes a trading decision.
+SGOATAIWireV2State g_GoatGateState;
+bool               g_GoatGateStateRead=false;
+int GoatGateActiveMask(void)
+  {
+   return (Seq_Buy.Active ? 1 : 0)|(Seq_Sell.Active ? 2 : 0)|(Seq_Buy_Virtual.Active ? 4 : 0)|(Seq_Sell_Virtual.Active ? 8 : 0);
+  }
+void GoatGateLog(const string gate_decision,const int gate_side)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   bool gate_read=g_GoatGateStateRead;
+   string gate_reason="actionable";
+   if(Mode_Bias==Bias_Disabled || Mode_Bias==Bias_Display) gate_reason="filter_off";
+   else if(!gate_read)                                     gate_reason=(GOATUsingControlTowerBias() ? "not_read" : "legacy_score");
+   else if(!g_GoatGateState.verified)                      gate_reason="unverified";
+   else if(!g_GoatGateState.directive_available)           gate_reason="withheld";
+   else if(g_GoatGateState.direction!="BULLISH" && g_GoatGateState.direction!="BEARISH") gate_reason="neutral";
+   else if(!g_GoatGateState.actionable)                    gate_reason="below_cutoff";
+   else if(gate_decision=="VETO")                          gate_reason="bias_rule";
+   Print("GOAT AI gate v1: decision="+gate_decision+" side="+(gate_side==OP_BUY ? "BUY" : "SELL")
+         +" magic="+IntegerToString(MAGIC1)+" symbol="+Symbol()
+         +" direction="+(gate_read && g_GoatGateState.direction!="" ? g_GoatGateState.direction : "NONE")
+         +" probability="+(gate_read ? DoubleToString(g_GoatGateState.decision_probability,4) : "NONE")
+         +" cutoff="+(gate_read ? DoubleToString(g_GoatGateState.probability_cutoff,4) : "NONE")
+         +" authority="+(gate_read ? g_GoatGateState.probability_authority : "NONE")
+         +" availability="+(gate_read ? g_GoatGateState.availability : "NONE")
+         +" reason="+gate_reason
+         +" code="+(gate_read && g_GoatGateState.reason_code!="" ? g_GoatGateState.reason_code : "NONE")
+         +" wire_read_at="+(gate_read && g_GoatGateState.read_at!="" ? g_GoatGateState.read_at : "NONE")
+         +" mode="+EnumToString(Mode_Bias)+" protocol="+EnumToString(Bias_Protocol));
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 #include "GOATLicenseInitRetry.mqh"
 int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
   {
@@ -2742,6 +2830,195 @@ void DashboardBusProcessCommands(void)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 sinput bool Studio_ReadOnlyMonitor=false; // Optimization Studio: read-only batch monitor
 sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch
+// B44 item 5 (goatai#2350): appended last, append-only for SET compatibility. WriteSet never writes it.
+input bool BlindExport=false; // Exporter: rank exports on fit+FWD only (BOOS/FOOS stay for the gates)
+// With BlindExport on, the exporter adds blind=1 to each export run's EA_Desc @{...}. That tester run then measures
+// the fit+FWD window (the SET header's SAMPLE window, dt_BOOS_end to dt_FOOS_start) on every tick and writes it on
+// a "; RANKED" header line; the exporter's profit floor, SR, ARF and SetsToExport trim read that line. Definitions
+// follow the controller's selectionWindow (studio_window_metrics.py): PL = closing - opening equity; ARF = the
+// OnTester ARF (top-5 drawdown episodes, monthly) on the window; SR = daily equity returns, mean / sample standard
+// deviation x sqrt(252), which is NOT MT5's STAT_SHARPE_RATIO. Measurement only: no trading decision reads it.
+bool   g_GoatBlindExport=false;
+bool   g_GoatRankOpened=false,g_GoatRankFinished=false;
+double g_GoatRankOpen=0.0,g_GoatRankClose=0.0,g_GoatRankPeak=0.0,g_GoatRankEpisode=0.0,g_GoatRankMark=0.0,g_GoatRankMaxDD=0.0;
+double g_GoatRankTop[5]={0,0,0,0,0};
+double g_GoatRankSum=0.0,g_GoatRankSquares=0.0,g_GoatRankSR=0.0,g_GoatRankARF=0.0;
+int    g_GoatRankReturns=0,g_GoatRankDays=0;
+long   g_GoatRankDay=-1;
+void GoatRankEpisodeEnd(const double rank_episode)
+  {
+   if(rank_episode<=0.0) return;
+   for(int rank_i=0;rank_i<5;rank_i++)
+      if(rank_episode>g_GoatRankTop[rank_i])
+        {
+         for(int rank_j=4;rank_j>rank_i;rank_j--) g_GoatRankTop[rank_j]=g_GoatRankTop[rank_j-1];
+         g_GoatRankTop[rank_i]=rank_episode;
+         return;
+        }
+  }
+void GoatRankReturn(const double rank_equity)
+  {
+   if(g_GoatRankMark<=0.0) return;
+   double rank_r=rank_equity/g_GoatRankMark-1.0;
+   g_GoatRankReturns++; g_GoatRankSum+=rank_r; g_GoatRankSquares+=rank_r*rank_r;
+  }
+void GoatRankTick(void)
+  {
+   if(!g_GoatBlindExport) return;
+   datetime rank_now=TimeCurrent();
+   if((dt_Back_OOS!=0 && rank_now<dt_Back_OOS) || (dt_Fwrd_OOS!=0 && rank_now>=dt_Fwrd_OOS)) return;
+   double rank_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   long rank_day=(long)rank_now/86400;
+   if(!g_GoatRankOpened)
+     {g_GoatRankOpened=true; g_GoatRankOpen=g_GoatRankPeak=g_GoatRankMark=rank_equity; g_GoatRankDay=rank_day; g_GoatRankDays=1;}
+   else if(rank_day!=g_GoatRankDay)
+     {GoatRankReturn(rank_equity); g_GoatRankMark=rank_equity; g_GoatRankDay=rank_day; g_GoatRankDays++;}
+   if(rank_equity>g_GoatRankPeak) {GoatRankEpisodeEnd(g_GoatRankEpisode); g_GoatRankPeak=rank_equity; g_GoatRankEpisode=0.0;}
+   g_GoatRankEpisode=MathMax(g_GoatRankEpisode,g_GoatRankPeak-rank_equity);
+   g_GoatRankMaxDD=MathMax(g_GoatRankMaxDD,g_GoatRankEpisode);
+   g_GoatRankClose=rank_equity;
+  }
+// Closes the window once (the last episode and the last daily return) and computes SR and ARF.
+void GoatRankFinish(void)
+  {
+   if(g_GoatRankFinished || !g_GoatRankOpened || g_GoatRankOpen<=0.0) return;
+   g_GoatRankFinished=true;
+   GoatRankEpisodeEnd(g_GoatRankEpisode); g_GoatRankEpisode=0.0;
+   GoatRankReturn(g_GoatRankClose); g_GoatRankMark=g_GoatRankClose;
+   double dds[5]; for(int i=0;i<5;i++) dds[i]=g_GoatRankTop[i];
+   double mean_dd;   // OnTester's MeanDD, on the window
+   if     (dds[0]==0)                                           mean_dd =  999999;
+   else if(dds[1]==0 || dds[1]<0.1*dds[0] || dds[1]<0.5*dds[0]) mean_dd =  dds[0];
+   else if(dds[2]==0 || dds[2]<0.1*dds[0] || dds[2]<0.5*dds[1]) mean_dd = (dds[0]*6+dds[1]*5)/11;
+   else if(dds[3]==0 || dds[3]<0.1*dds[0] || dds[3]<0.5*dds[2]) mean_dd = (dds[0]*7+dds[1]*6+dds[2]*5)/18;
+   else if(dds[4]==0 || dds[4]<0.1*dds[0] || dds[4]<0.5*dds[3]) mean_dd = (dds[0]*8+dds[1]*7+dds[2]*6+dds[3]*5)/26;
+   else                                                         mean_dd = (dds[0]*9+dds[1]*8+dds[2]*7+dds[3]*6+dds[4]*5)/35;
+   double rank_return=(g_GoatRankClose-g_GoatRankOpen)/g_GoatRankOpen;
+   if(rank_return<0)  mean_dd=dds[0];
+   if(mean_dd==0)     mean_dd=g_GoatRankOpen/2;
+   g_GoatRankARF=(rank_return/(mean_dd/g_GoatRankOpen))/(MathMax(1,g_GoatRankDays)/21.7);
+   g_GoatRankSR=0.0;
+   if(g_GoatRankReturns>=2)
+     {
+      double rank_mean=g_GoatRankSum/g_GoatRankReturns;
+      double rank_var=(g_GoatRankSquares-g_GoatRankReturns*rank_mean*rank_mean)/(g_GoatRankReturns-1);
+      if(rank_var>0) g_GoatRankSR=rank_mean/MathSqrt(rank_var)*MathSqrt(252.0);
+     }
+  }
+// The "; RANKED" header line, once at the end of a blind export run. B44 (goatai#2350 6128225191): the stamp and RANKED
+// lines hold no "=" at all (key:value), so a controller writer that copies ";" lines holding "=" into a deployed chart
+// (c708cae4 and before) never copies them.
+string GoatRankLine(void)
+  {
+   string rank_from=(dt_Back_OOS!=0 ? TimeToString(dt_Back_OOS,TIME_DATE) : "start");
+   string rank_to=(dt_Fwrd_OOS!=0 ? TimeToString(dt_Fwrd_OOS,TIME_DATE) : "end");
+   if(!g_GoatRankOpened || g_GoatRankOpen<=0.0) return "; RANKED fit+fwd "+rank_from+"-"+rank_to+" Days:0 Trades:0 PL:0.00 SR:0.000 ARF:0.000";
+   GoatRankFinish();
+   return "; RANKED fit+fwd "+rank_from+"-"+rank_to+" Days:"+IntegerToString(g_GoatRankDays)+" Trades:"+IntegerToString(trd_IS)
+          +" PL:"+DoubleToString(g_GoatRankClose-g_GoatRankOpen,2)+" SR:"+DoubleToString(g_GoatRankSR,3)+" ARF:"+DoubleToString(g_GoatRankARF,3);
+  }
+// B44 condition 1 (goatai#2350 6127809765): a blind export is blind. Its file-name metrics are the window's, so its
+// name, the AdjustLots scaling (on the file name's DD) and its SET never depend on a FOOS bar. PF: winning over losing
+// deal results (profit + swap + commission + fee) of the deals inside the window; 0 with no losing deal.
+double GoatRankPF(void)
+  {
+   datetime rank_to=(dt_Fwrd_OOS!=0 ? dt_Fwrd_OOS-1 : TimeCurrent());
+   if(!HistorySelect(dt_Back_OOS,rank_to)) return 0.0;
+   double rank_won=0.0,rank_lost=0.0;
+   for(int i=0;i<HistoryDealsTotal();i++)
+     {
+      ulong rank_deal=HistoryDealGetTicket(i);
+      if(rank_deal==0) continue;
+      long rank_type=HistoryDealGetInteger(rank_deal,DEAL_TYPE);
+      datetime rank_time=(datetime)HistoryDealGetInteger(rank_deal,DEAL_TIME);
+      if((rank_type!=DEAL_TYPE_BUY && rank_type!=DEAL_TYPE_SELL) || rank_time<dt_Back_OOS || rank_time>rank_to) continue;
+      double rank_result=HistoryDealGetDouble(rank_deal,DEAL_PROFIT)+HistoryDealGetDouble(rank_deal,DEAL_SWAP)
+                         +HistoryDealGetDouble(rank_deal,DEAL_COMMISSION)+HistoryDealGetDouble(rank_deal,DEAL_FEE);
+      if(rank_result>0) rank_won+=rank_result; else rank_lost-=rank_result;
+     }
+   return (rank_lost>0.0 ? rank_won/rank_lost : 0.0);
+  }
+// The blind export's file-name metrics, in the format of the full-span ones.
+string GoatRankMetrix(void)
+  {
+   GoatRankFinish();
+   return "_Trds="+IntegerToString(trd_IS)+"_Prf="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,0)+"_DD="+DoubleToString(g_GoatRankMaxDD,0)
+          +"_PF="+DoubleToString(GoatRankPF(),2)+"_SR="+DoubleToString(g_GoatRankSR,2)+"_ARF="+DoubleToString(g_GoatRankARF,3);
+  }
+// The blind export's SET header: of OnTester's description only the program line, the separators and the BOOS, SAMPLE
+// and FWD window lines (no full-span metric, FOOS, news or bias line), then the stamp and the RANKED line.
+string GoatBlindDesc(const string rank_desc)
+  {
+   string rank_lines[],rank_kept="";
+   int rank_count=StringSplit(rank_desc,'\n',rank_lines);
+   string rank_program="; "+MQLInfoString(MQL_PROGRAM_NAME)+" ";
+   for(int i=0;i<rank_count;i++)
+     {
+      string rank_line=rank_lines[i];
+      if(StringFind(rank_line,"; ---")==0 || StringFind(rank_line,rank_program)==0 || StringFind(rank_line,"; BOOS:")==0
+         || StringFind(rank_line,"; SAMPLE:")==0 || StringFind(rank_line,"; FWD:")==0)
+         rank_kept+=(rank_kept=="" ? "" : "\n")+rank_line;
+     }
+   return rank_kept+"\n; EXPORT blind:1 ranked:fit+fwd sr:daily_ann\n"+GoatRankLine();
+  }
+// Exporter side: PL, SR and ARF from an export's one "; RANKED fit+fwd" line, which must follow its
+// "; EXPORT blind:1 ranked:fit+fwd sr:daily_ann" stamp. Anything else (missing, repeated, unparsable) is false.
+bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,double &rank_arf)
+  {
+   rank_pl=rank_sr=rank_arf=0.0;
+   string rank_lines[];
+   int rank_count=StringSplit(rank_text,'\n',rank_lines),rank_found=0;
+   bool rank_stamped=false;
+   for(int i=0;i<rank_count;i++)
+     {
+      string rank_line=rank_lines[i]; StringTrimLeft(rank_line); StringTrimRight(rank_line);
+      if(rank_line=="; EXPORT blind:1 ranked:fit+fwd sr:daily_ann") {rank_stamped=true; continue;}
+      if(StringFind(rank_line,"; RANKED fit+fwd ")!=0) continue;
+      if(!rank_stamped || ++rank_found>1) return false;
+      string rank_tokens[];
+      int rank_n=StringSplit(rank_line,' ',rank_tokens),rank_seen=0;
+      for(int t=0;t<rank_n;t++)
+        {
+         string rank_token=rank_tokens[t];
+         int rank_eq=StringFind(rank_token,":");
+         if(rank_eq<1) continue;
+         string rank_key=StringSubstr(rank_token,0,rank_eq),rank_value=StringSubstr(rank_token,rank_eq+1);
+         if(rank_value=="" || !MathIsValidNumber(StringToDouble(rank_value))) continue;
+         if(rank_key=="PL")  {rank_pl=StringToDouble(rank_value);  rank_seen|=1;}
+         if(rank_key=="SR")  {rank_sr=StringToDouble(rank_value);  rank_seen|=2;}
+         if(rank_key=="ARF") {rank_arf=StringToDouble(rank_value); rank_seen|=4;}
+        }
+      if(rank_seen!=7) return false;
+     }
+   return rank_found==1;
+  }
+// B44 item 9 (goatai#2350): a failed panel no longer removes the chart. Before B44 "Panel GUI creation Failed" returned
+// INIT_FAILED, so a deployed child removed itself (and its Alert blocked a graceful close). Now the panel is tried three
+// times (250 ms, then 500 ms between tries); after that the chart stays alive without it, logs panel_unavailable, and
+// every panel write is skipped (SetEdit, the news list, the panel's chart events). No trading decision reads the panel.
+// GOAT_PANEL_FAIL_INJECT (never defined in a release build) forces the failure for the native harness check.
+bool g_GoatPanelUnavailable=false;
+bool GoatPanelCreate(const string panel_name,const int panel_x1,const int panel_y1,const int panel_x2,const int panel_y2)
+  {
+   for(int panel_try=1;panel_try<=3;panel_try++)
+     {
+      ResetLastError();
+#ifdef GOAT_PANEL_FAIL_INJECT
+      bool panel_made=false;
+#else
+      bool panel_made=PanelDialog.Create(ChartID(),panel_name,0,panel_x1,panel_y1,panel_x2,panel_y2);
+#endif
+      if(panel_made) return true;
+      int panel_error=GetLastError();
+      Print("GOAT panel creation failed, attempt ",panel_try,"/3, error ",panel_error);
+      GoatDeploymentPhase("panel_retry",ChartID(),IntegerToString(panel_try),panel_error);
+      PanelDialog.Destroy(REASON_INITFAILED); // removes a partial panel; not REASON_PROGRAM, so the EA stays
+      if(panel_try<3) Sleep(250*panel_try);
+     }
+   Print("GOAT panel_unavailable: this chart keeps trading without its panel");
+   GoatDeploymentPhase("panel_unavailable",ChartID());
+   return false;
+  }
 bool g_GoatStudioWorkerDiagnosticPending=false;
 ulong g_GoatStudioWorkerDiagnosticDeadline=0;
 int OnInit()
@@ -2838,6 +3115,7 @@ int OnInit()
      {
       dt_FWD_end = StringToTime(values[i]); Print("dt_FWD_end:",TimeToString(dt_FWD_end,TIME_DATE));
      }
+     if(names[i]=="blind" && values[i]=="1") {g_GoatBlindExport=true; Print("EXPORT blind:1 ranked:fit+fwd");} // B44 item 5
     }
     if(MQLInfoInteger(MQL_TESTER))
     {
@@ -3206,8 +3484,9 @@ int OnInit()
       int x2=x1+PANEL_WIDTH,  y2=y1+PANEL_HEIGHT;
       Sleep(100);
       if(MAGIC1==0) {
-       if(!PanelDialog.Create(ChartID(),EA_Name_generated,0,x1,y1,x2,y2)) {Alert("Panel GUI creation Failed, please try again."); return(INIT_FAILED);}
-       Sleep(100); PanelDialog.Run(); Sleep(100);
+       // B44 item 9: three tries, then the chart keeps running without its panel (panel_unavailable); it is never removed for it.
+       g_GoatPanelUnavailable=!GoatPanelCreate(EA_Name_generated,x1,y1,x2,y2);
+       if(!g_GoatPanelUnavailable) {Sleep(100); PanelDialog.Run(); Sleep(100);}
       }
       SetEdit(PanelDialog.m_edit_Info_1,Symbol(),clr_Text,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);
       SetEdit(PanelDialog.m_edit_Info_2,Strat,GOAT_UI_MUTED_TEXT,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_Text);
@@ -3397,8 +3676,12 @@ int OnInit()
     bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);
     if(restored_magic_found)
        MAGIC1=(int)restored_magic;
-     if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
-     if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
+     // B44: a new live child's magic comes from its chart id, unique among this terminal's CID records
+     // (GoatDeriveChildMagic, never 0). The tester keeps its per-run random magic (the export CSV name carries it).
+     if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID());
+     // B44 item 10: nothing is seeded from a window handle any more (ChartWindowsHandle(0) gave 0 under load, MT5 error
+     // 4102). This fallback is reached only in the tester (live always derives above); MAGIC2 was never read.
+     if(MAGIC1==0) MAGIC1 = MathRand()+9;
      if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))
         DashboardPortfolioPaused=(GlobalVariableGet(GoatPortfolioGVName("DashboardPolicyPaused"))>0.5);
      string trade_mask_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK);
@@ -4244,6 +4527,7 @@ double OnTester()
                    //+ "_RF="    + DoubleToString(RF,2)
                      + "_SR="    + DoubleToString(TesterStatistics(STAT_SHARPE_RATIO),2)
                      + "_ARF="   + DoubleToString(MARF,3);//Print(metrix);
+    if(g_GoatBlindExport) metrix=GoatRankMetrix(); // B44: a blind export is named by its fit+FWD metrics only
     newFile += metrix+".csv";//Print(newFile);
     string FileSET_Name=FileCSV_Name+metrix+".set";//Print(FileSET_Name);
     bool exportPathSafe=(!Sequence_Export_Enabled || (GoatSeqPathFits(newFile) && GoatSeqPathFits(FileSET_Name) && GoatSeqPathFits(GoatSeqStem(newFile)+".goatseq\\report-reconciliation.json.tmp")));
@@ -4259,7 +4543,10 @@ double OnTester()
     }
     else
       {
-       WriteSet(desc);
+       // B44 item 5: every export says how it was ranked (an export without this line is blind=0).
+       // sr= names the Sharpe the file's SR is: the window's daily annualized one, or MT5's STAT_SHARPE_RATIO.
+       if(g_GoatBlindExport) WriteSet(GoatBlindDesc(desc));
+       else                  WriteSet(desc+"\n; EXPORT blind:0 ranked:full_span sr:mt5_stat");
       }
     g_sequence_export_csv=newFile;
     g_sequence_export_set=FileSET_Name;
@@ -4558,7 +4845,7 @@ bool StartExporter(bool reportMode)
                                             +" Set Exports stored="+(string)ArraySize(g_allExports)+"/"+IntegerToString(passes)+" Above Threshold="+IntegerToString(fitterCount),Key,EA_Name,Server);
 
       int PositivePass=RunAndStoreSet(i,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT,"+"dt_BOOS_end="  +TimeToString(xmlData.startD,TIME_DATE)+","
-                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
+                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+(BlindExport ? ",blind=1" : "")+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
       //@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
       if(PositivePass==1)
       {
@@ -4726,6 +5013,17 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
     LogOrPrint(reportMode,"DEINIT: ❌ Export verification failed, Export Profit="+DoubleToString(profit,0)+" Back Profit="+DoubleToString(xmlData.Rows[0].back_profit,0)
                                                               +", Export Trades="+DoubleToString(trades,0)+" Back Trades="+DoubleToString(xmlData.Rows[0].back_trades,0),Key,EA_Name,Server); return 0;}
 
+   // B44 item 5: with BlindExport the profit floor, SR and ARF (so the thresholds and SortAndTrimExports) are the
+   // fit+FWD window's, from the export's own "; RANKED" line. BOOS and FOOS stay in the export for the gates.
+   double rank_pl=0.0,rank_sr=0.0,rank_arf=0.0;
+   if(BlindExport)
+   {
+    string rank_set="";
+    for(int k=0;k<ArraySize(exports);k++) if(StringFind(exports[k],".set",0)!=-1) rank_set=exports[k];
+    if(rank_set=="" || !GoatReadRankedLine(GoatExportReadTextCommon(rank_set,0),rank_pl,rank_sr,rank_arf))
+    {LogOrPrint(reportMode,"❌ Blind export has no fit+FWD ranking line: "+FileNameOnly(exports[0])+". Skipping...",Key,EA_Name,Server); return -1;}
+    profit=rank_pl;
+   }
    if(profit>0)
    {
     // move first, because MoveExports rewrites paths
@@ -4749,17 +5047,18 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
     expArr[n].prf      = FetchMetric(exports[0],"Prf");
     expArr[n].dd       = FetchMetric(exports[0],"DD");
     expArr[n].pf       = FetchMetric(exports[0],"PF");
-    expArr[n].sr       = FetchMetric(exports[0],"SR");
-    expArr[n].arf      = FetchMetric(exports[0],"ARF");
+    expArr[n].sr       = (BlindExport ? rank_sr  : FetchMetric(exports[0],"SR"));
+    expArr[n].arf      = (BlindExport ? rank_arf : FetchMetric(exports[0],"ARF"));
 
     LogOrPrint(reportMode,"✅ Stored Set "+(string)(rowInd+1)+" Profit="+DoubleToString(expArr[n].prf,0)+" DD=" +DoubleToString(expArr[n].dd,0)
-                                                             +" SR="    +DoubleToString(expArr[n].sr,2) +" ARF="+DoubleToString(expArr[n].arf,3),Key,EA_Name,Server);
+                                                             +" SR="    +DoubleToString(expArr[n].sr,2) +" ARF="+DoubleToString(expArr[n].arf,3)
+                                                             +(BlindExport ? " (ranked on fit+FWD: PL="+DoubleToString(rank_pl,0)+")" : ""),Key,EA_Name,Server);
     return 1;
    }
    else
    {
     DeleteExports(exports);
-    LogOrPrint(reportMode,"⚠️ Export Profit="+DoubleToString(profit,0)+"<0, Discarding completed Set (incomplete evidence retained)",Key,EA_Name,Server); return 0;
+    LogOrPrint(reportMode,"⚠️ Export Profit="+DoubleToString(profit,0)+(BlindExport ? " on fit+FWD" : "")+"<0, Discarding completed Set (incomplete evidence retained)",Key,EA_Name,Server); return 0;
    }
    return -1;
   }
@@ -4961,7 +5260,7 @@ void OnChartEvent(const int id,         // event ID
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
     else if(Mode_Operation==Operation_Dash)  DashboardDialog.HandleChartEvent(id,lparam,dparam,sparam);
-    else
+    else if(!g_GoatPanelUnavailable) // B44 item 9: no panel, no panel events
       {
        PanelDialog.HandleChartEvent(id,lparam,dparam,sparam);
        if(GOAT_PANEL_LOGO_READY && (id==CHARTEVENT_MOUSE_MOVE || id==CHARTEVENT_OBJECT_DRAG || id==CHARTEVENT_CHART_CHANGE))
@@ -4973,12 +5272,12 @@ void OnChartEvent(const int id,         // event ID
     if(id==CHARTEVENT_CHART_CHANGE)
     {
           if(Mode_Operation==Operation_Batch)   TesterDialog.maximizeWindow();
-     else if(Mode_Operation!=Operation_Dash)    PanelDialog.maximizeWindow();
+     else if(Mode_Operation!=Operation_Dash && !g_GoatPanelUnavailable) PanelDialog.maximizeWindow();
     }
   //if(id==CHARTEVENT_OBJECT_DRAG  && sparam==ExtDialog.Name()+"Caption") { ss=0;Comment(ss);}
     if(id==CHARTEVENT_OBJECT_CLICK)
     {
-     if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
+     if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash && !g_GoatPanelUnavailable) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
    //Print(sparam); Print(Key+"_BackToDB_"+(string)MAGIC1);
      //if(sparam==Key+"_BackToDB_"+(string)MAGIC1 && GlobalVariableCheck("Dashboard_ChartID"))
      //{
@@ -5122,6 +5421,7 @@ void GoatTickBody()
    bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    tm_cur = TimeCurrent(); TimeCurrent(stm_cur);
+   GoatRankTick(); // B44 item 5: blind export runs only (returns at once otherwise); measures, never trades
 //-------------------------------------------------------------------------
    if(IsNewDay())
    {
@@ -5278,11 +5578,13 @@ void GoatTickBody()
     SGOATAIWireV2State control_tower_state;
     bool control_tower_verified=false;
     int CurBias=-999;
+    g_GoatGateStateRead=false;
     if(control_tower_v2)
       {
        if(Mode_Bias!=Bias_Disabled)
          {
           control_tower_verified=GOATBiasWireV2.GetState(Symbol(),control_tower_state);
+          g_GoatGateState=control_tower_state; g_GoatGateStateRead=true; // B44 item 4: the gate log's fields (log only)
           if(control_tower_verified && control_tower_state.actionable)
              CurBias=control_tower_state.signed_probability_percent;
          }
@@ -6174,6 +6476,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
    {
     if(Sequence_New_News&&Sequence_New_Bias_B)
     {
+     int gate_active_b=GoatGateActiveMask();
      if(Reverse_Seq)
      {
       //virtual or real sequences not open, correct direction, no open trades in the same direction from other charts
@@ -6188,11 +6491,12 @@ void SignalEntryTrigger()//int Buys,int Sells)
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
      }
+     if((GoatGateActiveMask()&~gate_active_b)!=0) GoatGateLog("ALLOW",OP_BUY); // B44 item 4: log only
     }
     else
     {
      if(!Sequence_New_News&&!LastBuySignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_B&&!LastBuySignal) Sequence_Skipped_Bias_B++;
+     if(!Sequence_New_Bias_B&&!LastBuySignal) {Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);} // B44 item 4: log only
     }
     LastBuySignal=true; // whether skipped of not the signal was present
    }
@@ -6208,6 +6512,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
    {
     if(Sequence_New_News&&Sequence_New_Bias_S)
     {
+     int gate_active_s=GoatGateActiveMask();
      if(Reverse_Seq)
      {
        if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
@@ -6221,11 +6526,12 @@ void SignalEntryTrigger()//int Buys,int Sells)
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
      }
+     if((GoatGateActiveMask()&~gate_active_s)!=0) GoatGateLog("ALLOW",OP_SELL); // B44 item 4: log only
     }
     else
     {
      if(!Sequence_New_News&&!LastSellSignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_S&&!LastSellSignal) Sequence_Skipped_Bias_S++;
+     if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only
     }
     LastSellSignal=true; // whether skipped of not the signal was present
    }
@@ -7349,7 +7655,7 @@ bool CPanelDialog::CreateListView(CListView &listV,const string name,int x,int y
 //+------------------------------------------------------------------+
 bool SetEdit(CEdit &edit1,string text,color ctext=clrNONE,int Fsize=0,color cback=clrNONE,color cborder=clrNONE,ENUM_FONT font=0)
   {
-   if(FastSpeed_Flag)   return false;
+   if(FastSpeed_Flag || g_GoatPanelUnavailable) return false; // B44 item 9: no panel, nothing to draw
 
    edit1.Text(text);
 
@@ -7364,7 +7670,7 @@ bool SetEdit(CEdit &edit1,string text,color ctext=clrNONE,int Fsize=0,color cbac
 //+------------------------------------------------------------------+
 void NewsDisplayFunction(bool active,color clrtext)
   {
-   if(Mode_News==News_Disabled) return;
+   if(Mode_News==News_Disabled || g_GoatPanelUnavailable) return; // B44 item 9: no panel list to fill
 
    datetime now = TimeCurrent();
    int total    = ArraySize(News.TodaysNewsList);
@@ -7585,3 +7891,22 @@ string ExtractFunctionKeysFromInputString(const string inputString, string &name
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B44 item 9 (goatai#2350): the end of the Alert redirection that starts after the input header include.
+#undef Alert
+// Deploy mode: a live chart of a deployed portfolio, where a modal Alert window would block a graceful close of the
+// terminal. That is a live child (Operation_Standard) that the controller staged (Studio_MonitorRunPath "deploy=...")
+// or that runs on a terminal with a dashboard (Dashboard_ChartID), or the dashboard itself resumed by a deploy
+// (Dashboard_Resume_Saved). Never the tester, optimization or forward runs.
+bool GoatDeployMode(void)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+   if(Mode_Operation==Operation_Dash) return Dashboard_Resume_Saved;
+   if(Mode_Operation!=Operation_Standard) return false;
+   return (StringFind(Studio_MonitorRunPath,"deploy=")==0 || GlobalVariableCheck("Dashboard_ChartID"));
+  }
+void GoatDeployNotice(const string goat_notice_text)
+  {
+   if(!GoatDeployMode()) {Alert(goat_notice_text); return;}
+   Print("GOAT notice (deploy mode, no modal): "+goat_notice_text);
+   GoatDeploymentPhase("notice",ChartID(),StringSubstr(goat_notice_text,0,160));
+  }

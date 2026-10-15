@@ -192,6 +192,10 @@ bool GoatProfileWriterSetInputLines(const uchar &pw_raw[],string &pw_lines[])
       while(pw_a<pw_b && (pw_units[pw_a]==0x20 || pw_units[pw_a]==0x09)) pw_a++;
       while(pw_b>pw_a && (pw_units[pw_b-1]==0x20 || pw_units[pw_b-1]==0x09)) pw_b--;
       pw_start=pw_at+1;
+      // B44 condition 2 (goatai#2350 6127809765, 6128225191): the export stamp ("; EXPORT blind:... ranked:... sr:...", which holds no "="
+      // so older writers drop it too; also the pre-release "; EXPORT: blind=..." form) is provenance,
+      // not an input: dropped, so a stamped B44 SET deploys byte for byte as its unstamped B43 twin (studio_deploy_profile too).
+      if(pw_b-pw_a>=8 && ShortArrayToString(pw_units,pw_a,8)=="; EXPORT") continue;
       int pw_eq=-1;
       for(int pw_e=pw_a;pw_e<pw_b && pw_eq<0;pw_e++) if(pw_units[pw_e]=='=') pw_eq=pw_e;
       if(pw_a>=pw_b || pw_eq<=pw_a) continue;

@@ -46,6 +46,10 @@ for(const [from,to] of [['Enabled=false','Enabled=true'],['Id=\n','Id=x\n'],['St
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared.replace(from,to)+tail,expert),false,from);passed++;
 }
 assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'Unknown=1\n'+tail,expert),false);passed++;
+// B44 item 5: a B44 child template also carries BlindExport, which WriteSet omits. Accepted only at its default.
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'BlindExport=false\n'+tail,expert),true);passed++;
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'BlindExport=true\n'+tail,expert),false);passed++;
+assert.equal(api.GoatChildAuditMaps(original+'BlindExport=true\n',0,50,2,head+inputs+declared+'BlindExport=false\n'+tail,expert),false);passed++;
 assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,head+inputs+declared+tail,expert),false);passed++;
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;

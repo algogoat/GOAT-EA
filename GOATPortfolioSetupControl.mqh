@@ -159,7 +159,15 @@ bool GoatAdoptChartFits(const int adopt_row,const long adopt_chart,long &adopt_m
    if(!GoatFindMagicByCid(adopt_sym,adopt_chart,adopt_found) || adopt_found<=0) return false;
    for(int adopt_other=0;adopt_other<adopt_rows;adopt_other++)
       if(adopt_other!=adopt_row && (DashboardDialog.g_sets[adopt_other].cid==adopt_chart
-         || DashboardDialog.g_sets[adopt_other].magic==adopt_found)) return false;
+         || DashboardDialog.g_sets[adopt_other].magic==adopt_found))
+      {
+         // B44: a chart whose CID record names a magic another row's chart holds is still refused, but named
+         // once (Exp 03, 2026-10-12: it was a silent child_unmatched, then child_not_started).
+         if(DashboardDialog.g_sets[adopt_other].cid!=adopt_chart)
+            GoatAdoptNote("magic_held",adopt_chart,adopt_sym+" row="+IntegerToString(adopt_row)
+                          +" magic="+IntegerToString(adopt_found)+" held_by_row="+IntegerToString(adopt_other));
+         return false;
+      }
    adopt_magic=adopt_found;
    return true;
 }
@@ -194,10 +202,14 @@ int GoatPortfolioAdoptChildren(const string &adopt_hashes[],const string adopt_d
       long adopt_hint=DashboardDialog.g_sets[adopt_row].cid,adopt_magic=0;
       string adopt_snapshot="";
       if(DashboardDialog.g_sets[adopt_row].magic>0 || adopt_hint<=0 || adopt_sources[adopt_row]=="") continue;
+      GoatChildSnapshotRefusal="";
       if(GoatAdoptChartFits(adopt_row,adopt_hint,adopt_magic)
          && GoatChildChartSnapshot(adopt_hint,adopt_snapshot)
          && GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_snapshot,adopt_deployment)
          && DashboardDialog.AdoptChild(adopt_row,adopt_hint,adopt_magic)) adopt_count++;
+      // B44: a snapshot the audit could not read is named once (snapshot_too_large, snapshot_nul, snapshot_unreadable).
+      if(GoatChildSnapshotRefusal!="")
+         GoatAdoptNote(GoatChildSnapshotRefusal,adopt_hint,DashboardDialog.g_sets[adopt_row].sym+" row="+IntegerToString(adopt_row));
    }
    // 2) Fallback: walk every chart. A chart is fingerprinted once, then compared with each row it fits.
    long adopt_pair_chart[],adopt_pair_magic[];
@@ -216,7 +228,11 @@ int GoatPortfolioAdoptChildren(const string &adopt_hashes[],const string adopt_d
          if(!adopt_taken)
          {
             adopt_taken=true;
-            if(!GoatChildChartSnapshot(adopt_chart,adopt_shot)) adopt_shot="";
+            if(!GoatChildChartSnapshot(adopt_chart,adopt_shot))
+            {
+               adopt_shot="";
+               GoatAdoptNote(GoatChildSnapshotRefusal,adopt_chart,ChartSymbol(adopt_chart));
+            }
          }
          if(adopt_shot=="" || !GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_shot,adopt_deployment)) continue;
          int adopt_n=ArraySize(adopt_pair_chart);

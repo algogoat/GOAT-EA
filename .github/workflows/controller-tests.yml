@@ -24,9 +24,11 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation, test_profile_staged_adoption, test_b43_no_drift,
+#           test_terminal_isolation, test_profile_staged_adoption, test_b44_no_drift,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
-#           test_profile_writer_goldens
+#           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
+#           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
+#           test_panel_headless, test_alert_guard
 #     python: test_goat_deployment_liveness
 #
 # Controller mutations (GOAT-EA#204; Claude-Mac, goatai#2350 6089452823 + 6089458580). With 3 shards,
@@ -129,8 +131,8 @@ jobs:
         run: node scripts/test_dashboard_overview.cjs
       - name: Profile-staged deploy adoption, link_children, retired deploy_next and disabled dashboard deploy (beta.25, goatai#1885)
         run: node scripts/test_profile_staged_adoption.cjs
-      - name: B43 no drift from B41 (entrypoint build lines only; trade path and input header byte-identical)
-        run: node scripts/test_b43_no_drift.cjs
+      - name: B44 no drift from B43 (six B44 files only; trade-path units and input header byte-identical)
+        run: node scripts/test_b44_no_drift.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness
@@ -143,6 +145,28 @@ jobs:
         run: python scripts/test_goat_deployment_liveness.py
       - name: FU35 cancel stop confirmation and EvidenceEnd export boundary
         run: node scripts/test_ea_followups.cjs
+      - name: B44 child magic unique by construction (Exp 03 2026-10-12, goatai#2350)
+        run: node scripts/test_child_magic_unique.cjs
+      - name: B44 AI wire fast retry after a failed or unverified fetch (2026-10-12, goatai#2350)
+        run: node scripts/test_ai_wire_retry.cjs
+      - name: B44 child snapshot audit streams the template and adoption names its refusals (goatai#2350)
+        run: node scripts/test_child_snapshot_stream.cjs
+      - name: B44 AI gate log line, Print only, trading unchanged (goatai#2350)
+        run: node scripts/test_ai_gate_log.cjs
+      - name: B44 BlindExport ranks exports on fit+FWD, blind=0 unchanged (goatai#2350)
+        run: node scripts/test_blind_export.cjs
+      - name: B44 sequence capture marks go coarser past 1M rows, no 2M stop (goatai#2350)
+        run: node scripts/test_trace_marks_downsample.cjs
+      - name: Licence check retries a 5xx or WebRequest failure at init, V1.47 and V1.49 (B44 item 7)
+        run: node scripts/test_license_init_retry.cjs
+      - name: B44 panel retry, headless child, no modal Alert in deploy mode (goatai#2350)
+        run: node scripts/test_panel_headless.cjs
+      - name: B44 every Alert( in the compile closure is inside the deploy-notice redirection (include order)
+        run: node scripts/test_alert_guard.cjs
+      - name: EA-MAILBOX-SHARE-01 mailbox reads are FILE_SHARE_READ (B44 item 11, goatai#2350 6127147178)
+        run: |
+          python scripts/test_lint_ea_mailbox_share.py
+          python scripts/lint_ea_mailbox_share.py
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs

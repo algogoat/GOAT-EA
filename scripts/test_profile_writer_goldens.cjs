@@ -118,7 +118,23 @@ function runAll(api,count){
   const w=child(api,Object.assign({},okCase,{fileName:c.fileName,symbol:c.symbol,eaRelativePath:c.eaRelativePath,deploymentId:c.deploymentId}),Buffer.from(c.setHex,'hex'));
   assert.ok(!Buffer.isBuffer(w),'g4 refused '+c.label+' was written');assert.equal(w.refused,c.code,c.label);tick();
  }
- // Names.
+ // B44 condition 2 (goatai#2350 6127809765, 6128225191): a B44 export carries "; EXPORT blind:0 ranked:full_span sr:mt5_stat"
+ // as its last header line. Its child chart is byte for byte its unstamped B43 twin's (the G4 golden), in UTF-16 and UTF-8.
+ {const g4=JSON.parse(fixture('g4/cases.json'));
+  for(const spec of g4.portfolios) spec.members.forEach((m,i)=>{
+   const raw=fixture(m.set),wide=raw[0]===0xFF&&raw[1]===0xFE,bom=!wide&&raw[0]===0xEF&&raw[1]===0xBB&&raw[2]===0xBF;
+   const text=wide?raw.subarray(2).toString('utf16le'):raw.subarray(bom?3:0).toString('utf8');
+   const at=text.indexOf('; ===========GENERAL SETTINGS');
+   const eol=text.includes('\r\n')?'\r\n':'\n';
+   // Both B44 stamps (no '='), a blind=1 RANKED line (no '=') and the pre-release '=' form of the stamp: all dropped.
+   const stamp=['; EXPORT blind:0 ranked:full_span sr:mt5_stat','; EXPORT blind:1 ranked:fit+fwd sr:daily_ann',
+    '; RANKED fit+fwd 2025.01.06-2025.06.02 Days:100 Trades:41 PL:640.00 SR:1.234 ARF:0.456','; EXPORT: blind=0 ranked=full_span sr=mt5_stat'][i%4]+eol;
+   const stamped=at>=0?text.slice(0,at)+stamp+text.slice(at):stamp+text;
+   const twin=wide?Buffer.concat([Buffer.from([0xFF,0xFE]),Buffer.from(stamped,'utf16le')]):Buffer.concat([Buffer.from(bom?[0xEF,0xBB,0xBF]:[]),Buffer.from(stamped,'utf8')]);
+   const c=Object.assign({},m,{eaRelativePath:spec.eaRelativePath,policy:spec.policy,deploymentId:spec.deploymentId});
+   same(child(api,c,twin),fixture('g4/'+spec.case+'/'+api.GoatProfileWriterChartFileName(i+2)),'stamped twin '+spec.case+' '+m.set);
+  });
+  tick();} // Names.
  assert.equal(api.GoatProfileWriterChartFileName(1),'chart01.chr');assert.equal(api.GoatProfileWriterChartFileName(9),'chart09.chr');
  assert.equal(api.GoatProfileWriterChartFileName(10),'chart10.chr');assert.equal(api.GoatProfileWriterChartFileName(101),'chart101.chr');
  assert.equal(api.GoatProfileWriterChartFileName(0),'');assert.equal(api.GoatProfileWriterChartFileName(102),'');
@@ -142,6 +158,7 @@ const MUTATIONS=[
  ['protocol 1 written as 2','return (pw_protocol==2 ? "2" : "1");','return "2";'],
  ['trailing tab kept','while(pw_b>pw_a && (pw_units[pw_b-1]==0x20 || pw_units[pw_b-1]==0x09)) pw_b--;','while(pw_b>pw_a && pw_units[pw_b-1]==0x20) pw_b--;'],
  ['state row cid magic','+"0"+pw_tab+"0"+pw_crlf;','+"0"+pw_tab+"1"+pw_crlf;'],
+ ['export stamp kept as an input line (B44)','if(pw_b-pw_a>=8 && ShortArrayToString(pw_units,pw_a,8)=="; EXPORT") continue;',''],
 ];
 for(const [label,from,to] of MUTATIONS){
  assert.ok(SOURCE.includes(from),'mutation anchor missing: '+label);

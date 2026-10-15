@@ -26,6 +26,13 @@ const MUTANTS=[
  ['setup','never late','bool adopt_late=(TimeGMT()-GoatAdoptWindowStart>GOAT_CHILD_START_WAIT_SECONDS);','bool adopt_late=false;'],
  ['setup','child_not_started not recorded','if(adopt_late) GoatAdoptNote("child_not_started"','if(false) GoatAdoptNote("child_not_started"'],
  ['setup','ambiguity not recorded','else GoatAdoptNote("child_identity_ambiguous"','else if(false) GoatAdoptNote("child_identity_ambiguous"'],
+ ['setup','held magic refused silently (B44)','GoatAdoptNote("magic_held"','if(false) GoatAdoptNote("magic_held"'],
+ ['setup','claimed chart reported as a held magic (B44)','if(DashboardDialog.g_sets[adopt_other].cid!=adopt_chart)\n','if(true)\n'],
+ ['setup','held magic note drops the holder row (B44)','+" held_by_row="+IntegerToString(adopt_other)','+" held_by_row=?"'],
+ ['setup','cid-first snapshot refusal silent (B44)','if(GoatChildSnapshotRefusal!="")\n         GoatAdoptNote','if(false)\n         GoatAdoptNote'],
+ ['setup','fallback snapshot refusal silent (B44)','               GoatAdoptNote(GoatChildSnapshotRefusal,adopt_chart,ChartSymbol(adopt_chart));\n',''],
+ ['setup','refusal carried to the next row (B44)','      GoatChildSnapshotRefusal="";\n',''],
+ ['setup','cid-first refusal drops its row (B44)','DashboardDialog.g_sets[adopt_row].sym+" row="+IntegerToString(adopt_row));\n   }\n   // 2)','DashboardDialog.g_sets[adopt_row].sym);\n   }\n   // 2)'],
  ['setup','unmatched look-alike not recorded','if(!adopt_claimed) GoatAdoptNote("child_unmatched"','if(false) GoatAdoptNote("child_unmatched"'],
  ['setup','deploy_next not refused','if(matched && action=="deploy_next") result="rejected_deploy_next_retired";\n   else ',''],
  ['setup','deploy_next refusal while not inert lost','if(matched && action=="deploy_next") result="rejected_deploy_next_retired";\n   else if(matched && action!="status" && !inert)','if(matched && action!="status" && !inert) result="rejected_not_inert";\n   else if(matched && action=="deploy_next") result="rejected_deploy_next_retired";\n   if(false)'],
@@ -73,7 +80,7 @@ const MUTANTS=[
  ['setup','marker without a bound deployment','if(!GOATIsLowerHex(marker_deployment,32) || DashboardDialog.m_portfolio_command_id<=0','if(DashboardDialog.m_portfolio_command_id<=0'],
  ['setup','marker after any command','\n      || DashboardDialog.m_portfolio_command_type!=GOAT_DASH_CMD_EXPOSURE_POLICY) return;',') return;'],
  ['setup','poll never marks','   GoatPortfolioMarkPolicyApplied(GoatPortfolioDeployment,exposure);\n',''], ['audit','template apply in the audit','bool saved=ChartSaveTemplate(cid,"\\\\Files\\\\"+filename);','bool saved=ChartSaveTemplate(cid,"\\\\Files\\\\"+filename); ChartApplyTemplate(cid,filename);'],
- ['main','template apply in the entrypoint','#define   GOAT_BUILD_MARKER "B43"','#define   GOAT_BUILD_MARKER "B43"\n// ChartApplyTemplate'],
+ ['main','template apply in the entrypoint','#define   GOAT_BUILD_MARKER "B44"','#define   GOAT_BUILD_MARKER "B44"\n// ChartApplyTemplate'],
 ];
 const base=readSources();
 assert.ok(run(base)>0,'the unmutated suite passes');

@@ -150,7 +150,7 @@ jobs:
       - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
         if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_switch_hold_mutations|'))
         run: python scripts/test_switch_hold_mutations.py
-      - name: CID guard mutation check (B46/B47: stale record, claim heartbeat, unreadable claim, login 0, cid_duplicate add freeze, entry gate)
+      - name: 'CID guard mutation check (B46/B47: stale record, claim heartbeat, unreadable claim, login 0, cid_duplicate add freeze, entry gate)'
         if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_cid_guard_mutations|'))
         run: node scripts/test_cid_guard_mutations.cjs
 

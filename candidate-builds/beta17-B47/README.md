@@ -24,6 +24,17 @@ and only the entrypoint `GOAT V1.49.mq5` differs. The input header (contract pin
 - `externals.json`: no problems; `consumed_sha256` (`ced68559…`) equals B46's; bound to the receipt (`186fa6ba…`).
 - MetaEditor output is not byte-reproducible across stages, so admit only this binary.
 
+**Deploy note (Claude-Mac, goatai#2350 6187450687): upgrade every terminal on one login together.** A B46 terminal
+never re-stamps its claim, so from B47's point of view its claims go stale after 180 s. B47 terminals on the same login
+then refuse new sequences (`orphan_suspected`) on every symbol they share with a B46 terminal, until all of that
+login's terminals run B47. The refusal is the fail-closed design, not a fault, but a mixed B46/B47 login trades
+nothing on its shared symbols.
+
+**Known, for a later build (non-blocking per Claude-Mac 6187450687):**
+- The "Sequence Levels Viewer" MessageBox blocks the chart thread. Left open for more than 180 s, it lets the chart's
+  claim go stale, so other terminals refuse on that symbol. Replace it with a non-modal panel.
+- After a symbol switch, a live chart still owns the old record that names it. Clear the old record on the switch.
+
 **Not done.** Not installed, no native qualification. The root `GOAT V1.49.ex5` is unchanged.
 
 **Still owed:** Claude-Mac's review of this binary and pins; a new admission row for `V1.49-BETA17-47`.

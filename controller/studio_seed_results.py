@@ -18,7 +18,10 @@ MAX_STATE_BYTES=32*1024*1024
 
 
 def read_seed_json(path,limit=MAX_STATE_BYTES):
-    with Path(path).open('rb') as stream:raw=stream.read(limit+1)
+    def bounded():
+        with Path(path).open('rb') as stream:return stream.read(limit+1)
+    from studio_agent_mailbox import sharing_retry
+    raw=sharing_retry(bounded)   # a concurrent state replace can briefly deny the share (goatai#1885)
     if len(raw)>limit:raise ValueError('Seed JSON exceeds its explicit byte bound')
     def unique(pairs):
         value={}

@@ -1,0 +1,34 @@
+<chart>
+symbol=EURUSD
+<expert>
+path=Experts\GOAT-EA\GOAT V1.49.ex5
+expertmode=4
+<inputs>
+===========GENERAL SETTINGS============                    =
+Mode_Operation=11
+===========SEQUENCE SETTINGS===========                    =
+=============ATR SETTINGS==============                    =
+============POSITION SIZING============                    =
+============RISK MANAGEMENT===========                    =
+=============RSI SETTINGS==============                    =
+========MOVING AVERAGE SETTINGS========                    =
+=============ADX SETTINGS==============                    =
+=======BOLLINGER BANDS SETTINGS========                    =
+=============MACD SETTINGS=============                    =
+=============RSI2 SETTINGS==============                   =
+===========TRADING SCHEDULE============                    =
+==========GOAT AI SIGNAL FILTER==========                =
+================GOAT NEWS FILTER================         =
+==========AI BIAS/NEWS DATA DOWNLOADER=========               =
+========OPTIMIZATION PARAMETERS========                    =
+Studio_ReadOnlyMonitor=true
+Studio_MonitorRunPath=
+</inputs>
+</expert>
+<window>
+<indicator>
+name=Main
+path=
+</indicator>
+</window>
+</chart>

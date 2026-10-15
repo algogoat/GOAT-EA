@@ -39,20 +39,31 @@ def observe_reports(package, configuration, schema=None, member_statuses=None):
 
 
 def _observe_member(package,plan,manifest,configuration,schema,index):
+    # A run folder moved by evidence-archive --run-folders is read from its archive (each file verified as it is
+    # consumed); every path this reports stays the run folder's own (review on GOAT-EA#237).
+    from studio_run_folder_archive import checked, cite, run_dir
     paths = report_paths(plan, manifest, index)
+    cited_run = paths['common_run']
+    common_run = run_dir(cited_run)
+
+    def here(path):
+        return common_run / Path(path).relative_to(cited_run) if common_run != cited_run else Path(path)
     tester = configuration['tester']
     axes = sorted(configuration['strategy']['axes'])
     title = (f"{PureWindowsPath(tester['Expert']).stem} {tester['Symbol']},{tester['Period']} "
              f"{tester['FromDate']}-{tester['ToDate']}")
-    reports = [paths['common_back'], paths['common_forward']]
-    result = dict(status='reports_pending', expected_paths=[str(p) for p in reports],
+    cited_reports = [paths['common_back'], paths['common_forward']]
+    reports = [here(p) for p in cited_reports]
+    result = dict(status='reports_pending', expected_paths=[str(p) for p in cited_reports],
                   launch_permitted=False, retry_permitted=False, release_permitted=False,
                   export_qualification='not_evaluated')
     # Native frame deinit migrates reports to Common Files. Never substitute an
     # unrelated report or treat a missing/partial migration as zero qualifiers.
-    missing = [str(p) for p in reports if not p.is_file()]
+    missing = [str(c) for p, c in zip(reports, cited_reports) if not p.is_file()]
     if missing:
         return result | dict(missing=missing)
+    for report in reports:
+        checked(report)
     try:
         evidence = verify_pair(*reports, title, axes)
         # A producer may still be finishing migration; changed bytes invalidate
@@ -65,8 +76,8 @@ def _observe_member(package,plan,manifest,configuration,schema,index):
     exports = dict(status='trusted_schema_required', qualified_count=None, release_permitted=False)
     if schema is not None and sha(schema) == configuration['strategy']['schema_hash']:
         native_job = manifest['jobs'][index]
-        source_path = paths['common_run']/'inputs'/native_job['run_alias']/'Inputs.GOAT'
-        source_raw = source_path.read_bytes()
+        source_path = here(cited_run/'inputs'/native_job['run_alias']/'Inputs.GOAT')
+        source_raw = checked(source_path).read_bytes()
         if hashlib.sha256(source_raw).hexdigest() != native_job['staged_sha256']:
             raise ValueError('Export source input drift')
         back = read_report(reports[0], title, axes, False)
@@ -76,9 +87,17 @@ def _observe_member(package,plan,manifest,configuration,schema,index):
         if configuration['export']['AdjustLots']:
             exports = dict(status='adjusted_lot_provenance_required', qualified_count=None, release_permitted=False)
         else:
-            exports = scan_exports(paths['common_run']/'deploy'/native_job['run_alias']/tester['Symbol'],
+            deploy = here(cited_run/'deploy'/native_job['run_alias']/tester['Symbol'])
+            for unit in sorted(deploy.iterdir()) if common_run != cited_run and deploy.is_dir() else []:
+                if unit.is_file():
+                    checked(unit)
+            exports = scan_exports(deploy,
                 source_raw, schema, back['passes'], forward['passes'], alias=native_job['run_alias'],
                 symbol=tester['Symbol'], period=tester['Period'], expert_name=PureWindowsPath(tester['Expert']).stem,
-                min_arf=configuration['export']['MinARF'], min_sr=configuration['export']['MinSR'])
-    return result | dict(status='report_pair_verified', evidence=evidence, exports=exports,
+                min_arf=configuration['export']['MinARF'], min_sr=configuration['export']['MinSR'],
+                windows=dict(from_date=tester['FromDate'], to_date=tester['ToDate'],
+                             back_oos_date=configuration['export'].get('BackOOSDate'),
+                             include_back_oos=bool(configuration['export'].get('IncludeBackOOS'))))
+    return result | dict(status='report_pair_verified', evidence=cite(evidence, common_run, cited_run),
+                         exports=cite(exports, common_run, cited_run),
                          remaining=['runtime/config acceptance', 'journal coverage', 'export qualification'])

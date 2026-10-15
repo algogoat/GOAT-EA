@@ -119,7 +119,8 @@ public:
 #ifdef GOAT_STUDIO_UNIFIED_V147
    bool m_studioLoaded,m_studioDraftChecked,m_studioDraftFailed;
    long m_studioRevision,m_studioGeneration;
-   string m_studioOwner,m_studioBaseline,m_studioSubmitted;
+   string m_studioOwner,m_studioBaseline,m_studioSubmitted,m_studioRetainedDraftBody;
+   string ManagedDraftBody(void);
    void ManagedRefresh(void);
    void ManagedObservation(const string status);
    void ManagedResize(void);
@@ -820,6 +821,9 @@ bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
    string queue=GetFileContent(Path_QueueBatch);
    // Save the values currently displayed, not a previous run/start snapshot.
    string exportSettings=(m_compactLayout ? GetFileContent(Path_ExportSettings) : GetExportSettingsString());
+#ifdef GOAT_EVIDENCE_END_V149
+   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(Path_ExportSettings));
+#endif
    if(exportSettings!="" && !GoatOptWriteTextFile(Path_ExportSettings,exportSettings)) return false;
    string runName=m_edtRunName.Text();
    StringTrimLeft(runName);
@@ -874,6 +878,9 @@ bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)
    string oldExportSettingsPath=Path_ExportSettings;
    string queue=GetFileContent(oldQueuePath);
    string exportSettings=(m_compactLayout ? GetFileContent(oldExportSettingsPath) : GetExportSettingsString());
+#ifdef GOAT_EVIDENCE_END_V149
+   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(oldExportSettingsPath));
+#endif
    if(queue=="") return true;
 
    Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,requestedSafe,oldRunFolder);
@@ -1435,6 +1442,40 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
       line1=StringFormat("Runs OK: %d/%d | Errors: %d | Left: %d",stats.completed,stats.total,stats.errors,left);
    else
       line1="Runs OK: n/a | Queue not found";
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+   // Items tested without a profitable pass, or whose profitable passes all scored
+   // below the export score with the forward period, keep the queue status Error, but
+   // they are results, not failures: count them apart from errors (item_stats.tsv).
+   int noEdge=0;
+   if(loaded && stats.errors>0)
+     {
+      // Only items the queue itself marks Error are counted (status check).
+      string errorAliases="\n",queueItems[];
+      int queueCount=StringSplit(GetFileContent(queueFile),(ushort)31,queueItems);
+      for(int q=0;q<queueCount;q++)
+        {
+         string head=queueItems[q]; StringTrimLeft(head);
+         int headEnd=StringFind(head,";",1),colon=-1;
+         for(int k=headEnd-1;k>0 && colon<0;k--) if(StringGetCharacter(head,k)==':') colon=k;
+         if(StringFind(head,";Error_")==0 && colon>0) errorAliases+=StringSubstr(head,colon+1,headEnd-colon-1)+"\n";
+        }
+      string seen="\n";
+      string statLines[];
+      int statCount=StringSplit(GoatOptReadTextFile(GoatOptFolderOf(queueFile)+"\\item_stats.tsv"),'\n',statLines);
+      for(int i=1;i<statCount;i++)
+        {
+         string fields[];
+         if(StringSplit(statLines[i],'\t',fields)<9 || (fields[3]!="NoProfitablePasses" && fields[3]!="NoQualifyingRows")) continue;
+         if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;
+         string itemKey=fields[1]+"\t"+fields[2]+"\n";
+         if(StringFind(seen,"\n"+itemKey)>=0) continue;
+         seen+=itemKey; noEdge++;
+        }
+      noEdge=(int)MathMin(noEdge,stats.errors);
+     }
+   if(noEdge>0)
+      line1=StringFormat("Runs OK: %d/%d | No edge: %d | Errors: %d | Left: %d",stats.completed,stats.total,noEdge,stats.errors-noEdge,left);
+#endif
 
    string logLines[];
    int lineCount=0;
@@ -1663,8 +1704,10 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
        StageMove(m_lblAdjustLots,label_x,y,true,pair_label);    StageMove(m_chkAdjustLots,label_x+pair_label+m_GapHoriz,y+(m_controlHeight-m_chkAdjustLots.Height())/2,true);
        StageMove(m_lblVerifyOOS,right_x,y,true,pair_label);     StageMove(m_chkVerifyOOS,right_control_x,y+(m_controlHeight-m_chkVerifyOOS.Height())/2,true); y+=row;
 #ifdef GOAT_SEQUENCE_EXPORT_V148
-       StageMove(m_lblSequenceData,label_x,y,true,m_labelWidth);
-       StageMove(m_chkSequenceData,control_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true); y+=row;
+       // Keep the long caption clear of the checkbox at compact chart widths.
+       int sequence_label_x=label_x+m_chkSequenceData.Width()+m_GapHoriz;
+       StageMove(m_chkSequenceData,label_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true);
+       StageMove(m_lblSequenceData,sequence_label_x,y,true,editor_width-(sequence_label_x-label_x)); y+=row;
        StageMove(m_lblSequenceCost,label_x,y,true,editor_width); y+=row;
 #else
        StageMove(m_lblDataSync,label_x,y,true,editor_width); y+=row;
@@ -1684,47 +1727,53 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
    if(g_GoatStudioReadOnlyMonitor)
    {
       // Disable editing controls, never the parent client area or navigation.
-      m_btnSelectFile.Disable();
-      m_btnAddQueue.Disable();
-      m_btnSetPresets.Disable();
       m_btnDelQ.Disable();
-      m_btnDelQitem.Disable();
-      m_btnUpQitem.Disable();
-      m_btnDownQitem.Disable();
-      m_btnCancelSelected.Disable();
-      m_btnMakePending.Disable();
-      m_btnStart.Disable();
-      m_btnStop.Disable();
       m_btnSyncBias.Disable();
       m_btnViewBias.Disable();
       m_btnSyncNews.Disable();
       m_edtRunName.Disable();
       m_cmbExpert.Disable();
-      m_cmbSymbol.Disable();
-      m_cmbPeriod.Disable();
-      m_dtFrom.Disable();
-      m_dtTo.Disable();
-      m_cmbForward.Disable();
-      m_dtForward.Disable();
-      m_cmbDelay.Disable();
-      m_cmbModel.Disable();
-      m_edtDeposit.Disable();
-      m_edtCurrency.Disable();
-      m_cmbLeverage.Disable();
       m_cmbOptimization.Disable();
-      m_edtSetsToExport.Disable();
-      m_dpBackOOS.Disable();
-      m_edtMinScore.Disable();
-      m_edtMinARF.Disable();
-      m_edtTargetDD.Disable();
-      m_edtMinSR.Disable();
-      m_chkAdjustLots.Disable();
-      m_chkVerifyOOS.Disable();
-#ifdef GOAT_SEQUENCE_EXPORT_V148
-      m_chkSequenceData.Disable();
+#ifdef GOAT_STUDIO_UNIFIED_V147
+      // Managed Studio decides the controls below once, in ManagedControls, so a
+      // refresh never disables and re-enables them or pre-paints the handoff buttons.
+      if(!GoatStudioManaged())
 #endif
-      m_btnStart.Text("AGENT CONTROLS BATCH");
-      m_btnStop.Text("READ-ONLY VIEW");
+        {
+         m_btnSelectFile.Disable();
+         m_btnAddQueue.Disable();
+         m_btnSetPresets.Disable();
+         m_btnDelQitem.Disable();
+         m_btnUpQitem.Disable();
+         m_btnDownQitem.Disable();
+         m_btnCancelSelected.Disable();
+         m_btnMakePending.Disable();
+         m_cmbSymbol.Disable();
+         m_cmbPeriod.Disable();
+         m_dtFrom.Disable();
+         m_dtTo.Disable();
+         m_cmbForward.Disable();
+         m_dtForward.Disable();
+         m_cmbDelay.Disable();
+         m_cmbModel.Disable();
+         m_edtDeposit.Disable();
+         m_edtCurrency.Disable();
+         m_cmbLeverage.Disable();
+         m_edtSetsToExport.Disable();
+         m_dpBackOOS.Disable();
+         m_edtMinScore.Disable();
+         m_edtMinARF.Disable();
+         m_edtTargetDD.Disable();
+         m_edtMinSR.Disable();
+         m_chkAdjustLots.Disable();
+         m_chkVerifyOOS.Disable();
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+         m_chkSequenceData.Disable();
+#endif
+         m_btnStart.Disable(); m_btnStop.Disable();
+         m_btnStart.Text("AGENT CONTROLS BATCH");
+         m_btnStop.Text("READ-ONLY VIEW");
+        }
    }
 #ifdef GOAT_STUDIO_UNIFIED_V147
    if(GoatStudioManaged()) ManagedControls();
@@ -3085,7 +3134,10 @@ void CStrategyTesterDialog::OnClickStart(void)
       MessageBox("Unable to save the run and export settings. Batch was not started.","Error",MB_OK|MB_ICONERROR);
       return;
    }
-   // Only an explicitly accepted new start releases the persistent cancellation latch.
+   // Only an explicitly accepted human start releases human or legacy cancellation.
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   GlobalVariableDel(GOAT_BATCH_HUMAN_CANCEL_GV);
+#endif
    GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
    GoatBatchClearDeferredRestart();
    GlobalVariablesFlush();
@@ -3114,11 +3166,15 @@ void CStrategyTesterDialog::OnClickStart(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStop(void)
   {
-   int res=MessageBox("Terminate this batch?\n\nThe running optimization will be stopped and all Pending, Queued and OnGoing items cancelled.","Confirmation",MB_YESNO|MB_ICONWARNING);
+   int res=MessageBox("Stop this batch?\n\nThe running optimization stops and every waiting or running item is cancelled. Finished results are kept.","Stop batch?",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
    if(res!=IDYES) return;
 
    // Disarm callbacks and terminal relaunch before requesting tester stop.
    // Persist even when the queue is missing or cannot be rewritten.
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   // Separate persistent intent wins even if another native writer races the latch.
+   GlobalVariableSet(GOAT_BATCH_HUMAN_CANCEL_GV,1.0);
+#endif
    GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0);
    GlobalVariableDel("BatchOnGoing");
    GlobalVariableDel("TerminalRunning");
@@ -3327,6 +3383,9 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
    EnsureCommonFolderTree(strategyDir);
    string testerInputs = GetFileContent(inputsPath);
    if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   testerInputs=GoatStudioExplicitOptimizationInputs(testerInputs);
+#endif
    string configBody=(QueueItem=="" ? QueueItem : QueueItem+"\r\n[TesterInputs]\r\n"+testerInputs);
    string auditConfig=strategyDir+"\\config.ini";
    string activeConfig=GoatOptActiveConfigPath(EA_Name_,Server_);
@@ -3365,7 +3424,15 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
       FileDelete(activeConfig,FILE_COMMON);
       return false;
    }
+#ifdef GOAT_CONFIG_REPORT_START_V149
+   if(!AddCommand(activeConfig,guardPath,launchId))
+     {
+      WriteLog("Headless next-member launcher failed; terminal remains open for recovery.",true,Key_,EA_Name_,Server_);
+      return false;
+     }
+#else
    AddCommand(activeConfig,guardPath,launchId);
+#endif
    return true;
   }
 //+------------------------------------------------------------------+

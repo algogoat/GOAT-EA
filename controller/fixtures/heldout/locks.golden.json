@@ -1,0 +1,13 @@
+{
+  "description": "Golden held-out lock registry (goatai#2221 \u00a74, GOAT-EA controller studio_heldout). The desktop ledger writer must reproduce locks.golden.jsonl byte for byte from the same three events; statuses are as of 2026-10-03 18:00 UTC (AUTO evidence end Friday 2026-10-02).",
+  "head": "f668e404cda919ed35b0148cf7e7ed61c9dae70707d8dc9e1ccd0855b33db125",
+  "events": 3,
+  "lock_ids": [
+    "6879406e51ef70915e03e59748cd424360ebe1b0c8ad05a4c6c8ff1142a47991",
+    "92fa8516b795b24aa0d93c9ed9ae2b1185115b81d1541d6a3e657d9860487890"
+  ],
+  "status_at_2026_10_03": {
+    "compass-trend-pullback": "revealable",
+    "beacon-european-pullback": "locked"
+  }
+}

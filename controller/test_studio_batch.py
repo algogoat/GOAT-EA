@@ -151,6 +151,40 @@ class NativeBatchTests(unittest.TestCase):
         self.assertFalse(result['native_started'])
         self.assertEqual(self.controller.job('customer-batch')['status'], 'cancelled')
 
+    def test_evidence_end_is_recorded_in_the_plan_and_carried_to_successors(self):
+        from datetime import datetime, timezone
+        self.spec['evidence_end'] = 'auto'
+        file = self.root / 'evidence.json'; file.write_text(json.dumps(self.spec), encoding='utf-8')
+        saturday = datetime(2026, 10, 3, 8, tzinfo=timezone.utc)
+        result = prepare_batch(self.controller, 'evidence-batch', file, now=saturday)
+        policy = result['evidence_end']
+        self.assertEqual((policy['requested'], policy['mode'], policy['target'], policy['tester_to_date']), ('auto', 'auto', '2026-10-02', '2026.10.03'))
+        self.assertEqual(policy['native_export_end'], 'ea_last_friday_exclusive')
+        self.assertEqual(policy['native_end_if_exported_now'], '2026-10-01')
+        plan = json.loads((Path(result['package']) / 'studio-plan.json').read_text(encoding='utf-8'))
+        self.assertEqual(plan['native_batch']['evidence_end'], policy)
+        self.assertEqual(json.loads((Path(result['package']) / 'customer-plan.json').read_text(encoding='utf-8'))['evidence_end'], 'auto')
+        self.assertEqual(batch_status(self.controller, 'evidence-batch')['evidence_end']['target'], '2026-10-02')
+        self.controller.cancel('evidence-batch')
+        successor = resume_batch(self.controller, 'evidence-batch', 'evidence-batch-r1', now=saturday)
+        # The successor keeps the resolved date, so a later Friday close never moves it.
+        self.assertEqual((successor['evidence_end']['requested'], successor['evidence_end']['target']), ('2026-10-02', '2026-10-02'))
+
+    def test_evidence_end_must_be_closed_and_after_the_window(self):
+        from datetime import datetime, timezone
+        saturday = datetime(2026, 10, 3, 8, tzinfo=timezone.utc)
+        for value, message in (('2026-10-05', 'not a closed broker day'), ('2026-08-28', 'optimization window end'),
+                               ('next friday', 'Evidence end'), (5, 'evidence_end must be')):
+            with self.subTest(value=value):
+                self.spec['evidence_end'] = value
+                file = self.root / 'bad-evidence.json'; file.write_text(json.dumps(self.spec), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, message):
+                    prepare_batch(self.controller, 'bad-evidence', file, now=saturday)
+        self.assertEqual(self.controller.state()['queue'], [])
+        del self.spec['evidence_end']
+        self.assertIsNone(self.prepare()['evidence_end'])
+        self.assertIsNone(batch_status(self.controller, 'customer-batch')['evidence_end'])
+
     def started_fixture(self, states):
         # Synthetic completed attempt: real native queue and input observation,
         # with no terminal process, activation, or execution authorization.
@@ -179,6 +213,13 @@ class NativeBatchTests(unittest.TestCase):
         self.assertEqual(with_errors['member_count'], 2)
         self.assertEqual([m['tester']['Symbol'] for m in self.controller.job('remaining-only')['configuration']['batch_members']], ['PAIR1'])
         self.assertEqual([m['tester']['Symbol'] for m in self.controller.job('remaining-and-errors')['configuration']['batch_members']], ['PAIR1', 'PAIR2'])
+
+    def test_remaining_work_runs_never_run_members_before_failure_retries(self):
+        original, _ = self.started_fixture(['Error', 'Completed', 'Cancelled', 'Pending'])
+        with patch.object(self.controller, 'job', return_value=original):
+            resume_batch(self.controller, 'customer-batch', 'ordered', include_failed=True)
+        self.assertEqual([m['tester']['Symbol'] for m in self.controller.job('ordered')['configuration']['batch_members']],
+                         ['PAIR2', 'PAIR3', 'PAIR0'])
 
     def test_started_remaining_requires_stopped_complete_member_evidence(self):
         original, run = self.started_fixture(['Completed', 'OnGoing'])

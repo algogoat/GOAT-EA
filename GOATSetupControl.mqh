@@ -22,7 +22,9 @@ bool GoatSetupDirectoryMatches(string value)
 bool GoatSetupRead(const string path,string &body)
 {
    body="";
-   int h=FileOpen(path,FILE_READ|FILE_BIN|FILE_COMMON);
+   // B44 (EA-MAILBOX-SHARE-01): read shared, so the controller can still open request.json while the EA reads it
+   // (the 10-12 VPS errno 13). Read sharing only: the controller writes through a temporary file and a rename.
+   int h=FileOpen(path,FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ);
    if(h==INVALID_HANDLE) return false;
    ulong size=FileSize(h);
    if(size==0 || size>4096){FileClose(h);return false;}

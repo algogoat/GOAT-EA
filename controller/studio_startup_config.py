@@ -12,7 +12,10 @@ def startup_config(material):
     sections = material['sections']
     if set(sections) != {'Charts', 'Experts', 'Tester', 'TesterInputs'}:
         raise ValueError('Unexpected startup sections')
-    if sections['Charts'] != {'ProfileLast': 'GOAT Research'}:
+    profile=material.get('plan',{}).get('research_binding',{}).get('research_profile','GOAT Research')
+    if profile!='GOAT Research' and not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}',profile):
+        raise ValueError('Unsafe bound research profile')
+    if sections['Charts'] != {'ProfileLast': profile}:
         raise ValueError('Research profile required')
     if sections['Experts'] != {'Enabled': '0', 'AllowLiveTrading': '0'}:
         raise ValueError('Disabled chart trading required')
@@ -33,7 +36,13 @@ def startup_config(material):
     payload['TesterInputs'] = dict(material['paste_inputs'])
     if 'startup_monitor' in material:
         payload['StartUp']=dict(material['startup_monitor'])
-        if set(payload['StartUp'])!={'Expert','ExpertParameters','Symbol','Period'}:
+        keys=set(payload['StartUp'])
+        if keys=={'Expert','ExpertParameters','Period'}:
+            # GOAT Research packages (studio_research_profile): the monitor_launch shape, no Symbol, M1, and only on
+            # GOAT's own research profile, never the monitor profile.
+            if profile!='GOAT Research' or payload['StartUp']['Period']!='M1':
+                raise ValueError('Symbol-free monitor startup requires the GOAT Research profile and Period=M1')
+        elif keys!={'Expert','ExpertParameters','Symbol','Period'}:
             raise ValueError('Only verified monitor startup is supported')
     text = ''
     for section in payload:

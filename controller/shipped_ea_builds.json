@@ -1,0 +1,107 @@
+{
+  "schema": "goat-shipped-ea-builds-v1",
+  "coordination": "goatai#2350 6089620067, Claude-Mac spec 6089668580",
+  "derivedFrom": "Every EA sha256 named by a shipped desktop bundle record (CANDIDATE.json, latest.json, staged-publication.json, installed-readback-detail.json, downloaded-install-readback.json) under G:\\GOAT-Build-Artifacts, read 2026-10-09. Build IDs come only from the bundle's own ea.buildId, the goatai EA admission registry (functions/serve-api/config/ea_internal_build_admissions.json at goatai 21b188aa) or the goatai release/admission docs at the same commit; never from a guess.",
+  "policy": "status pinned: the build is in studio_installed_build.PINNED_BUILDS with this buildId. status pre_b38_excluded: in PRE_B38_EXCLUDED; the controller refuses it and tells the user to update the EA. bundleVersionsSeen lists the bundle versions named in the same records (a record can also name earlier versions).",
+  "builds": [
+    {
+      "eaSha256": "38912791a76988a62a95d05dcee41c3132c9ec35e859ac9894732c38f463c373",
+      "buildId": "V1.48-SEQUENCE-EXPORT-1",
+      "buildIdSource": "goatai functions/serve-api/EA_BETA_ONBOARDING.md:265-268 (build ID read from compiled source commit 0372be17, EX5 sha256 38912791)",
+      "bundleVersionsSeen": ["0.5.0-beta.2", "0.5.0-beta.3", "0.5.0-beta.4", "0.5.0-beta.5", "0.5.0-beta.6", "0.5.0-beta.7"],
+      "record": "G:\\GOAT-Build-Artifacts\\v148-desktop-delivery-20260925\\latest.json",
+      "status": "pre_b38_excluded",
+      "reason": "V1.48 EA from the first beta bundles, before build B38"
+    },
+    {
+      "eaSha256": "fab7b7fd3613cd94f6a8488e44851a25926a44bea45399713923079e636f951d",
+      "buildId": null,
+      "buildIdSource": null,
+      "bundleVersionsSeen": ["0.5.0-beta.2"],
+      "record": "G:\\GOAT-Build-Artifacts\\v148-onboarding-20260925\\latest.json",
+      "status": "pre_b38_excluded",
+      "reason": "V1.48 EA before build B38; no bundle identity or admission row names its build (GOAT-EA bd6ea5d's source says V1.48-SEQUENCE-EXPORT-1, which also labels 38912791, so it is not proof)"
+    },
+    {
+      "eaSha256": "62a882c362880fe2682a9d427125f9a551727eabe1463f00a6523c60cd429f61",
+      "buildId": "V1.49-MONITOR-ONBOARDING-5",
+      "buildIdSource": "goatai docs/desktop-optimizer-release.md:162-163 (beta.7 carries V1.49-MONITOR-ONBOARDING-5 with this sha) and docs/MT5_EA_CREDENTIAL_PROVISIONING.md:298-316 (admission binding of the EX5 committed at GOAT-EA 19179d4); that admission row has since expired out of the registry",
+      "bundleVersionsSeen": ["0.5.0-beta.7", "0.5.0-beta.8", "0.5.0-beta.10"],
+      "record": "G:\\GOAT-Build-Artifacts\\beta7-tester-delivery-20260927\\downloaded-final\\latest.json",
+      "status": "pre_b38_excluded",
+      "reason": "V1.49 build 5 (beta.7 to beta.10), before build B38"
+    },
+    {
+      "eaSha256": "c59a3b318526304a12aea233f27365b85bc49626c0bec62721e0864adb5186ed",
+      "buildId": "V1.49-ORPHAN-DIRECTORY-9",
+      "buildIdSource": "goatai functions/serve-api/config/ea_internal_build_admissions.json:160 (admission row)",
+      "bundleVersionsSeen": ["0.5.0-beta.11"],
+      "record": "G:\\GOAT-Build-Artifacts\\desktop-recovery-beta11-20260928\\build-artifacts\\latest.json",
+      "status": "pre_b38_excluded",
+      "reason": "V1.49 build 9 (beta.11 build artifacts), before build B38"
+    },
+    {
+      "eaSha256": "09ff4cb051a60105aebd43a3bf5857da8b1d4d304307800a47fc2fc8f731d2a9",
+      "buildId": null,
+      "buildIdSource": null,
+      "bundleVersionsSeen": ["0.5.0-beta.11"],
+      "record": "G:\\GOAT-Build-Artifacts\\desktop-recovery-beta11-20260928\\installer-ts24-controller31f\\latest.json",
+      "status": "pre_b38_excluded",
+      "reason": "V1.49 beta.11 candidate before build B38; no bundle identity or admission row names its build (only a GOAT-EA source pin in f9a469a: V1.49-TESTER-SAFETY-24)"
+    },
+    {
+      "eaSha256": "a1c09bd858897b8a3c99ea46e8dfb05db0a89c5ad22c1d8baa717afce429a838",
+      "buildId": "V1.49-EXPORT-BACK-BOUNDARY-28",
+      "buildIdSource": "goatai functions/serve-api/config/ea_internal_build_admissions.json:102 (admission row)",
+      "bundleVersionsSeen": ["0.5.0-beta.11", "0.5.0-beta.13", "0.5.0-beta.14", "0.5.0-beta.15"],
+      "record": "G:\\GOAT-Build-Artifacts\\c-archive-20261003\\worktree-ignored-files\\goatai\\beta13-controller-rebind-20260930\\desktop\\dist-packaged\\latest.json",
+      "status": "pre_b38_excluded",
+      "reason": "V1.49 build 28 (beta.13 to beta.15), before build B38"
+    },
+    {
+      "eaSha256": "f05a63c7a72a980d0ab442ba143be4241efcd2f96819bb7432e729e0b3800a33",
+      "buildId": "V1.49-NDX-SYMBOL-MAP-31",
+      "buildIdSource": "goatai functions/serve-api/config/ea_internal_build_admissions.json:231 (admission row); candidate-builds/ndx-symbol-map-SM31/identity.json",
+      "bundleVersionsSeen": ["0.5.0-beta.16"],
+      "record": "G:\\GOAT-Build-Artifacts\\desktop-recovery-beta11-20260928\\beta16-post-promote-readback-20261002\\latest.json",
+      "status": "pinned",
+      "reason": null
+    },
+    {
+      "eaSha256": "7f03c9bae1e6367f0cff731f5ad1fa95599ca6e54ea5d8fb592efb85067e07df",
+      "buildId": "V1.49-BETA17-38",
+      "buildIdSource": "goatai functions/serve-api/config/ea_internal_build_admissions.json:73 (admission row); candidate-builds/beta17-B38/identity.json",
+      "bundleVersionsSeen": ["0.5.0-beta.17"],
+      "record": "G:\\GOAT-Build-Artifacts\\beta17-candidate-20261003\\latest.json",
+      "status": "pinned",
+      "reason": null
+    },
+    {
+      "eaSha256": "27226cfb61c02d066c7eabc0a598b0762b0ed055752ea9f14c5a7e2a01d5f517",
+      "buildId": "V1.49-BETA17-39",
+      "buildIdSource": "goatai functions/serve-api/config/ea_internal_build_admissions.json:88 (admission row); candidate-builds/beta17-B39/identity.json",
+      "bundleVersionsSeen": ["0.5.0-beta.18", "0.5.0-beta.19"],
+      "record": "G:\\GOAT-Build-Artifacts\\beta17-1-candidate-20261003\\latest.json",
+      "status": "pinned",
+      "reason": null
+    },
+    {
+      "eaSha256": "d5cbcbfd182f7ff18afce79c4245c2ac8ff1044ca3b7ec6e7cbfa663deee8913",
+      "buildId": "V1.49-BETA17-41",
+      "buildIdSource": "bundle record ea.buildId (G:\\GOAT-Build-Artifacts\\beta19-final-20261004); goatai functions/serve-api/config/ea_internal_build_admissions.json:132 (admission row)",
+      "bundleVersionsSeen": ["0.5.0-beta.19", "0.5.0-beta.20", "0.5.0-beta.21", "0.5.0-beta.22", "0.5.0-beta.23", "0.5.0-beta.24"],
+      "record": "G:\\GOAT-Build-Artifacts\\beta19-final-20261004\\latest.json",
+      "status": "pinned",
+      "reason": null
+    },
+    {
+      "eaSha256": "e630ee34cb04c26513f16860a927074ec745f3c62869d984260230a89fd4dc24",
+      "buildId": "V1.49-BETA17-43",
+      "buildIdSource": "bundle record ea.buildId (G:\\GOAT-Build-Artifacts\\beta22-final-20261006\\CANDIDATE.json); goatai functions/serve-api/config/ea_internal_build_admissions.json:146 (admission row)",
+      "bundleVersionsSeen": ["0.5.0-beta.25", "0.5.0-beta.26", "0.5.0-beta.27", "0.5.0-beta.28", "0.5.0-beta.29", "0.5.0-beta.30"],
+      "record": "G:\\GOAT-Build-Artifacts\\beta22-final-20261006\\CANDIDATE.json",
+      "status": "pinned",
+      "reason": null
+    }
+  ]
+}

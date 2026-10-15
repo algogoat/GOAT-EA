@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "note": "SET texts (encoded UTF-16LE with a BOM) that both profile writers must refuse; nothing is staged.",
+  "cases": [
+    {
+      "label": "lone CR",
+      "text": "EA_Desc=x\rRisk=9999\r\n"
+    },
+    {
+      "label": "lone CR at the end",
+      "text": "EA_Desc=x\r\nRisk=1\r"
+    },
+    {
+      "label": "U+2028 line separator",
+      "text": "EA_Desc=x\u2028Risk=9999\r\n"
+    },
+    {
+      "label": "U+2029 paragraph separator",
+      "text": "EA_Desc=x\u2029Risk=9999\r\n"
+    },
+    {
+      "label": "U+0085 next line",
+      "text": "EA_Desc=x\u0085Risk=9999\r\n"
+    },
+    {
+      "label": "vertical tab",
+      "text": "EA_Desc=x\u000bRisk=9999\r\n"
+    },
+    {
+      "label": "form feed",
+      "text": "EA_Desc=x\fRisk=9999\r\n"
+    },
+    {
+      "label": "file separator",
+      "text": "EA_Desc=x\u001cRisk=9999\r\n"
+    },
+    {
+      "label": "C1 control",
+      "text": "EA_Desc=x\u009fRisk=9999\r\n"
+    },
+    {
+      "label": "DEL",
+      "text": "EA_Desc=x\u007fRisk=9999\r\n"
+    },
+    {
+      "label": "NUL",
+      "text": "EA_Desc=x\u0000\r\n"
+    },
+    {
+      "label": "separator inside a line without a key",
+      "text": "; note\u2028Risk=9999\r\nEA_Desc=x\r\n"
+    },
+    {
+      "label": "angle bracket",
+      "text": "EA_Desc=<x>\r\n"
+    },
+    {
+      "label": "no-break space at the end",
+      "text": "EA_Desc=x\u00a0\r\n"
+    },
+    {
+      "label": "no inputs",
+      "text": "; only a comment\r\n"
+    }
+  ]
+}

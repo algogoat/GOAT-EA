@@ -113,9 +113,16 @@ class NativeBatchTests(unittest.TestCase):
         self.assertTrue(self.native.is_relative_to(self.fixture.root));shutil.rmtree(self.native)
         args=self.c.native_args();material=_validate_material(self.c.state(),self.c.job('beta-job'),**{k:v for k,v in args.items() if k!='observation_path'})
         evidence=self.c.root/'attempts'/self.intent['attempt_id'];evidence.parent.mkdir()
-        with patch('studio_open_activation.validate_launch_material',return_value=material),patch('studio_open_activation.revalidate_processes',return_value={}),patch('studio_open_activation.validate_activated_job',return_value={'verified':'fixture'}):
+        from studio_terminal_isolation import binding_relative
+        observed=dict(state_base=binding_relative(self.plan['research_binding'],self.c.session['account']))
+        with patch('studio_open_activation.validate_launch_material',return_value=material),patch('studio_open_activation.revalidate_processes',return_value={}),patch('studio_open_activation.validate_activated_job',return_value={'verified':'fixture'}),\
+             patch('studio_open_activation.read_observation',return_value=(observed,0)),patch('studio_terminal_isolation.live_terminals',return_value=[]):
             activate_open(self.c.state(),self.c.job('beta-job'),**args,evidence=evidence,process_baseline={},validate_ownership=lambda *args:None)
         self.assertEqual([m['status'] for m in observe(self.package)['members']],['native_queued','native_pending'])
+        # Controls went to this terminal's own batch folder, recorded in the activation receipt.
+        receipt=json.loads((evidence/'activation.json').read_text(encoding='utf-8'))
+        self.assertEqual(receipt['batch_state']['relative'],observed['state_base'])
+        self.assertEqual(receipt['batch_state']['isolated'],self.plan['research_binding']['ea_version']=='1.49')
         for index,item in enumerate(self.manifest['jobs']):
             paths=report_paths(self.plan,self.manifest,index)
             self.assertTrue(paths['local_back'].parent.is_dir());self.assertTrue(paths['common_back'].parent.is_dir())

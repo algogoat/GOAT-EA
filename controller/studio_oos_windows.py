@@ -3,12 +3,20 @@
 Decided by Vince on 2026-10-05 (goatai#1885, comment 6004797676). It replaces "whatever gap
 the export happens to leave". O is the optimization period, SAMPLE + FWD. Oldest to newest:
 
-    BOOS    1/2 O, immediately before SAMPLE     pass/fail only
-    SAMPLE  2/3 O                                the optimizer fits here
-    FWD     1/3 O                                ranks and picks passes
-    FOOS    1/4 O, ending at the export Friday   pass/fail only, never used for ranking
+    BOOS    1/3 O (= FWD), immediately before SAMPLE   lenient "not broken" gate only
+    SAMPLE  2/3 O                                      the optimizer fits here
+    FWD     1/3 O                                      ranks and picks passes
+    FOOS    1/4 O, ending at the export Friday         pass/fail only, never used for ranking
 
 Optimization end = export Friday - FOOS. Every date comes from O and the export Friday.
+
+BOOS = 1/3 O was locked by Vince on 2026-10-11 (goatai#2350, 6106946678; Claude-Mac 6106961195,
+6162820519: P-beta38-oos-formula-boos-third). Until then BOOS was 1/2 O. Every record stamps
+``oosFormula`` (``OOS_FORMULA`` = 'boos-1/3'); a record stamped before the key existed is
+'boos-1/2' (``LEGACY_OOS_FORMULA``). Recorded windows are always re-derived and measured on
+their OWN formula, never the current one, so nothing prepared or run before the lock is
+refused; a ``batch-resume`` successor keeps its source's formula. The BOOS bar is the locked
+lenient rule for EVERY BOOS, 1/2 O windows included (Claude-Mac, goatai#2350 6165051704).
 
 Units and rounding (deterministic, no month-length rounding)
 ------------------------------------------------------------
@@ -49,8 +57,13 @@ Claude-Mac ruled (goatai#1885 comment 6005864453) that this evaluator is the sou
 the desktop sift (goatai#2274) uses the same constants, result names and ``DEFINITIONS``, and
 the shared fixture ``controller/fixtures/oos-holdout-gate-cases.json`` pins both to identical
 results. Each OOS window needs at least 30 trades (positions opened in the window). Fewer is
-``not_eligible_yet``; a window is never shortened to reach the floor. With the floor met a
-window passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). Results:
+``not_eligible_yet``; a window is never shortened to reach the floor. With the floor met
+FOOS passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). BOOS is the lenient "not
+broken" gate (Vince 6106946678, Claude-Mac 6106961195), for 'boos-1/2' windows too (Claude-Mac
+6165051704): it fails only on DD > 1.5 x in-sample DD, or on a BOOS net result worse than
+``in_sample_p10``, the 10th percentile of the net results of every rolling SAMPLE window of
+BOOS's own length (1-week step). It is never a profit requirement and never a ranking input.
+Results:
 ``pass | fail | not_eligible_yet | no_data | not_measured``; a missing measurement is
 ``no_data`` or ``not_measured``, never a pass.
 
@@ -85,7 +98,14 @@ BOOS_CONTAMINATED_BY = 'ea_trim'
 # SortAndTrimExports over BOOS..optimization end, so BOOS partly selects which passes are kept. Accepted for v1;
 # every oos_rule says so, and the desktop and house manifest show it as "BOOS: partial". The planned EA fix
 # (export SR/ARF/trim on SAMPLE+FWD only) is Claude-Mac's to admit; until then house portfolios rest mainly on FOOS. = 'ea_trim'
-FRACTIONS = dict(boos='1/2', sample='2/3', fwd='1/3', foos='1/4')
+FRACTIONS = dict(boos='1/3', sample='2/3', fwd='1/3', foos='1/4')
+# The formula version every record stamps (``oosFormula``). Only the BOOS share differs.
+OOS_FORMULA = 'boos-1/3'                # Vince, locked 2026-10-11: BOOS = FWD = 1/3 O, lenient BOOS gate
+LEGACY_OOS_FORMULA = 'boos-1/2'         # records stamped before oosFormula existed: BOOS 1/2 O windows
+BOOS_SHARE = {OOS_FORMULA: Fraction(1, 3), LEGACY_OOS_FORMULA: Fraction(1, 2)}
+# The window length follows the stamp; the bar is the locked lenient rule for EVERY BOOS (Claude-Mac 6165051704).
+BOOS_GATE = {OOS_FORMULA: 'lenient_p10', LEGACY_OOS_FORMULA: 'lenient_p10'}
+BOOS_LOSS_QUANTILE = Fraction(1, 10)    # lenient BOOS: no worse than the in-sample 10th-percentile window
 FIXTURE = 'fixtures/oos-holdout-gate-cases.json'
 # The measurement definitions the desktop must match exactly (this controller is the source of truth).
 DEFINITIONS = dict(
@@ -104,7 +124,11 @@ DEFINITIONS = dict(
            'limit: not_measured.',
     foos='FOOS runs from the Saturday after the optimization end through the export Friday; a catch-up re-test that '
          'runs later extends it to the re-test end (catch-up weeks count toward the 30-trade floor). FOOS is never '
-         'judged before its full 1/4 O has been tested.')
+         'judged before its full 1/4 O has been tested.',
+    in_sample_p10='Lenient BOOS bar (every BOOS, 1/3 O and 1/2 O windows alike): the 10th percentile (linear '
+                  'interpolation, as numpy "linear" and Excel PERCENTILE.INC) of the pl of every window of BOOS\'s own length inside SAMPLE, the first '
+                  'starting on SAMPLE\'s first day and each next one week later. BOOS fails only on DD above the dd_bar '
+                  'or a loss (pl < 0) below it, worse than that in-sample window; BOOS needs no profit and never ranks.')
 
 DEMO_RULE = dict(
     rule='goat-demo-continuation-v2',
@@ -145,12 +169,19 @@ def optimization_weeks(*, months=None, weeks=None):
     return _half_up(months * WEEKS_PER_MONTH)
 
 
-def split(o_weeks):
+def _formula(formula):
+    if formula not in BOOS_SHARE:
+        raise ValueError('oosFormula must be one of %s, not %r' % (', '.join(BOOS_SHARE), formula))
+    return formula
+
+
+def split(o_weeks, formula=OOS_FORMULA):
     """Window lengths in weeks: judging windows rounded up, SAMPLE = O - FWD."""
     if type(o_weeks) is not int or o_weeks < 2:
         raise ValueError('O must be at least 2 whole weeks')
     fwd = _ceil(Fraction(o_weeks, 3))
-    return dict(boos=_ceil(Fraction(o_weeks, 2)), sample=o_weeks - fwd, fwd=fwd, foos=_ceil(Fraction(o_weeks, 4)))
+    return dict(boos=_ceil(o_weeks * BOOS_SHARE[_formula(formula)]), sample=o_weeks - fwd, fwd=fwd,
+                foos=_ceil(Fraction(o_weeks, 4)))
 
 
 def _day(value):
@@ -173,12 +204,12 @@ def _window(name, role, first, weeks):
                 mt5_from=mt5(first), mt5_to_exclusive=mt5(last + timedelta(days=1)))
 
 
-def compute(o_weeks, export_friday):
+def compute(o_weeks, export_friday, formula=OOS_FORMULA):
     """Every window for O weeks and an export Friday (a date). Pure: no clock, no closed-day check."""
     friday = _day(export_friday)
     if friday.weekday() != FRIDAY:
         raise ValueError('The export Friday must be a Friday; %s is a %s' % (friday.isoformat(), friday.strftime('%A')))
-    weeks = split(o_weeks)
+    weeks = split(o_weeks, formula)
     to_date = friday + timedelta(days=1) - timedelta(days=7 * weeks['foos'])      # Saturday, MT5-exclusive optimization end
     forward = to_date - timedelta(days=7 * weeks['fwd'])
     start = to_date - timedelta(days=7 * o_weeks)
@@ -188,7 +219,7 @@ def compute(o_weeks, export_friday):
                    fwd=_window('FWD', 'ranks and picks passes', forward, weeks['fwd']),
                    foos=_window('FOOS', 'held-out pass/fail only, never used for ranking', to_date, weeks['foos']))
     optimization_end = to_date - timedelta(days=1)
-    return dict(rule=RULE, o_weeks=o_weeks, weeks=weeks, export_friday=friday.isoformat(), **windows,
+    return dict(rule=RULE, oosFormula=formula, o_weeks=o_weeks, weeks=weeks, export_friday=friday.isoformat(), **windows,
                 optimization=dict(first_day=start.isoformat(), last_day=optimization_end.isoformat(), weeks=o_weeks),
                 optimization_end=optimization_end.isoformat(),
                 tester=dict(FromDate=mt5(start), ToDate=mt5(to_date), ForwardMode=4, ForwardDate=mt5(forward)),
@@ -207,10 +238,16 @@ def compute(o_weeks, export_friday):
 
 
 def request(value):
-    """Validate a plan's ``oos_windows`` request: O plus an optional export Friday (default auto)."""
-    if not isinstance(value, dict) or not value or set(value) - {'optimization_months', 'optimization_weeks', 'export_friday'}:
+    """Validate a plan's ``oos_windows`` request: O plus an optional export Friday (default auto).
+
+    ``oosFormula`` (default ``OOS_FORMULA``) is for ``batch-resume`` successors, which keep their
+    source's stamped formula; new plans leave it out.
+    """
+    if not isinstance(value, dict) or not value or set(value) - {'optimization_months', 'optimization_weeks', 'export_friday',
+                                                                 'oosFormula'}:
         raise ValueError('oos_windows takes optimization_months or optimization_weeks, and optionally export_friday '
                          '("auto" or a closed Friday such as 2026-10-02)')
+    _formula(value.get('oosFormula', OOS_FORMULA))
     weeks = optimization_weeks(months=value.get('optimization_months'), weeks=value.get('optimization_weeks'))
     friday = value.get('export_friday', 'auto')
     if not isinstance(friday, str):
@@ -218,7 +255,7 @@ def request(value):
     return dict(value, export_friday=friday), weeks
 
 
-def windows(o, export_friday='auto', *, unit='months', now=None, clock=None, holidays=()):
+def windows(o, export_friday='auto', *, unit='months', now=None, clock=None, holidays=(), formula=OOS_FORMULA):
     """``windows(O, export_friday)``: resolve the export Friday (AUTO = latest closed Friday) and compute every date.
 
     ``unit`` is 'months' (13/3 weeks each) or 'weeks'. An explicit export Friday must be a
@@ -229,7 +266,7 @@ def windows(o, export_friday='auto', *, unit='months', now=None, clock=None, hol
         raise ValueError("unit must be 'months' or 'weeks'")
     o_weeks = optimization_weeks(**{unit: o})
     target = resolve(export_friday, now, clock=clock or DEFAULT_CLOCK, holidays=holidays)
-    result = compute(o_weeks, date.fromisoformat(target['iso']))
+    result = compute(o_weeks, date.fromisoformat(target['iso']), formula)
     result['requested'] = {('optimization_' + unit): o, 'export_friday': export_friday}
     result['export_friday_resolution'] = dict(requested=target['requested'], mode=target['mode'], rule=target['rule'],
                                               auto=target['auto']['iso'])
@@ -241,18 +278,35 @@ def from_request(value, *, now=None, clock=None):
     value, o_weeks = request(value)
     unit, o = (('months', value['optimization_months']) if 'optimization_months' in value
                else ('weeks', value['optimization_weeks']))
-    result = windows(o, value['export_friday'], unit=unit, now=now, clock=clock)
+    result = windows(o, value['export_friday'], unit=unit, now=now, clock=clock,
+                     formula=value.get('oosFormula', OOS_FORMULA))
     if result['o_weeks'] != o_weeks:
         raise ValueError('O changed while resolving the windows')
     result['requested'] = value
     return result
 
 
+def record_formula(record):
+    """The formula a record was stamped with: its ``oosFormula``, or 'boos-1/2' when it predates the key."""
+    return record.get('oosFormula', LEGACY_OOS_FORMULA)
+
+
+def successor_request(record):
+    """The ``oos_windows`` request a ``batch-resume`` successor uses: the same O, export Friday and formula."""
+    return dict(optimization_weeks=record['o_weeks'], export_friday=record['export_friday'], oosFormula=record_formula(record))
+
+
 def same(record):
-    """Recompute a recorded window set from its own O and export Friday; refuse any difference."""
+    """Recompute a recorded window set from its own O, export Friday and stamped formula; refuse any difference.
+
+    A record stamped under BOOS 1/2 O (no ``oosFormula``) is re-derived with 1/2 O, never the
+    current formula, so existing batches keep validating.
+    """
     if not isinstance(record, dict) or record.get('rule') != RULE:
         raise ValueError('oos_windows record is not ' + RULE)
-    fresh = compute(record.get('o_weeks'), record.get('export_friday'))
+    fresh = compute(record.get('o_weeks'), record.get('export_friday'), record_formula(record))
+    if 'oosFormula' not in record:
+        del fresh['oosFormula']             # stamped before the key existed
     for key, value in fresh.items():
         if record.get(key) != value:
             raise ValueError('oos_windows.%s differs from the formula for O=%s weeks and export Friday %s'
@@ -268,11 +322,16 @@ def tester_from_mt5(tester):
         return None
 
 
-def formula_of(tester, back_oos_date):
+def formula_of(tester, back_oos_date, formula=None):
     """The formula record whose dates these are, or None when they are not formula dates.
 
     Reads O from ToDate - FromDate and checks FWD and BOOS against the formula; the export
-    Friday follows from ToDate and FOOS (it is not checked against any clock).
+    Friday follows from ToDate and FOOS (it is not checked against any clock). ``formula``,
+    the stamped ``oosFormula`` when the caller has it, is the only one tried. Without it both
+    are tried and the record says which matched in ``oosFormula``. Where both give the same
+    dates (O = 2 or 4 weeks, where 1/2 O and 1/3 O round up to the same BOOS), the pre-lock
+    'boos-1/2' is stamped: the windows are identical and both are judged with the same
+    lenient BOOS gate, so only the stamp differs.
     """
     days = tester_from_mt5(tester or {})
     try:
@@ -285,16 +344,17 @@ def formula_of(tester, back_oos_date):
     span = (to_date - start).days
     if to_date.weekday() != SATURDAY or span <= 0 or span % 7:
         return None
-    try:
-        weeks = split(span // 7)
-    except ValueError:
-        return None
-    friday = to_date - timedelta(days=1) + timedelta(days=7 * weeks['foos'])
-    record = compute(span // 7, friday)
-    if record['tester'] != dict(FromDate=mt5(start), ToDate=mt5(to_date), ForwardMode=4, ForwardDate=mt5(forward)) \
-            or record['export']['BackOOSDate'] != mt5(back):
-        return None
-    return record
+    for candidate in ((formula,) if formula is not None else (LEGACY_OOS_FORMULA, OOS_FORMULA)):
+        try:
+            weeks = split(span // 7, candidate)
+        except ValueError:
+            return None
+        friday = to_date - timedelta(days=1) + timedelta(days=7 * weeks['foos'])
+        record = compute(span // 7, friday, candidate)
+        if record['tester'] == dict(FromDate=mt5(start), ToDate=mt5(to_date), ForwardMode=4, ForwardDate=mt5(forward)) \
+                and record['export']['BackOOSDate'] == mt5(back):
+            return record
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -430,8 +490,35 @@ def _number(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
 
 
-def judge_window(name, window, in_sample_dd):
+def percentile(values, q=BOOS_LOSS_QUANTILE):
+    """The q quantile of numbers by linear interpolation (numpy 'linear', Excel PERCENTILE.INC), exact; None if empty."""
+    ordered = sorted(Fraction(value) for value in values)
+    if not ordered:
+        return None
+    h = (len(ordered) - 1) * Fraction(q)
+    low = math.floor(h)
+    high = min(low + 1, len(ordered) - 1)
+    return float(ordered[low] + (h - low) * (ordered[high] - ordered[low]))
+
+
+def _lenient_loss_test(window):
+    """Lenient BOOS loss leg: (passes, text) or (None, reason) when a loss cannot be compared with the in-sample p10."""
+    pl, p10 = window.get('pl'), window.get('in_sample_p10')
+    pf_ok, pf_text = _pf_test(window)
+    if pf_ok is not False:
+        return pf_ok, pf_text               # no loss (or nothing measured): no profit is required
+    if not isinstance(pl, (int, float)) or isinstance(pl, bool):
+        return None, 'BOOS lost (PF %s) but its net result was not measured' % pf_text
+    if not isinstance(p10, (int, float)) or isinstance(p10, bool):
+        return None, 'BOOS lost %.2f but there is no in-sample 10th-percentile window to compare it with' % pl
+    return Fraction(pl) >= Fraction(p10), 'net %+.2f vs in-sample p10 %+.2f' % (pl, p10)
+
+
+def judge_window(name, window, in_sample_dd, *, lenient=False):
     """One OOS window's gate: ``pass | fail | not_eligible_yet | no_data | not_measured`` with reasons.
+
+    ``lenient`` (every BOOS): the PF bar is replaced by the loss leg, so the window
+    fails only on DD above 1.5x in-sample or a loss worse than ``window['in_sample_p10']``.
 
     ``window``: ``trades`` (positions opened in the window), ``pf`` (or ``pf_note`` 'no losing
     deals', or ``pl``, the net of those positions), ``dd`` (equity drawdown in money), optional
@@ -465,13 +552,23 @@ def judge_window(name, window, in_sample_dd):
                       reasons=['%d of %d %s trades: too few to judge, so it has not passed or failed yet; the window is '
                                'never shortened to reach the floor' % (trades, MIN_TRADES, name)])
         return result
-    pf_ok, pf_text = _pf_test(window)
     dd, base = _number(window.get('dd')), _positive(in_sample_dd)
     failed, missing = [], []
-    if pf_ok is False:
-        failed.append('%s profit factor below 1.0 (%s) over %d trades' % (name, pf_text, trades))
-    elif pf_ok is None:
-        missing.append('%s profit factor not measured (needs a complete deal capture)' % name)
+    if lenient:
+        result.update(gate='lenient_p10', in_sample_p10=window.get('in_sample_p10'),
+                      in_sample_windows=window.get('in_sample_windows'))
+        loss_ok, loss_text = _lenient_loss_test(window)
+        if loss_ok is False:
+            failed.append('%s loss is worse than the in-sample 10th-percentile window (%s) over %d trades'
+                          % (name, loss_text, trades))
+        elif loss_ok is None:
+            missing.append(loss_text or '%s net result not measured (needs a complete deal capture)' % name)
+    else:
+        pf_ok, pf_text = _pf_test(window)
+        if pf_ok is False:
+            failed.append('%s profit factor below 1.0 (%s) over %d trades' % (name, pf_text, trades))
+        elif pf_ok is None:
+            missing.append('%s profit factor not measured (needs a complete deal capture)' % name)
     if base is not None:
         result['dd_limit'] = float(MAX_DD_RATIO) * base
     if dd is not None and base is not None:
@@ -484,6 +581,9 @@ def judge_window(name, window, in_sample_dd):
         result.update(status='fail', reasons=failed)
     elif missing:
         result.update(status='not_measured', reasons=missing)
+    elif lenient:
+        result.update(status='pass', reasons=['%s not broken: %d trades, %s, drawdown %.2f within %.2f (1.5x in-sample)'
+                                              % (name, trades, loss_text, dd, result['dd_limit'])])
     else:
         result.update(status='pass', reasons=['%s passed: %d trades, PF %s, drawdown %.2f within %.2f (1.5x in-sample)'
                                               % (name, trades, pf_text, dd, result['dd_limit'])])
@@ -493,14 +593,17 @@ def judge_window(name, window, in_sample_dd):
 SET_ORDER = ('fail', 'not_eligible_yet', 'not_measured', 'no_data', 'pass')
 
 
-def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY):
+def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY, oos_formula=OOS_FORMULA):
     """A set's OOS verdict from its BOOS and FOOS gates (``SET_ORDER``: the first status either window has).
 
     pass only when both windows pass. A set with fewer than 30 FOOS trades is not eligible yet.
-    FWD and SAMPLE never change this verdict except through the in-sample drawdown, and FOOS is
-    never a ranking input.
+    FWD and SAMPLE never change this verdict except through the in-sample drawdown (and, for the
+    lenient BOOS gate, the in-sample p10), and neither BOOS nor FOOS is ever a ranking input.
+    ``oos_formula`` names the window formula (stamped); the BOOS gate is lenient for both.
     """
-    parts = dict(boos=judge_window('BOOS', boos, in_sample_dd), foos=judge_window('FOOS', foos, in_sample_dd))
+    gate = BOOS_GATE[_formula(oos_formula)]
+    parts = dict(boos=judge_window('BOOS', boos, in_sample_dd, lenient=gate == 'lenient_p10'),
+                 foos=judge_window('FOOS', foos, in_sample_dd))
     states = [parts['boos']['status'], parts['foos']['status']]
     status = next(s for s in SET_ORDER if s in states)
     reasons = [reason for part in parts.values() if part['status'] == status for reason in part['reasons']]
@@ -509,6 +612,7 @@ def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY
     return dict(schema=EVALUATION, status=status, reasons=reasons, windows=parts, in_sample_dd=in_sample_dd,
                 bar=dict(min_trades=MIN_TRADES, min_pf=MIN_PF, max_dd_ratio=float(MAX_DD_RATIO), in_sample='SAMPLE'),
                 used_for_ranking=False, boosContaminatedBy=boos_contaminated_by,
+                oosFormula=oos_formula, boosGate=gate, oosUsedForSelection='gate_only',
                 plain=words[status] + ' (OOS window rule): ' + '; '.join(reasons) + '.')
 
 
@@ -518,9 +622,11 @@ def judge_case(case):
         if raw is None:
             return None
         return dict(present=raw.get('present', True), trades=raw.get('trades'), pf=raw.get('pf'), pf_note=raw.get('pf_note'),
-                    pl=raw.get('pl'), dd=raw.get('max_drawdown'), complete=raw.get('complete'))
+                    pl=raw.get('pl'), dd=raw.get('max_drawdown'), complete=raw.get('complete'),
+                    in_sample_p10=case.get('in_sample_p10_pl'))
     if 'window' in case:
-        return judge_window(case['window'].upper(), window(case['input']), case.get('in_sample_max_drawdown'))
+        return judge_window(case['window'].upper(), window(case['input']), case.get('in_sample_max_drawdown'),
+                            lenient=case['window'] == 'boos')
     return judge(window(case.get('boos')), window(case.get('foos')), in_sample_dd=case.get('in_sample_max_drawdown'))
 
 
@@ -530,7 +636,7 @@ def not_applicable(reason):
                 plain='The OOS window rule does not apply: ' + reason + '.')
 
 
-def judge_retest(original, retest, *, tester, evidence_end=None):
+def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=None):
     """Score one OOS catch-up re-test (the FOOS held-out replay) with the window rule.
 
     ``original``/``retest``: studio_evidence.read_export records; ``tester``: the original
@@ -543,7 +649,8 @@ def judge_retest(original, retest, *, tester, evidence_end=None):
     after the export Friday count toward FOOS (they follow the optimization end and are never
     ranked), but FOOS is never judged before its full 1/4 O has been tested. `evidence_end` is the catch-up's
     resolved end (it may be any closed trading day, `auto_day`); the re-test is judged through the earlier of it
-    and the re-test's own end, and the result stamps it as `evidenceEnd`.
+    and the re-test's own end, and the result stamps it as `evidenceEnd`. ``oos_formula``: the export's stamped
+    formula when known (``formula_of``); otherwise it is read from the dates.
     """
     from pathlib import Path
     from studio_build_migration import refuse
@@ -557,7 +664,7 @@ def judge_retest(original, retest, *, tester, evidence_end=None):
         back = mt5(_day(back)) if back else None
     except ValueError:
         back = None
-    record = formula_of(tester, back)
+    record = formula_of(tester, back, oos_formula)
     if record is None:
         return not_applicable('the optimization dates were not set by the OOS window formula')
     original_end = _day(original['evidence_end'])
@@ -590,8 +697,24 @@ def judge_retest(original, retest, *, tester, evidence_end=None):
             out.update(trades=None, pf=None, pf_note='needs a complete capture', pl=None)
         return out
 
+    def in_sample_p10():
+        """Lenient BOOS bar: p10 of the pl of every SAMPLE window of BOOS's length, 1-week step (None: unmeasured)."""
+        first, last = _day(record['sample']['first_day']), _day(record['sample']['last_day'])
+        days = 7 * record['weeks']['boos']
+        totals = []
+        while deals and first + timedelta(days=days - 1) <= last:
+            counted = deal_window(deals, first, first + timedelta(days=days - 1))
+            totals.append(round(counted['gross_win'] - counted['gross_loss'], 8))
+            first += timedelta(days=7)
+        return percentile(totals), len(totals)
+
     sample = measure('sample')
-    result = judge(measure('boos'), measure('foos', extend=True), in_sample_dd=sample['dd'] if sample['complete'] else None)
+    boos, formula = measure('boos'), record['oosFormula']
+    if BOOS_GATE[formula] == 'lenient_p10':
+        p10, count = in_sample_p10() if sample['complete'] else (None, 0)
+        boos.update(in_sample_p10=p10, in_sample_windows=count)
+    result = judge(boos, measure('foos', extend=True), in_sample_dd=sample['dd'] if sample['complete'] else None,
+                   oos_formula=formula)
     result.update(o_weeks=record['o_weeks'], export_friday=record['export_friday'], trade_source='capture_deals' if deals else 'unavailable',
                   windows_dates={key: dict(first_day=record[key]['first_day'], last_day=record[key]['last_day'])
                                  for key in ('boos', 'sample', 'fwd', 'foos')},

@@ -21,6 +21,8 @@ import time
 from campaign_ledger import packed
 from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, public_thresholds, read_run_thresholds, stamp_set,
                                          summarize, threshold_words)
+# A file of a run folder moved by evidence-archive --run-folders is verified before it is read (a no-op otherwise).
+from studio_run_folder_archive import checked as archived_checked
 
 HEARTBEAT_FRESH_SECONDS = 20
 RELAUNCH_GRACE_SECONDS = 240
@@ -57,7 +59,7 @@ def _bounded_json(path, limit=MAX_JSON_BYTES):
         before = path.stat()
         if before.st_size > limit:
             return None, None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
         return json.loads(text), before.st_mtime
     except (OSError, ValueError, UnicodeError):
@@ -188,7 +190,7 @@ def timeline(native_run, aliases):
     try:
         if not path.is_file() or path.stat().st_size > MAX_TIMELINE_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
     except OSError:
         return None
     try:
@@ -344,7 +346,7 @@ def _log_lines(native_run):
     try:
         if not path.is_file() or path.stat().st_size > MAX_LOG_BYTES:
             return None
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     except (OSError, UnicodeError):
         return None
@@ -475,7 +477,7 @@ def item_outcomes(native_run, members, timing=None):
     try:
         if not path.is_file() or path.stat().st_size > MAX_ITEM_STATS_BYTES:
             return {}
-        raw = path.read_bytes()
+        raw = archived_checked(path).read_bytes()
         text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     except (OSError, UnicodeError):
         return {}
@@ -567,8 +569,11 @@ def batch_progress(root, install, job, *, now, journal=None):
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
         result['evidence'] = 'not_started' if 'launch_intent' not in job else 'package_unreadable'
         return result
+    from studio_evidence_archive import ArchiveUnreachable
     try:
         native = observe(package)
+    except ArchiveUnreachable:
+        raise                     # an archived run folder that cannot be read refuses loudly, never "unreadable"
     except (OSError, ValueError, KeyError) as error:
         result.update(evidence='native_unreadable', evidence_reason=str(error)[:240])
         return result
@@ -577,7 +582,9 @@ def batch_progress(root, install, job, *, now, journal=None):
         return result
     statuses = [m['status'] for m in native['members']]
     aliases = [item['run_alias'] for item in manifest['jobs']]
-    common_run = Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/')
+    from studio_run_folder_archive import run_dir
+    # A run folder moved by evidence-archive --run-folders is read from its archive.
+    common_run = run_dir(Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/'))
     timing = timeline(common_run, aliases)
     # "Qualifying" = passed this run's own export thresholds (goat-export-qualification-v1). The EA
     # also keeps its best set when nothing passed (SortAndTrimExports: Passing=0 Kept=1); those are
@@ -599,6 +606,8 @@ def batch_progress(root, install, job, *, now, journal=None):
         for path in paths:
             try:
                 stamps.append(stamp_set(path, run_thresholds(), with_sha256=False))
+            except ArchiveUnreachable:
+                raise
             except (OSError, ValueError, UnicodeError):
                 stamps.append(dict(status='unknown', missed=['metrics_unavailable']))
         return summarize(stamps)
@@ -959,11 +968,18 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                         **progress)
         # A batch whose MT5 has run nothing for a while is not "running" (goatai#1885, Banker 2026-10-05).
         from studio_batch_stall import research_stall
-        stall = research_stall(activity, monitor, journal, now=now, session=session)
+        from studio_ea_refusal import for_job as ea_refusal_for
+        refusal_fn = (lambda: ea_refusal_for(install, current, jobs, now=now))
+        stall = research_stall(activity, monitor, journal, now=now, session=session, refusal_fn=refusal_fn)
+        # Nothing runs now: the EA's own refusal of this attempt (its Experts log), null when none (Banker 2026-10-13).
+        idle = current.get('status') in ACTIVE | {'failed', 'cancelled'} and activity.get('current_member') is None
         if stall is not None:
             activity.update(status='stalled', stall=stall)
+        activity['ea_refusal'] = stall.get('ea_refusal') if stall is not None else refusal_fn() if idle else None
     activity['_now'] = now
     activity['headline'] = activity['stall']['plain'] if activity.get('status') == 'stalled' else headline(activity)
+    if activity.get('status') != 'stalled' and isinstance(activity.get('ea_refusal'), dict):
+        activity['headline'] = str(activity['headline']).rstrip() + ' ' + activity['ea_refusal']['plain']
     activity.pop('_now', None)
     driver = None
     if journal is not None or activity.get('kind') == 'batch':
@@ -1010,9 +1026,19 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                              blocker=monitor.get('blocker')),
                 activity=activity, driver=driver, owner_stop=bool(owner_stop),
                 disk=disk(install, root, minimum), queue_error=jobs_error,
+                # Size, free pages and the one-time studio-db-compact offer (studio_db_maintenance); never fails the read.
+                controller_db=_controller_db(root),
                 heldout_locks=_heldout(install, root, activity.get('batch_id'), now),
                 research_launch=research_launch, enabled_mt5_workers=research_launch.get('enabled_mt5_workers'),
                 read_only=True, launch_permitted=False)
+
+
+def _controller_db(root):
+    try:
+        from studio_db_maintenance import facts
+        return facts(Path(root) / 'studio.sqlite')
+    except Exception as error:
+        return dict(error=str(error)[:240])
 
 
 def _research_launch(install, root, now):

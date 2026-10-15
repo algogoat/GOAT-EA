@@ -273,7 +273,8 @@ def retire(c, job_id, *, clock=None, reason='operator', settle_journal=True):
                     or current['status'] != job['status'] or current_state['owner'] != 'agent'):
                 _refuse('Batch ' + job_id + ' changed during retirement; nothing was retired, retry to re-check it.')
             current.update(status='cancelled', completion=result, completion_path=str(result_path))
-            c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?', (packed(current_state['queue']), binding))
+            from studio_db_maintenance import write_queue
+            write_queue(c.store.db, binding, packed(current_state['queue']))
             c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?', (binding,))
             c.store.db.execute('COMMIT')
         except BaseException:

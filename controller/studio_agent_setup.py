@@ -382,9 +382,25 @@ def _exit_observation(observed, close_requested_utc):
 _ANY_PROCESS = object()
 
 
+def _seconds(value):
+    """An observed duration for the journal (remote deploy v0): seconds, millisecond precision, never negative."""
+    return round(max(0.0, float(value)), 3)
+
+
+def _cut(record, name):
+    """Name a duration that ended at a failure rather than at the phase's end (a lower bound, not a measurement)."""
+    cut = record.setdefault('observed_cut_by_failure', [])
+    if name not in cut:
+        cut.append(name)
+
+
 def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30,
-                   expected_process=_ANY_PROCESS):
+                   expected_process=_ANY_PROCESS, clock=time.monotonic, timing_record=None):
     """Inert-only normal close of the selected terminal. Retained; never repeated.
+
+    Remote deploy v0: the journal records ``observed_seconds.close``, measured on the same monotonic ``clock`` the exit
+    wait uses, from the close request to the exit (or to the end of the wait when MT5 did not exit, then listed in
+    ``observed_cut_by_failure``), and ``timing_profile`` (``timing_record``, the --timing-profile used) when given.
 
     ``expected_process`` (a batch's end state, studio_research_profile.batch_end_state): the exact MT5 (pid, image,
     creation time) this close may target, or None for "MT5 must be stopped". Checked under the gate right before
@@ -434,12 +450,15 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 return record
             if record.get('phase') == 'close_issued':
                 observed = {}
-                stopped = _wait_exit(process, record['process'], wait_seconds, observed=observed)
+                waited_from = clock()
+                stopped = _wait_exit(process, record['process'], wait_seconds, observed=observed, clock=clock)
+                record.setdefault('observed_seconds', {})['close_after_resume'] = _seconds(clock() - waited_from)
                 if stopped:
                     record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(),
                                   exit_observation=_exit_observation(observed, record.get('close_requested_utc')))
                     write_json(path, record)
                     return record
+                _cut(record, 'close_after_resume'); write_json(path, record)
                 return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
             raise ValueError('Retained close attempt is unresolved; inspect it before another close')
         with exclusive_gate(gate):
@@ -469,6 +488,8 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             record = dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running,
                           native=native, created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False,
                           positions_closed=False)
+            if timing_record is not None:
+                record['timing_profile'] = timing_record
             if settled is not None:
                 record['settled_native_request'] = settled
             if superseded is not None:
@@ -476,8 +497,15 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             write_json(path, record)
         method = None
         close_requested_utc = None  # telemetry: the exit cannot precede the first close request
+        close_started = None  # observed_seconds.close is measured from the first close request on this clock
+
+        def observe_close(cut=False):
+            record['observed_seconds'] = dict(close=_seconds(clock() - close_started) if close_started is not None else 0.0)
+            if cut:
+                _cut(record, 'close')
         if ident is not None:
             close_requested_utc = _utc_now()
+            close_started = clock()
             receipt = request(controller, ident, 'shutdown', timeout=10)
             if receipt['result'] == 'receipt_timeout':
                 # Withdraw the unanswered shutdown so no EA can act on it during or after our
@@ -491,9 +519,11 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 method = 'ea_inert_shutdown'
                 record['ea_receipt'] = {k: receipt[k] for k in ('id', 'result', 'tradingAllowed', 'positions', 'orders', 'observedAtUtc')}
             elif receipt['result'] == 'rejected_not_inert':
+                observe_close(cut=True)
                 record.update(phase='refused', status='rejected_not_inert'); write_json(path, record)
                 raise ValueError('The EA refused to close MT5: Algo Trading is on or the demo account has positions or orders')
             elif receipt['result'] != 'receipt_timeout':
+                observe_close(cut=True)
                 record.update(phase='refused', status=receipt['result']); write_json(path, record)
                 raise ValueError('The EA refused the close request (' + receipt['result'] + ')')
         if method is None:
@@ -513,6 +543,7 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 health = pre_close_health(controller, session, state, again, running)
                 method = 'controller_normal_close'
                 close_requested_utc = close_requested_utc or _utc_now()
+                close_started = close_started if close_started is not None else clock()
                 record['phase'] = 'close_issued'; record['method'] = method; record['close_requested_utc'] = close_requested_utc
                 write_json(path, record)
                 process.close(running)
@@ -520,9 +551,11 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             record['phase'] = 'close_issued'; record['method'] = method; record['close_requested_utc'] = close_requested_utc
             write_json(path, record)
         observed = {}
-        stopped = _wait_exit(process, running, wait_seconds, observed=observed)
+        stopped = _wait_exit(process, running, wait_seconds, observed=observed, clock=clock)
         if not stopped:
+            observe_close(cut=True); write_json(path, record)
             return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
+        observe_close()
         record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(),
                       exit_observation=_exit_observation(observed, close_requested_utc))
         # Fix B (goatai#2350 6118831254): MT5 rewrites the monitor chart as it closes. Only now, fully stopped, are the

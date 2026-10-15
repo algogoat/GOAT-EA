@@ -88,6 +88,11 @@ def predecessor(db, state, scope, *, successor_id=None, require_released=True):
     # ordered tester settings and immutable inputs; retain its actual bytes.
     expected_files['queue.GOAT']=native['artifacts'][0]['sha256']
     common=safe_path(paths['common_run'])
+    from studio_run_folder_archive import STUB
+    if (common/STUB).exists():
+        # Not "work artifacts": evidence-archive --run-folders moved this run folder (review on GOAT-EA#237).
+        raise ValueError('Predecessor run folder was moved by evidence-archive --run-folders ('+STUB+'); bring it back with '
+                         'evidence-archive --run-folders --restore before a replacement')
     actual={p.relative_to(common).as_posix():hashlib.sha256(safe_path(p).read_bytes()).hexdigest() for p in common.rglob('*') if p.is_file()}
     if actual!=expected_files:raise ValueError('Predecessor has work artifacts or changed native material')
     cache=safe_path(Path(plan['research_binding']['research_data_root'])/'Tester/cache')

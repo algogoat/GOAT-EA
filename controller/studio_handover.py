@@ -479,7 +479,8 @@ def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
                 with ExitStack() as stack:
                     for gate in sorted(old['gates']):
                         stack.enter_context(exclusive_gate(gate))
-                    db = stack.enter_context(closing(sqlite3.connect(old['path'], timeout=1, isolation_level=None)))
+                    from studio_db_maintenance import connect_existing   # mode=rw: never creates a missing database
+                    db = stack.enter_context(closing(connect_existing(old['path'], timeout=1)))
                     db.execute('BEGIN IMMEDIATE')
                     for gate in sorted(old['gates']): handover_gate(c,db,gate)
                     current = database_view(old['path'])

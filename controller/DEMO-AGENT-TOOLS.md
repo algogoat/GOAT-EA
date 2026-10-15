@@ -32,10 +32,18 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --confirm   # close a paused batch for good; --mode finish|exclude, --reason (exclude)
 & $goat demo --installation $receipt compact-evidence   # preview; --apply moves finished in-row evidence history to verified logs
 & $goat demo --installation $receipt compact-receipts   # preview; --apply archives legacy full-queue receipts and keeps their queue digest
+& $goat demo --installation $receipt studio-db-compact  # preview; --apply --confirm (idle only) gives a legacy studio.sqlite's free pages back
 & $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm --keep-list '<file>' copies a finished batch's evidence off C: (sources stay); then --complete --confirm removes them after re-verifying; evidence-restore / evidence-repoint
 ```
 
-- `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. Neither shrinks `studio.sqlite` on disk: that needs a separate reviewed `VACUUM`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
+- `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. On a store created from beta.38 on (`auto_vacuum=INCREMENTAL`) each `--apply` then gives the freed pages back at once (`db_reclaim`, at most 30 s); on an older store `studio.sqlite` keeps its size until `studio-db-compact`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
+- **`studio.sqlite` free space** (`studio_db_maintenance.py`, beta.38). Banker's store reached 11.4 GB with 98.8% free pages: before 3e00695 every queue receipt embedded the whole queue (818 MB; 64 receipts held 9.96 GB), and `compact-receipts` freed them in place, but SQLite keeps freed pages until a VACUUM.
+  - Every queue-row write (reconcile at each member boundary, finish, launch intent, queue commands, settle/retire/repair) goes through `write_queue`: delete, then insert, in one savepoint. An `UPDATE` of the large row allocated the new copy before freeing the old one, so a freshly compacted store grew by one whole queue copy at the next member boundary (Banker 2026-10-14: 136 MB -> 272 MB at round 3 member 1); now the new copy reuses the freed pages.
+  - A new store is created with `auto_vacuum=INCREMENTAL`. When the batch driver has verified a batch's finish (terminal lease held, nothing starting or running, no seed slot) it runs a bounded `incremental_vacuum` (8 MiB per statement, 2 s in all, a 250 ms busy wait) if the free pages are over 25% of the file **and** over 256 MB. Logged in `studio-db-maintenance.jsonl`.
+  - `research-status` shows `controller_db` (file, live and free bytes, `auto_vacuum`, `reclaim_due`, `compaction_offered`, `kept_originals`). An older store (`auto_vacuum` 0) over both thresholds is offered `studio-db-compact`.
+  - `studio-db-compact` previews by default. `--apply --confirm` takes the terminal lease and refuses (`refusal_code`, nothing changed) when the terminal is not idle (`DB_COMPACT_LANE_BUSY`), the store is already incremental or has no free pages (`DB_COMPACT_NOT_NEEDED`), an earlier original is still kept (`DB_COMPACT_ORIGINAL_KEPT`), another connection, a journal or WAL holds the file, or Windows refuses the rename (`DB_COMPACT_DB_HELD`), or the volume has less than the live data + 10% + 256 MB free (`DB_COMPACT_LOW_SPACE`). Under a write lock it runs `VACUUM INTO` a temp file beside the database (with `auto_vacuum=INCREMENTAL`), then checks integrity, schema, `user_version`, `application_id`, page size, encoding and every table's row count and content hash **including rowids** (`DB_COMPACT_MISMATCH` removes the copy). The swap renames the original to `studio.sqlite.pre-vacuum-<UTC stamp>` (+ a `.json` sidecar), places the copy, re-verifies it, and rolls back on any difference. Never an in-place VACUUM. No MT5 effect.
+  - The swap is journaled (sidecar `swapping`, with the original's size and the owning process) before the rename. Any stop, or anything at the path that is not the verified copy (for example a database another opener created in the gap), moves aside to `.compact-rejected-<stamp>` and the original comes back; the sidecar is removed only once the original is provably back. Every opener (StudioStore and every non-creating `mode=rw` opener) runs that recovery first and refuses `DB_COMPACT_IN_PROGRESS` while the swap may still have a working owner, so no write can land in a copy the swap might still reject and nothing can create an empty `studio.sqlite`. The owner holds the swap lock (`studio.sqlite.swap-gate`, the controller's exclusive file gate) for the whole swap and refreshes the record at every phase (a heartbeat); another process takes over only when that lock is free (the OS released it, so the owner is gone, whatever its PID now names) AND the heartbeat is over 10 minutes old (or in the future). A lock still held with a stale heartbeat refuses with `hung: true` and the `pid` to stop. Only a first bootstrap opens the store with `create=True`. An owner whose swap was taken over stops with `DB_COMPACT_RECOVERED_ELSEWHERE`; a missing database refuses `CONTROLLER_DB_MISSING`. The idle reclaim runs with `cache_spill=0`, so a reader holding a shared lock makes it stop `busy` within its 250 ms wait instead of stalling it.
+  - The kept original is removed after the next successful batch start (the driver's journal reaches `observing`). Only originals with this tool's sidecar are removed; a `*.pre-vacuum-*` a manual runbook kept is left alone.
 
 - `install-build` verifies the candidate hash and the inert monitor INI (only Charts/Experts/StartUp monitor keys; account, tester and script directives refuse before MT5 closes), archives the old EX5 and identity files, closes only the selected idle demo terminal, copies the EX5, relaunches its monitor and reads back the physical hash, demo account, EA feedback and Algo-off state within 120 seconds. Repeating it with the same candidate and hash returns `already_installed` or completes an interrupted swap; an uncertain relaunch never dispatches a batch. It rebinds the session to the new receipt and keeps the session's lane (`authority_kind`): only `--enter-demo-lane` (the owner enrolling one of GOAT's own demo terminals) writes `demo_direct`, and it refuses together with the app's `--bundle-version`/`--agent-guide-path`, so an app update never changes a lane. Each `local_identity_verified` row in `actions.jsonl` records `authority_kind` and `previous_authority_kind`, and `enter_demo_lane: true` for an enrollment. It also rebinds the prepared `monitor-profile.json` to the new receipt (row `monitor_profile_rebound`, old receipt kept as `backups/monitor-profile-<sha256>.json`), but only for this session's own profile and an installation that differs only in what an update rewrites (EA hash, bundle version, guide path, install time). Before this, `monitor-launch` refused after every desktop update with `Monitor profile receipt belongs to another installation/session`. `studio monitor-launch` and `monitor-prepare` apply the same rebind from the retained `installation-*.json` backups, which heals a profile an earlier controller left behind. Anything else still refuses.
 - Credential recovery (goatai#1885, T2 2026-10-04). An EA whose GOAT sign-in was rejected (`License not valid for this MT5 account`) waits for a new connection and never loads its Studio UI, so `preflight` refuses with `Fresh EA owner feedback unavailable`. The refusal JSON then carries `"reason":"ea_feedback_unavailable"`, which is the only refusal the desktop app answers with recovery.
@@ -119,9 +127,10 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
   - Only if every attempt fails does the check fail, closed, as before.
   - Stalls cluster at an MT5 launch. After a seed, catch-up or hold-up member launch, GOAT waits up to 90 s for that MT5's identity. A stalled query, or a row without its path, means "not seen yet". A different PID, two processes or an MT5 exit refuse at once.
   - A row WMI lists without its path is read from the process itself (bound to the row by its creation time) before GOAT refuses "Unknown terminal executable". A process it can't open still refuses.
-- `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. The live driver watches for STOP every 0.5 s between its passes and, once a cancel of its attempt is out, re-reads every second, so a running batch settles in seconds (the EA answers a cancel in about 1.5 s); the readback itself is unchanged. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state.
+- `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. The live driver watches for STOP every 0.5 s between its passes and, once a cancel of its attempt is out, re-reads every second, so a running batch settles in seconds (the EA answers a cancel in about 1.5 s); the readback itself is unchanged. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state. Every result (`already_clear` or `verified`) says `clears: owner_stop_file_only` with a `note`: it deletes that one file and never a human cancel, TAKE CONTROL, an EA latch or an EA input refusal. `continue --clear-stop` returns the same `clears` (null when no STOP was set), the cleared row as `stop_cleared`, and `previous_attempt` (`attempt_id`, the EA's dispatch receipt `dispatch_status`, `ea_refusal`).
+- **The EA refused the batch before any test ran** (Banker 2026-10-13). The EA Prints why to the terminal's **Experts** log (`MQL5\Logs\<yyyymmdd>.log`), for example `GOAT optimization refused before passes: Native optimization flag/value/range differs: RSI_TF_`; MT5's tester journal (`Tester\logs`) says only `OnTesterInit failed. Optimization cannot be started.` `batch-status` (`studio.ea_refusal`), `batch-driver-status` (`driver.ea_refusal`), `research-status` (`activity.ea_refusal`) and the stall verdict (`stall.ea_refusal`) quote it as `{at, at_local, line, reason, kind, source, log, context, tester_journal, retry_unchanged_refuses, plain}`. It is read only from that attempt's launch intent up to its retained completion (`completion.native.observed_at`) or the next attempt on this terminal, whichever is first, only lines of the batch's own symbols, from the launch day and its next two days plus the newest three days, the last 2 MB of each day's log, at most 200 matching lines, with a share-friendly read-only open; a missing, locked or unreadable log gives `null`, never an error. It matches `GOAT optimization refused before passes:` (`kind: input_verification`), `Initialization Failed:` (`initialization_failed`), `Studio settings refused:` (`studio_settings_refused`), with the EA's `Optimization Initialization` line as `context`. **`continue` refuses** (nothing changed, the STOP included) when the last attempt's refusal is `input_verification` or `initialization_failed` (`EA_REFUSED_INPUTS`: rebuild the SET, prepare a new batch and start that) or its dispatch receipt is `HUMAN_CANCEL_RETAINED` (`HUMAN_CANCEL_RETAINED`: the person presses Start in the GOAT panel). A retry with the same inputs refuses again, and `clear-stop` cannot fix either.
 - Treat `start_uncertain` or `stop_unconfirmed` as "inspect the native state", never as completion. A `stop_unconfirmed` batch is settled with `batch-pause`, which adopts its outstanding stop.
-- **A stalled batch** (goatai#1885, Banker 2026-10-05). When no member has run for 15 minutes, the tester is idle and members are still queued, `research-status` reports `activity.status: stalled` and `batch-driver-status` reports `status: stalled`. Each carries a `stall` with a plain sentence and `fix.commands`. The usual cause: a member ended on the EA's tester-idle timeout while the tester was still busy, and the EA's deferred MT5 restart for the next member was never retried (`restart_pending` stays true). Neither the safe point nor `--immediate` lets `batch-pause` land while that restart is pending. Recover with `stop`, then `continue --batch-id <id> --clear-stop` (add `--include-failed` to retry the failed member). The cancel clears the EA's batch and its pending restart, finish keeps every finished member, and the remaining members run as `<id>-rN`. If `stop` answers `stop_unconfirmed`, run `batch-pause --batch-id <id>` (it adopts that stop), then `continue`.
+- **A stalled batch** (goatai#1885, Banker 2026-10-05). When no member has run for 15 minutes, the tester is idle and members are still queued, `research-status` reports `activity.status: stalled` and `batch-driver-status` reports `status: stalled`. Each carries a `stall` with a plain sentence and `fix.commands`. The usual cause: a member ended on the EA's tester-idle timeout while the tester was still busy, and the EA's deferred MT5 restart for the next member was never retried (`restart_pending` stays true). Neither the safe point nor `--immediate` lets `batch-pause` land while that restart is pending. Recover with `stop`, then `continue --batch-id <id> --clear-stop` (add `--include-failed` to retry the failed member). The cancel clears the EA's batch and its pending restart, finish keeps every finished member, and the remaining members run as `<id>-rN`. If `stop` answers `stop_unconfirmed`, run `batch-pause --batch-id <id>` (it adopts that stop), then `continue`. **Except when `stall.ea_refusal` is set:** the EA refused the batch before any test ran, the sentence quotes its reason, `fix.commands` holds only `stop`, and `continue` refuses; rebuild the SET instead (previous item).
 - **Driver CPU.** An observing pass (reconcile plus a finish attempt) can cost a minute of CPU on a large store. While nothing changes, the driver waits 30, 60, then 120 s between passes, and always at least twice the last pass, up to 300 s, so it uses at most about a third of one core. Any change returns it to 30 s. STOP, TAKE CONTROL, a published cancel and a new pause request still wake it within 0.5 s. The driver thread runs one step below the publishers (BelowNormal class, below-normal thread). The process class and MT5's priority are unchanged. `batch-driver-status` shows `observe` (`quiet_since_wall`, `quiet_passes`, `last_pass_seconds`, `next_wait_seconds`).
 - **Member switch hold** (goatai#1885, off by default). On a PC that runs the public experiment publishers, a seed, catch-up or hold-up driver can start each member's MT5 in Exp 02's quiet slot (seconds 35-55 of an odd minute, after its cycle ends), so the I/O-heavy member switch does not overlap a publisher cycle. Enable it with `GOAT_SWITCH_HOLD=exp02` (plus `GOAT_SWITCH_HOLD_STATE=<Exp 02 cycle-identities.jsonl>` to wait for the cycle's END row) or a `switch-hold.json` beside the demo agent state (`{"mode": "exp02", "state_path": "..."}`). A hold never lasts more than 90 s, a STOP, cancel or pause ends it at once, and unreadable publisher state means no hold. Each hold and release (`waited_ms`, `reason`, `source`) is journaled and kept on the member. **Wide slots** (goatai#2350, Claude-Mac 6094451003): add Exp 01's log as `exp01_state_path` (or `GOAT_SWITCH_HOLD_STATE_EXP01`; it needs `state_path`) and a member may start from :20 of an odd minute or :40 of an even one until :55, only once both publishers' newest cycles have their END row (`reason: exp01_exp02_cycles_ended`). Removing `exp01_state_path` is the rollback to the narrow slot. Native batches switch members inside the EA, so this does not hold them. Tuning: the slot closes at `QUIET_SLOT_CLOSE` in `studio_switch_hold.py` (default 55 s); if releases at :50-:55 line up with Exp 01 overruns, lower it to 45.
 - **`status_busy` on a lane driver's closing read** (goatai#1885) is not success: another GOAT operation held `native-gate\launch.lock` past the 1 s wait. Check who holds it (a stuck `seed-status`/`catchup-status`, a deploy), then read `<kind>-status` again for the real state.
@@ -283,7 +292,7 @@ safety rules, in `studio_batch_pause.py`:
 
 `batch-resume` refuses in plain words while the batch is still pausing, failed,
 finished, its monitor has a blocker, or an owner STOP is set (pass `--clear-stop`
-to lift a STOP written by this tool). Otherwise it re-verifies the paused result
+to lift a STOP written by this tool; it clears only that owner STOP file). Otherwise it re-verifies the paused result
 and token, refreshes `verified-build.json` after a terminal restart, accepts the
 protected peer when only its process instance restarted, closed or reopened (same
 reviewed executable bytes, data root and origin; anything else still needs
@@ -450,6 +459,73 @@ archive never deletes the only copy. No MT5 effect.
   of batch IDs or run folders, or `{"keep": [...]}`; it may be empty) and keeps every
   listed batch in place. The Exp 02
   refusal belongs to the desktop gate, as with `batch-pause-close`.
+
+#### Finished run folders (`evidence-archive --run-folders`, P-beta38-run-folder-archive)
+
+```powershell
+& $goat demo --installation $receipt evidence-archive --run-folders --archive-root 'E:\GOAT-Run-Archive'                                 # preview: eligible folders, bytes, target free space
+& $goat demo --installation $receipt evidence-archive --run-folders --archive-root 'E:\GOAT-Run-Archive' --keep-list '<keep.json>' --apply --confirm   # copy + verify + ARCHIVED.json; sources stay
+& $goat demo --installation $receipt evidence-archive --run-folders --complete --confirm --keep-list '<keep.json>'                        # separate step: re-judge each run, then remove its sources one verified file at a time
+& $goat demo --installation $receipt evidence-archive --run-folders --restore --run-id 'R<12 hex>' --confirm                               # bring a run back to C:, verified; retire its stub
+& $goat demo --installation $receipt evidence-archive --run-folders --repoint --archive-root 'H:\GOAT-Run-Archive' --confirm             # point the stubs at a verified clone of the archive
+```
+
+Moves finished native run folders (`Common Files\GOAT\R<12 hex>`) to
+`<archive root>\<run id>\` (`studio_run_folder_archive.py`); the folder keeps only
+`ARCHIVED.json` (archive folder, file count, bytes, manifest sha256, time, state
+`archived` -> `removing` -> `removed`), which every controller reader follows.
+
+- Eligible, from the controller's own state of this installation and every sibling
+  installation sharing these Common Files: a package names the folder (else
+  `not_attributable`, never moved); every owning batch is terminal and settled
+  (`ARCHIVE_NOT_FINISHED`); no EA `active_optimization_run.ini` names it
+  (`ARCHIVE_RUN_ACTIVE`); no driver journal is live, paused or pausing
+  (`ARCHIVE_DRIVER_LIVE`); not continue-able (never-run members, not closed, no
+  successor: `ARCHIVE_CONTINUABLE`) and no unfinished `-rN` successor
+  (`ARCHIVE_SUCCESSOR_ACTIVE`); no unfinished seed hunt, catch-up or hold-up test cites
+  a path inside it (`ARCHIVE_IN_FLIGHT_READER`; finished ones such as b43mig-1 are
+  listed in `cited_by`), no ACTIVE held-out lock freezes one of its SETs; not among the
+  newest `--keep-last` runs (default 10, `ARCHIVE_KEPT_RECENT`) or on `--keep-list`.
+- The desktop library copies a run's `deploy` units into its own library folder at
+  import, so `deploy` moves with the rest.
+- Target: absolute, existing, local NTFS/ReFS, writable, another volume than the run
+  folders (`ARCHIVE_ROOT_SAME_VOLUME`), and `--free-floor-gb` (default 50) still free
+  after the copy (`ARCHIVE_ROOT_FLOOR`). `--run-id` (repeatable) and `--max-runs` narrow
+  a pass.
+- `--apply` copies and sha256-verifies every file, checks the source and the archive
+  hold exactly the same files, writes `.goat-run-archive-manifest.json` in the archive
+  folder and then `ARCHIVED.json` in the source. A crash leaves the source intact; a
+  re-run resumes. `--complete` re-hashes every archived file from disk, checks every
+  source still hashes to the manifest, and only then removes the sources (only regular
+  files below that run folder). It holds its own lock (`ARCHIVE_ARCHIVER_BUSY`), not the
+  terminal lease, and re-checks each run right before copying or removing it.
+- `--complete` needs `--keep-list` and re-runs the full per-run plan right before each run
+  (anything that began to need it since `--apply` keeps it). Its sources go one at a time:
+  right before each removal the archive copy must still be the same file (size, mtime,
+  volume, file ID) and re-hash to the manifest (`ARCHIVE_VERIFY_FAILED` keeps that source
+  and every later one). A source that cannot be removed refuses `ARCHIVE_SOURCE_LOCKED`
+  naming it. Removable drives and RAM disks refuse `ARCHIVE_ROOT_REMOVABLE`; a link at or
+  above `<root>\<run id>` refuses `ARCHIVE_TARGET_LINK`; an archive copy that is its own
+  source (same file ID) refuses `ARCHIVE_TARGET_CONFLICT`.
+- `--restore --run-id R... --confirm` copies every file not local back (verified against
+  the manifest; a local file that differs refuses `ARCHIVE_RESTORE_CONFLICT`), then moves
+  the stub to `<controller state>\run-folder-archive\retired\` (audit record). It also
+  repairs a run whose `--complete` stopped on a lost copy. `--repoint --archive-root <new
+  root> --confirm` accepts `<new root>\<run id>` only when it passes every archive-root
+  check and its manifest and every file verify (`ARCHIVE_REPOINT_MISMATCH`), then rewrites
+  each stub (old one retired). A drive that only changed letter needs neither: readers
+  find it by its volume GUID. `--restore` refuses `ARCHIVE_SOURCE_FLOOR` unless C: keeps
+  `--source-floor-gb` (default 10) free after the copy.
+- `--reset-run R... --archive-root <root> --confirm` sets a stale partial archive of a run
+  without a stub aside to `<root>\.reset\` (nothing deleted), but refuses
+  `ARCHIVE_RESET_REFUSED` whenever that archive holds a manifest whose files are not all
+  in the source as archived (it may be the only copy). `--adopt --run-id R...
+  --archive-root <root> --confirm` rebuilds a lost `ARCHIVED.json` from the verified
+  archive (every file re-hashed, link/volume/same-file checks; a differing local file
+  refuses `ARCHIVE_ADOPT_CONFLICT`); the state follows what is still local.
+- `--complete` holds each verified archive copy open (`CreateFileW`, `FILE_SHARE_READ`
+  only) until its source unlink returns, so it cannot be deleted, renamed or written in
+  between.
 
 ### Protected peer restarts
 
@@ -1043,14 +1119,14 @@ such SETs on purpose, on the installed newer build, as new evidence. It uses the
 Banker batches, demo Algo research and seed hunts derive every date from O and the
 export Friday (`goat-oos-windows-v1`; full rule, rounding and worked example:
 [docs/operations/OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md)).
-O = SAMPLE + FWD in whole weeks (a month = 13/3 weeks). BOOS = 1/2 O before SAMPLE,
+O = SAMPLE + FWD in whole weeks (a month = 13/3 weeks). BOOS = 1/3 O before SAMPLE,
 SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
 `auto`, the latest closed Friday). BOOS, FWD and FOOS round up; SAMPLE takes the rest.
 
 - Plan: add `"oos_windows":{"optimization_months":12}` (or `optimization_weeks`,
   optional `export_friday`) to a batch or seed plan and leave the dates out; dates
   you do give must equal the formula. O = 12 months at export Friday 2026-10-02 gives
-  `BackOOSDate=2025.01.04`, `FromDate=2025.07.05`, `ForwardDate=2026.02.28`,
+  `BackOOSDate=2025.03.01`, `FromDate=2025.07.05`, `ForwardDate=2026.02.28`,
   `ToDate=2026.07.04`, `EvidenceEnd=2026.07.04`; FOOS is 2026-07-04 to 2026-10-02.
   Seed jobs read SAMPLE only (`ToDate` = `ForwardDate`, `ForwardMode=0`).
 - FOOS is held out with existing EA inputs: the batch export stops at the optimization
@@ -1062,7 +1138,9 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   (`not_applicable` for non-formula exports). Catch-up weeks after the export\r
   Friday count toward FOOS.
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
-  shorten a window or change O to reach it), then PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD.
+  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD;
+  BOOS is lenient (fails only on that DD bar or a loss worse than the in-sample p10 of rolling
+  SAMPLE windows of its own length). Records stamp `oosFormula`; 1/2 O batches keep theirs.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
   `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:
   the EA's export trim partly selects on BOOS, so show "BOOS: partial" and lead with FOOS.

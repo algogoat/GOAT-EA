@@ -466,7 +466,8 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                     # Only this row changes; any earlier settled rows stay exactly as they were.
                     jobs = [current_job if row['job_id'] == job_id else row for row in state['queue']]
                     binding = packed(dict(terminal_id=c.terminal,run_id=c.run))
-                    c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(jobs),binding))
+                    from studio_db_maintenance import write_queue
+                    write_queue(c.store.db,binding,packed(jobs))
                     c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
                 elif current_job.get('completion') != result:
                     raise ValueError('Controller completion changed')

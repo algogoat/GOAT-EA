@@ -3,7 +3,8 @@
   "source_of_truth": "GOAT-EA controller/studio_oos_windows.py (Claude-Mac ruling, algogoat/goatai#1885 comment 6005864453)",
   "sync": "One file, two byte-identical copies: GOAT-EA controller/fixtures/oos-holdout-gate-cases.json and goatai docs/fixtures/oos-holdout-gate-cases.json. Change it in GOAT-EA first (controller/test_studio_oos_windows.py runs every case and checks rules against the module constants), then copy the same bytes to goatai (its desktop gate test runs every case). Never edit one copy alone; a new case is added to both in the same pair of PRs.",
   "rules": {
-    "fractions_of_o": {"boos": "1/2", "sample": "2/3", "fwd": "1/3", "foos": "1/4"},
+    "fractions_of_o": {"boos": "1/3", "sample": "2/3", "fwd": "1/3", "foos": "1/4"},
+    "boos_gate": "Lenient 'not broken' gate (Vince, locked 2026-10-11): with the 30-trade floor met, BOOS fails only on max_drawdown above 1.5 x in-sample, or on a loss (pl < 0) below in_sample_p10_pl. No PF or profit bar for BOOS; FOOS keeps PF >= 1.0 and the DD bar.",
     "min_trades": 30,
     "min_pf": 1.0,
     "max_dd_multiple_of_in_sample": 1.5,
@@ -16,6 +17,7 @@
     "pf": "Positive deal results / |non-positive deal results| of those deals. PF >= 1.0 is exactly pl >= 0; a case may give pf, pl or both (consistent).",
     "max_drawdown": "Equity (not balance) drawdown in money: deepest fall of the sampled equity below its running peak, the peak starting at the window's opening equity. Same definition for SAMPLE, BOOS and FOOS.",
     "in_sample_max_drawdown": "max_drawdown of SAMPLE. 0 or null leaves no limit (not_measured).",
+    "in_sample_p10_pl": "The 10th percentile (linear interpolation, numpy 'linear' / Excel PERCENTILE.INC) of the pl of every window of BOOS's own length inside SAMPLE, starting at SAMPLE's first day and stepping one week. Null: a BOOS loss cannot be judged (not_measured).",
     "complete": "false while the window has not been tested through its last day (FOOS: the export Friday); null/absent = complete.",
     "present": "false when the set has no such window; a null window means the same."
   },
@@ -28,7 +30,7 @@
     {"id": "pf_below_one", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": -10, "pf": 0.95, "max_drawdown": 50}, "expected": "fail"},
     {"id": "pf_exactly_one", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": 0, "pf": 1.0, "max_drawdown": 50}, "expected": "pass"},
     {"id": "pl_only_zero_passes", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": 0, "max_drawdown": 50}, "expected": "pass"},
-    {"id": "pl_only_small_loss_fails", "window": "boos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": -0.01, "max_drawdown": 50}, "expected": "fail"},
+    {"id": "pl_only_small_loss_fails", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": -0.01, "max_drawdown": 50}, "expected": "fail"},
     {"id": "no_losing_trades", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 31, "pl": 300, "pf": null, "pf_note": "no losing deals", "max_drawdown": 10}, "expected": "pass"},
     {"id": "dd_exactly_at_the_bar", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": 50, "pf": 1.2, "max_drawdown": 150}, "expected": "pass"},
     {"id": "dd_just_above_the_bar", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": 50, "pf": 1.2, "max_drawdown": 150.01}, "expected": "fail"},
@@ -39,16 +41,24 @@
     {"id": "dd_not_measured_losing", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": -50, "pf": 0.8, "max_drawdown": null}, "expected": "fail"},
     {"id": "no_in_sample_drawdown", "window": "foos", "in_sample_max_drawdown": null, "input": {"trades": 40, "pl": 50, "pf": 1.2, "max_drawdown": 50}, "expected": "not_measured"},
     {"id": "in_sample_drawdown_zero", "window": "foos", "in_sample_max_drawdown": 0, "input": {"trades": 40, "pl": 50, "pf": 1.2, "max_drawdown": 50}, "expected": "not_measured"},
-    {"id": "loss_without_in_sample_drawdown", "window": "boos", "in_sample_max_drawdown": null, "input": {"trades": 40, "pl": -5, "pf": 0.9, "max_drawdown": 50}, "expected": "fail"},
+    {"id": "loss_without_in_sample_drawdown", "window": "foos", "in_sample_max_drawdown": null, "input": {"trades": 40, "pl": -5, "pf": 0.9, "max_drawdown": 50}, "expected": "fail"},
     {"id": "pf_not_measured", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 40, "pl": null, "pf": null, "max_drawdown": 50}, "expected": "not_measured"},
     {"id": "pf_and_dd_fail_together", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 45, "pl": -20, "pf": 0.9, "max_drawdown": 300}, "expected": "fail"},
     {"id": "window_absent", "window": "foos", "in_sample_max_drawdown": 100, "input": {"present": false}, "expected": "no_data"},
     {"id": "trade_count_unknown", "window": "boos", "in_sample_max_drawdown": 100, "input": {"trades": null, "pl": 50, "max_drawdown": 50}, "expected": "no_data"},
-    {"id": "foos_not_complete_yet", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 50, "pl": 50, "pf": 1.2, "max_drawdown": 50, "complete": false}, "expected": "not_eligible_yet"}
+    {"id": "foos_not_complete_yet", "window": "foos", "in_sample_max_drawdown": 100, "input": {"trades": 50, "pl": 50, "pf": 1.2, "max_drawdown": 50, "complete": false}, "expected": "not_eligible_yet"},
+    {"id": "boos_loss_within_in_sample_p10", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": -80, "input": {"trades": 40, "pl": -50, "pf": 0.7, "max_drawdown": 120}, "expected": "pass"},
+    {"id": "boos_loss_at_in_sample_p10", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": -80, "input": {"trades": 40, "pl": -80, "pf": 0.6, "max_drawdown": 120}, "expected": "pass"},
+    {"id": "boos_loss_worse_than_in_sample_p10", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": -80, "input": {"trades": 40, "pl": -80.01, "pf": 0.6, "max_drawdown": 120}, "expected": "fail"},
+    {"id": "boos_any_loss_fails_when_every_in_sample_window_made_money", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": 25, "input": {"trades": 40, "pl": -0.01, "max_drawdown": 50}, "expected": "fail"},
+    {"id": "boos_profit_needs_no_p10", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": null, "input": {"trades": 40, "pl": 5, "pf": 1.05, "max_drawdown": 50}, "expected": "pass"},
+    {"id": "boos_loss_without_p10", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": null, "input": {"trades": 40, "pl": -5, "pf": 0.9, "max_drawdown": 50}, "expected": "not_measured"},
+    {"id": "boos_loss_within_p10_but_dd_above_the_bar", "window": "boos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": -80, "input": {"trades": 40, "pl": -50, "pf": 0.7, "max_drawdown": 150.01}, "expected": "fail"}
   ],
   "set_cases": [
     {"id": "both_pass", "in_sample_max_drawdown": 100, "boos": {"trades": 30, "pl": 10, "max_drawdown": 100}, "foos": {"trades": 30, "pl": 10, "max_drawdown": 100}, "expected": "pass"},
-    {"id": "fail_outranks_a_thin_foos", "in_sample_max_drawdown": 100, "boos": {"trades": 30, "pl": -10, "max_drawdown": 100}, "foos": {"trades": 3, "pl": 10, "max_drawdown": 100}, "expected": "fail"},
+    {"id": "fail_outranks_a_thin_foos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": -5, "boos": {"trades": 30, "pl": -10, "max_drawdown": 100}, "foos": {"trades": 3, "pl": 10, "max_drawdown": 100}, "expected": "fail"},
+    {"id": "boos_loss_within_p10_passes_with_foos", "in_sample_max_drawdown": 100, "in_sample_p10_pl": -20, "boos": {"trades": 30, "pl": -10, "max_drawdown": 100}, "foos": {"trades": 30, "pl": 10, "max_drawdown": 100}, "expected": "pass"},
     {"id": "fewer_than_30_foos_trades", "in_sample_max_drawdown": 100, "boos": {"trades": 30, "pl": 10, "max_drawdown": 100}, "foos": {"trades": 29, "pl": 10, "max_drawdown": 100}, "expected": "not_eligible_yet"},
     {"id": "foos_drawdown_unchecked", "in_sample_max_drawdown": 100, "boos": {"trades": 30, "pl": 10, "max_drawdown": 100}, "foos": {"trades": 30, "pl": 10, "max_drawdown": null}, "expected": "not_measured"},
     {"id": "no_boos_window", "in_sample_max_drawdown": 100, "boos": null, "foos": {"trades": 30, "pl": 10, "max_drawdown": 100}, "expected": "no_data"},
@@ -57,10 +67,10 @@
     {"id": "not_eligible_outranks_not_measured", "in_sample_max_drawdown": 100, "boos": {"trades": 30, "pl": 10, "max_drawdown": null}, "foos": {"trades": 12, "pl": 10, "max_drawdown": 100}, "expected": "not_eligible_yet"}
   ],
   "date_cases": [
-    {"optimization_months": 3, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2026.04.18", "FromDate": "2026.06.06", "ForwardDate": "2026.08.01", "ToDate": "2026.09.05", "optimization_end": "2026-09-04", "foos": ["2026-09-05", "2026-10-02"]}},
-    {"optimization_months": 6, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2025.11.15", "FromDate": "2026.02.14", "ForwardDate": "2026.06.13", "ToDate": "2026.08.15", "optimization_end": "2026-08-14", "foos": ["2026-08-15", "2026-10-02"]}},
-    {"optimization_months": 12, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2025.01.04", "FromDate": "2025.07.05", "ForwardDate": "2026.02.28", "ToDate": "2026.07.04", "optimization_end": "2026-07-03", "foos": ["2026-07-04", "2026-10-02"]}},
-    {"optimization_months": 24, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2023.04.08", "FromDate": "2024.04.06", "ForwardDate": "2025.08.02", "ToDate": "2026.04.04", "optimization_end": "2026-04-03", "foos": ["2026-04-04", "2026-10-02"]}},
-    {"optimization_months": 12, "export_friday": "2024-03-01", "expected": {"BackOOSDate": "2022.06.04", "FromDate": "2022.12.03", "ForwardDate": "2023.07.29", "ToDate": "2023.12.02", "optimization_end": "2023-12-01", "foos": ["2023-12-02", "2024-03-01"]}}
+    {"optimization_months": 3, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2026.05.02", "FromDate": "2026.06.06", "ForwardDate": "2026.08.01", "ToDate": "2026.09.05", "optimization_end": "2026-09-04", "foos": ["2026-09-05", "2026-10-02"]}},
+    {"optimization_months": 6, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2025.12.13", "FromDate": "2026.02.14", "ForwardDate": "2026.06.13", "ToDate": "2026.08.15", "optimization_end": "2026-08-14", "foos": ["2026-08-15", "2026-10-02"]}},
+    {"optimization_months": 12, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2025.03.01", "FromDate": "2025.07.05", "ForwardDate": "2026.02.28", "ToDate": "2026.07.04", "optimization_end": "2026-07-03", "foos": ["2026-07-04", "2026-10-02"]}},
+    {"optimization_months": 24, "export_friday": "2026-10-02", "expected": {"BackOOSDate": "2023.08.05", "FromDate": "2024.04.06", "ForwardDate": "2025.08.02", "ToDate": "2026.04.04", "optimization_end": "2026-04-03", "foos": ["2026-04-04", "2026-10-02"]}},
+    {"optimization_months": 12, "export_friday": "2024-03-01", "expected": {"BackOOSDate": "2022.07.30", "FromDate": "2022.12.03", "ForwardDate": "2023.07.29", "ToDate": "2023.12.02", "optimization_end": "2023-12-01", "foos": ["2023-12-02", "2024-03-01"]}}
   ]
 }

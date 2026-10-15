@@ -85,6 +85,9 @@ def reconcile(store, terminal_id, run_id, job_id, attempt_id, *, revision,
                                               previous=current.get('native_evidence_log'))
         current.update(status=status,native_evidence_sha256=evidence_hash,native_observation=evidence)
         binding=packed(dict(terminal_id=terminal_id,run_id=run_id))
-        store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))
+        # The member-boundary write: delete-then-insert, so the new queue copy reuses the old one's pages
+        # instead of growing the file by a whole queue (studio_db_maintenance.write_queue).
+        from studio_db_maintenance import write_queue
+        write_queue(store.db,binding,packed(state['queue']))
         store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
         return dict(changed=True,status=status,revision=state['revision']+1,launch_permitted=False)

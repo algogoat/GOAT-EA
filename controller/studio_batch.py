@@ -242,6 +242,12 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
         _, _, manifest = _verify_package(controller, existing)
         return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
+    # Tester-only EA init refusals (TESTER_INIT_REFUSED): valid live, but every pass would end at OnInit. Checked
+    # for new staging only, so an already-queued identical batch is still reused as before.
+    from studio_ea_init_rules import check_tester_init
+    for index, (member, (source, _, _)) in enumerate(zip(raw_members, retained), 1):
+        check_tester_init(member['strategy']['values'], controller.schema,
+                          where='batch member %d (%s): ' % (index, source))
     if scope is not None and snapshot['queue']:
         from studio_research_retry import predecessor
         # Read-only preflight before staging; store rechecks under its gate/CAS.
@@ -398,6 +404,10 @@ def batch_status(controller, batch_id):
         # The EA journal says why the native queue ended in Error (read-only quote).
         no_edge = [item.get('index') for item in (job.get('completion') or {}).get('research_outcomes') or [] if isinstance(item, dict)]
         extra['native_error_evidence'] = for_job(controller, job, observed, no_edge)
+    # The EA's own refusal of this attempt, quoted from the terminal's Experts log (never the tester journal,
+    # which says only "OnTesterInit failed"): null when none, the log is missing or unreadable.
+    from studio_ea_refusal import for_controller
+    extra['ea_refusal'] = for_controller(controller, batch_id) if 'launch_intent' in job else None
     evidence = oos = None
     plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
     if plan_path.is_file():
@@ -409,6 +419,7 @@ def batch_status(controller, batch_id):
     if isinstance(oos, dict):
         # Formula batches only (goat-oos-windows-v1): every window and the FOOS replay to run after the batch.
         extra['oos_windows'] = dict(o_weeks=oos.get('o_weeks'), export_friday=oos.get('export_friday'),
+                                    oosFormula=oos.get('oosFormula', 'boos-1/2'),
                                     optimization_end=oos.get('optimization_end'),
                                     windows={key: dict(first_day=(oos.get(key) or {}).get('first_day'),
                                                        last_day=(oos.get(key) or {}).get('last_day'),
@@ -595,8 +606,10 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
         remaining['evidence_end'] = recorded['target']
     oos_record = (source_plan.get('native_batch') or {}).get('oos_windows')
     if isinstance(oos_record, dict):
-        # Same O and the same resolved export Friday: the successor's windows are the original's, day for day.
-        remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])
+        # Same O, the same resolved export Friday and the same stamped formula (a BOOS 1/2 O batch stays 1/2 O):
+        # the successor's windows are the original's, day for day.
+        from studio_oos_windows import successor_request
+        remaining['oos_windows'] = successor_request(oos_record)
     write_json(plan_path, remaining)
     result = prepare_batch(controller, batch_id, plan_path, now=now)
     result['news_file'] = save_record(controller, news_record)

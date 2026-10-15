@@ -82,7 +82,8 @@ def replace_receipt(c, review_id, candidate, expected_sha256):
         # Serialize external legacy writers through validation and publication.
         for view in sorted(plan['after_ownership'],key=lambda x:x['path']):
             if not Path(view['path']).is_relative_to(root):
-                db=stack.enter_context(closing(sqlite3.connect(view['path'],timeout=1,isolation_level=None)))
+                from studio_db_maintenance import connect_existing   # mode=rw: never creates a missing database
+                db=stack.enter_context(closing(connect_existing(view['path'],timeout=1)))
                 db.execute('BEGIN IMMEDIATE')
         target=safe_path(root/'installation.json');journal=folder/'receipt-upgrade.json'
         expected=dict(schema_version=1,review_id=review_id,previous_sha256=expected_sha256,candidate_sha256=desired_digest,

@@ -446,7 +446,8 @@ def apply(c, review_id):
         for gate in plan['snapshot']['controller']['gates']: stack.enter_context(exclusive_gate(gate))
         # Prevent legacy queue/grant changes across inspection, close and retirement,
         # even for writers which do not cooperate with the native file gate.
-        legacy=stack.enter_context(closing(sqlite3.connect(context['spec']['binding']['controller_database'],timeout=1,isolation_level=None)))
+        from studio_db_maintenance import connect_existing   # mode=rw: never creates a missing database
+        legacy=stack.enter_context(closing(connect_existing(context['spec']['binding']['controller_database'],timeout=1)))
         legacy.execute('BEGIN IMMEDIATE')
         if not (target/'close-issued.json').exists():
             if time.time()>plan['expires_at']: raise ValueError('Retirement review expired')

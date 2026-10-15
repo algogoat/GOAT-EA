@@ -29,16 +29,21 @@ import base64
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PureWindowsPath
 import re
 import subprocess
 import time
 
-from studio_agent_mailbox import identity, portfolio_register, portfolio_request, portfolio_root, read_bounded, sharing_retry
-from studio_agent_setup import PROTECTED_ACCOUNTS, broker_proof, close_terminal, demo_terminal_lock, require_unprotected
+from studio_agent_mailbox import (REQUEST_STILL_LIVE_MESSAGE, UNRESOLVED_MUTATION_MESSAGE, RequestStillLive, UnresolvedMutation,
+                                  identity, portfolio_register, portfolio_request, portfolio_root, read_bounded, sharing_retry,
+                                  validate_portfolio_registration, validate_portfolio_request)
+from studio_agent_setup import (PROTECTED_ACCOUNTS, _cut, _seconds, broker_proof, close_terminal, demo_terminal_lock,
+                                require_unprotected)
 from studio_bridge import write_json
 import studio_deploy_profile as deploy_profile
+import studio_deploy_timing as deploy_timing
 from studio_installation import read_json
 from studio_launch_telemetry import SCHEMA as TELEMETRY_SCHEMA, launch_record, utc_now
 from studio_native_gate import exclusive_gate
@@ -63,6 +68,17 @@ LINK_REQUEST_SECONDS = 20
 LINK_POLL_SECONDS = 2
 # An unanswered request stays live until its expiry (wait + 5 s) and is archived 5 s after that.
 LINK_RETRY_AFTER_TIMEOUT_SECONDS = 11
+# studio_agent_setup.close_terminal's own wait_seconds default, and the resume re-check's bound for seeing the journaled
+# MT5 process. With the next six they are the built-in `desktop` timing profile (studio_deploy_timing.PROFILES), which a
+# test pins equal: no --timing-profile means exactly these values (remote deploy v0, goatai docs/remote-deploy-design.md).
+CLOSE_WAIT_SECONDS = 30
+LAUNCH_OBSERVE_SECONDS = 30
+# While a retained link request's receipt says `started`, it is re-read (read-only) this often until the window ends.
+LINK_RACE_POLL_SECONDS = 1
+# Phases after which MT5 may be running this deployment's profile: a crash there unwinds (D3).
+LAUNCHED_PHASES = ('launch_intent', 'launched', 'registered', 'dashboard_ready', 'attached', 'policy_applied')
+# A resume from one of these re-checks the terminal, the bytes and the registration before going on (T5, T6).
+RESUME_CHECKED_PHASES = ('launched', 'registered', 'dashboard_ready')
 CHILD_NOT_STARTED = 'child_not_started'
 CHILD_NOT_LINKED = 'child_not_linked'
 # 3: additive only. allow_live_trading_default and readiness_blockers (D2); every version 2 key is unchanged.
@@ -162,8 +178,14 @@ def check_member_values(controller, name, raw):
         raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
 
 
-def validate_plan(controller, session, plan):
-    if type(plan) is not dict or set(plan) != {'schema', 'deploymentId', 'portfolio', 'buildId', 'accountLogin', 'policy', 'members'}:
+PLAN_KEYS = frozenset(('schema', 'deploymentId', 'portfolio', 'buildId', 'accountLogin', 'policy', 'members'))
+# Optional (plug-and-play broker-fit, controller/contracts/broker-fit.md): each member's contentBase64 then holds the
+# REFERENCE SET and the controller itself writes the scaled SET from the reviewed edits. A plan without it is unchanged.
+BROKER_FIT_KEY = 'brokerFit'
+
+
+def validate_plan(controller, session, plan, *, manifest_sha256=None):
+    if type(plan) is not dict or set(plan) not in (PLAN_KEYS, PLAN_KEYS | {BROKER_FIT_KEY}):
         raise ValueError('Invalid demo deploy plan')
     if plan['schema'] != PLAN_SCHEMA or not isinstance(plan['deploymentId'], str) or not DEPLOYMENT_ID.fullmatch(plan['deploymentId']):
         raise ValueError('Invalid demo deploy identity')
@@ -184,6 +206,14 @@ def validate_plan(controller, session, plan):
     members = plan['members']
     if type(members) is not list or not 1 <= len(members) <= 100:
         raise ValueError('A demo portfolio needs 1 to 100 members')
+    fit = None
+    if BROKER_FIT_KEY in plan:
+        import studio_broker_fit as broker_fit
+        # The manifest is the one plan value every broker-fit value is re-derived from: it must be the published one.
+        # MANIFEST_UNVERIFIED unless --manifest-sha256 is given and equals its JCS sha256 (round 4 R1); no path skips it.
+        block = plan[BROKER_FIT_KEY]
+        broker_fit.verify_manifest(block.get('manifest') if type(block) is dict else None, manifest_sha256)
+        fit = broker_fit.deploy_entries(block, members)
     expected_ea = 'GOAT V' + controller.install['ea_version']
     names, prepared = set(), []
     for index, member in enumerate(members):
@@ -210,6 +240,14 @@ def validate_plan(controller, session, plan):
             raise ValueError('Invalid SET bytes: ' + name) from exc
         if not 0 < len(raw) <= 2_000_000 or hashlib.sha256(raw).hexdigest() != member['sha256']:
             raise ValueError('SET bytes differ from the reviewed SHA-256: ' + name)
+        digest = member['sha256']
+        if fit is not None:
+            # The scaled SET is written here and only here, from the reference bytes and the reviewed edits.
+            try:
+                raw = broker_fit.deployed_bytes(raw, fit[index])
+            except (UnicodeError, ValueError) as exc:
+                raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
+            digest = fit[index]['setSha256Deployed']
         check_member_values(controller, name, raw)
         try:
             # The exact chart the profile will hold: period, line, character and nonce rules (studio_deploy_profile).
@@ -221,7 +259,7 @@ def validate_plan(controller, session, plan):
             raise Refusal(str(exc) + ' Nothing was written or launched.', exc.code, **exc.fields) from exc
         except ValueError as exc:
             raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
-        prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=member['sha256'], raw=raw))
+        prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=digest, raw=raw))
     # Adoption must never be ambiguous: two members that would start identical charts are refused.
     deploy_profile.refuse_duplicates(prepared, policy)
     return prepared
@@ -552,12 +590,54 @@ def current_deployment(controller):
     return public(live[0])
 
 
+# ------------------------------------------------------- timing profile (remote deploy v0)
+
+def default_timing():
+    """No --timing-profile: today's module constants, read at call time. Their values are the built-in `desktop`
+    profile's (a test pins them equal), so a deploy without a profile behaves exactly as before."""
+    return dict(schema=deploy_timing.SCHEMA, id=deploy_timing.DEFAULT_ID, closeWaitSeconds=CLOSE_WAIT_SECONDS,
+                launchObserveSeconds=LAUNCH_OBSERVE_SECONDS, dashboardWaitSeconds=DASHBOARD_WAIT_SECONDS,
+                childStartWaitSeconds=CHILD_START_WAIT_SECONDS, linkRequestSeconds=LINK_REQUEST_SECONDS,
+                ackWaitSeconds=ACK_WAIT_SECONDS, auditWaitSeconds=AUDIT_WAIT_SECONDS, evidence=None)
+
+
+def resolve_timing(timing, source=None):
+    """(effective profile, journal record). A given profile is validated like the reference (goat-deploy-timing-v1);
+    None is the module constants. `source` is where the CLI found it (builtin, or file:<sha256 of its bytes>)."""
+    if timing is None:
+        profile = default_timing()
+        return profile, deploy_timing.record(profile, source='default')
+    deploy_timing.validate_profile(timing)
+    return timing, deploy_timing.record(timing, source=source or 'parameter')
+
+
+def _closer(close, profile):
+    """The close a deploy uses. An injected close (fixtures, adapters) keeps today's call shape and owns its wait;
+    otherwise close_terminal, given the profile's closeWaitSeconds only when it differs from close_terminal's own
+    default, so the desktop call is unchanged (T4: load() never passed a wait before)."""
+    if close is not None:
+        return close
+    wait = profile['closeWaitSeconds']
+    if wait == CLOSE_WAIT_SECONDS:
+        return close_terminal
+    return lambda controller, attempt_id, **options: close_terminal(controller, attempt_id, wait_seconds=wait, **options)
+
+
 def _poll_until(controller, ident, action, accept, *, seconds, step_timeout=20, request=None, sleep=time.sleep, clock=time.monotonic):
     request = request or portfolio_request
     deadline = clock() + seconds
     last = None
     while clock() < deadline:
-        last = request(controller, ident, action, timeout=min(step_timeout, max(1, int(deadline - clock()))))
+        try:
+            last = request(controller, ident, action, timeout=min(step_timeout, max(1, int(deadline - clock()))))
+        except ValueError as exc:
+            if not _is_request_still_live(exc):
+                raise
+            # Another caller's request (a concurrent deploy-status) is still live: pending, as the link step treats it
+            # (Claude-Mac 6161835586 item 2). Asked again after it can have been answered; at the deadline it is a timeout.
+            last = dict(result='receipt_timeout', request_still_live=True)
+            sleep(LINK_POLL_SECONDS)
+            continue
         if accept(last):
             return last
         if last['result'] not in ('receipt_timeout', 'observed', 'child_attached'):
@@ -566,6 +646,11 @@ def _poll_until(controller, ident, action, accept, *, seconds, step_timeout=20, 
         # be refused ("still live"). A slow dashboard start-up (every chart of the profile loads at once) is normal.
         sleep(LINK_RETRY_AFTER_TIMEOUT_SECONDS if last['result'] == 'receipt_timeout' else 1)
     return last
+
+
+def _timed_out(last):
+    """_poll_until ended at its deadline (no answer, or only answers it keeps polling through), not on a refusal."""
+    return last is None or last['result'] in ('receipt_timeout', 'observed', 'child_attached')
 
 
 def _verify_ready(audit, registration, *, allow_live_trading=None):
@@ -616,6 +701,19 @@ def _launch_telemetry(arguments, options, previous, pre_launch_check, launch_sta
         return dict(schema=TELEMETRY_SCHEMA, error=type(exc).__name__ + ': ' + str(exc)[:200])
 
 
+def _launched_identity(process, pid):
+    """The MT5 just launched as (pid, image, creation time), which a resume re-checks (GOAT-EA#229 review item 3). Never
+    raises: MT5 is already started, so the 'launched' phase must be written whatever the inventory answers. An MT5 not
+    listed with that pid keeps no creation time, and a resume then refuses rather than guess."""
+    try:
+        running = process.inspect()
+    except Exception:
+        running = None
+    if isinstance(running, dict) and running.get('pid') == pid:
+        return {key: running.get(key) for key in ('pid', 'executable', 'created_utc')}
+    return dict(pid=pid, executable=None, created_utc=None)
+
+
 def _row_linked(row):
     return bool(row['linkedFresh']) and row['chartId'] > 0 and row['magic'] > 0
 
@@ -641,30 +739,88 @@ def rows_failed(members, rows):
     return failed
 
 
-def _link_children(controller, ident, *, request, sleep, clock):
+def _is_unresolved_mutation(exc):
+    return isinstance(exc, UnresolvedMutation) or str(exc).startswith(UNRESOLVED_MUTATION_MESSAGE.split(';')[0])
+
+
+def _is_request_still_live(exc):
+    return isinstance(exc, RequestStillLive) or str(exc).startswith(REQUEST_STILL_LIVE_MESSAGE.split(';')[0])
+
+
+def _retained_started(controller, read):
+    """Read-only: whether the retained portfolio request's receipt still says `started`. Never writes, locks or
+    archives. A PermissionError (the EA holds the file without read sharing, T9) means "still pending"; anything else
+    unreadable means nothing is retained, and the next request decides."""
+    root = portfolio_root(controller)
+    try:
+        pending, _ = read(root / 'request.json')
+        validate_portfolio_request(pending)
+        receipt, _ = read(root / (pending['id'] + '.json'), 131072)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return receipt.get('result') == 'started'
+
+
+def _link_children(controller, ident, *, request, sleep, clock, wait_seconds=None, request_seconds=None, read=read_bounded):
     """Ask the dashboard to adopt the children MT5 started from the profile, until all are linked or the
-    start-up window ends. Every receipt must still show Algo Trading off with no positions or orders."""
-    deadline = clock() + CHILD_START_WAIT_SECONDS
+    start-up window ends. Every receipt must still show Algo Trading off with no positions or orders.
+
+    The link race (remote deploy v0, traps T2 and T9; the Exp 03 prototype's link_race_request moved in): a cold
+    36-chart dashboard answers `started` while it is still adopting, and the next request then finds that retained
+    receipt and is refused (UnresolvedMutation). That is pending, not a refusal: the retained receipt is re-read
+    read-only until it resolves or the window ends. A PermissionError on a mailbox file, and the still-live request a
+    locked read can leave behind, are pending too. Every other refusal still ends the link at once."""
+    wait_seconds = CHILD_START_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    request_seconds = LINK_REQUEST_SECONDS if request_seconds is None else request_seconds
+    deadline = clock() + wait_seconds
     last, rows = None, None
+    race = dict(started_waits=0, locked_reads=0, live_waits=0)
+    all_started = None  # the clock() at the first receipt in which every row has a started chart (observed child start)
+
+    def ended(outcome, result, **extra):
+        return dict(outcome=outcome, result=result, rows=rows, **extra, **({'race': race} if any(race.values()) else {}),
+                    **({'all_started_at': all_started} if all_started is not None else {}))
+
     while clock() < deadline:
         try:
-            receipt = request(controller, ident, 'link_children', timeout=max(1, min(LINK_REQUEST_SECONDS, int(deadline - clock()))))
+            receipt = request(controller, ident, 'link_children', timeout=max(1, min(request_seconds, int(deadline - clock()))))
+        except PermissionError:
+            race['locked_reads'] += 1
+            last = 'mailbox_locked'
+            sleep(LINK_POLL_SECONDS)
+            continue
         except ValueError as exc:
-            return dict(outcome='refused', result=str(exc)[:200], rows=rows)
+            if _is_unresolved_mutation(exc):
+                race['started_waits'] += 1
+                last = 'started'
+                sleep(LINK_RACE_POLL_SECONDS)  # never a busy loop, even when the retained receipt cannot be read
+                while _retained_started(controller, read) and clock() < deadline:
+                    sleep(LINK_RACE_POLL_SECONDS)
+                continue
+            if _is_request_still_live(exc):
+                race['live_waits'] += 1
+                last = 'receipt_timeout'
+                sleep(LINK_POLL_SECONDS)
+                continue
+            return ended('refused', str(exc)[:200])
         last = receipt['result']
         if last in ('children_linked', 'children_pending'):
             rows = receipt['rows']
+            if all_started is None and rows and all(r['chartId'] > 0 and r['magic'] > 0 for r in rows):
+                all_started = clock()
             if receipt['tradingAllowed'] or receipt['positions'] or receipt['orders'] or not receipt['connected']:
-                return dict(outcome='not_inert', result=last, rows=rows)
+                return ended('not_inert', last)
             if last == 'children_linked' and rows_linked(rows):
-                return dict(outcome='linked', result=last, rows=rows, receipt=receipt)
+                return ended('linked', last, receipt=receipt)
             sleep(LINK_POLL_SECONDS)
         elif last == 'receipt_timeout':
             sleep(LINK_RETRY_AFTER_TIMEOUT_SECONDS)
         else:
             # rejected_not_inert, rejected_portfolio_mismatch, rejected_ai_policy_mismatch or anything unexpected.
-            return dict(outcome='not_inert' if last == 'rejected_not_inert' else 'refused', result=last, rows=rows)
-    return dict(outcome='timeout', result=last or 'receipt_timeout', rows=rows)
+            return ended('not_inert' if last == 'rejected_not_inert' else 'refused', last)
+    return ended('timeout', last or 'receipt_timeout')
 
 
 def _named_rows(failed):
@@ -672,18 +828,44 @@ def _named_rows(failed):
     return shown + (f'; and {len(failed) - 5} more' if len(failed) > 5 else '')
 
 
-def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason):
+def _not_proven(running, launched):
+    """Why the running MT5 is not proven to be the one this deployment launched, in plain words. The same pid with no
+    recorded (or another) creation time cannot be proven ours; another pid is another MT5 (Claude-Mac 6161835586)."""
+    if running.get('pid') == launched.get('pid'):
+        return ('GOAT can\'t prove the MT5 running now (pid ' + str(running.get('pid')) + ', started ' + str(running.get('created_utc'))
+                + ') is the one this deployment launched: ' + ('no creation time was recorded at the launch' if not launched.get('created_utc')
+                                                             else 'it was launched at ' + str(launched.get('created_utc'))))
+    return ('The MT5 running now (pid ' + str(running.get('pid')) + ', started ' + str(running.get('created_utc'))
+            + ') is not the one this deployment launched (pid ' + str(launched.get('pid')) + ', started ' + str(launched.get('created_utc')) + ')')
+
+
+def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason, clock=time.monotonic,
+            close_key='unwind_close', expected_process=None, keep_mailbox=False):
     """Unload the deployment from an inert terminal: close MT5 normally, rename the dashboard state, the deploy
-    profile and the mailbox files aside, then select the previous profile again. Never closes positions."""
+    profile and the mailbox files aside, then select the previous profile again. Never closes positions.
+    ``expected_process`` (a resume unwind): the exact MT5 the resume re-check proved, which close_terminal re-checks
+    right before its close. ``keep_mailbox``: the retained registration was not proven this deployment's, so it and the
+    retained request are left in place for inspection (GOAT-EA#229 review item 3)."""
     launched = journal.get('phase') not in ('validated', 'staged', 'closed')
+    if launched and expected_process is not None:
+        # Review 6161742880: an unwind after the launch closes only the MT5 this deployment launched. Another one is
+        # refused here with nothing closed or renamed (close_terminal re-checks the same identity under its gate).
+        from studio_research_profile import _same_identity
+        running = process.inspect()
+        if running is not None and not _same_identity(running, expected_process):
+            raise ValueError(_not_proven(running, expected_process) + '; GOAT closed nothing and set nothing aside')
     if launched and process.inspect() is not None:
         proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
         if proof['algo_trading']:
             raise ValueError('Turn Algo Trading off in MT5 first; GOAT never turns it off or closes trades for you')
         if proof['positions'] or proof['orders']:
             raise ValueError('The demo account still has open positions or orders. Close or keep them yourself in MT5; GOAT never closes them automatically')
-        closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'])
+        close_started = clock()
+        expected = {} if expected_process is None else dict(expected_process=expected_process)
+        closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'], **expected)
+        journal.setdefault('observed_seconds', {})[close_key] = _seconds(clock() - close_started)
         if closed.get('phase') not in ('stopped', 'already_stopped'):
+            _cut(journal, close_key); write_json(where['journal'], journal)
             raise ValueError('MT5 did not confirm a normal close; inspect it before deploy-stop again (no second close is sent)')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     archived = []
@@ -694,7 +876,11 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
         # Rename aside, never delete: a later launch has no saved dashboard or deploy profile to resume, and
         # every byte remains for inspection. Only this deployment's own profile is moved, never the previous one.
         mailbox_root = portfolio_root(controller)
+        if keep_mailbox:
+            journal['mailbox_left_in_place'] = True
         for source in (where['state'], where['profile'], mailbox_root / 'request.json', mailbox_root / 'registration.json'):
+            if keep_mailbox and source.parent == mailbox_root and source.name in ('request.json', 'registration.json'):
+                continue
             if source.exists():
                 target = source.with_name(source.name + '.stopped-' + stamp)
                 sharing_retry(lambda: source.rename(target)); archived.append(str(target))
@@ -706,26 +892,46 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
     return journal
 
 
-def _unwind_summary(journal):
+def _unwind_summary(journal, launched=True):
     rollback = journal.get('rollback') or {}
     if rollback.get('profile_restored'):
         profile = 'restored the previous chart profile ' + str(rollback.get('previous_profile'))
     else:
         profile = 'left the chart profile selection unchanged (' + str(rollback.get('reason', 'no previous profile')) + ')'
-    summary = 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    if launched:
+        summary = 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    else:
+        summary = 'Nothing was closed or launched: GOAT set this deployment aside and ' + profile + '.'
     return summary + (' ' + rollback['select_profile_instruction'] if rollback.get('select_profile_instruction') else '')
 
 
-def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic):
+def _same_bytes(path, raw):
+    path = Path(path)
+    try:
+        return path.is_file() and not path.is_symlink() and path.read_bytes() == raw
+    except OSError:
+        return False
+
+
+def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic,
+         manifest_sha256=None, server_time_utc=None, utc_clock=time.time, timing=None, timing_source=None, read=read_bounded):
+    """deploy-load. ``timing`` is a goat-deploy-timing-v1 profile (studio_deploy_timing, --timing-profile), validated
+    here; None keeps today's constants. The journal records which profile ran (timing_profile: id and the sha256 of
+    its effective waits)."""
     from studio_seed_process import WindowsSeedProcess
+    profile, timing_record = resolve_timing(timing, timing_source)
     session, _ = session_state(controller)
     plan = read_json(plan_path)
-    members = validate_plan(controller, session, plan)
+    if server_time_utc is not None and (isinstance(server_time_utc, bool) or not isinstance(server_time_utc, (int, float))
+                                        or not math.isfinite(server_time_utc) or server_time_utc <= 0):
+        raise ValueError('--server-time-utc must be unix seconds')
+    members = validate_plan(controller, session, plan, manifest_sha256=manifest_sha256)
     ident = identity(controller, session, plan['buildId'])
     deployment_id = plan['deploymentId']
     where = paths(controller, deployment_id)
     process = process or WindowsSeedProcess(controller)
     request = request or portfolio_request
+    closer = _closer(close, profile)
     plan_sha256 = hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     for member in members:
         member['path'] = str(where['sets'] / member['name'])
@@ -738,9 +944,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         raise ValueError('Another demo deployment is live on this terminal; stop it first')
     if record and record.get('phase') == 'ready':
         return public(record)
-    if record and record.get('phase') == 'refused_before_stage':
-        record = None  # Nothing was staged; the same reviewed plan starts again.
     attempt = 1
+    if record and record.get('phase') == 'refused_before_stage':
+        # Nothing was staged; the same reviewed plan starts again. It keeps its attempt number, so a later stop never
+        # finds the attempt journal it must keep already taken (remote deploy design, 3.1 item 4).
+        attempt = int(record.get('attempt', 1))
+        record = None
     if record and record.get('phase') == 'stopped':
         # A stopped or auto-unwound attempt of this plan: keep its journal and deploy again from the start.
         attempt = int(record.get('attempt', 1)) + 1
@@ -749,175 +958,465 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             raise ValueError('An earlier attempt journal of this deployment is already kept; inspect demo-deployments')
         sharing_retry(lambda: where['journal'].rename(kept))
         record = None
+    resumed_from = record.get('phase') if record else None
     if record is None:
         record = dict(schema_version=1, deployment_id=deployment_id, plan_sha256=plan_sha256, phase='validated',
                       portfolio=plan['portfolio'], account=dict(session['account']), build_id=plan['buildId'],
                       members=[dict(index=m['index'], fileName=m['name'], symbol=m['symbol'], sha256=m['sha256']) for m in members],
                       created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False, positions_closed=False,
-                      profile_format=deploy_profile.PROFILE_FORMAT, attempt=attempt)
+                      profile_format=deploy_profile.PROFILE_FORMAT, attempt=attempt, timing_profile=timing_record)
+        if BROKER_FIT_KEY in plan:
+            import studio_broker_fit as broker_fit
+            record['broker_fit'] = broker_fit.deploy_record(plan[BROKER_FIT_KEY])
         write_json(where['journal'], record)
+    else:
+        # A resume: an earlier crash's failure is kept as history, and the profile this run waits with is recorded.
+        changed = False
+        if 'failure' in record:
+            record.setdefault('earlier_failures', []).append(record.pop('failure')); changed = True
+        if record.get('timing_profile') != timing_record:
+            if 'timing_profile' in record:
+                record.setdefault('earlier_timing_profiles', []).append(record['timing_profile'])
+            record['timing_profile'] = timing_record; changed = True
+        if changed:
+            write_json(where['journal'], record)
     if record.get('profile_format') != deploy_profile.PROFILE_FORMAT and record['phase'] in ('validated', 'staged', 'closed', 'launch_intent'):
         raise ValueError('This deployment was staged by an earlier GOAT (template deploy) and never launched; run deploy-stop, then deploy again')
     attempt = int(record.get('attempt', 1))
     suffix = '' if attempt == 1 else '-a' + str(attempt)
     config_path = where['config'] if attempt == 1 else where['config'].with_name(deployment_id + '.attempt-' + str(attempt) + '.ini')
+    # Remote deploy v0 (goatai#2350 6130033743): every phase's OBSERVED duration, on the same monotonic clock as the
+    # waits, next to timing_profile, so a per-host profile can later be derived from real deploys. A duration that a
+    # failure ended is still recorded (up to the failure) and named in observed_cut_by_failure: a lower bound.
+    durations = record.setdefault('observed_seconds', {})
+    opened = {}
+
+    def begin(name):
+        opened[name] = clock()
+
+    def end(name, at=None):
+        durations[name] = _seconds((clock() if at is None else at) - opened.pop(name))
+
+    def cut_open():
+        for name in list(opened):
+            end(name); _cut(record, name)
+
+    def persist_durations():
+        """After a refusal that is not journaled as a phase: the durations reach the durable journal (its phase is kept)."""
+        if not durations and 'observed_cut_by_failure' not in record:
+            return
+        try:
+            durable = read_json(where['journal'])
+        except Exception:
+            return
+        durable['observed_seconds'] = durations
+        if 'observed_cut_by_failure' in record:
+            durable['observed_cut_by_failure'] = record['observed_cut_by_failure']
+        write_json(where['journal'], durable)
 
     def phase(name, **extra):
         record.update(phase=name, **extra); record['updated_utc'] = datetime.now(timezone.utc).isoformat()
         write_json(where['journal'], record)
 
-    def fail_and_unwind(code, message, failed=()):
-        """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path."""
-        record.update(failure=dict(code=code, message=message[:400], utc=utc_now()), rows_failed=list(failed))
+    unwinding = []  # set once an auto-unwind has started: a crash inside it is recorded, never a second unwind
+
+    def launched_identity():
+        """The MT5 this deployment launched (pid, image, creation time). A journal that never read it has no creation
+        time, so an unwind given it refuses to close anything rather than guess."""
+        return record.get('launched_process') or dict(pid=record.get('pid'), executable=None, created_utc=None)
+
+    def registration_owned():
+        """The retained registration is byte for byte the one this deployment wrote (its journaled sha256)."""
+        try:
+            _, digest = read(portfolio_root(controller) / 'registration.json', 131072)
+        except (OSError, ValueError):
+            return False
+        return digest is not None and digest == record.get('registration_sha256')
+
+    def fail_and_unwind(code, message, failed=(), *, refusal=None, refusal_code=None, unwind=None, **facts):
+        """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path. A never-launched
+        journal ('staged', 'closed') is set aside the same way without touching MT5. With `refusal` (a broker-fit
+        FIT_STALE) the error keeps its code and fields; ``refusal_code`` (the remote deploy v0 codes) makes the final
+        refusal a typed Refusal; the older codes keep their plain one. ``unwind``: _unwind's expected_process /
+        keep_mailbox when a caller has its own.
+
+        Every unwind after the launch (Claude-Mac 6161835586 item 1) closes only the MT5 this deployment launched: it
+        passes the journaled launched_process, which _unwind and close_terminal re-check (pid, image, creation time).
+        A journal without a creation time cannot prove it, so nothing is closed and the refusal says so (deploy-stop
+        is the person's step). A registration that is not this deployment's own is never renamed aside."""
+        launched = record['phase'] not in ('validated', 'staged', 'closed')
+
+        def refuse(text):
+            if refusal is not None:
+                return Refusal(text, refusal.code, **refusal.fields)
+            return Refusal(text, refusal_code) if refusal_code else ValueError(text)
+
+        cut_open()
+        record.update(failure=dict(code=code, message=message[:400], utc=utc_now(), **facts), rows_failed=list(failed))
         write_json(where['journal'], record)
+        unwinding.append(code)
+        options = dict(unwind or {})
+        if launched:
+            options.setdefault('expected_process', launched_identity())
+            options.setdefault('keep_mailbox', not registration_owned())
         try:
             _unwind(controller, session, record, where, 'unwind-' + deployment_id[:24] + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
-                    mt5=mt5, process=process, close=close, reason=code)
+                    mt5=mt5, process=process, close=closer, reason=code, clock=clock, **options)
         except (OSError, ValueError) as exc:
             record['auto_unwind'] = dict(status='failed', error=str(exc)[:300], utc=utc_now())
             write_json(where['journal'], record)
-            raise ValueError(message + ' GOAT could not unload it: ' + str(exc) + ' Then run deploy-stop.') from exc
+            raise refuse(message + ' GOAT could not ' + ('unload' if launched else 'set aside') + ' it: ' + str(exc)
+                         + ' Then run deploy-stop.') from exc
         record['auto_unwind'] = dict(status='unwound', utc=utc_now())
         write_json(where['journal'], record)
-        raise ValueError(message + ' ' + _unwind_summary(record) + ' Run deploy-load again to retry.')
+        raise refuse(message + ' ' + _unwind_summary(record, launched)
+                     + (' Run deploy-load again to retry.' if launched else ' Check again to re-plan.'))
 
-    if record['phase'] == 'validated':
+    # A broker-fit plan is re-checked on the live broker in 'validated', before anything is staged. A call that resumes
+    # the journal past it re-checks too (GOAT-EA#229 review 6160002799: a plan reviewed at 50k, resumed at 'staged' at
+    # 20k, reached 'ready' at scale 0.5): check_live before MT5 is closed; with MT5 already closed, the plan TTL before
+    # the launch and check_live once the relaunched dashboard answers. A stale fit unwinds (fail_and_unwind): a
+    # never-launched journal sets itself aside like deploy-stop, so the next check re-plans instead of meeting
+    # "Another demo deployment is live" (review 6160692543).
+    # It runs inside run(): before the close at 'staged', the plan age at 'closed', and after the resume re-check (review
+    # item 3) once the dashboard answers; a stale unwind goes through the re-entrancy-safe fail_and_unwind (item 2).
+    fit_unchecked = BROKER_FIT_KEY in plan and record['phase'] != 'validated'
+
+    def resume_check():
+        """T5, T6: a resume after the launch first re-proves what the skipped phases proved. The MT5 running is the one
+        this deployment launched (the journaled pid, observed within launchObserveSeconds) and the reviewed SET bytes are
+        unchanged. At dashboard_ready, which never registers again, the retained registration must also be exactly this
+        deployment's, young enough that the rest of the deploy ends before its 4 h expiry (resumeAllowed), and a fresh
+        status read must show the dashboard observed and inert. Anything else unwinds (D3) and records why; the next
+        deploy-load is then a fresh attempt with a new registration (remote deploy design M5: unwind, never re-register).
+        An MT5 other than the launched one (pid and creation time) is refused with nothing changed (review item 3)."""
+        from studio_research_profile import _same_identity
+        facts = dict(from_phase=resumed_from, utc=utc_now())
+        record['resume_check'] = facts
+        # The MT5 this deployment launched: pid, image and creation time (a reused pid is another process).
+        launched = launched_identity()
+        mailbox_root = portfolio_root(controller)
+
+        def refuse(code, message):
+            # The unwind closes only the MT5 this deployment launched (close_terminal re-checks it right before its close)
+            # and never renames aside a registration (or its request) that is not this deployment's own (fail_and_unwind).
+            facts.update(ok=False, code=code)
+            fail_and_unwind(code, message, refusal_code=code)
+
+        def refuse_untouched(code, message):
+            """A refusal about an MT5 GOAT did not launch: journaled, nothing closed, renamed or unloaded (review item 3)."""
+            facts.update(ok=False, code=code)
+            cut_open()
+            record['failure'] = dict(code=code, message=message[:400], utc=utc_now())
+            write_json(where['journal'], record)
+            raise Refusal(message + ' GOAT closed, unloaded and renamed nothing. Check which MT5 this is; run deploy-stop to unload '
+                          'this deployment from it once it is inert, then deploy-load again.', code)
+
+        begin('launch_observe')
+        deadline = clock() + profile['launchObserveSeconds']
+        while True:
+            running = process.inspect()
+            if running is not None or clock() >= deadline:
+                break
+            sleep(1)
+        end('launch_observe')
+        if running is None:
+            _cut(record, 'launch_observe')
+        facts['terminal_pid'] = running.get('pid') if running else None
+        if running is None:
+            refuse('RESUME_TERMINAL_GONE', 'The MT5 this deployment launched is no longer running, so GOAT did not resume it.')
+        if not _same_identity(running, launched):
+            facts['terminal_created_utc'] = running.get('created_utc')
+            refuse_untouched('RESUME_TERMINAL_CHANGED', _not_proven(running, launched) + ', so GOAT did not resume it.')
+        changed = [m['name'] for m in members if not _same_bytes(m['path'], m['raw'])]
+        if changed:
+            refuse('RESUME_BYTES_CHANGED', 'A staged SET changed after the launch (' + ', '.join(changed[:3]) + '), so GOAT did not resume it.')
+        if resumed_from == 'dashboard_ready':
+            try:
+                registration, digest = read(mailbox_root / 'registration.json', 131072)
+            except (OSError, ValueError):
+                registration, digest = None, None
+            expires = registration.get('expiresAtUtc') if isinstance(registration, dict) else None
+            age = time.time() - (expires - deploy_timing.REGISTRATION_SECONDS) if type(expires) is int else None
+            rule = deploy_timing.resume_rule(profile, age)
+            facts.update(registration_age_seconds=None if age is None else int(age), resume_allowed=rule)
+            if not rule['ok']:
+                refuse(rule['code'], 'The retained dashboard registration cannot last until this deploy finishes (' + rule['reason'] + ').')
+            expected_registration = registration_for(ident, plan, members)
+            try:
+                validate_portfolio_registration(registration, ident, controller.install['common_files_root'])
+                same = (digest == record.get('registration_sha256')
+                        and {k: v for k, v in registration.items() if k != 'expiresAtUtc'}
+                        == {k: v for k, v in expected_registration.items() if k != 'expiresAtUtc'})
+            except (OSError, ValueError):
+                same = False
+            if not same:
+                refuse('RESUME_REGISTRATION_CHANGED', 'The retained dashboard registration is not the one this deployment registered, so GOAT did not resume it.')
+            try:
+                observed = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed', seconds=profile['dashboardWaitSeconds'],
+                                       request=request, sleep=sleep, clock=clock)
+            except ValueError as exc:
+                observed = dict(result=str(exc)[:160])
+            if observed is None or observed['result'] != 'observed':
+                refuse('RESUME_DASHBOARD_NOT_READY', 'The Portfolio Dashboard did not answer on resume ('
+                       + (observed['result'] if observed else 'receipt_timeout') + ').')
+            if observed['tradingAllowed'] or observed['positions'] or observed['orders']:
+                refuse('RESUME_NOT_INERT', 'Algo Trading is on (or the account has positions or orders), so GOAT did not resume the deploy.')
+        facts['ok'] = True
+        write_json(where['journal'], record)
+
+    def crashed(exc):
+        """A crash that is not a ValueError (a bug, a KeyError, an unexpected OSError) still journals `failure`. Before
+        the launch nothing is half-loaded and the next deploy-load resumes the same plan; once MT5 may be running the
+        deploy profile, it unwinds like any failure after the launch (D3). The journal written is the durable one, never
+        a phase the crash interrupted before it was written.
+
+        Two exceptions (GOAT-EA#229 review items 2 and 4): a crash inside an auto-unwind already under way is recorded as
+        that unwind's failure and raised again, never a second unwind, and the first failure stays the journal's
+        `failure`. A crash at `launch_intent` (Popen itself, or before `launched` was written) keeps the old stop: MT5
+        may or may not have started, so nothing is closed and the next deploy-load says to inspect MT5 (never launched
+        twice)."""
+        cut_open()
         try:
-            with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
-                require_idle_control(controller, session)
-                # A crash after staging but before the journal said 'staged' leaves this
-                # plan's own exact resume file; only a different one blocks the deploy.
-                if where['state'].exists() and (where['state'].is_symlink()
-                                                or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]):
-                    raise ValueError('This terminal already has a saved GOAT dashboard portfolio; stop or remove it before deploying another')
-                if (portfolio_root(controller) / 'registration.json').exists():
-                    raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying')
-                if namespace_conflict(controller):
-                    raise ValueError('Another MT5 terminal with the same data folder name already uses GOAT\'s dashboard files; GOAT will not deploy here')
-                if process.inspect() is None:
-                    raise ValueError('Open the selected MT5 on the demo account first so GOAT can verify it is a demo account')
+            durable = read_json(where['journal'])
+        except Exception:
+            durable = dict(record)
+        durable['observed_seconds'] = durations
+        if 'observed_cut_by_failure' in record:
+            durable['observed_cut_by_failure'] = record['observed_cut_by_failure']
+        message = (type(exc).__name__ + ': ' + str(exc))[:300]
+        if unwinding:
+            durable['auto_unwind'] = dict(status='failed', error=message, exception=type(exc).__name__, utc=utc_now())
+            write_json(where['journal'], durable)
+            raise exc
+        if durable.get('phase') not in LAUNCHED_PHASES or durable.get('phase') == 'launch_intent':
+            durable['failure'] = dict(code='controller_crash', message=message, utc=utc_now(), phase=durable.get('phase'),
+                                      exception=type(exc).__name__)
+            write_json(where['journal'], durable)
+            raise exc
+        record.clear(); record.update(durable)
+        fail_and_unwind('controller_crash', 'GOAT stopped this deploy after an unexpected controller error (' + message + ').',
+                        refusal_code='DEPLOY_CONTROLLER_CRASH', phase=durable.get('phase'), exception=type(exc).__name__)
+
+    def run():
+        nonlocal fit_unchecked
+        if record['phase'] == 'validated':
+            try:
+                with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
+                    require_idle_control(controller, session)
+                    # A crash after staging but before the journal said 'staged' leaves this
+                    # plan's own exact resume file; only a different one blocks the deploy.
+                    if where['state'].exists() and (where['state'].is_symlink()
+                                                    or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]):
+                        raise ValueError('This terminal already has a saved GOAT dashboard portfolio; stop or remove it before deploying another')
+                    if (portfolio_root(controller) / 'registration.json').exists():
+                        # The person's step, named (Claude-Mac 6161835586): a crash between writing registration.json and
+                        # journaling 'registered', or an unwind that could not prove the registration was its own, keeps it.
+                        raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying: '
+                                         'with deploy-status showing no live deployment, rename '
+                                         + str(portfolio_root(controller) / 'registration.json')
+                                         + ' aside (never delete it), then run deploy-load again')
+                    if namespace_conflict(controller):
+                        raise ValueError('Another MT5 terminal with the same data folder name already uses GOAT\'s dashboard files; GOAT will not deploy here')
+                    if process.inspect() is None:
+                        raise ValueError('Open the selected MT5 on the demo account first so GOAT can verify it is a demo account')
+                    broker_proof(controller, session, mt5=mt5)
+                    if BROKER_FIT_KEY in plan:
+                        # Never deploy a stale fit: every value is re-derived from the plan's manifest and the live broker
+                        # (equity, rate, symbol facts, clock, margin) and compared with the plan (FIT_STALE).
+                        import studio_broker_fit as broker_fit
+                        broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc)
+                    for path, raw in staged_bytes(controller, plan, members).items():
+                        write_exact(path, raw)
+            except (OSError, ValueError):
+                if not where['state'].exists() or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]:
+                    phase('refused_before_stage')
+                raise
+            phase('staged')
+
+        if record['phase'] == 'staged':
+            running = process.inspect()
+            # Telemetry only (goatai#1885): which MT5 was closed and when it was seen gone.
+            previous = dict(present_at_stage=running is not None, observed_gone_utc=None if running else utc_now(), exit_after_utc=None)
+            if running is not None:
+                # Demo proof and inert state come first; closing never touches positions.
                 broker_proof(controller, session, mt5=mt5)
-                for path, raw in staged_bytes(controller, plan, members).items():
-                    write_exact(path, raw)
-        except (OSError, ValueError):
-            if not where['state'].exists() or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]:
-                phase('refused_before_stage')
-            raise
-        phase('staged')
+                if fit_unchecked:
+                    import studio_broker_fit as broker_fit
+                    try:
+                        broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
+                    except Refusal as stale:
+                        if stale.code != broker_fit.FIT_STALE:
+                            raise
+                        fail_and_unwind(stale.code, str(stale), refusal=stale)
+                    fit_unchecked = False
+                attempt_id = 'deploy-' + deployment_id[:24] + suffix
+                begin('close')
+                closed = closer(controller, attempt_id, build_id=plan['buildId'])
+                if closed.get('phase') not in ('stopped', 'already_stopped'):
+                    raise ValueError('MT5 did not confirm a normal close; run deploy-load again after it exits (no second close is sent)')
+                end('close')
+                previous = _closed_terminal(running, attempt_id, closed)
+            # Taken after MT5 exits: MT5 rewrites the active profile and common.ini on close.
+            phase('closed', previous_terminal=previous, previous_profile=capture_previous_profile(controller, where))
 
-    if record['phase'] == 'staged':
-        running = process.inspect()
-        # Telemetry only (goatai#1885): which MT5 was closed and when it was seen gone.
-        previous = dict(present_at_stage=running is not None, observed_gone_utc=None if running else utc_now(), exit_after_utc=None)
-        if running is not None:
-            # Demo proof and inert state come first; closing never touches positions.
-            broker_proof(controller, session, mt5=mt5)
-            attempt_id = 'deploy-' + deployment_id[:24] + suffix
-            closed = (close or close_terminal)(controller, attempt_id, build_id=plan['buildId'])
-            if closed.get('phase') not in ('stopped', 'already_stopped'):
-                raise ValueError('MT5 did not confirm a normal close; run deploy-load again after it exits (no second close is sent)')
-            previous = _closed_terminal(running, attempt_id, closed)
-        # Taken after MT5 exits: MT5 rewrites the active profile and common.ini on close.
-        phase('closed', previous_terminal=previous, previous_profile=capture_previous_profile(controller, where))
+        if record['phase'] == 'closed':
+            if fit_unchecked:
+                # MT5 is closed, so the broker cannot be read: an expired plan refuses and sets this deployment aside (a
+                # fresh attempt re-plans). Inside the TTL MT5 is relaunched with Algo Trading off (Enabled=0) and check_live
+                # runs once the dashboard answers, before any child is linked; a stale fit then unwinds.
+                import studio_broker_fit as broker_fit
+                try:
+                    broker_fit.check_plan_age(plan, utc_now=max(utc_clock(), server_time_utc or 0), outcome='')
+                except Refusal as expired:
+                    fail_and_unwind(broker_fit.PLAN_EXPIRED, str(expired), refusal=expired)
+            with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
+                check_started = utc_now()
+                present = process.inspect()
+                pre_launch_check = dict(started_utc=check_started, finished_utc=utc_now(), present=present is not None)
+                if present is not None:
+                    raise ValueError('The selected MT5 reopened before the dashboard launch; nothing was launched')
+                portable = saved_launch_policy(controller, session)
+                # Byte-exact: the SETs, resume file, every chart of the profile and the namespace claim.
+                verify_staged(controller, plan, members)
+                config = startup_config(where['profile'].name)
+                write_exact(config_path, config)
+                phase('launch_intent', startup_sha256=hashlib.sha256(config).hexdigest(), startup_config=str(config_path))
+                arguments = [controller.install['terminal_executable'], '/config:' + str(config_path)]
+                if portable:
+                    arguments.append('/portable')
+                launch_started = utc_now()
+                begin('launch_observe')  # a fresh launch: until MT5's process exists (Popen returned with its pid)
+                child = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                end('launch_observe')
+                popen_returned = utc_now()
+                # The same keyword arguments as the call above, for the journal only (the test pins them equal).
+                options = dict(cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                phase('launched', pid=child.pid, launched_process=_launched_identity(process, child.pid), launch_telemetry=_launch_telemetry(
+                    arguments, options, record.get('previous_terminal'), pre_launch_check, launch_started, popen_returned, child.pid))
+        elif record['phase'] == 'launch_intent':
+            raise ValueError('A dashboard launch intent is retained without confirmation; inspect MT5 before retrying (never launched twice)')
 
-    if record['phase'] == 'closed':
-        with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
-            check_started = utc_now()
-            present = process.inspect()
-            pre_launch_check = dict(started_utc=check_started, finished_utc=utc_now(), present=present is not None)
-            if present is not None:
-                raise ValueError('The selected MT5 reopened before the dashboard launch; nothing was launched')
-            portable = saved_launch_policy(controller, session)
-            # Byte-exact: the SETs, resume file, every chart of the profile and the namespace claim.
-            verify_staged(controller, plan, members)
-            config = startup_config(where['profile'].name)
-            write_exact(config_path, config)
-            phase('launch_intent', startup_sha256=hashlib.sha256(config).hexdigest(), startup_config=str(config_path))
-            arguments = [controller.install['terminal_executable'], '/config:' + str(config_path)]
-            if portable:
-                arguments.append('/portable')
-            launch_started = utc_now()
-            child = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            popen_returned = utc_now()
-            # The same keyword arguments as the call above, for the journal only (the test pins them equal).
-            options = dict(cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            phase('launched', pid=child.pid, launch_telemetry=_launch_telemetry(
-                arguments, options, record.get('previous_terminal'), pre_launch_check, launch_started, popen_returned, child.pid))
-    elif record['phase'] == 'launch_intent':
-        raise ValueError('A dashboard launch intent is retained without confirmation; inspect MT5 before retrying (never launched twice)')
+        if resumed_from in RESUME_CHECKED_PHASES and record['phase'] == resumed_from:
+            resume_check()
 
-    if record['phase'] in ('launched', 'registered'):
-        registration = registration_for(ident, plan, members)
-        try:
-            digest = portfolio_register(controller, ident, registration)
-        except ValueError as exc:
-            fail_and_unwind('registration_refused', 'The dashboard portfolio could not be registered (' + str(exc) + ').')
-        phase('registered', registration_sha256=digest)
-        try:
-            status = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed', seconds=DASHBOARD_WAIT_SECONDS,
-                                 request=request, sleep=sleep, clock=clock)
-        except ValueError as exc:
-            status = dict(result=str(exc)[:160])
-        if status is None or status['result'] != 'observed':
-            outcome = status['result'] if status else 'receipt_timeout'
-            fail_and_unwind('dashboard_not_ready', 'The Portfolio Dashboard did not answer (' + outcome + '). Check that MT5 opened on the demo account with GOAT paired.')
-        if status['tradingAllowed'] or status['positions'] or status['orders']:
-            fail_and_unwind('not_inert_after_start', 'Algo Trading is already on (or the account has positions or orders) after MT5 started; '
-                            'GOAT does not load a portfolio then.')
-        phase('dashboard_ready')
+        if record['phase'] in ('launched', 'registered'):
+            registration = registration_for(ident, plan, members)
+            try:
+                digest = portfolio_register(controller, ident, registration)
+            except ValueError as exc:
+                fail_and_unwind('registration_refused', 'The dashboard portfolio could not be registered (' + str(exc) + ').')
+            phase('registered', registration_sha256=digest)
+            begin('dashboard_first_answer')
+            try:
+                status = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed', seconds=profile['dashboardWaitSeconds'],
+                                     request=request, sleep=sleep, clock=clock)
+            except ValueError as exc:
+                status = dict(result=str(exc)[:160])
+            if status is None or status['result'] != 'observed':
+                outcome = status['result'] if status else 'receipt_timeout'
+                fail_and_unwind('dashboard_not_ready', 'The Portfolio Dashboard did not answer (' + outcome + '). Check that MT5 opened on the demo account with GOAT paired.')
+            end('dashboard_first_answer')
+            if status['tradingAllowed'] or status['positions'] or status['orders']:
+                fail_and_unwind('not_inert_after_start', 'Algo Trading is already on (or the account has positions or orders) after MT5 started; '
+                                'GOAT does not load a portfolio then.')
+            phase('dashboard_ready')
 
-    if record['phase'] == 'dashboard_ready':
-        # A beta.24 journal launched by the template deploy resumes here too; its profile holds no children,
-        # so every row ends child_not_started and the deploy unwinds cleanly.
-        linked = _link_children(controller, ident, request=request, sleep=sleep, clock=clock)
-        if linked['outcome'] != 'linked':
-            failed = rows_failed(members, linked['rows'])
-            if linked['outcome'] == 'not_inert':
-                message = ('MT5 stopped being inert (Algo Trading on, a position or order open, or disconnected) before every '
-                           'member was linked, so GOAT stopped linking (' + linked['result'] + ').')
-            else:
-                waited = 'within ' + str(CHILD_START_WAIT_SECONDS) + ' s' if linked['outcome'] == 'timeout' else '(' + linked['result'] + ')'
-                message = (str(len(failed)) + ' of ' + str(len(members)) + ' members did not start as linked GOAT charts ' + waited
-                           + ': ' + _named_rows(failed) + '.')
-            fail_and_unwind(CHILD_NOT_STARTED if any(row['reason'] == CHILD_NOT_STARTED for row in failed) else CHILD_NOT_LINKED,
-                            message, failed)
-        phase('attached', link_result=linked['result'], linked_rows=[dict(index=r['index'], chartId=r['chartId'], magic=r['magic'])
-                                                                     for r in linked['rows']])
+        if fit_unchecked and record['phase'] in ('dashboard_ready', 'attached', 'policy_applied'):
+            # The post-launch re-check of a resumed broker-fit deploy (above), after the resume re-check proved the MT5,
+            # bytes and registration: stale -> the inert-only unwind (Algo Trading stays off, positions are never closed).
+            # Any other read failure leaves the journal here for the next resume. The unwind closes only the MT5 this
+            # deployment launched (review 6161742880): another one is refused, journaled and left running.
+            import studio_broker_fit as broker_fit
+            try:
+                broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc, outcome='')
+            except Refusal as stale:
+                if stale.code != broker_fit.FIT_STALE:
+                    # The person's step, named (Claude-Mac 6161835586): the fit could not be read, so the deploy goes no
+                    # further and is not unloaded; MT5 stays loaded with Algo Trading off at this phase.
+                    raise Refusal(str(stale) + ' The deploy stays loaded at ' + record['phase'] + ' with Algo Trading off and '
+                                  'nothing traded: run deploy-load again to re-check the fit, or deploy-stop to unload it.',
+                                  stale.code, **stale.fields) from stale
+                fail_and_unwind(stale.code, str(stale), refusal=stale)
+            fit_unchecked = False
 
-    if record['phase'] == 'attached':
-        dispatched = request(controller, ident, 'apply_policy', timeout=60)
-        if dispatched['result'] != 'policy_dispatched':
-            raise ValueError('The exposure policy was not dispatched (' + dispatched['result'] + ')')
-        command = dispatched['commandId']
-        def acknowledged(r):
-            return (r['result'] == 'observed' and not r['commandPending']
-                    and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']))
-        acked = _poll_until(controller, ident, 'status', acknowledged, seconds=ACK_WAIT_SECONDS, request=request, sleep=sleep, clock=clock)
-        if acked is None or not acknowledged(acked):
-            raise ValueError('Child charts did not acknowledge the exposure policy in time; run deploy-load again')
-        phase('policy_applied', command_id=command)
+        if record['phase'] == 'dashboard_ready':
+            # A beta.24 journal launched by the template deploy resumes here too; its profile holds no children,
+            # so every row ends child_not_started and the deploy unwinds cleanly.
+            begin('child_start'); begin('link')
+            linked = _link_children(controller, ident, request=request, sleep=sleep, clock=clock, wait_seconds=profile['childStartWaitSeconds'],
+                                    request_seconds=profile['linkRequestSeconds'], read=read)
+            if 'all_started_at' in linked:
+                end('child_start', at=linked['all_started_at'])
+            race = {'link_race': linked['race']} if 'race' in linked else {}
+            if linked['outcome'] != 'linked':
+                failed = rows_failed(members, linked['rows'])
+                if linked['outcome'] == 'not_inert':
+                    message = ('MT5 stopped being inert (Algo Trading on, a position or order open, or disconnected) before every '
+                               'member was linked, so GOAT stopped linking (' + linked['result'] + ').')
+                else:
+                    waited = 'within ' + str(profile['childStartWaitSeconds']) + ' s' if linked['outcome'] == 'timeout' else '(' + linked['result'] + ')'
+                    message = (str(len(failed)) + ' of ' + str(len(members)) + ' members did not start as linked GOAT charts ' + waited
+                               + ': ' + _named_rows(failed) + '.')
+                fail_and_unwind(CHILD_NOT_STARTED if any(row['reason'] == CHILD_NOT_STARTED for row in failed) else CHILD_NOT_LINKED,
+                                message, failed, **race)
+            end('link')
+            phase('attached', link_result=linked['result'], linked_rows=[dict(index=r['index'], chartId=r['chartId'], magic=r['magic'])
+                                                                         for r in linked['rows']], **race)
 
-    if record['phase'] == 'policy_applied':
-        registration, _ = read_bounded(portfolio_root(controller) / 'registration.json', 131072)
-        audit = _poll_until(controller, ident, 'audit', lambda r: r['result'] == 'observed' and all(row['settingsMatch'] for row in r['rows']),
-                            seconds=AUDIT_WAIT_SECONDS, request=request, sleep=sleep, clock=clock)
-        if audit is None or audit['result'] != 'observed':
-            raise ValueError('The dashboard settings audit did not complete (' + (audit['result'] if audit else 'receipt_timeout') + ')')
-        if audit['registrationSha256'] != record.get('registration_sha256'):
-            raise ValueError('The dashboard audited a different registration than this deployment registered; readiness is not claimed')
-        _verify_ready(audit, registration, allow_live_trading=allow_live_trading_default(controller))
-        proof = broker_proof(controller, session, mt5=mt5)
-        if proof['algo_trading']:
-            raise ValueError('Algo Trading turned on during the deploy; readiness is not claimed')
-        rows = [dict(index=row['index'], symbol=row['symbol'], sha256=registration['members'][row['index']]['sha256'],
-                     chartId=row['chartId'], magic=row['magic'], settingsMatch=row['settingsMatch']) for row in audit['rows']]
-        phase('ready', readback=dict(audit_id=audit['id'], observed_at_utc=audit['observedAtUtc'], registration_sha256=audit['registrationSha256'],
-                                     trading_allowed=audit['tradingAllowed'], positions=audit['positions'], orders=audit['orders'],
-                                     demo=proof['demo'], algo_trading=proof['algo_trading'], login=proof['login'], server=proof['server'], rows=rows),
-              instruction=READY_INSTRUCTION)
+        if record['phase'] == 'attached':
+            dispatched = request(controller, ident, 'apply_policy', timeout=deploy_timing.APPLY_POLICY_SECONDS)
+            if dispatched['result'] != 'policy_dispatched':
+                raise ValueError('The exposure policy was not dispatched (' + dispatched['result'] + ')')
+            command = dispatched['commandId']
+            begin('ack')
+            def acknowledged(r):
+                return (r['result'] == 'observed' and not r['commandPending']
+                        and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']))
+            acked = _poll_until(controller, ident, 'status', acknowledged, seconds=profile['ackWaitSeconds'], request=request, sleep=sleep, clock=clock)
+            if acked is None or not acknowledged(acked):
+                if not _timed_out(acked):
+                    raise ValueError('Child charts did not acknowledge the exposure policy (' + acked['result'] + '); run deploy-load again')
+                # A timeout unwinds like the dashboard and link timeouts: never leave a loaded MT5 with Algo off (review item 4).
+                fail_and_unwind('ack_timeout', 'Child charts did not acknowledge the exposure policy in time.')
+            end('ack')
+            phase('policy_applied', command_id=command)
+
+        if record['phase'] == 'policy_applied':
+            registration, _ = read_bounded(portfolio_root(controller) / 'registration.json', 131072)
+            begin('audit')
+            audit = _poll_until(controller, ident, 'audit', lambda r: r['result'] == 'observed' and all(row['settingsMatch'] for row in r['rows']),
+                                seconds=profile['auditWaitSeconds'], request=request, sleep=sleep, clock=clock)
+            if audit is None or audit['result'] != 'observed':
+                outcome = audit['result'] if audit else 'receipt_timeout'
+                if not _timed_out(audit):
+                    # An answer that is not a timeout (a refusal) keeps the plain refusal and the durable phase, as before.
+                    raise ValueError('The dashboard settings audit did not complete (' + outcome + ')')
+                fail_and_unwind('audit_timeout', 'The dashboard settings audit did not complete (' + outcome + ').')
+            end('audit')
+            if audit['registrationSha256'] != record.get('registration_sha256'):
+                raise ValueError('The dashboard audited a different registration than this deployment registered; readiness is not claimed')
+            _verify_ready(audit, registration, allow_live_trading=allow_live_trading_default(controller))
+            proof = broker_proof(controller, session, mt5=mt5)
+            if proof['algo_trading']:
+                raise ValueError('Algo Trading turned on during the deploy; readiness is not claimed')
+            rows = [dict(index=row['index'], symbol=row['symbol'], sha256=registration['members'][row['index']]['sha256'],
+                         chartId=row['chartId'], magic=row['magic'], settingsMatch=row['settingsMatch']) for row in audit['rows']]
+            phase('ready', readback=dict(audit_id=audit['id'], observed_at_utc=audit['observedAtUtc'], registration_sha256=audit['registrationSha256'],
+                                         trading_allowed=audit['tradingAllowed'], positions=audit['positions'], orders=audit['orders'],
+                                         demo=proof['demo'], algo_trading=proof['algo_trading'], login=proof['login'], server=proof['server'], rows=rows),
+                  instruction=READY_INSTRUCTION)
+
+    try:
+        run()
+    except ValueError:
+        cut_open(); persist_durations()
+        raise
+    except Exception as exc:
+        crashed(exc)
     return public(record)
 
 
@@ -939,13 +1438,19 @@ def status(controller, *, mt5=None, process=None, request=None):
         if observed['result'] == 'observed':
             result['trading'] = bool(observed['tradingAllowed'] and observed['rows'] and all(r['linkedFresh'] for r in observed['rows']))
     except ValueError as exc:
-        result['dashboard_error'] = str(exc)
+        if _is_request_still_live(exc) or _is_unresolved_mutation(exc):
+            # deploy-load is waiting on its own request (dashboard, ack or audit): pending, as the link step treats it.
+            result['dashboard'] = dict(result='pending', reason='request_still_live' if _is_request_still_live(exc) else 'mutation_started', rows=[])
+        else:
+            result['dashboard_error'] = str(exc)
     return result
 
 
-def stop(controller, attempt_id, *, mt5=None, process=None, close=None):
-    """Unload the dashboard portfolio from an inert terminal and select the previous profile again. Never closes positions."""
+def stop(controller, attempt_id, *, mt5=None, process=None, close=None, timing=None, timing_source=None, clock=time.monotonic):
+    """Unload the dashboard portfolio from an inert terminal and select the previous profile again. Never closes positions.
+    ``timing`` (--timing-profile) sets the close wait; the journal records it as stop_timing_profile."""
     from studio_seed_process import WindowsSeedProcess
+    profile, timing_record = resolve_timing(timing, timing_source)
     session, _ = session_state(controller)
     record = current_deployment(controller)
     if record is None:
@@ -953,7 +1458,9 @@ def stop(controller, attempt_id, *, mt5=None, process=None, close=None):
     where = paths(controller, record['deployment_id'])
     journal = read_json(where['journal'])
     process = process or WindowsSeedProcess(controller)
-    journal = _unwind(controller, session, journal, where, attempt_id, mt5=mt5, process=process, close=close, reason='deploy_stop')
+    journal['stop_timing_profile'] = timing_record
+    journal = _unwind(controller, session, journal, where, attempt_id, mt5=mt5, process=process, close=_closer(close, profile),
+                      reason='deploy_stop', clock=clock, close_key='stop_close')
     select = (journal.get('rollback') or {}).get('select_profile_instruction')
     return public(journal) | dict(status='stopped', terminal='stopped', trading_changed=False, positions_closed=False,
                                   next_action=(select + ' ' if select else '')

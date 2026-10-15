@@ -214,7 +214,7 @@ class HandoverTests(unittest.TestCase):
         from studio_command_store import StudioStore
         from studio_native_gate import configure_gate
         external = self.fixture.root/'older.sqlite'
-        older = StudioStore(external)
+        older = StudioStore(external, create=True)
         try:
             older.bind('old-terminal','old-run')
             configure_gate(older, self.c.local/'older/native-gate')

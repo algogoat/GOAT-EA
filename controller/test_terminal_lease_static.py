@@ -16,8 +16,11 @@ INITIALIZE_SITES = {
     ('demo_agent', 'DemoAgent._broker_readback'): 'DemoAgent._broker',
     ('studio_agent_setup', 'broker_proof'): 'lexical',
     ('studio_monitor_probe', 'inspect_idle_demo'): 'lexical',
+    # broker-fit's one read (GOAT-EA#228): leased, and attach-only (MT5_NOT_RUNNING before initialize when the selected
+    # terminal64.exe is not running).
+    ('studio_broker_fit', 'read_broker'): 'lexical',
 }
-METATRADER_IMPORTERS = {'demo_agent', 'studio_agent_setup', 'studio_monitor_probe'}
+METATRADER_IMPORTERS = {'demo_agent', 'studio_agent_setup', 'studio_monitor_probe', 'studio_broker_fit'}
 
 
 def modules():

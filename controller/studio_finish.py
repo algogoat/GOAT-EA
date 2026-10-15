@@ -132,7 +132,8 @@ def finish(controller,job_id,*,expected_generation=None):
             current=next(j for j in state['queue'] if j['job_id']==job_id)
             current.update(status=result['status'],completion=result,completion_path=str(result_path))
             binding=packed(dict(terminal_id=controller.terminal,run_id=controller.run))
-            controller.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))
+            from studio_db_maintenance import write_queue
+            write_queue(controller.store.db,binding,packed(state['queue']))
             controller.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
             controller.store.db.execute('COMMIT')
         except BaseException:

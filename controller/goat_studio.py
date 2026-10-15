@@ -55,6 +55,11 @@ NEWS_FILE_GUARD=('studio_news_guard: a news-on run (any SET with Mode_News 2-5; 
                  'NEWS_FILE_CHANGED / NEWS_FILE_UNRECORDED unless --accept-news-change, which continues as a new labelled news '
                  'lineage (both shas recorded, results marked); news-off runs are never blocked')
 
+# Remote deploy v0 (controller/contracts/deploy-timing-profile.md): the waits of a deploy as a reviewed parameter.
+TIMING_PROFILE_NOTE = ('--timing-profile <file|id>: goat-deploy-timing-v1 waits (close, launch observe, dashboard, child start, link '
+                       'request <=90 s, ack, audit), validated and refused with a TIMING_* code out of bounds or under 1.5x its '
+                       'measured evidence; built-in desktop (the default: the pinned constants) and vps-cold-36; the journal records '
+                       'its id and sha256')
 OPERATION_CONTRACTS = {
     'self-repair':dict(required=['job-id','action-id','linked-login'],effect='retire an exact expired rejected never-consumed demo start/cancel using original receipt and pristine native package proof; caller verifies linked-login eligibility, tool matches it against fresh native demo account. Republish genuine projection, normally close idle selected demo, archive transport and restore owned controls, then same-EA rebind. No research relaunch, grant, permissions, human-stop reset or native-cancellation claim; returns sanitized own-ticket repair payload'),
     'same-ea-rebind':dict(required=[],effect='repair only a stopped demo session after a proven same-EA desktop receipt rewrite; requires exact preserved previous receipt and settled native attempts, retains previous session bytes and database, never launches, grants or clears a permit'),
@@ -101,12 +106,12 @@ OPERATION_CONTRACTS = {
     'equivalence-status':dict(required=['certificate'],effect='read-only: certificate status (active only with a stored matching canary), canaries and blocking files'),
     'equivalence-canary-plan':dict(required=['certificate','source'],repeatable=['source'],defaults={'max-sets':10,'evidence-end':'auto'},optional=['output'],effect='read-only selection of ~10 diverse exports of the certificate export build with complete Model-4 captures, as a catch-up plan with canary_certificate; the native run is catchup-prepare/start on the installed build'),
     'equivalence-canary-ingest':dict(required=['certificate'],required_one_of=['catchup-id','pairs'],defaults={'min-sets':10},limits={'min-sets':[10,50]},effect='compare deal lists (time, type, entry, volume, price) of a canary catch-up or explicit pairs and store the canary result with its digest; matching deals activate the certificate, any drift refutes it; no terminal effect'),
-    'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
+    'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; refuses a member the EA refuses in the strategy tester (TESTER_INIT_REFUSED); no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
     'load-batch':dict(required=['batch-id','file'],effect='validate saved .goatbatch as a new unstarted batch on this installation'),
     'resume-batch':dict(required=['source-batch-id','batch-id'],optional=['accept-news-change'],news_file_guard=NEWS_FILE_GUARD,effect='prepare remaining members under a new identity after original stop/finish; failed members require include-failed; members tested with no profitable settings only with include-no-edge'),
-    'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; refuses any reachable Mode_Lots=RiskperSeq with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES); no launch'),
+    'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; refuses any reachable Mode_Lots=RiskperSeq with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), any reachable value combination the EA refuses at OnInit (EA_INIT_REFUSED) and any optimized enum ladder the EA refuses at OnTesterInit (ENUM_LADDER_NOT_NATIVE: step 1 over consecutive declared items only); no launch'),
     'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite. A starter-set source is recorded as parent starter:single|sequence with its starter receipt hash; the output still needs at least one active search axis'),
     'starter-set':dict(required=['shape','output'],choices={'shape':['single','sequence']},effect='write a blank starting SET generated from the installed input schema plus a same-stem .starter.json receipt (schema hash, versions, shape, sha256, every input it sets away from its declared default): indicator signal modes, AI bias and news filters off, no search axes; single = Max_Seq_Trades 1 with CloseAtMaxLevels, sequence = 5 trades with CloseAtMaxLevels, RiskperSeq sizing and hard close at Risk, default Grid_* gaps; its Risk is a placeholder the user must choose (build-set refuses RISK_NOT_CHOSEN until changes set Risk). Local create-only file outside the publisher catalog; never overwrites, never opens the store or MT5. A starter is untested and has zero evidence: build-set adds the idea'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
@@ -152,11 +157,12 @@ OPERATION_CONTRACTS = {
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
     'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else (native_human_control only; never on a demo_direct installation, where it is a pure read) register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
-    'close-terminal':dict(required=['attempt-id'],optional=['build-id'],effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats. When it read the GOAT monitor healthy just before its close (native_monitor facts, SDK Algo off, demo, bound login), it records the post-close chart hash monitor-launch may reopen (monitor_chart_record)'),
+    'close-terminal':dict(required=['attempt-id'],optional=['build-id','timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats. When it read the GOAT monitor healthy just before its close (native_monitor facts, SDK Algo off, demo, bound login), it records the post-close chart hash monitor-launch may reopen (monitor_chart_record)'),
     'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback (plus account currency, balance, equity, leverage, company and trade mode), existing dashboard state and live deployment record for a desktop deploy review, and the Allow Algo Trading default MT5 saved (allow_live_trading_default, plus an informational notes entry when it is off; readiness_blockers stays empty for it; never written)'),
-    'deploy-load':dict(required=['plan'],effect='refuse any member SET whose values could size risk-per-sequence with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES) or still carry an unchosen starter Risk (RISK_NOT_CHOSEN) before anything is written; stage reviewed hash-bound member SETs and a saved dashboard in Common Files and one MT5 profile holding the Portfolio Dashboard plus one child chart per member, close the inert demo terminal, relaunch it on that profile with Algo Trading off (Enabled=0), let the dashboard link every child, apply exposure policy and audit every child against its SET; a member not linked within the start-up window is named child_not_started and the deploy unloads itself and restores the previous chart profile; Algo Trading stays off; resumable phase journal'),
+    'deploy-load':dict(required=['plan'],optional=['manifest-sha256','server-time-utc','timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='a plan with a brokerFit block refuses MANIFEST_UNVERIFIED (reason) unless its manifest carries a valid ed25519 signature by a pinned house key and --manifest-sha256 equals the RFC 8785 JCS sha256 of its manifest (without signature); refuse any member SET whose values could size risk-per-sequence with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES) or still carry an unchosen starter Risk (RISK_NOT_CHOSEN) before anything is written; stage reviewed hash-bound member SETs and a saved dashboard in Common Files and one MT5 profile holding the Portfolio Dashboard plus one child chart per member, close the inert demo terminal, relaunch it on that profile with Algo Trading off (Enabled=0), let the dashboard link every child, apply exposure policy and audit every child against its SET; a member not linked within the start-up window is named child_not_started and the deploy unloads itself and restores the previous chart profile; Algo Trading stays off; resumable phase journal'),
     'deploy-status':dict(required=[],effect='read the live deployment record and dashboard status; no mutation'),
-    'deploy-stop':dict(required=['attempt-id'],effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside and selects the previous chart profile again when it is unchanged; never closes positions'),
+    'broker-fit':dict(required=['portfolio'],optional=['equity','sets','server-time-utc'],effect='read-only plug-and-play check of a goat-house-portfolio-v1 manifest against the bound DEMO account (controller/contracts/broker-fit.md), in one short attach-only MT5 SDK read (seconds; refuses MT5_NOT_RUNNING and starts nothing when the selected terminal64.exe is not running): account currency/equity/leverage, every symbol, the median spread of each mapped symbol over the last 6 h of real ticks (copy_ticks_range; rollover 16:00-18:00 New York and Friday 16:00 to Sunday 18:00 New York skipped; SPREAD_SAMPLE_UNAVAILABLE only when too few ticks remain), the broker GMT offset (only from a tick seen arriving during the read, and unknown when --server-time-utc shows this PC clock more than 120 s off) against the reference (reference.serverGmtOffset, else referenceAccount.serverGmtOffset, else the server-name assumption, reported), swaps and margin per lot; returns goat-broker-fit-v1 with per-member fit/excluded codes (MARGIN_UNKNOWN when the worst-case margin cannot be computed, MARGIN_TOO_HIGH above half the equity, MONEY_VALUE_UNREADABLE, EA_INIT_REFUSED), equity_linear scale, minEquity, offered, the sha256 of the scaled SET the deploy would write and the deployBasis/deploy entries a brokerFit deploy plan carries (deploy-load re-derives every value from the plan manifest and the live broker, plans expire after 15 min, and refuses FIT_STALE). Never writes a file, selects a symbol, opens a chart or trades; refuses NOT_DEMO_ACCOUNT on a non-demo account and MANIFEST_UNVERIFIED (reason) unless the manifest carries a valid ed25519 signature by a pinned house key'),
+    'deploy-stop':dict(required=['attempt-id'],optional=['timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside and selects the previous chart profile again when it is unchanged; never closes positions'),
     'batch-pause':dict(required=['job-id'],optional=['immediate','supervise-seconds'],limits={'supervise-seconds':[1,172800]},demo_lane='goat.exe demo batch-pause --batch-id <id> (broker-verified; starts its own bounded supervisor)',effect='durable idempotent pause request: one cancel only at a safe point (right after a member turns OnGoing, or tester idle after the member-boundary relaunch) while the bound monitor reports; an expired unconsumed cancel is answered by the EA with CANCEL_REJECTED and only that exact receipt admits exactly one successor stop (cancel-rejected-successor identity rules, both receipts kept, never blind replay); a closed, unbound or unlicensed monitor is a named blocker with its fix; the driver keeps its disk guard and finish, never records cancel_issued for a pause and adopts an outstanding unconfirmed stop; finish harvests completed members and records paused with a resume token. States: pausing, paused, pause_failed (one sentence + fix), finished. Optional supervise-seconds runs the bounded pause supervisor in this call'),
     'batch-resume':dict(required=['job-id'],optional=['new-batch-id','resume-token','include-failed','include-no-edge','accept-news-change'],news_file_guard=NEWS_FILE_GUARD,demo_lane='goat.exe demo batch-resume --batch-id <id> (also refreshes a restarted protected peer and starts the bounded driver)',effect='after paused: verify the exact paused result and resume token, build the remaining-work plan from per-member native evidence (resume-batch) tolerating only a refreshed protected-peer process, prepare the successor under a new ID (default <id>-rN) and record lineage paused batch -> successor; no start in this CLI, run-batch starts it'),
     'research-status':dict(required=[],effect='read-only lane status for one installation: terminal, account, EA build, current batch or seed hunt (status, members done/total, qualifying, last member, pace and ETA, lineage, pause), driver health, disk headroom and monitor/licence state with the plain reason and fix when unbound; never opens the mutable store, launches or signals MT5'),
@@ -274,7 +280,8 @@ class Controller:
         terminal='terminal-'+sha(self.install['terminal_data_root'])[:16]
         run='session-'+uuid.uuid4().hex
         self.local.mkdir(parents=True,exist_ok=True)
-        self.store=StudioStore(self.root/'studio.sqlite',input_schema=self.schema,dependency_policy=self.policy)
+        # The only open that may create studio.sqlite (studio_db_maintenance.connect_existing for every other).
+        self.store=StudioStore(self.root/'studio.sqlite',input_schema=self.schema,dependency_policy=self.policy,create=True)
         self.store.bind(terminal,run)
         configure_gate(self.store,self.local/'native-gate')
         bridge=StudioBridge(self.local/run,self.store,terminal,run);bridge.pump()
@@ -299,7 +306,8 @@ class Controller:
         tester=validate_tester(config['tester']);exports=validate_export(config['export'],tester)
         if tester['Expert']!=self.install['ea_relative_path']: raise ValueError('Tester Expert must match installation')
         if tester['ForwardMode']!=4: raise ValueError('Beta native pipeline requires custom forward mode 4')
-        raw=Path(set_path).read_bytes();info=inspect_set(raw);values=read_values(raw)
+        from studio_run_folder_archive import read_bytes as archived_read   # a cited export in an archived run folder
+        raw=archived_read(set_path);info=inspect_set(raw);values=read_values(raw)
         from studio_template_tools import check_risk_chosen
         check_risk_chosen(raw,values,self.schema)   # the bytes' lineage marker; validate_strategy sees values only
         package=self.root/'packages'/job_id
@@ -513,10 +521,11 @@ def main(argv=None):
     p=sub.add_parser('research-retire-never-started');p.add_argument('--job-id',required=True)
     sub.add_parser('research-regrant-status')
     p=sub.add_parser('pairing-code');p.add_argument('--build-id',required=True)
-    p=sub.add_parser('close-terminal');p.add_argument('--attempt-id',required=True);p.add_argument('--build-id')
+    p=sub.add_parser('close-terminal');p.add_argument('--attempt-id',required=True);p.add_argument('--build-id');p.add_argument('--timing-profile')
     sub.add_parser('deploy-preflight');sub.add_parser('deploy-status')
-    p=sub.add_parser('deploy-load');p.add_argument('--plan',type=Path,required=True)
-    p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True)
+    p=sub.add_parser('deploy-load');p.add_argument('--plan',type=Path,required=True);p.add_argument('--manifest-sha256',help='The house manifestSha256 (JCS) the caller verified; required for a plan with a brokerFit block (MANIFEST_UNVERIFIED otherwise)');p.add_argument('--server-time-utc',type=float,help='Trusted UTC now (unix seconds); for a brokerFit plan a PC clock more than 120 s off leaves the broker offset unknown');p.add_argument('--timing-profile')
+    p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True);p.add_argument('--timing-profile')
+    p=sub.add_parser('broker-fit');p.add_argument('--portfolio',type=Path,required=True);p.add_argument('--equity',type=float,help='Plan for this equity (account currency) instead of the account equity; still read-only');p.add_argument('--sets',type=Path,help='Folder holding the member SET files (named <setSha256> or setName); default: the manifest folder');p.add_argument('--server-time-utc',type=float,help='Trusted UTC now (unix seconds, e.g. the app server HTTP Date); a PC clock more than 120 s off leaves the broker offset unknown')
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         foreign=foreign_controller_modules()
@@ -702,16 +711,30 @@ def main(argv=None):
                 result=starter_set(args.shape,args.output,controller.schema,controller.policy,
                     controller_version=VERSION,ea_version=controller.install['ea_version'],forbidden_roots=catalog)
         else:
+            # Remote deploy v0: --timing-profile <file|id> (studio_deploy_timing), validated before anything is opened.
+            timing=None
+            if getattr(args,'timing_profile',None) is not None:
+                from studio_deploy_timing import load_profile
+                timing=load_profile(args.timing_profile)
+            timed={} if timing is None else dict(timing=timing[0],timing_source=timing[1]['source'])
             if not args.operation.startswith('orphan-recovery-'): controller.open()
             if args.operation in ('pairing-code','close-terminal'):
                 from studio_agent_setup import pairing_code,close_terminal
-                result=pairing_code(controller,args.build_id) if args.operation=='pairing-code' else close_terminal(controller,args.attempt_id,build_id=args.build_id)
+                if args.operation=='pairing-code': result=pairing_code(controller,args.build_id)
+                # The close journal records the profile (no flag: desktop, close_terminal's own 30 s) and observed_seconds.close.
+                elif timing is None:
+                    from studio_deploy_timing import default_record
+                    result=close_terminal(controller,args.attempt_id,build_id=args.build_id,timing_record=default_record())
+                else: result=close_terminal(controller,args.attempt_id,build_id=args.build_id,wait_seconds=timing[0]['closeWaitSeconds'],timing_record=timing[1])
             elif args.operation.startswith('deploy-'):
                 import studio_demo_deploy as deploy
                 if args.operation=='deploy-preflight': result=deploy.preflight(controller)
-                elif args.operation=='deploy-load': result=deploy.load(controller,args.plan)
+                elif args.operation=='deploy-load': result=deploy.load(controller,args.plan,manifest_sha256=args.manifest_sha256,server_time_utc=args.server_time_utc,**timed)
                 elif args.operation=='deploy-status': result=deploy.status(controller)
-                else: result=deploy.stop(controller,args.attempt_id)
+                else: result=deploy.stop(controller,args.attempt_id,**timed)
+            elif args.operation=='broker-fit':
+                from studio_broker_fit import broker_fit
+                result=broker_fit(controller,args.portfolio,equity=args.equity,sets_dir=args.sets,server_time_utc=args.server_time_utc)
             elif args.operation in ('monitor-repair','monitor-stop'):
                 from studio_monitor_repair import repair
                 result=repair(controller,args.attempt_id,stop_only=args.operation=='monitor-stop')

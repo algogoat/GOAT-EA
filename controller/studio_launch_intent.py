@@ -72,6 +72,7 @@ def record_intent(store, terminal_id, run_id, job_id, package, *, actor, revisio
                     required_next_step='Fresh native ownership/account/binary checks and activation adapter')
         job.update(status='starting',launch_intent=intent)
         binding=packed(dict(terminal_id=terminal_id,run_id=run_id))
-        store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))
+        from studio_db_maintenance import write_queue
+        write_queue(store.db,binding,packed(state['queue']))
         store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
         return intent

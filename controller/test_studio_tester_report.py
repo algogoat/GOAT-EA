@@ -37,6 +37,18 @@ def schema_for(values):
     return dict(source_sha256='a' * 64, inputs=inputs)
 
 
+def with_ea_init_enums(schema):
+    """A GOAT-shaped compact schema (it names Mode_Lots) must declare the enum labels the EA init rules read
+    (studio_ea_init_rules fails closed otherwise): take them from the shipped 1.49 interface."""
+    from studio_ea_init_rules import EA_INIT_RULES
+    from studio_installation import contracts
+    real = contracts('1.49')[0]['inputs']
+    for name in {name for rule in EA_INIT_RULES for name in rule['enums']} - {'Mode_Lots'}:
+        if name in schema['inputs']:
+            schema['inputs'][name] = dict(real[name])
+    return schema
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)

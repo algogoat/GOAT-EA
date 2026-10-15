@@ -19,6 +19,78 @@ Do not transfer the parent's performance claims to changed inputs or ranges.
 
 What this page covers is new work: a changed file is a new, untested candidate.
 
+## A new strategy, start to finish
+
+Every new strategy follows the same order: the user's own idea
+([goat-strategy-create](skills/goat-strategy-create/SKILL.md)), a fork of a catalog
+template ([goat-template-create](skills/goat-template-create/SKILL.md)) and designs an
+agent drafts to fill a gap. Each step is one of GOAT's own tools, so any agent can
+repeat it exactly. The installed agent guide (`goat-beta-agent-guide.md`, "A new
+strategy, start to finish") gives the same order for the desktop side.
+
+This order is how to get more qualifying files; it is not a pool rule. A file that
+qualifies counts however it was built: pool membership is the product's qualifying
+rule only (AGENT-START-HERE step 20). **Advice:** don't put hand-written SETs or
+unseeded ranges into a production batch (house research, a FAT run or a customer
+batch), and don't skip the seed hunt: ranges that were never hunted mostly measure
+the guess. In GOAT's own house research on 2026-10-13, designs sent with hand-picked
+ranges straight into full runs found no profitable setting at all in 18 of their
+first 31 runs.
+
+1. **Build from a real parent.** Clone the closest catalog template, or a blank from
+   `starter-set --shape single|sequence` ("Start from blank" below). Never hand-write a
+   SET. Write the spec ("Build a documented variant" below) with **wide, purposeful
+   hunt ranges**: where the strategy uses them, open the inputs that change its
+   behaviour most (ATR periods, indicator timeframes, lock-profit size and flexibility,
+   and for sequences the progression inputs).
+   ```powershell
+   & '<agent kit>\goat.exe' studio --installation '<receipt.json>' build-set --source '<parent.set>' --output '<My strategies>\<name>.set' --spec '<variant-spec.json>'
+   & '<agent kit>\goat.exe' studio --installation '<receipt.json>' validate-set --set '<My strategies>\<name>.set' --require-optimization
+   ```
+   Read `cartesian_combinations` in the reply to size the hunt before preparing it.
+2. **Register it** with the desktop: `strategy.forkTemplate` (`templateId` for a
+   catalog parent, `starter` for a blank), so it appears in Research as the user's
+   untested strategy. The controller has no register command of its own: build-set's
+   `.build.json` receipt is local provenance only.
+3. **Seed hunt** ([SEED-WORKFLOW.md](SEED-WORKFLOW.md); "Seed loop" in
+   AGENT-START-HERE.md): `seed-prepare`, `seed-start`, then `seed-resume` until it
+   ends, then `seed-report`.
+   - **Window:** in-sample only, ending **before** the earliest date the later proof
+     reads (its `BackOOSDate`). Give the seed jobs explicit `FromDate`/`ToDate`. A seed
+     plan with `oos_windows` reads that O's SAMPLE, which lies inside a proof batch on
+     the same O and export Friday, so don't share one `oos_windows` between the seed
+     and the proof.
+   - **Size:** about 400 frames per member (`frame_target`), on the strategy's 3 most
+     likely assets first.
+4. **Read the seed honestly.** `summary.qualifying_count` counts rows that meet the
+   plan's cutoff (`min_fitness`, `min_trades`); that cutoff admits net losers, and
+   health only means "traded". Open each member's `result_path` file and count its
+   **profitable qualifiers**: candidates with `qualifies: true` (it keeps both plan
+   cutoffs, so a one-trade candidate with a high profit factor never wins) **and**
+   `metrics.Profit` > 0 **and** `metrics."Profit Factor"` ≥ 1.05. A strategy with no
+   profitable qualifier on any asset is dropped and recorded, not re-hunted with small
+   tweaks. Record every member, failures included, with the profitable-qualifier
+   count as its qualifying count (AGENT-START-HERE, seed step 5).
+5. **Promote the winners only.** For each member that has one, `seed-promote` the
+   profitable qualifier (step 4) with the highest `Result`:
+   `seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--member <alias>]`.
+   It writes `fixed.set` (the exact candidate, no search axis) and `robustness.set`
+   (the candidate's neighbourhood, with search axes).
+6. **Prove in an ordinary batch.** Put each promoted **`robustness.set`** in a
+   `prepare-batch` plan with a forward window, on dates after the seed window
+   (`seed_window.to_date` in `promotion.json`), and judge it like any template:
+   forward, then FOOS. Never put `fixed.set` in that batch: `prepare-batch` validates
+   every member as an optimization template and refuses a SET with no active axis.
+   `fixed.set` is the exact candidate for a single test only, such as a hold-up test. Declare
+   the held-out lock (`heldOut.declare`) as it enters Prove. Its files enter a pool by
+   the product's qualifying rule (AGENT-START-HERE step 20), like every file. Each
+   promoted or changed version counts as its own variant.
+
+The controller checks each file (validate-set, `EA_INIT_REFUSED`, the
+risk rules), but it does not check this order: `prepare-batch` accepts any validated
+SET and does not compare a promoted SET's seed window with the batch dates. Following
+the order is the agent's job.
+
 ## Validate an existing SET
 
 ```powershell
@@ -34,8 +106,9 @@ with no active search axes; omit it when inspecting fixed settings.
 The shipped dependency policy covers indicator-mode gates. It rejects a searched
 indicator input whose controlling mode is disabled for the entire search and
 reports conditionally inactive modes. **Unchecked axes require further review.**
-A pass does not establish initialization compatibility for every combination,
-broker constraints, useful economic effects, profitability or native readiness.
+It refuses any reachable combination the EA's own `OnInit` refuses from input values
+(`EA_INIT_REFUSED`, below). A pass does not establish broker constraints, useful
+economic effects, profitability or native readiness.
 Use `discover` to inspect each input's own enum; never reuse numeric meanings
 from a different enum or assume every integer between valid endpoints is valid.
 
@@ -98,6 +171,40 @@ switching the rule off. Reason code
 sequence trades; use fixed lots or raise Max_Seq_Trades. Single-trade risk sizing
 isn't available yet. We'll say so in the release notes when it ships." With fewer than 2 trades the EA's planned loss path
 is empty, so its lot solver climbs to the broker's maximum volume.
+
+**The EA's own init refusals, for every strategy (`EA_INIT_REFUSED`).** The same
+shared validator mirrors every `OnInit` refusal of the EA that depends only on input
+values (`controller/studio_ea_init_rules.py`, `EA_INIT_RULES`, each with its
+`GOAT V1.49.mq5` line and the EA's own alert text): for example Smart Rescue
+(`Mode_Bias_Exit=BiasExit_SmartRescue`) without `Mode_Lots=RiskperSeq` and `Risk>0`,
+`Risk<10` with risk sizing, MLPS hard close or Smart Peak, Smart Peak percentages
+outside 0-100, RRR on with `RRR<=0` or an inconsistent SL/TP or SL/LP pair,
+`|Grid_Size|<0.5`, LP and TP both disabled, malformed `Active_Time_*` sessions,
+inconsistent export dates in `EA_Desc @{mode=EXPORT,...}` and any `Mode_Download` other
+than `Download_Disabled` (the EA removes itself in `OnInit`; it is a data tool, not a
+strategy setting). It is checked over every
+value MT5 can run: the current value, every value of an active ladder and the first
+field of a dormant `N` tuple. **Any failing combination refuses**, for fixed SETs
+and optimization ranges alike, because an init-failing pass produces nothing and an
+exported or template SET must never fail init. The message names the rule, the
+first failing combination and quotes the EA's alert; fix the SET (narrow the
+range), never the rule. More than 10,000 combinations for one rule is refused as
+uncheckable; narrow the named ladders. A GOAT schema that lost an input or enum label
+a rule reads is refused (`EA_INIT_SCHEMA_UNRECOGNISED`). Refusals that depend on the
+symbol, account, files or run context (tester vs live) are listed in `NOT_PORTED`
+with the reason, and a test keeps the tables complete against the EA source,
+including its `ExpertRemove()` paths.
+
+**Refused in the tester only (`TESTER_INIT_REFUSED`, at `prepare-batch`).** Some
+SETs are valid on a live chart but refused by `OnInit` in every tester, optimization
+and forward pass: today an AI bias mode other than `Bias_Disabled` with the
+`BiasProtocol_ControlTowerV2` or `...DemoRaw` protocol (`GOAT V1.49.mq5:2777`; the
+header defaults are exactly that). `validate-set` keeps accepting them, since they are
+valid live; `prepare-batch` refuses such a member before anything is staged, over every
+reachable value the same strict way, naming the member, rule, values and the EA's
+message. Turn AI bias off (`Mode_Bias=Bias_Disabled`) or use
+`BiasProtocol_LegacyRecorded` for a backtest. An already-queued identical batch is
+still reused.
 
 ## Build a documented variant
 

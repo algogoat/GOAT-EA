@@ -408,6 +408,11 @@ failures, empty results and those never started. A failed member also shows its
 Verified reports contain actual rows, average/best fitness, health percentage,
 zero-trade count, average trades and qualifying count. Native health means the
 percentage of rows with trades greater than zero; it does not mean profitable.
+The qualifying count uses the plan's cutoff (`min_fitness`, `min_trades`), which
+admits net losers. Read a seed honestly from each member's result artifact: count the
+profitable qualifiers, candidates with `qualifies: true` (both plan cutoffs) and
+`metrics.Profit` > 0 and `metrics."Profit Factor"` >= 1.05, record that count, and
+promote only those (TEMPLATE-WORKFLOW.md, "A new strategy, start to finish").
 Filename metrics are checked against XML rows. The report retains the raw XML
 path and hash. Each per-member result artifact stores `base_values` once and every candidate
 stores only optimized `value_overrides`. Reconstruct exact values with
@@ -460,6 +465,9 @@ The robustness SET is a local stability check around the candidate; only the for
 window is out-of-sample. Its batch re-optimizes the neighborhood, so the back window
 picks the best neighbor: that pick is in-sample. Run it in an ordinary batch on
 dates after the seed window, with a forward window, and judge it on the forward result.
+Only `robustness.set` goes into that batch: `prepare-batch` refuses a SET with no
+active axis, and `fixed.set` has none by design. `fixed.set` is the exact candidate
+for a single test only, such as a hold-up test.
 Seed XML is not ordinary back/forward XML, exported SET/CSV pairs, or exposure
 sequence evidence, and must not be uploaded as a portfolio strategy pool.
 

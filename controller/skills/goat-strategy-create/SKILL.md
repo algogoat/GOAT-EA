@@ -1,6 +1,6 @@
 ---
 name: goat-strategy-create
-description: Guide a user, expert or not, from a trading idea to their own new GOAT strategy file through a plain-language interview, a catalog check first, then starter-set, build-set and validate-set, registered as an untested fork with zero evidence.
+description: Guide a user, expert or not, from a trading idea to their own new GOAT strategy file through a plain-language interview, a catalog check first, then starter-set, build-set and validate-set, registered as an untested fork with zero evidence, then a seed hunt, an honest seed read, seed-promote and a forward batch.
 ---
 
 Read [template construction](../../TEMPLATE-WORKFLOW.md) and the
@@ -43,7 +43,11 @@ currency. The starter's 500 is only a placeholder (half of a 1,000 demo). Never 
 the placeholder into the spec yourself: write the amount the user said, even if it
 is 500. Until a change sets `Risk`, every descendant of a starter carries a "Risk not
 chosen" marker, and any of them that sizes or closes by Risk is refused with
-`RISK_NOT_CHOSEN`.
+`RISK_NOT_CHOSEN`. Settings the EA itself refuses at start (for example Smart Rescue
+without `RiskperSeq`, `Risk` under 10 with risk sizing or a hard close, a zero pip gap,
+LP and TP both off) are refused with `EA_INIT_REFUSED`, which names the rule, the
+first failing combination and the EA's own message: change the setting or narrow the
+search range, then build again.
 
 **5. Catalog check before building.** Read `Desktop 'strategy.matrix'` and compare
 the answers with each template's description, support notes and SET (enabled
@@ -54,8 +58,12 @@ blank has none (then follow goat-template-create). The percentage is a rough
 comparison of filters, shape and exits; say so, never present it as a measurement.
 
 **6. Build.** Write the spec as in TEMPLATE-WORKFLOW: one rationale per change and
-honest `entry_logic`, `ladder_exits` and `intended_role` for the actual file. Search
-only a few inputs the idea depends on; at least one search axis is required.
+honest `entry_logic`, `ladder_exits` and `intended_role` for the actual file. Give
+the seed hunt (step 7) **wide, purposeful ranges** on the few inputs that change the
+idea's behaviour most: where it uses them, ATR periods, indicator timeframes,
+lock-profit size and flexibility, and for a sequence the progression inputs. At least
+one search axis is required; read `cartesian_combinations` from `validate-set` before
+sizing the hunt. Never hand-write a SET.
 
 ```powershell
 Studio @('starter-set','--shape','single','--output','<My strategies>\Starter.set')   # or --shape sequence
@@ -74,10 +82,31 @@ takes `{ starter: 'single' | 'sequence', contentBase64, name }` instead of
 `{ templateId, contentBase64, name }`; pass exactly one. Keep the `.md` notes and
 `.build.json` beside the fork.
 
-**7. Untested, then research.** Mark it UNTESTED and say plainly: "a new idea starts
-with zero evidence". Hand off to Explore, then Refine, then Prove. Hand-built ideas
-overfit easily, because every filter the user picked is part of the search, so the
-13-week held-out lock matters even more: declare it with `heldOut.declare` as the
+**7. Untested, then research, in this order.** Mark it UNTESTED and say plainly: "a
+new idea starts with zero evidence". Then follow TEMPLATE-WORKFLOW, "A new strategy,
+start to finish" (Explore, then Refine, then Prove):
+- **Seed hunt** ("Seed loop" in AGENT-START-HERE): `seed-prepare`, `seed-start`,
+  `seed-resume` until it ends, `seed-report`. In-sample only, on a window that ends
+  before the later proof's `BackOOSDate`; about 400 frames per member on the 3 most
+  likely assets first.
+- **Read it honestly.** `qualifying_count` uses the plan's cutoff, which admits net
+  losers. In each member's `result_path` file, count the profitable qualifiers:
+  candidates with `qualifies: true` (the plan's trade and fitness minimums) **and**
+  `Profit` > 0 **and** `Profit Factor` ≥ 1.05, and record that count. None on any
+  asset: tell the user the idea found no profitable setting, record it and drop it;
+  don't re-hunt with small tweaks.
+- **Promote the winners only** with `seed-promote` (the profitable qualifier with the
+  highest `Result`). Run its `robustness.set` in an ordinary batch with a forward
+  window on dates after the seed window, judged forward, then FOOS. `fixed.set` never
+  goes into that batch (it has no search axis, and `prepare-batch` refuses it); it is
+  the exact candidate, for a single test only.
+
+This order is how to get more qualifying files, not a pool rule: a file that
+qualifies counts however it was built. Advice: don't put a hand-written SET or
+unseeded ranges into a production batch (in GOAT's house research on 2026-10-13,
+hand-picked ranges found no profitable setting in 18 of their first 31 runs). Hand-built
+ideas overfit easily, because every filter the user picked is part of the search, so
+the 13-week held-out lock matters even more: declare it with `heldOut.declare` as the
 strategy enters Prove, let those unseen weeks close, and never tune against them.
 Never claim or imply performance. Demo only; real money stays the user's own
 decision outside this workflow.

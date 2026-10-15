@@ -359,7 +359,20 @@ DEPLOY_NEXT_RETIRED = 'DEPLOY_NEXT_RETIRED'
 DEPLOY_NEXT_RETIRED_MESSAGE = ("This EA build deploys through the app's Next step; the old one-by-one deploy was retired. "
                                'Use deploy-load (Next in the app) instead.')
 REGISTRATION_SECONDS = 14400
-ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMatch', 'exposureMode', 'ackId', 'ackStatus',
+UNRESOLVED_MUTATION_MESSAGE = 'An unresolved dashboard mutation is retained; inspect deploy-status before continuing'
+REQUEST_STILL_LIVE_MESSAGE = 'An unanswered portfolio request is still live; wait for it to expire'
+
+
+class UnresolvedMutation(ValueError):
+    """The retained request's receipt still says `started` (the dashboard is mid-mutation). The sentence is unchanged;
+    the type lets deploy-load's link step tell this pending state from a real refusal (remote deploy v0, trap T2)."""
+
+
+class RequestStillLive(ValueError):
+    """An unanswered request is still inside its expiry. Unchanged sentence; typed for the same reason."""
+
+
+ROW_FIELDS ={'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMatch', 'exposureMode', 'ackId', 'ackStatus',
               'AI_MODE', 'AI_PROTOCOL', 'AI_THRESHOLD', 'AI_SCOPE', 'AI_VERIFIED', 'AI_AVAILABLE', 'AI_AT', 'EA_TRADE_ALLOWED'}
 
 
@@ -465,13 +478,13 @@ def portfolio_register(controller, ident, value):
             receipt = root / (retained['id'] + '.json')
             if not receipt.exists():
                 if retained['expiresAtUtc'] + 5 >= time.time():
-                    raise ValueError('An unanswered portfolio request is still live; wait for it to expire')
+                    raise RequestStillLive(REQUEST_STILL_LIVE_MESSAGE)
                 archived = root / (retained['id'] + '.expired.request.json')
             else:
                 old, _ = read_bounded(receipt, 131072)
                 portfolio_receipt(old, retained, ident, value['members'])
                 if old['result'] == 'started':
-                    raise ValueError('An unresolved dashboard mutation is retained; inspect deploy-status before continuing')
+                    raise UnresolvedMutation(UNRESOLVED_MUTATION_MESSAGE)
                 archived = root / (retained['id'] + '.request.json')
             sharing_retry(lambda: (root / 'request.json').rename(archived))
         atomic(root / 'registration.json', value)
@@ -504,12 +517,12 @@ def portfolio_request(controller, ident, action, *, timeout=60, clock=time.monot
                 retained, _ = read_bounded(receipt, 131072)
                 portfolio_receipt(retained, previous, ident, registration['members'])
                 if retained['result'] == 'started':
-                    raise ValueError('An unresolved dashboard mutation is retained; inspect deploy-status before continuing')
+                    raise UnresolvedMutation(UNRESOLVED_MUTATION_MESSAGE)
                 sharing_retry(lambda: pending.rename(root / (previous['id'] + '.request.json')))
             elif previous['expiresAtUtc'] + 5 < time.time():
                 sharing_retry(lambda: pending.rename(root / (previous['id'] + '.expired.request.json')))
             else:
-                raise ValueError('An unanswered portfolio request is still live; wait for it to expire')
+                raise RequestStillLive(REQUEST_STILL_LIVE_MESSAGE)
         envelope = dict(schema=1, id=uuid.uuid4().hex, action=action, registrationSha256=digest,
                         expiresAtUtc=int(time.time()) + min(timeout + 5, 120))
         atomic(pending, envelope)

@@ -908,15 +908,19 @@ class DemoAgent:
             raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
         from studio_batch_close import refuse_closed
         refuse_closed(self.root, batch_id)          # a closed batch never continues, before any terminal effect
+        # Read-only, before any terminal effect or STOP clear: a refusal an unchanged retry repeats ends here.
+        previous = self._previous_attempt(job)
+        self._refuse_unfixable_retry(batch_id, previous)
         if unactivated_hint(self.root, job):
             self.retire_unactivated(batch_id)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
         if monitor.get('blocker'):
             raise ValueError(monitor['blocker']['message'] + ' ' + monitor['blocker']['fix'])
+        cleared = None
         if (self.state_root / 'STOP').exists():
             if clear_stop is not True:
                 raise ValueError('Owner STOP is on; continue with --clear-stop to lift it.')
-            self.clear_stop()
+            cleared = self.clear_stop()
         readback = self._refresh_readback()
         # The core's resolver: a retained, never-started successor of this batch (for
         # example after the driver failed to spawn) is reused instead of a new -rN, and
@@ -932,7 +936,54 @@ class DemoAgent:
                          members=prepared.get('members'), binding_changed_keys=prepared.get('binding_changed_keys'),
                          broker=broker)
         driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
-        return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
+        # What --clear-stop did (only ever the owner STOP file), and the previous attempt's EA refusal, if any.
+        return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id),
+                    clears=cleared.get('clears') if isinstance(cleared, dict) else None, stop_cleared=cleared,
+                    previous_attempt=previous)
+
+    def _previous_attempt(self, job):
+        """Read-only: how this batch's last launch attempt ended at the EA (its dispatch receipt status and its Experts
+        log refusal, studio_ea_refusal). Never raises; unreadable evidence reads as None."""
+        from studio_dispatch_observe import observe_dispatch
+        from studio_ea_refusal import for_job
+        attempt = ((job or {}).get('launch_intent') or {}).get('attempt_id')
+        if not (isinstance(attempt, str) and re.fullmatch(r'[a-f0-9]{64}', attempt)):
+            return dict(attempt_id=None, dispatch_status=None, ea_refusal=None)
+        dispatch = None
+        try:
+            observed = observe_dispatch(self.local / 'native-gate', attempt)
+            if observed.get('status') == 'receipt_observed':
+                dispatch = observed['receipt']['status']
+        except (OSError, ValueError, KeyError, TypeError):
+            dispatch = None
+        try:
+            jobs = self._jobs_readonly()
+        except (OSError, sqlite3.Error, ValueError, AttributeError):
+            jobs = ()
+        return dict(attempt_id=attempt, dispatch_status=dispatch, ea_refusal=for_job(self.install, job, jobs, now=self.clock()))
+
+    @staticmethod
+    def _refuse_unfixable_retry(batch_id, previous):
+        """continue refuses a retry that cannot work, naming the reason and the fix; nothing was changed.
+
+        The EA refused the batch's own inputs before any test ran (``refused before passes`` or ``Initialization
+        Failed`` in its Experts log): an unchanged continue refuses again, and clear-stop only clears the owner STOP
+        file. A retained human cancel (dispatch HUMAN_CANCEL_RETAINED) is the person's to release with Start."""
+        from studio_ea_refusal import blocks_retry
+        refusal = previous.get('ea_refusal')
+        if blocks_retry(refusal):
+            raise Refusal('Continue refused: the EA refused ' + batch_id + ' before any test ran: ' + str(refusal['reason'])
+                          + '. Continuing unchanged will refuse again, and clear-stop only clears the owner STOP file. '
+                          'Rebuild the SET (fix the input it names), prepare a new batch from it and start that. Nothing '
+                          'was changed. (Experts log ' + str(refusal['log']) + ' at ' + str(refusal['at_local']) + ')',
+                          'EA_REFUSED_INPUTS', batch_id=batch_id, ea_refusal=refusal,
+                          dispatch_status=previous.get('dispatch_status'), clears=None)
+        if previous.get('dispatch_status') == 'HUMAN_CANCEL_RETAINED':
+            raise Refusal('Continue refused: the EA kept a person\'s cancel for ' + batch_id + '\'s last start '
+                          '(HUMAN_CANCEL_RETAINED). clear-stop only clears the owner STOP file and never a human cancel. '
+                          'Have the person press Start in the GOAT panel on this MT5; nothing was changed.',
+                          'HUMAN_CANCEL_RETAINED', batch_id=batch_id, ea_refusal=refusal,
+                          dispatch_status='HUMAN_CANCEL_RETAINED', clears=None)
 
     def _peer_view(self):
         """The fields studio_peer_roster reads, without opening (or EA-hashing) the controller."""
@@ -978,6 +1029,7 @@ class DemoAgent:
             if result.get('applied'):
                 self._append('compact_evidence', 'applied', jobs=[job['job_id'] for job in result['jobs']],
                              queue_bytes_before=result['queue_bytes_before'], queue_bytes_after=result['queue_bytes_after'])
+                result['db_reclaim'] = self._reclaim_after_compaction(controller)
             return result
 
     def compact_receipts(self, apply=False):
@@ -989,6 +1041,45 @@ class DemoAgent:
                 self._append('compact_receipts', 'applied', receipts=[item['request_id'] for item in result['receipts']],
                              receipt_bytes_before=result['receipt_bytes_before'],
                              receipt_bytes_after=result['receipt_bytes_after'])
+                result['db_reclaim'] = self._reclaim_after_compaction(controller)
+            return result
+
+    @staticmethod
+    def _reclaim_after_compaction(controller):
+        """A digest/evidence pass frees the pages of the rows it shrank: an incremental store gives them back now
+        (bounded, studio_db_maintenance); a legacy store reports that studio-db-compact is offered."""
+        from studio_db_maintenance import after_batch
+        return after_batch(controller, max_seconds=30.0)
+
+    def studio_db_compact(self, *, apply=False, confirm=False):
+        """``studio-db-compact``: one-time compaction of a legacy controller database (studio_db_maintenance.compact).
+
+        Preview unless ``apply``. ``apply`` needs ``confirm``, takes the terminal lease and requires an idle terminal
+        (no running batch, seed slot, unreleased fixed task or live driver); it never opens the controller through
+        ``_studio`` (the swap needs every handle closed) and has no MT5 effect. VACUUM INTO a temp file beside the
+        database, verify it (integrity, schema, user_version, rows, rowids, content hashes), swap, and keep the
+        original as ``studio.sqlite.pre-vacuum-<ts>`` until the next successful batch start.
+        """
+        from studio_db_maintenance import compact
+        database = self.root / 'studio.sqlite'
+        if not apply:
+            try:
+                busy = self._close_busy()
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                busy = 'the terminal state cannot be read (' + str(exc)[:200] + ')'
+            return compact(database, busy=busy, apply=False, now=self.clock())
+        if confirm is not True:
+            raise Refusal('studio-db-compact --apply replaces the controller database with a verified compact copy; '
+                          'pass --confirm.', 'DB_COMPACT_CONFIRM_REQUIRED')
+        stack = ExitStack()
+        try:
+            stack.enter_context(self._exclusive())
+        except ValueError as exc:
+            raise Refusal('This terminal is busy (' + str(exc) + '); nothing was changed.', 'DB_COMPACT_LANE_BUSY') from None
+        with stack:
+            result = compact(database, busy=self._close_busy(), apply=True, now=self.clock())
+            self._append('studio_db_compact', 'swapped', original=result['original'], bytes_before=result['bytes_before'],
+                         bytes_after=result['bytes_after'], tables=result['tables'])
             return result
 
     def cancel_pending(self, batch_id):
@@ -1007,10 +1098,17 @@ class DemoAgent:
             self._append('studio_cancel_pending', 'cancelled', batch_id=batch_id, broker=broker)
             return dict(status=controller.job(batch_id)['status'], batch_id=batch_id)
 
+    # clear-stop deletes exactly one file: the owner STOP this tool's own `stop` wrote. It never clears a human cancel,
+    # TAKE CONTROL, an EA latch or an EA input refusal (ea_refusal in batch-status), and says so in every result.
+    CLEARS = 'owner_stop_file_only'
+    CLEARS_NOTE = ('clear-stop clears only the owner STOP file written by demo stop. It does not change the EA\'s inputs, '
+                   'a human cancel, TAKE CONTROL or any EA latch; a batch the EA refused (ea_refusal in batch-status) '
+                   'needs a rebuilt SET.')
+
     def clear_stop(self):
         marker = self.state_root / 'STOP'
         if not marker.exists():
-            return dict(status='already_clear')
+            return dict(status='already_clear', clears=self.CLEARS, note=self.CLEARS_NOTE)
         try:
             record = read_json(marker)
         except (ValueError, json.JSONDecodeError):
@@ -1029,7 +1127,7 @@ class DemoAgent:
             if read_json(self.local / 'ui-observation.json').get('owner') != 'agent':
                 raise ValueError('Agent does not own the EA')
             marker.unlink()
-            return self._append('clear_stop', 'verified', broker=broker)
+            return dict(self._append('clear_stop', 'verified', broker=broker, clears=self.CLEARS), note=self.CLEARS_NOTE)
 
     def _stop_requested(self):
         if (self.state_root / 'STOP').exists():
@@ -2590,6 +2688,221 @@ class DemoAgent:
                          manifest_sha256=result['manifest_sha256'])
             return archive.public(dict(preview, result=result), applied=True)
 
+    def run_folder_archive(self, archive_root=None, *, apply=False, complete=False, confirm=False, keep_list=None,
+                           keep_last=None, run_ids=None, max_runs=None, free_floor_gb=None, restore=False, repoint=False,
+                           reset_run=None, source_floor_gb=None, adopt=False):
+        """``evidence-archive --run-folders``: move finished native run folders (``Common Files\\GOAT\\R<12 hex>``) to an
+        archive root on another local NTFS/ReFS volume (studio_run_folder_archive, goatai#2350 6156934300).
+
+        Preview unless ``apply`` or ``complete``: every eligible run folder (finished, not active, not continue-able,
+        not cited by an unfinished run, not among the newest ``keep_last`` runs, not on ``keep_list``), the bytes to
+        free, and with ``archive_root`` the target's free space against the ``free_floor_gb`` floor. ``apply`` (needs
+        ``confirm``, ``keep_list`` and ``archive_root``) copies and sha256-verifies each folder, writes its manifest and
+        ARCHIVED.json, and keeps every source; ``complete`` (a separate invocation, needs ``confirm``) re-verifies every
+        archived file and only then removes the sources, leaving ARCHIVED.json, which every controller reader follows.
+        Demo lane only. It holds its own lock (shared by every installation of these Common Files), not the terminal lease (a long copy never blocks research), and re-checks
+        each run before it copies or removes it. No MT5 effect.
+        """
+        import studio_evidence_archive as archive
+        import studio_run_folder_archive as runs
+        modes = [name for name, on in (('apply', apply), ('complete', complete), ('restore', restore), ('repoint', repoint),
+                                       ('reset-run', reset_run is not None), ('adopt', adopt)) if on]
+        if len(modes) > 1:
+            raise Refusal('evidence-archive --run-folders takes one of --apply, --complete, --restore, --repoint, --reset-run, --adopt '
+                          'at a time '
+                          '(given: %s); nothing was changed.' % ', '.join('--' + m for m in modes), 'ARCHIVE_MODE_CONFLICT')
+        run_ids = list(run_ids or [])
+        if any(not isinstance(item, str) or not runs.RUN_NAME.fullmatch(item) for item in run_ids):
+            raise ValueError('--run-id must name a run folder R<12 lowercase hex>')
+        keep_last = runs.DEFAULT_KEEP_LAST if keep_last is None else int(keep_last)
+        floor_gb = runs.DEFAULT_FLOOR_GB if free_floor_gb is None else float(free_floor_gb)
+        if keep_last < 0 or floor_gb < 0 or (max_runs is not None and int(max_runs) < 1):
+            raise ValueError('--keep-last and --free-floor-gb must be zero or more, --max-runs one or more')
+        floor = int(floor_gb * runs.GB)
+        if modes and confirm is not True:
+            raise Refusal('evidence-archive --run-folders --%s changes run folders or their stubs; pass --confirm.'
+                          % modes[0], 'ARCHIVE_CONFIRM_REQUIRED')
+        try:
+            self._paired_account()
+        except ValueError as exc:
+            raise Refusal('evidence-archive runs only on a paired demo installation: ' + str(exc), 'ARCHIVE_NOT_DEMO') from None
+        if restore or repoint:
+            source_floor_gb = runs.DEFAULT_SOURCE_FLOOR_GB if source_floor_gb is None else float(source_floor_gb)
+            if source_floor_gb < 0:
+                raise ValueError('--source-floor-gb must be zero or more')
+            return self._run_folder_restore_or_repoint(run_ids, archive_root if repoint else None,
+                                                       source_floor=int(source_floor_gb * runs.GB))
+        if adopt:
+            if not run_ids:
+                raise Refusal('--adopt needs --run-id <R...> (repeatable): which run folders get their ARCHIVED.json rebuilt; '
+                              'nothing was changed.', 'ARCHIVE_RUN_ID_REQUIRED')
+            if archive_root is None or not str(archive_root):
+                raise Refusal('--adopt needs --archive-root <the root that holds the archive>.', 'ARCHIVE_ROOT_INVALID')
+            source = runs.source_root(self.install)
+            results = []
+            with runs.ArchiverLock(self.install):
+                for run_id in run_ids:
+                    result = runs.adopt_run(self.root, source, source / run_id, archive_root, install=self.install,
+                                            now=self.clock())
+                    self._append('run_folder_archive', 'adopted', run_id=run_id, archive_dir=result['archive_dir'],
+                                 state=result['state'], manifest_sha256=result['manifest_sha256'])
+                    results.append(result)
+            return dict(scope='run_folders', applied=True, adopted=True, results=results)
+        if reset_run is not None:
+            if not runs.RUN_NAME.fullmatch(str(reset_run)):
+                raise ValueError('--reset-run must name a run folder R<12 lowercase hex>')
+            if archive_root is None or not str(archive_root):
+                raise Refusal('--reset-run needs --archive-root <the root that holds the partial archive>.', 'ARCHIVE_ROOT_INVALID')
+            source = runs.source_root(self.install)
+            with runs.ArchiverLock(self.install):
+                result = runs.reset_run(source, source / reset_run, archive_root, now=self.clock())
+            self._append('run_folder_archive', 'reset', run_id=reset_run, moved_to=result['moved_to'])
+            return dict(scope='run_folders', applied=True, result=result)
+        if (apply or complete) and keep_list is None:
+            raise Refusal('--%s needs --keep-list <file>: the JSON list (it may be empty, []) of batches and run folders '
+                          'the prereg files, the book and live portfolios cite, which the controller cannot see. Nothing '
+                          'was moved.' % ('apply' if apply else 'complete'), 'ARCHIVE_KEEP_LIST_REQUIRED')
+        if complete:
+            return self._run_folder_complete(run_ids, archive.read_keep_list(keep_list), keep_last)
+        if apply and (archive_root is None or not str(archive_root)):
+            raise Refusal('evidence-archive --run-folders --apply needs --archive-root <folder on another drive>.',
+                          'ARCHIVE_ROOT_INVALID')
+        keep = archive.read_keep_list(keep_list) if keep_list is not None else None
+        options = dict(keep=keep, keep_last=keep_last, run_ids=run_ids or None, floor_bytes=floor, max_runs=max_runs)
+        if not apply:
+            preview = runs.plan(self.root, self.install, archive_root, now=self.clock(), **options)
+            return runs.public(dict(preview, next_step=(
+                'evidence-archive --run-folders --archive-root <folder> --apply --confirm --keep-list <file> copies these '
+                'run folders to the archive, verifies every file, and writes ARCHIVED.json in each; every source stays. '
+                'Then evidence-archive --run-folders --complete --confirm re-verifies every archived file and only then '
+                'removes the sources.')))
+        with runs.ArchiverLock(self.install):
+            preview = runs.plan(self.root, self.install, archive_root, now=self.clock(), **options)
+            if preview['blockers']:
+                first = preview['blockers'][0]
+                fields = {key: value for key, value in first.items() if key not in ('code', 'plain')}
+                raise Refusal(first['plain'] + ' Nothing was moved.', first['code'], blockers=preview['blockers'], **fields)
+            if not preview['eligible']:
+                raise Refusal('No run folder is eligible to archive (see the preview\'s skipped list); nothing was moved.',
+                              'ARCHIVE_NOTHING_TO_MOVE')
+            results, skipped = [], []
+            for run in preview['eligible']:
+                # Re-checked right before its copy: a run that started reading it, or a new keep, wins.
+                again = runs.plan(self.root, self.install, None, now=self.clock(), sizes=False,
+                                  **dict(options, run_ids=[run['run_id']], max_runs=None))
+                if again['blockers'] or not again['eligible']:
+                    skipped.append(dict(run_id=run['run_id'], codes=[b['code'] for b in again['blockers']] +
+                                        [c for row in again['skipped'] for c in row['codes']]))
+                    continue
+                free = shutil.disk_usage(preview['archive_root']).free
+                if free - runs.missing_bytes(preview['archive_root'], run['run_id'], run['files']) < floor:
+                    skipped.append(dict(run_id=run['run_id'], codes=['ARCHIVE_ROOT_FLOOR']))
+                    break
+                result = runs.apply_run(Path(run['path']), preview['archive_root'], run['files'], install=self.install,
+                                        now=self.clock(), owners_=run['owners'])
+                self._append('run_folder_archive', 'archived', run_id=run['run_id'], archive_dir=result['archive_dir'],
+                             files=result['file_count'], bytes=result['bytes'], manifest_sha256=result['manifest_sha256'])
+                results.append(result)
+            return runs.public(dict(preview, results=results, skipped_at_copy=skipped,
+                                    archived_bytes=sum(item['bytes'] for item in results),
+                                    next_step='evidence-archive --run-folders --complete --confirm re-verifies every archived '
+                                              'file and then removes the sources (ARCHIVED.json stays).'), applied=True)
+
+    def _run_folder_restore_or_repoint(self, run_ids, new_root, *, source_floor):
+        """``--restore`` (``new_root`` None): bring each ``--run-id`` back to its own volume, verified, and retire its stub.
+        ``--repoint --archive-root <new root>``: point each archived run (the ``--run-id`` ones, else every one) at its
+        verified copy under the new root, e.g. after the archive drive was cloned or replaced (review item 4 on #237)."""
+        import studio_run_folder_archive as runs
+        source = runs.source_root(self.install)
+        if new_root is None and not run_ids:
+            raise Refusal('--restore needs --run-id <R...> (repeatable): which archived run folders come back; nothing was '
+                          'changed.', 'ARCHIVE_RUN_ID_REQUIRED')
+        if new_root is not None and not str(new_root):
+            raise Refusal('--repoint needs --archive-root <the new archive root>.', 'ARCHIVE_ROOT_INVALID')
+        with runs.ArchiverLock(self.install):
+            names = sorted(entry.name for entry in os.scandir(source) if entry.is_dir(follow_symlinks=False)
+                           and runs.RUN_NAME.fullmatch(entry.name)) if source.is_dir() else []
+            chosen = [name for name in names if (name in run_ids if run_ids else runs.load_stub(source / name) is not None)]
+            unknown = sorted(set(run_ids) - set(names))
+            if unknown:
+                raise Refusal('No run folder %s under %s; nothing was changed.' % (unknown[0], source), 'ARCHIVE_NOT_ARCHIVED',
+                              run_id=unknown[0])
+            if not chosen:
+                raise Refusal('No archived run folder to repoint; nothing was changed.', 'ARCHIVE_NOTHING_TO_MOVE')
+            results = []
+
+            def elsewhere():
+                """Archived runs whose stub does NOT point below the new root yet: never retire the old drive while any."""
+                target = os.path.normcase(os.path.abspath(str(new_root)))
+                found = []
+                for name in names:
+                    try:
+                        stub = runs.load_stub(source / name)
+                    except ValueError:
+                        found.append(dict(run_id=name, archive_dir=None))
+                        continue
+                    if stub is not None and not os.path.normcase(os.path.abspath(stub['archive_dir'])).startswith(target + os.sep):
+                        found.append(dict(run_id=name, archive_dir=stub['archive_dir']))
+                return found
+            for run_id in chosen:
+                if new_root is None:
+                    result = runs.restore_run(self.root, source, source / run_id, now=self.clock(), floor_bytes=source_floor)
+                    self._append('run_folder_archive', 'restored', run_id=run_id, archive_dir=result['archive_dir'],
+                                 restored=result['restored'], retired_stub=result['retired_stub'])
+                else:
+                    try:
+                        result = runs.repoint_run(self.root, source, source / run_id, new_root, now=self.clock())
+                    except Refusal as exc:
+                        left = elsewhere()
+                        raise Refusal('%s %d run(s) were repointed before it; %d stub(s) still point at another root (listed in '
+                                      'still_pointing_elsewhere): keep that drive until they are repointed.'
+                                      % (exc, len(results), len(left)), exc.code, **dict(
+                                          exc.fields, repointed=[r['run_id'] for r in results],
+                                          still_pointing_elsewhere=left[:500])) from None
+                    self._append('run_folder_archive', 'repointed', run_id=run_id, archive_dir=result['archive_dir'],
+                                 previous_archive_dir=result['previous_archive_dir'], retired_stub=result['retired_stub'])
+                results.append(result)
+            return dict(scope='run_folders', applied=True, restored=new_root is None, repointed=new_root is not None,
+                        results=results,
+                        **(dict(still_pointing_elsewhere=elsewhere()[:500]) if new_root is not None else {}))
+
+    def _run_folder_complete(self, run_ids, keep, keep_last):
+        """``evidence-archive --run-folders --complete``: remove the sources of every archived run folder (or of
+        ``run_ids``) whose stub is ``archived`` or ``removing``. Right before each run's removal the FULL per-run plan
+        runs again (review item 2 on #237): active pointer, owners finished, live/paused driver, continue-able,
+        successor, in-flight reader, held-out lock, ``keep`` and ``keep_last``; any blocker keeps that run's sources."""
+        import studio_run_folder_archive as runs
+        source = runs.source_root(self.install)
+        with runs.ArchiverLock(self.install):
+            names = sorted(entry.name for entry in os.scandir(source) if entry.is_dir(follow_symlinks=False)
+                           and runs.RUN_NAME.fullmatch(entry.name)) if source.is_dir() else []
+            results, skipped = [], []
+            for run_id in names:
+                if run_ids and run_id not in run_ids:
+                    continue
+                stub = runs.load_stub(source / run_id)
+                if stub is None or stub['state'] == 'removed':
+                    continue
+                again = runs.plan(self.root, self.install, None, keep=keep, keep_last=keep_last, run_ids=[run_id],
+                                  now=self.clock(), sizes=False, recheck_archived=True)
+                if again['blockers'] or not again['eligible']:
+                    skipped.append(dict(run_id=run_id, codes=[b['code'] for b in again['blockers']] +
+                                        [c for row in again['skipped'] for c in row['codes']],
+                                        plain=(again['blockers'] or again['skipped'] or [dict(plain=None)])[0]['plain']))
+                    continue
+                result = runs.complete_run(source, source / run_id, now=self.clock())
+                self._append('run_folder_archive', 'completed', run_id=run_id, archive_dir=result['archive_dir'],
+                             files=result['file_count'], bytes=result['bytes'], removed=result['removed'],
+                             manifest_sha256=result['manifest_sha256'])
+                results.append(result)
+            if not results and not skipped:
+                raise Refusal('No archived run folder awaits --complete (run --apply first); nothing was removed.',
+                              'ARCHIVE_NOTHING_TO_MOVE')
+            return dict(scope='run_folders', completed=True, applied=True, results=results, skipped=skipped,
+                        freed_bytes=sum(item['bytes'] for item in results if item['removed']),
+                        plain='%d run folder(s) now live only in their archive; ARCHIVED.json in each tells every '
+                              'controller reader where.' % len(results))
+
     def _seed_pause(self, batch_id, kind='seed'):
         word = LANES[kind]['word']
         with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
@@ -3621,6 +3934,12 @@ def main(argv=None):
     receipts = commands.add_parser('compact-receipts',
                                    help='Preview, then --apply: archive legacy full-queue receipts and keep only their queue digest')
     receipts.add_argument('--apply', action='store_true')
+    db_compact = commands.add_parser('studio-db-compact',
+                                     help='Preview, then --apply --confirm while idle: give a legacy controller database\'s '
+                                          'free pages back (verified VACUUM INTO copy + swap; original kept until the next '
+                                          'successful batch start)')
+    db_compact.add_argument('--apply', action='store_true')
+    db_compact.add_argument('--confirm', action='store_true')
     begin =commands.add_parser('start', help='Start any prepared batch under the bounded driver')
     begin.add_argument('--batch-id', required=True)
     begin.add_argument('--max-seconds', type=int)
@@ -3711,7 +4030,32 @@ def main(argv=None):
                                         'evidence to an archive root on another local NTFS/ReFS volume, sha256-verified, with '
                                         'a manifest and a pointer every reader follows, keeping every source; then, as its own '
                                         'step, --complete --confirm re-verifies every archived file and removes the sources')
-    archiver.add_argument('--batch-id', required=True)
+    archiver.add_argument('--batch-id', help='The batch or catch-up whose evidence moves (required without --run-folders)')
+    archiver.add_argument('--run-folders', action='store_true',
+                          help='Scope: finished native run folders (Common Files\\GOAT\\R<12 hex>) instead of one batch\'s '
+                               'evidence; each moves to <root>\\<run id>\\ and leaves ARCHIVED.json, which every reader follows')
+    archiver.add_argument('--run-id', action='append', default=None,
+                          help='With --run-folders: only this run folder (repeatable)')
+    archiver.add_argument('--keep-last', type=int, default=None,
+                          help='With --run-folders: keep the newest N runs where they are (default 10)')
+    archiver.add_argument('--max-runs', type=int, default=None, help='With --run-folders --apply: archive at most N runs')
+    archiver.add_argument('--free-floor-gb', type=float, default=None,
+                          help='With --run-folders: refuse when the archive root would keep less than this free (default 50)')
+    archiver.add_argument('--restore', action='store_true',
+                          help='With --run-folders --run-id R... --confirm: copy an archived run folder back to its own volume, '
+                               'verified, and retire its ARCHIVED.json (the archive copy is kept)')
+    archiver.add_argument('--adopt', action='store_true',
+                          help='With --run-folders --run-id R... --archive-root <root> --confirm: rebuild a lost ARCHIVED.json from '
+                               'the verified archive (every file re-hashed); nothing is copied or removed')
+    archiver.add_argument('--source-floor-gb', type=float, default=None,
+                          help='With --run-folders --restore: refuse when the volume of the run folders (C:) would keep less '
+                               'than this free after the copy (default 10)')
+    archiver.add_argument('--reset-run', default=None,
+                          help='With --run-folders --archive-root <root> --confirm: set aside the partial archive of a run that '
+                               'has no ARCHIVED.json (renamed to <root>\\.reset\\..., nothing deleted) so --apply starts fresh')
+    archiver.add_argument('--repoint', action='store_true',
+                          help='With --run-folders --archive-root <new root> --confirm: point archived run folders (--run-id, '
+                               'else all) at their verified copies under a new archive root, e.g. after a drive clone')
     archiver.add_argument('--archive-root', type=Path,
                           help='Required for the preview and --apply: an existing folder on another local NTFS/ReFS volume; '
                                'files go to <root>/<installation>/<batch id>/ (--complete reads the pointer instead)')
@@ -3859,6 +4203,7 @@ def main(argv=None):
         elif args.command == 'start': result = agent.start(args.batch_id, args.max_seconds)
         elif args.command == 'compact-evidence': result = agent.compact_evidence(args.apply)
         elif args.command == 'compact-receipts': result = agent.compact_receipts(args.apply)
+        elif args.command == 'studio-db-compact': result = agent.studio_db_compact(apply=args.apply, confirm=args.confirm)
         elif args.command == 'continue': result = agent.continue_batch(args.batch_id, new_batch_id=args.new_batch_id,
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
             include_no_edge=args.include_no_edge, accept_news_change=args.accept_news_change)
@@ -3884,8 +4229,23 @@ def main(argv=None):
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
         elif args.command == 'batch-pause-close': result = agent.batch_pause_close(args.batch_id, mode=args.mode,
             reason=args.reason, confirm=args.confirm)
-        elif args.command == 'evidence-archive': result = agent.evidence_archive(args.batch_id, args.archive_root,
-            apply=args.apply, confirm=args.confirm, keep_list=args.keep_list, complete=args.complete)
+        elif args.command == 'evidence-archive' and args.run_folders:
+            if args.batch_id is not None:
+                raise Refusal('--run-folders archives run folders, not one batch\'s evidence: drop --batch-id (or --run-folders); '
+                              'nothing was changed.', 'ARCHIVE_MODE_CONFLICT')
+            result = agent.run_folder_archive(args.archive_root, apply=args.apply, complete=args.complete, confirm=args.confirm,
+                                              keep_list=args.keep_list, keep_last=args.keep_last, run_ids=args.run_id,
+                                              max_runs=args.max_runs, free_floor_gb=args.free_floor_gb,
+                                              restore=args.restore, repoint=args.repoint, reset_run=args.reset_run,
+                                              source_floor_gb=args.source_floor_gb, adopt=args.adopt)
+        elif args.command == 'evidence-archive':
+            if args.batch_id is None or args.restore or args.repoint or args.adopt or args.reset_run is not None or any(
+                    value is not None for value in (args.run_id, args.keep_last, args.max_runs, args.free_floor_gb,
+                                                    args.source_floor_gb)):
+                raise ValueError('evidence-archive needs --batch-id (or --run-folders for run folders; --run-id, --keep-last, '
+                                 '--max-runs, --free-floor-gb, --restore and --repoint belong to --run-folders)')
+            result = agent.evidence_archive(args.batch_id, args.archive_root,
+                apply=args.apply, confirm=args.confirm, keep_list=args.keep_list, complete=args.complete)
         elif args.command == 'evidence-restore': result = agent.evidence_restore(args.batch_id, confirm=args.confirm)
         elif args.command == 'evidence-repoint': result = agent.evidence_repoint(args.batch_id, args.archive_dir,
             confirm=args.confirm)

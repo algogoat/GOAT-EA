@@ -22,7 +22,7 @@ from studio_seed_slot import guard_active_seed
 from test_demo_agent import MetaTrader
 from test_demo_seed_agent import MONITOR, FakeController, SeedProcess
 from test_studio_holdup import report_inputs
-from test_studio_tester_report import fixture_text, schema_for
+from test_studio_tester_report import fixture_text, schema_for, with_ea_init_enums
 
 
 class DemoHoldupAgentTests(unittest.TestCase):
@@ -58,6 +58,7 @@ class DemoHoldupAgentTests(unittest.TestCase):
         self.schema = schema_for(values)
         self.schema['inputs']['Mode_Bias'] = dict(type='int', optimizable=True, enum_choices=dict(Bias_Disabled=1, Bias_Opens=0))
         self.schema['inputs']['Mode_Lots'] = dict(type='int', optimizable=True, enum_choices=dict(Fixed=0, Balance=1, RiskperSeq=2))
+        with_ea_init_enums(self.schema)
         self.policy = dict(header_sha256='a' * 64, main_sha256='b' * 64, coverage='indicator_mode_gates_only', rules=[])
         self.source = base / 'sets' / 'GOAT V1.49 SP500,M1_Trds=128_Prf=-880_DD=1960_PF=0.85_SR=-2.80_ARF=-0.1.set'
         self.source.parent.mkdir()

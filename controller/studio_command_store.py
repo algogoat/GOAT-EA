@@ -21,12 +21,26 @@ class Conflict(ValueError):
 
 
 class StudioStore:
-    def __init__(self, path, *, input_schema=None, dependency_policy=None):
+    def __init__(self, path, *, input_schema=None, dependency_policy=None, create=False):
+        """Open the controller store. ``create=True`` only from the first bootstrap (goat_studio.bootstrap): every
+        other open uses ``connect_existing`` (mode=rw after any interrupted compaction is recovered, refusing while
+        one is swapping), so no open can ever create an empty store in place of the real one."""
         self.input_schema = None if input_schema is None else json.loads(packed(input_schema))
         self.input_schema_hash = None if input_schema is None else sha(self.input_schema)
         self.dependency_policy = None if dependency_policy is None else json.loads(packed(dependency_policy))
-        self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        if str(path) == ':memory:':
+            self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        elif create:
+            from studio_db_maintenance import recover_interrupted
+            recover_interrupted(path)
+            self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        else:
+            from studio_db_maintenance import connect_existing
+            self.db = connect_existing(path, timeout=10)
         self.db.row_factory = sqlite3.Row
+        # A new store gives freed pages back (studio_db_maintenance): only possible before the first table.
+        from studio_db_maintenance import enable_incremental
+        enable_incremental(self.db)
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS studio_native_gate(id INTEGER PRIMARY KEY CHECK(id=1), root TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS studio_authorities(binding TEXT PRIMARY KEY, kind TEXT NOT NULL, provenance TEXT NOT NULL);
@@ -208,7 +222,8 @@ class StudioStore:
                     else:
                         jobs = change_queue(command,request['payload'],state,self.input_schema,self.dependency_policy)
                     raw_queue = packed(jobs)
-                    self.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',(binding,raw_queue))
+                    from studio_db_maintenance import write_queue
+                    write_queue(self.db,binding,raw_queue,create=True)
                     state['queue'] = jobs
                 elif command == 'draft.replace_strategy':
                     self.db.execute('INSERT OR REPLACE INTO studio_strategy_drafts VALUES(?,?)',

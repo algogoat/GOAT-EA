@@ -25,9 +25,13 @@ class ConfigStartTests(unittest.TestCase):
         c.state=lambda:copy.deepcopy(self.state)
         c.job=lambda job_id:copy.deepcopy(self.state['queue'][0])
         c.bridge=types.SimpleNamespace(root=root/'bridge',pump=lambda:None)
-        def execute(sql,values):
+        def execute(sql,values=()):
             if sql.startswith('UPDATE studio_queues'):self.state['queue']=json.loads(values[0])
             elif sql.startswith('UPDATE studio_state'):self.state['revision']+=1
+            # studio_db_maintenance.write_queue: savepoint, delete, insert (the queue write that reuses its pages)
+            elif sql.startswith(('SAVEPOINT','RELEASE','ROLLBACK TO')):pass
+            elif sql.startswith('DELETE FROM studio_queues'):return types.SimpleNamespace(rowcount=1)
+            elif sql.startswith('INSERT INTO studio_queues'):self.state['queue']=json.loads(values[1])
             else:raise AssertionError(sql)
         c.store=types.SimpleNamespace(transaction=lambda:nullcontext(),db=types.SimpleNamespace(execute=execute))
         c.runtime=Mock();c.native_args=lambda:dict(account=c.session['account'],

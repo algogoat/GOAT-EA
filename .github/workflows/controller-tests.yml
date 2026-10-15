@@ -24,7 +24,7 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation, test_profile_staged_adoption, test_b46_no_drift,
+#           test_terminal_isolation, test_profile_staged_adoption, test_b47_no_drift,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -35,6 +35,8 @@ concurrency:
 # shard 1/3 hit the 45-min cap on GOAT-EA#201 and #203 (run 37956413084: 45.25 min, cancelled), so the
 # suite now runs as 4 shards split by measured step time. The step table and the timing data live
 # in controller-mutation-shard.yml (one reusable workflow, also used by the full run).
+# B47 (goatai#2350 6186991728): each shard's cap is 60 min, and the slow steps log a per-mutant time
+# budget; the measured step table and why the shards were not split again are in that file.
 #
 #   mutation selection        scripts/ci_mutation_select.py diffs the PR against its merge base and
 #                             picks the steps whose files it changes plus their dependents. Core
@@ -131,8 +133,8 @@ jobs:
         run: node scripts/test_dashboard_overview.cjs
       - name: Profile-staged deploy adoption, link_children, retired deploy_next and disabled dashboard deploy (beta.25, goatai#1885)
         run: node scripts/test_profile_staged_adoption.cjs
-      - name: B46 no drift from B45 (entrypoint only; trade-path units and input header byte-identical, marked guard lines)
-        run: node scripts/test_b46_no_drift.cjs
+      - name: B47 no drift from B46 (entrypoint only; trade-path units and input header byte-identical, marked guard lines)
+        run: node scripts/test_b47_no_drift.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness
@@ -163,7 +165,7 @@ jobs:
         run: node scripts/test_panel_headless.cjs
       - name: B44 every Alert( in the compile closure is inside the deploy-notice redirection (include order)
         run: node scripts/test_alert_guard.cjs
-      - name: B46 missing or duplicate CID record refuses new sequences (orphan_suspected, cid_duplicate), management continues (goatai#2350 6186284858)
+      - name: B46/B47 CID guard (orphan_suspected, cid_duplicate; live-chart mappings, claim heartbeat, unreadable claim, add freeze), management continues (goatai#2350)
         run: node scripts/test_cid_guard.cjs
       # One command per step (GOAT-EA#227 review): this was one two-command step, which only failed on its last exit
       # code, so a failing test_lint_ea_mailbox_share.py was hidden by a passing lint run.

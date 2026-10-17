@@ -1,17 +1,19 @@
-"""Terminal isolation (INV-BATCH-01, INV-CRED-01): every MT5 terminal/account runs its
-batch state independently, and each MT5 login keeps its own GOAT credential.
+"""Terminal isolation (INV-BATCH-01, INV-CRED-01/02): every MT5 terminal/account runs its
+batch state independently, and each MT5 login, terminal and EA build keeps its own GOAT
+credential slot.
 
 Pins are shared with scripts/test_terminal_isolation.cjs, which runs the EA side.
 """
 import configparser
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from studio_agent_mailbox import CREDENTIAL_NAME as STUDIO_CREDENTIAL_NAME
 import studio_terminal_isolation as iso
 from studio_native_inventory import inventory
 
@@ -90,27 +92,48 @@ class NamespaceFormulaTests(unittest.TestCase):
 
 
 class CredentialPathTests(unittest.TestCase):
+    """INV-CRED-01/02. Pins are shared with scripts/test_terminal_isolation.cjs."""
     LEGACY = 'GOAT/Credentials/api-bearer-v149.token'
+    BANKER = 'G:\\MetaTrader5 Data\\Terminals\\Terminal 1 - Banker'
+    T2 = 'G:\\MetaTrader5 Data\\Terminals\\Terminal 2 - GOAT'
+    B40, B42 = 'V1.49-BETA17-40', 'V1.49-BETA17-42'
 
-    def test_two_logins_on_one_pc_keep_separate_credentials(self):
-        a = iso.credential_relative_path(self.LEGACY, LOGIN)
-        b = iso.credential_relative_path(self.LEGACY, OTHER_LOGIN)
-        self.assertEqual(a, 'GOAT/Credentials/api-bearer-v149-3000082754.token')
-        self.assertEqual(b, 'GOAT/Credentials/api-bearer-v149-3000107825.token')
-        self.assertNotEqual(a, b)
-        self.assertNotEqual(a, self.LEGACY)
-        self.assertEqual(iso.credential_relative_path('GOAT\\Credentials\\api-bearer-v149.token', LOGIN),
-                         'GOAT\\Credentials\\api-bearer-v149-3000082754.token')
+    def test_two_terminals_pair_into_separate_slots(self):
+        a = iso.credential_relative_path(self.LEGACY, LOGIN, self.BANKER, self.B42)
+        b = iso.credential_relative_path(self.LEGACY, OTHER_LOGIN, self.T2, self.B42)
+        self.assertEqual(a, 'GOAT/Credentials/api-bearer-v149-3000082754-c2408708-V1_49-BETA17-42.token')
+        self.assertEqual(b, 'GOAT/Credentials/api-bearer-v149-3000107825-30d46804-V1_49-BETA17-42.token')
+        self.assertEqual(len({a, b, self.LEGACY, 'GOAT/Credentials/api-bearer-v149-3000082754.token'}), 4)
+        self.assertEqual(iso.credential_relative_path('GOAT\\Credentials\\api-bearer-v149.token', LOGIN, self.BANKER, self.B42),
+                         'GOAT\\Credentials\\api-bearer-v149-3000082754-c2408708-V1_49-BETA17-42.token')
+
+    def test_same_login_on_two_terminals_and_two_builds_never_share(self):
+        slots = {iso.credential_relative_path(self.LEGACY, LOGIN, root, build)
+                 for root in (self.BANKER, self.T2) for build in (self.B40, self.B42)}
+        self.assertEqual(len(slots), 4)
+        # Case, separators and a trailing separator name the same terminal, as in the EA.
+        self.assertEqual(iso.credential_relative_path(self.LEGACY, LOGIN, 'g:/metatrader5 data/terminals/terminal 1 - banker/', self.B42),
+                         iso.credential_relative_path(self.LEGACY, LOGIN, self.BANKER, self.B42))
+
+    def test_slot_names_stay_inside_every_credential_filter(self):
+        for build in (self.B42, 'V1.49-EA-EXPERIENCE-33', 'weird build/../x'):
+            name = PureWindowsPath(iso.credential_relative_path(self.LEGACY, LOGIN, self.BANKER, build)).name
+            with self.subTest(build=build):
+                self.assertRegex(name, r'^api-bearer(?:-[A-Za-z0-9_-]+)?\.token$')
+                self.assertTrue(STUDIO_CREDENTIAL_NAME.fullmatch(name))
 
     def test_only_digits_and_the_receipt_credential_folder_are_accepted(self):
         for login in ('', '12a', '../1', '1\\2', '0', 7):
             with self.subTest(login=login), self.assertRaises(ValueError):
-                iso.credential_relative_path(self.LEGACY, login)
+                iso.credential_relative_path(self.LEGACY, login, self.BANKER, self.B42)
         for legacy in ('GOAT/Credentials/../x.token', 'C:/GOAT/Credentials/api-bearer.token', '/GOAT/Credentials/api-bearer.token',
                        'GOAT/Other/api-bearer.token', 'GOAT/Credentials/sub/api-bearer.token', 'GOAT/Credentials/key.txt',
                        'GOAT/Credentials/api-bearer-v1.4.token'):
             with self.subTest(legacy=legacy), self.assertRaises(ValueError):
-                iso.credential_relative_path(legacy, LOGIN)
+                iso.credential_relative_path(legacy, LOGIN, self.BANKER, self.B42)
+        for build in ('', 'x' * 65, None):
+            with self.subTest(build=build), self.assertRaises(ValueError):
+                iso.credential_relative_path(self.LEGACY, LOGIN, self.BANKER, build)
 
 
 class MigrationTests(unittest.TestCase):

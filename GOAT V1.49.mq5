@@ -12,7 +12,8 @@
 // credential. The shared pre-isolation credential is read only for migration.
 #define GOAT_TERMINAL_ISOLATION_V149 1
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
-#define GOAT_API_BEARER_FILE GOATApiBearerFile()
+#define GOAT_CREDENTIAL_SLOTS_V149 1
+#define GOAT_API_BEARER_FILE GOATCredentialSlotFile()
 #include "GOAT_Inputs_Definitions.mqh"
 // B44 item 9 (goatai#2350): no modal Alert() on a deploy-mode path. Every Alert(...) compiled after this line, in this
 // file and in every include below it, goes through GoatDeployNotice (defined, with #undef Alert, at the end of this
@@ -3367,6 +3368,10 @@ int OnInit()
    g_PerformanceProfileTester=(MQLInfoInteger(MQL_TESTER)!=0);
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Initialization Start"+"================");
    Print("GOAT_BUILD_ID="+GOAT_BUILD_ID+" PATH="+MQLInfoString(MQL_PROGRAM_PATH));
+#ifdef GOAT_CREDENTIAL_SLOTS_V149
+   // INV-CRED-02: before any credential use; legacy credential files are never adopted.
+   GOATCredentialSlotsOnInit();
+#endif
  //string summary = GenerateOptimizationSummary(Key+"\\"+EA_Name+"-"+Server+"\\GOAT Batch Queue."+Key, Key+"\\"+EA_Name+"-"+Server+"\\log."+Key);
  //int ret=MessageBox("Batch Summary:\n\n"+summary+"\n\nDo you want to open logs?","Batch Complete...",MB_OKCANCEL);
    ulong lastMScount=GetMicrosecondCount();

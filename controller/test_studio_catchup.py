@@ -137,7 +137,11 @@ class CatchupCase(unittest.TestCase):
         folder = Path(self.controller.install['common_files_root']) / 'TEMP' / 'SQ' / member['attempt_token']
         (folder / 'attempt-issued.json').parent.mkdir(parents=True, exist_ok=True)
         (folder / 'attempt-issued.json').write_text('{}', encoding='utf-8')
-        return make_unit(folder, rows=rows, deals=deals, alias=member['alias'], symbol=tester['Symbol'], run_id=member['capture_id'],
+        # A faithful EA exports the inputs it ran: the member's sealed [TesterInputs] (catch-up checks them, Claude-Mac
+        # goatai#2587 6247436506), unless a test asks for a different export on purpose.
+        ran = sc._tester_inputs_section(Path(member['config_path']).read_bytes())
+        values = getattr(self, 'retest_values', None) or {name: ran[name].split('||')[0] for name in VALUES if name in ran}
+        return make_unit(folder, rows=rows, deals=deals, alias=member['alias'], symbol=tester['Symbol'], run_id=member['capture_id'], values=values,
                          start=datetime.strptime(tester['FromDate'], '%Y.%m.%d').date(), requested_to=to_date, windows=windows,
                          marks=getattr(self, 'retest_marks', ()), observed_end=getattr(self, 'retest_observed_end', None))
 
@@ -570,6 +574,55 @@ class NativeCycleTests(CatchupCase):
         self.assertEqual(state['members'][0]['status'], 'completed')
         version = read_json(Path(member['evidence_dir']) / 'evidence-version.json')
         self.assertEqual(version['verdict']['verdict'], 'unjudged')
+
+
+class RetestInputsCheckTests(CatchupCase):
+    """Claude-Mac goatai#2587 6247436506: a catch-up re-test must have run the inputs its sealed config set. B (the EA's
+    exported re-test SET) is primary; A (MT5's report) cross-checks when readable; a missing B refuses."""
+
+    def test_the_config_pins_every_omitted_input_and_the_member_is_checked(self):
+        self.runner.prepare('cu1', self.plan())
+        member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
+        self.assertTrue(member['inputs_checked'])
+        ran = sc._tester_inputs_section(Path(member['config_path']).read_bytes())
+        self.assertEqual((ran['Dashboard_Resume_Saved'], ran['Studio_ReadOnlyMonitor'], ran['GOAT_FitnessRunNonce']), ('false', 'false', '0||0||0||0||N'))
+        self.assertTrue(ran['Sequence_Export_Id'].startswith('catchup-'))                    # catch-up's own inputs are not overridden
+
+    def test_a_retest_that_ran_another_value_is_refused_and_never_judged(self):
+        self.runner.prepare('cu1', self.plan(sets=[self.behind]))
+        self.runner.start('cu1', 1)
+        member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
+        ran = sc._tester_inputs_section(Path(member['config_path']).read_bytes())
+        self.retest_values = {name: ran[name].split('||')[0] for name in VALUES if name in ran} | {'Grid_Size': '-9.75'}
+        self.native_retest(member)
+        self.process_state = None
+        state = self.runner.status('cu1')
+        self.assertEqual(state['members'][0]['status'], 'failed')
+        self.assertIn('Grid_Size set %s, EA ran -9.75' % ran['Grid_Size'].split('||')[0], json.dumps(state['members'][0]))
+        self.assertFalse((Path(member['evidence_dir']) / 'evidence-version.json').exists())
+
+    def test_check_rules(self):
+        schema = dict(inputs={name: dict(type='double' if name != 'Mode_Operation' else 'int') for name in VALUES})
+        configured = dict(VALUES, EA_Desc='C1@{mode=EXPORT}', Dashboard_Resume_Saved='false', GOAT_FitnessRunNonce='0||0||0||0||N')
+        exported = dict(VALUES, EA_Desc='C1')
+        self.assertEqual(sc.check_retest_inputs(configured, exported, None, schema), 3)           # B only; EA_Desc not compared
+        with self.assertRaisesRegex(ValueError, "exported re-test SET is missing or unreadable"):
+            sc.check_retest_inputs(configured, None, dict(VALUES), schema)                    # a missing B refuses, A or not
+        with self.assertRaisesRegex(ValueError, "export does not list input\\(s\\) the run set: Lots_Input"):
+            sc.check_retest_inputs(configured, {k: v for k, v in exported.items() if k != 'Lots_Input'}, None, schema)
+        with self.assertRaisesRegex(ValueError, 'the EA exported input\\(s\\) the run did not set: Mystery'):
+            sc.check_retest_inputs(configured, dict(exported, Mystery='1'), None, schema)
+        report = dict(VALUES, Dashboard_Resume_Saved='false', GOAT_FitnessRunNonce='0')
+        self.assertEqual(sc.check_retest_inputs(configured, exported, report, schema), 5)       # A agrees, runtime pins checked
+        with self.assertRaisesRegex(ValueError, "report and the EA's export disagree: Grid_Size export -2.25, report -3"):
+            sc.check_retest_inputs(configured, exported, dict(report, Grid_Size='-3'), schema)
+        with self.assertRaisesRegex(ValueError, "report shows input\\(s\\) off the config's pin: Dashboard_Resume_Saved set false, ran true"):
+            sc.check_retest_inputs(configured, exported, dict(report, Dashboard_Resume_Saved='true'), schema)
+
+    def test_a_member_prepared_before_the_check_keeps_the_old_collection(self):
+        runner = SimpleNamespace(c=self.controller)
+        spec = dict(config_path=str(Path(self.tmp.name) / 'missing.ini'), config_sha256='0' * 64, tester=dict(Report='x'))
+        self.assertIsNone(sc.CatchupRunner._check_inputs(runner, spec, dict(set_path='nowhere.set')))   # no inputs_checked: no check
 
 
 class SameModelAndEquivalenceTests(CatchupCase):

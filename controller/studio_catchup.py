@@ -691,6 +691,69 @@ def _validate_single_pass(tester):
     validate_tester(view | dict(Optimization=2, OptimizationCriterion=6, ForwardDate=''))
 
 
+def _tester_inputs_section(config):
+    """{name: value} of the [TesterInputs] section of a controller-written startup config (UTF-16 bytes), exactly as
+    written (values may carry || tuples or literal ||). Refuses a config without exactly one such section."""
+    section, found, values = None, 0, {}
+    for line in config.decode('utf-16').splitlines():
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            section = stripped[1:-1]
+            found += section == 'TesterInputs'
+            continue
+        if section == 'TesterInputs' and '=' in line:
+            key, value = line.split('=', 1)
+            if key in values:
+                raise ValueError('The catch-up startup config repeats a tester input: ' + key)
+            values[key] = value
+    if found != 1:
+        raise ValueError('The catch-up startup config needs exactly one [TesterInputs] section')
+    return values
+
+
+def check_retest_inputs(configured, exported, reported, schema):
+    """Claude-Mac goatai#2587 6247436506: did the re-test run the inputs its sealed config set?
+
+    B, the EA's exported re-test SET (what the EA itself ran with), is primary: it must exist, list every contract input
+    the config set, and agree on each. A, MT5's report, is a cross-check when readable: on every input both list, A and B
+    must agree; inputs only A lists (the runtime ones) must equal the config's pins. EA_Desc is the EA's own label and is
+    not compared. Returns the number of inputs compared; raises one ValueError naming every disagreement."""
+    from studio_tester_report import RUNTIME_INPUT_DEFAULTS, _same_input
+    if exported is None:
+        raise ValueError("the EA's exported re-test SET is missing or unreadable")
+    definitions = schema.get('inputs') or {}
+    kind = lambda name: definitions.get(name) or RUNTIME_INPUT_DEFAULTS.get(name, (None, None))[1]
+    plain = lambda value: value.split('||')[0]
+    problems = []
+    unset = sorted(name for name in exported if name != 'EA_Desc' and name not in configured)
+    if unset:
+        problems.append('the EA exported input(s) the run did not set: ' + ', '.join(unset[:8]))
+    absent = sorted(name for name in configured if name in definitions and name != 'EA_Desc' and name not in exported)
+    if absent:
+        problems.append("the EA's export does not list input(s) the run set: " + ', '.join(absent[:8]))
+    differ = [name for name in exported if name != 'EA_Desc' and name in configured
+              and not _same_input(name, configured[name], exported[name], kind(name))]
+    if differ:
+        problems.append('the EA ran other values than the config set: ' + '; '.join(
+            '%s set %s, EA ran %s' % (name, plain(configured[name]), exported[name]) for name in differ[:8]))
+    compared = len(exported) - ('EA_Desc' in exported)
+    if reported is not None:
+        both = [name for name in exported if name != 'EA_Desc' and name in reported
+                and not _same_input(name, exported[name], reported[name], kind(name))]
+        if both:
+            problems.append("MT5's report and the EA's export disagree: " + '; '.join(
+                '%s export %s, report %s' % (name, exported[name], reported[name]) for name in both[:8]))
+        only = [name for name in reported if name not in exported and name in configured and name != 'EA_Desc'
+                and not _same_input(name, configured[name], reported[name], kind(name))]
+        if only:
+            problems.append("MT5's report shows input(s) off the config's pin: " + '; '.join(
+                '%s set %s, ran %s' % (name, plain(configured[name]), reported[name]) for name in only[:8]))
+        compared += len([name for name in reported if name not in exported and name in configured and name != 'EA_Desc'])
+    if problems:
+        raise ValueError('; '.join(problems))
+    return compared
+
+
 def _export_desc(alias, window):
     """EA_Desc metadata the EA's StartExporter passes, so the re-test SET header has the same windows."""
     if window['source'] == 'unknown':
@@ -1023,7 +1086,7 @@ class CatchupRunner(SeedRunner):
                       attempt_token=attempt_token(capture_id), capture=source_inputs is not None,
                       source_path=export['set_path'], source_sha256=export['set_sha256'],
                       set_path=str(set_path), set_sha256=hashlib.sha256(frozen).hexdigest(),
-                      config_path=str(config_path), config_sha256=hashlib.sha256(config).hexdigest(),
+                      config_path=str(config_path), config_sha256=hashlib.sha256(config).hexdigest(), inputs_checked=True,
                       evidence_dir=str(evidence_dir), assumed=assumed, optimization_window=window,
                       original=dict(set_path=export['set_path'], set_sha256=export['set_sha256'], values_sha256=export['values_sha256'],
                                     member=export.get('member'), run_id=(export.get('run') or {}).get('run_id'),
@@ -1289,6 +1352,7 @@ class CatchupRunner(SeedRunner):
         original = read_export(spec['original']['set_path'])
         if original['set_sha256'] != spec['original']['set_sha256'] or original['evidence_end'] != spec['original']['evidence_end']:
             raise ValueError('Original export changed since the catch-up was prepared')
+        self._check_inputs(spec, retest)
         moved = self._move(path, Path(spec['evidence_dir']))
         retest = read_export(moved)
         if not retest['evidence_end']:
@@ -1368,6 +1432,31 @@ class CatchupRunner(SeedRunner):
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)
+
+    def _check_inputs(self, spec, retest):
+        """Refuse a re-test that did not run the inputs its sealed config set (check_retest_inputs), before its evidence
+        is moved or judged, so it never reaches a pool. The config is read back by its recorded sha, never trusted.
+        Members prepared before this check (no inputs_checked) keep the old collection."""
+        if not spec.get('inputs_checked'):
+            return
+        config = Path(spec['config_path']).read_bytes()
+        if hashlib.sha256(config).hexdigest() != spec['config_sha256']:
+            raise ValueError('The catch-up startup config changed since it was prepared: ' + spec['config_path'])
+        try:
+            exported = read_values(Path(retest['set_path']).read_bytes())
+        except (OSError, ValueError, UnicodeError):
+            exported = None
+        reported = None
+        report_path = Path(self.c.install['terminal_data_root']) / (spec['tester']['Report'] + '.htm')
+        if report_path.is_file():
+            try:
+                reported = tester_report.read_report(report_path)['inputs']
+            except (OSError, ValueError):
+                reported = None                              # the cross-check runs only when MT5's report is readable
+        try:
+            check_retest_inputs(_tester_inputs_section(config), exported, reported, self.c.schema)
+        except ValueError as exc:
+            raise ValueError('Catch-up re-test refused, it did not run the inputs its config set: ' + str(exc))
 
     def _collect_migration(self, path, spec, manifest):
         """A build-migration member: verify the unit, move it, and write a ``build_migration_retest`` record.

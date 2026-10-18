@@ -352,6 +352,46 @@ class SeedPinningTests(unittest.TestCase):
         self.assertEqual(row['sha256'], hashlib.sha256(b'0123456789').hexdigest())
 
 
+class NativeStartupRuntimePinTests(unittest.TestCase):
+    """Claude-Mac goatai#2587 6247436506: native campaigns pin the runtime inputs only when their manifest was created
+    with startup_runtime_pins=1. An in-flight campaign (no field) keeps its exact startup bytes, so its restart sha
+    check still matches; the flag is never inferred or flipped."""
+
+    def material(self, **manifest):
+        relative = 'GOAT\\R0123456789ab'
+        return dict(plan={}, manifest=dict(native_run_relative=relative, campaign_id='c' * 64, **manifest),
+                    sections={'Charts': {'ProfileLast': 'GOAT Research'}, 'Experts': {'Enabled': '0', 'AllowLiveTrading': '0'},
+                              'Tester': dict(UseLocal='1', UseRemote='0', UseCloud='0', Visual='0', ReplaceReport='0', ShutdownTerminal='0',
+                                             Leverage='1:200', Report='MQL5\\Files\\' + relative + '\\reports\\A1.xml'),
+                              'TesterInputs': {'Grid_Size': '10.0||10.0||0||10.0||N'}},
+                    paste_inputs={'Grid_Size': '10.0||10.0||0||10.0||N'})
+
+    def test_an_in_flight_campaign_keeps_its_exact_startup_bytes(self):
+        from studio_startup_config import startup_config
+        raw, receipt = startup_config(self.material())
+        again, _ = startup_config(self.material())
+        self.assertEqual(raw, again)
+        inputs = raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1]
+        self.assertEqual(inputs, 'Grid_Size=10.0||10.0||0||10.0||N\r\n')                       # exactly the recorded inputs
+        self.assertEqual(receipt['sha256'], hashlib.sha256(raw).hexdigest())
+
+    def test_a_new_campaign_pins_every_runtime_input(self):
+        from studio_startup_config import startup_config
+        import studio_tester_report as tester_report
+        old, _ = startup_config(self.material())
+        raw, receipt = startup_config(self.material(startup_runtime_pins=1))
+        self.assertNotEqual(hashlib.sha256(old).hexdigest(), receipt['sha256'])
+        inputs = dict(line.split('=', 1) for line in raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1].splitlines() if '=' in line)
+        self.assertEqual(inputs['Grid_Size'], '10.0||10.0||0||10.0||N')                           # paste inputs unchanged
+        for name, (default, definition) in tester_report.RUNTIME_INPUT_DEFAULTS.items():
+            self.assertEqual(inputs[name], '%s||%s||0||%s||N' % (default, default, default) if definition.get('optimizable') else default, name)
+
+    def test_an_unknown_flag_value_refuses(self):
+        from studio_startup_config import startup_config
+        with self.assertRaisesRegex(ValueError, 'Unknown startup_runtime_pins value'):
+            startup_config(self.material(startup_runtime_pins=2))
+
+
 class StoppedRootMessageTests(unittest.TestCase):
     def test_names_program_pid_and_metaeditor_action(self):
         root = 'G:\\MetaTrader5 Data\\Terminals\\Terminal 2 - GOAT'

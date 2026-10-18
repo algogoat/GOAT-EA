@@ -76,6 +76,7 @@ from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
 from studio_strategy_settings import read_values
 from studio_template_tools import validate_raw
+import studio_tester_report as tester_report
 
 MODE = 'OOSCatchup'
 VERSION_SCHEMA = 'goat-evidence-version-v1'
@@ -996,6 +997,10 @@ class CatchupRunner(SeedRunner):
         inputs = dict(values, EA_Desc=_export_desc(alias, window), Sequence_Export_Enabled='true' if source_inputs is not None else 'false',
                       Sequence_Export_Id=capture_id, Sequence_Export_Start=tester['FromDate'], Sequence_Export_End=tester['ToDate'],
                       Sequence_Export_Model='4')
+        # Every other input this build declares that the SET omits runs at its compiled default, never at the value the
+        # terminal last used (GOAT-EA#250; Claude-Mac goatai#2587 6247162261: an older SET lacking Mode_News would otherwise
+        # inherit a news A/B round's Avoid/Pause). The SET file stays the frozen bytes; only the startup config pins.
+        inputs = tester_report.pinned_tester_inputs(inputs, self.c.schema)
         # [Charts]: every member runs MT5 on GOAT Research, never the monitor profile (studio_research_profile).
         sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Charts': {'ProfileLast': 'GOAT Research'},
                     'Experts': {'Enabled': 0, 'AllowLiveTrading': 0}, 'Tester': tester, 'TesterInputs': inputs}

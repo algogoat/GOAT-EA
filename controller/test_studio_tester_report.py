@@ -203,6 +203,27 @@ class ReportTests(unittest.TestCase):
         readable = {n for n, d in schema['inputs'].items() if tr._schema_default(d, schema.get('defines')) is not None}
         self.assertEqual(set(pins) - set(tr.RUNTIME_INPUT_DEFAULTS), readable - set(values))
 
+    def test_runtime_defaults_equal_every_ea_source_declaration_goat_ea_250(self):
+        """Claude-Mac on GOAT-EA#251 (should-fix): RUNTIME_INPUT_DEFAULTS is a table; a build that changes one of these
+        defaults must fail here, never be accepted at the old value. Every declaration of the 8 runtime inputs in the
+        V1.47 / V1.48 / V1.49 sources (and the shared GOAT_SequencePackage.mqh) must equal the table, in default and
+        in whether it is an optimizable `input` (needs an explicit N flag) or a fixed `sinput`."""
+        repo = Path(__file__).resolve().parents[1]
+        sources = [repo / ('GOAT V%s.mq5' % v) for v in ('1.47', '1.48', '1.49')] + [repo / 'GOAT_SequencePackage.mqh']
+        literal = {'""': '', 'false': 'false', 'true': 'true'}
+        seen = {}
+        for source in sources:
+            text = source.read_text(encoding='utf-8-sig', errors='strict')
+            for name, (default, definition) in tr.RUNTIME_INPUT_DEFAULTS.items():
+                for keyword, kind, value in re.findall(r'(?m)^\s*(sinput|input)\s+(\w+)\s+%s\s*=\s*([^;]*);' % name, text):
+                    value = value.strip()
+                    declared = literal.get(value, value)
+                    with self.subTest(source=source.name, input=name):
+                        self.assertEqual(declared, default, '%s declares %s=%s; the table says %s' % (source.name, name, value, default))
+                        self.assertEqual(keyword == 'input', bool(definition.get('optimizable')), '%s declares %s as %s' % (source.name, name, keyword))
+                    seen.setdefault(name, []).append(source.name)
+        self.assertEqual(set(seen), set(tr.RUNTIME_INPUT_DEFAULTS), 'every table entry is declared by a supported source')
+
     def test_values_compare_by_type_not_by_spelling(self):
         report = self.read()
         values = dict(report['inputs'], Risk='500.0||100||10||900||N', Grid_Exponent='1.00000000')

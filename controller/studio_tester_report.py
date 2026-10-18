@@ -257,7 +257,7 @@ RUNTIME_INPUT_DEFAULTS = {
     'Sequence_Export_Start': ('0', dict(type='datetime')),
     'Sequence_Export_End': ('0', dict(type='datetime')),
     'Sequence_Export_Model': ('4', dict(type='int')),
-    'GOAT_FitnessRunNonce': ('0', dict(type='long')),
+    'GOAT_FitnessRunNonce': ('0', dict(type='long', optimizable=True)),     # declared `input`, so it can carry a stale flag
     'Studio_MonitorRunPath': ('', dict(type='string')),
     'Dashboard_Resume_Saved': ('false', dict(type='bool')),
 }
@@ -277,6 +277,20 @@ def omitted_input_defaults(values, schema):
         if name not in values:
             defaults[name] = default
     return defaults
+
+
+def pinned_tester_inputs(values, schema):
+    """[TesterInputs] for any controller-launched run: ``values`` unchanged, plus every omitted input at its compiled
+    default. An optimizable non-string pin is spelled ``d||d||0||d||N`` (studio_optimization_inputs): a plain value
+    line only replaces the value, so a stale optimize flag in the terminal's tester profile would otherwise add an
+    axis to an optimization run. Single-pass runs ignore the flag, so the same spelling is safe everywhere."""
+    pinned = dict(values)
+    for name, default in omitted_input_defaults(values, schema).items():
+        definition = (schema.get('inputs') or {}).get(name) or RUNTIME_INPUT_DEFAULTS.get(name, (None, None))[1]
+        if definition and definition.get('optimizable') and definition.get('type') != 'string':
+            default = default + '||' + default + '||0||' + default + '||N'
+        pinned[name] = default
+    return pinned
 
 
 def _schema_default(definition, defines):

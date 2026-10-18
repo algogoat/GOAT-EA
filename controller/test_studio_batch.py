@@ -191,6 +191,8 @@ class NativeBatchTests(unittest.TestCase):
         self.spec['members'] = [dict(set_path=str(self.source), tester=self.fixture.tester | {'Symbol': 'PAIR' + str(index)})
                                 for index in range(len(states))]
         result = self.prepare(); package = Path(result['package']); manifest = result['manifest']
+        # GOAT-EA#250 (Claude-Mac goatai#2587 6247436506): every new native campaign is created with runtime pins, frozen.
+        self.assertEqual(manifest['startup_runtime_pins'], 1)
         run = self.fixture.common / manifest['native_run_relative'].replace('\\', '/')
         run.mkdir(parents=True)
         blocks = (package / 'queue.GOAT').read_bytes().decode('utf-16').split('\x1f')

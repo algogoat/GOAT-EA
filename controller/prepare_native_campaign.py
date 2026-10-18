@@ -191,6 +191,10 @@ def prepare(plan_path, registry_path, output):
             (output/filename).write_bytes(text.encode('utf-16'))
         receipt['native_run_relative'] = native['run_relative']
         receipt['export_end_policy'] = native['export_end_policy']
+        # Frozen at creation (Claude-Mac goatai#2587 6247436506): this campaign's startup config pins every input
+        # declared outside the contract to its compiled default (GOAT-EA#250), so the session never inherits the
+        # terminal's last-used values. Campaigns prepared before this field keep their recorded startup bytes.
+        receipt['startup_runtime_pins'] = 1
         receipt['export_settings'] = export_settings
         if evidence_end_setting(native) is not None:
             receipt['export_evidence_end'] = evidence_end_setting(native)

@@ -24,6 +24,7 @@ from studio_template_tools import source_bytes,validate_raw
 from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES,MAX_XML_BYTES
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import controller_preflight
+import studio_tester_report as tester_report
 
 TERMINAL={'completed','cancelled','timeout','failed','missing_output'}
 MAX_RETAINED_INPUT_BYTES=128*1024*1024
@@ -241,12 +242,17 @@ class SeedRunner:
                     values[name]!=original_values[name] for name in values if name!='EA_Desc' and self.c.schema['inputs'][name]['type']=='string'):
                 raise ValueError('Pinned seed inputs changed a template trading value')
             verify_explicit_inputs(values,self.c.schema,valid['active_axes'])
+            # Every input the template omits runs at the build's compiled default, never at the terminal's last-used value
+            # (GOAT-EA#250; Claude-Mac goatai#2587 6247162261), and optimizable pins carry an explicit N flag, so no stale
+            # flag adds an axis. The frozen SET bytes are unchanged; only the startup config carries the pins.
+            tester_inputs=tester_report.pinned_tester_inputs(values,self.c.schema)
+            verify_explicit_inputs(tester_inputs,self.c.schema,valid['active_axes'])
             setpath=root/(alias+'.set')
             configpath=Path(self.c.install['terminal_data_root'])/'config/GOATStudio/Seeds'/(alias+'.ini')
             # [Charts]: every member runs MT5 on GOAT Research, never the monitor profile (studio_research_profile).
             sections={'Common':{'Login':account['login'],'Server':account['server']},'Charts':{'ProfileLast':'GOAT Research'},
                 'Experts':{'Enabled':0,'AllowLiveTrading':0},
-                'Tester':tester|{'ShutdownTerminal':1,'ReplaceReport':0,'Report':'MQL5\\Files\\GOATStudio\\SeedReports\\'+alias+'.xml'},'TesterInputs':values}
+                'Tester':tester|{'ShutdownTerminal':1,'ReplaceReport':0,'Report':'MQL5\\Files\\GOATStudio\\SeedReports\\'+alias+'.xml'},'TesterInputs':tester_inputs}
             ini=''
             for section,items in sections.items():
                 ini+='['+section+']\r\n'
@@ -364,6 +370,8 @@ class SeedRunner:
             except ValueError as exc:
                 raise ValueError('Seed batch '+batch_id+' was prepared before explicit optimization flags ('+str(exc)+
                     '); prepare a new batch ID') from None
+        # A package prepared before the input pins (GOAT-EA#250) would reuse its unpinned config: refused before any effect.
+        tester_report.refuse_unpinned_package(batch_id,manifest['members'],self.c.schema,self.COMMAND_PREFIX)
 
     def _collect_member(self,root,manifest,spec,item,paths):
         """Collect this member's single output (age, identity and content checked), else mark it failed."""

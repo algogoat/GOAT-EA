@@ -34,6 +34,19 @@ def startup_config(material):
         raise ValueError('Unsafe report path')
     payload = {k: dict(v) for k, v in sections.items()}
     payload['TesterInputs'] = dict(material['paste_inputs'])
+    pins = material['manifest'].get('startup_runtime_pins')
+    if pins not in (None, 1):
+        raise ValueError('Unknown startup_runtime_pins value')
+    if pins == 1:
+        # The campaign was created with runtime pins (frozen in its manifest): every input the EA declares outside the
+        # contract runs at its compiled default for the whole native session, never at the terminal's last-used value
+        # (GOAT-EA#250). The paste inputs already carry the complete contract set (validate_strategy). A campaign
+        # without the field keeps exactly its recorded startup bytes, so its restart sha check still matches.
+        from studio_tester_report import RUNTIME_INPUT_DEFAULTS
+        for name, (default, definition) in RUNTIME_INPUT_DEFAULTS.items():
+            if name not in payload['TesterInputs']:
+                payload['TesterInputs'][name] = ('%s||%s||0||%s||N' % (default, default, default)
+                                                 if definition.get('optimizable') else default)
     if 'startup_monitor' in material:
         payload['StartUp']=dict(material['startup_monitor'])
         keys=set(payload['StartUp'])

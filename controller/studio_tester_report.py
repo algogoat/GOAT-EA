@@ -283,6 +283,50 @@ def omitted_input_defaults(values, schema):
     return defaults
 
 
+PACKAGE_PREDATES_INPUT_PINNING = 'PACKAGE_PREDATES_INPUT_PINNING'
+
+
+def unpinned_inputs(config, schema):
+    """Inputs this build declares that a persisted startup config (UTF-16 bytes) does not set: [] for a config written
+    with the pins (GOAT-EA#250), the omitted names for one prepared before them. Run before every launch (Codex P1 on
+    GOAT-EA#252): a package prepared earlier would otherwise reuse its unpinned config and inherit stale values."""
+    section, inputs = None, set()
+    for line in config.decode('utf-16').splitlines():
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            section = stripped[1:-1]
+        elif section == 'TesterInputs' and '=' in line:
+            inputs.add(line.split('=', 1)[0])
+    return sorted(omitted_input_defaults(dict.fromkeys(inputs, ''), schema))
+
+
+def refuse_unpinned_package(batch_id, members, schema, kind):
+    """Refuse (structured, before any process effect) a package whose member configs predate the input pins."""
+    from pathlib import Path
+    for member in members:
+        missing = unpinned_inputs(Path(member['config_path']).read_bytes(), schema)
+        if missing:
+            from studio_refusal import Refusal
+            raise Refusal('This batch was prepared by an older GOAT, before every input was pinned to its default, so a run '
+                          'could inherit the terminal\'s last-used values (%s). Nothing was started; prepare it again.'
+                          % ', '.join(missing[:6]), PACKAGE_PREDATES_INPUT_PINNING, batch_id=batch_id, kind=kind, prepare_again=True,
+                          next_action='Prepare the same plan again under a new batch ID, then start that batch.')
+
+
+def pinned_tester_inputs(values, schema):
+    """[TesterInputs] for any controller-launched run: ``values`` unchanged, plus every omitted input at its compiled
+    default. An optimizable non-string pin is spelled ``d||d||0||d||N`` (studio_optimization_inputs): a plain value
+    line only replaces the value, so a stale optimize flag in the terminal's tester profile would otherwise add an
+    axis to an optimization run. Single-pass runs ignore the flag, so the same spelling is safe everywhere."""
+    pinned = dict(values)
+    for name, default in omitted_input_defaults(values, schema).items():
+        definition = (schema.get('inputs') or {}).get(name) or RUNTIME_INPUT_DEFAULTS.get(name, (None, None))[1]
+        if definition and definition.get('optimizable') and definition.get('type') != 'string':
+            default = default + '||' + default + '||0||' + default + '||N'
+        pinned[name] = default
+    return pinned
+
+
 def _schema_default(definition, defines):
     """The SET-spelled default of a contract input, or None when it cannot be read (fails closed)."""
     expression = (definition or {}).get('default_expression')

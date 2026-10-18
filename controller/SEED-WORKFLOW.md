@@ -387,7 +387,9 @@ so a config start sets it to `GOAT Research` right before its launch and restore
 A batch prepared before this change is refused at its first start with `refusal_code`
 `PACKAGE_PREDATES_RESEARCH_PROFILE` ("This batch was prepared by an older GOAT; it will be
 prepared again."): prepare the same plan again under a new batch ID. A running or paused
-batch finishes as it is.
+batch finishes as it is. From beta.38.1, a package prepared before every omitted input was
+pinned to its compiled default is refused before any launch with `refusal_code`
+`PACKAGE_PREDATES_INPUT_PINNING` (GOAT-EA#252): prepare it again under a new batch ID the same way.
 While seeds run, MT5 shows a plain chart and its Strategy Tester, without the GOAT
 Studio panel or queue; tell the user that is expected. On the owner demo lane (`goat.exe demo`) the seed run reopens
 MT5 itself on that profile after the last member and reads the build back

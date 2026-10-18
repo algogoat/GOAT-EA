@@ -384,7 +384,9 @@ class HoldupRunner(SeedRunner):
 
     # ---- native hooks ---------------------------------------------------------------------------------
     def _verify_prepared(self, batch_id, manifest):
-        """Hold-up members are single Optimization=0 passes with no axes; nothing to refuse here."""
+        """Hold-up members are single Optimization=0 passes with no axes. A package prepared before the input pins
+        (GOAT-EA#250, e.g. audit-1018-exp03) is refused before any process effect: its configs would inherit stale values."""
+        tester_report.refuse_unpinned_package(batch_id, manifest['members'], self.c.schema, self.COMMAND_PREFIX)
 
     def _outputs(self, member):
         path = self.report_dir() / (member['alias'] + '.htm')

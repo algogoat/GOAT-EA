@@ -78,6 +78,20 @@ class RealSchemaPinningTests(unittest.TestCase):
         self.template = compass_like_template(self.schema)
         self.axes = {'Grid_Size', 'Lock_Profit_Size', 'Lock_Profit_Flexibility', 'RSI_Period', 'RSI_Level', 'BB_Deviation'}
 
+    def test_an_older_set_omitting_a_trading_input_runs_its_default_not_the_last_ab_round_goat_ea_250(self):
+        """Claude-Mac goatai#2587 6247162261: a V1.47/V1.48 SET that lacks a trading input (Mode_News here) on a terminal
+        whose last pass ran a news A/B arm (Mode_News=Avoid, even flagged as an axis) still runs the 1.49 default."""
+        import studio_tester_report as tr
+        values = {k: v for k, v in read_values(('\r\n'.join(self.template.splitlines()) + '\r\n').encode('utf-16')).items() if k != 'Mode_News'}
+        avoid = str(self.schema['inputs']['Mode_News']['enum_choices']['News_Avoid'])
+        default = tr._schema_default(self.schema['inputs']['Mode_News'], self.schema.get('defines'))
+        self.assertNotEqual(avoid, default)
+        stale = mt5_load({}, {'Mode_News': avoid + '||0||1||5||Y'})                # the A/B round left Avoid, even as an axis
+        merged = mt5_load(stale, tr.pinned_tester_inputs(values, self.schema))
+        self.assertEqual(merged['Mode_News'][0], default)
+        self.assertEqual(merged['Mode_News'][4], 'N')
+        self.assertNotIn('Mode_News', effective_axes(merged))
+
     def test_template_fixture_is_a_valid_template_with_plain_non_axis_inputs(self):
         raw = b'\xff\xfe'+self.template.encode('utf-16-le')
         self.assertEqual(set(validate_raw(raw, self.schema, self.policy, require_optimization=True)['active_axes']), self.axes)
@@ -209,10 +223,31 @@ class SeedPinningTests(unittest.TestCase):
         ini = Path(m['config_path']).read_bytes()
         self.assertTrue(ini.startswith(b'\xff\xfe'))
         text = ini.decode('utf-16')
-        self.assertTrue(text.endswith('[TesterInputs]\r\nEA_Desc='+m['alias']+'@{mode=SeedFarming,n=2,from=2025.04.01,to=2026.06.30}\r\n'+expected_inputs), text)
+        # The startup config adds the inputs the template omits, at the build's compiled default (GOAT-EA#250): here only
+        # the runtime inputs (this compact schema declares no contract defaults). The frozen SET above is unchanged.
+        import studio_tester_report as tester_report
+        pins = ''.join('%s=%s\r\n' % (name, '%s||%s||0||%s||N' % (default, default, default) if definition.get('optimizable') else default)
+                       for name, (default, definition) in tester_report.RUNTIME_INPUT_DEFAULTS.items())
+        self.assertTrue(text.endswith('[TesterInputs]\r\nEA_Desc='+m['alias']+'@{mode=SeedFarming,n=2,from=2025.04.01,to=2026.06.30}\r\n'
+                                      +expected_inputs+pins), text)
         self.assertEqual(hashlib.sha256(ini).hexdigest(), m['config_sha256'])
         self.assertEqual(m['axes'], {'Period': 3})
         self.assertEqual(m['values']['Note'], 'a||b', 'literal strings are never tuple-rewritten')
+
+    def test_a_terminal_left_with_other_runtime_values_still_runs_the_defaults_goat_ea_250(self):
+        """Claude-Mac goatai#2587 6247162261 (b): the terminal's last-used values differ from the defaults (an earlier
+        catch-up's export left on, a stale nonce axis, the dashboard resume on) and the seed still runs the defaults,
+        with no extra axis."""
+        self.mt5_profile.update({'Sequence_Export_Enabled': ['true', 'true', '0', 'true', 'N'],
+                                 'Sequence_Export_Id': ['catchup-c5fb36b46df64517-00103'] * 4 + ['N'],
+                                 'GOAT_FitnessRunNonce': ['88123', '1', '1', '99999', 'Y'],
+                                 'Dashboard_Resume_Saved': ['true', 'true', '0', 'true', 'N']})
+        self.runner.prepare('batch', self.plan)
+        state = self.runner.start('batch', 10)
+        self.assertEqual(state['status'], 'completed', state)
+        self.assertEqual(effective_axes(self.mt5_profile), {'Period'})              # the stale nonce axis is cleared
+        self.assertEqual([self.mt5_profile[n][0] for n in ('Sequence_Export_Enabled', 'Sequence_Export_Id', 'GOAT_FitnessRunNonce',
+                                                            'Dashboard_Resume_Saved')], ['false', '', '0', 'false'])
 
     def test_contaminated_tester_profile_no_longer_adds_axes_and_seed_completes(self):
         self.runner.prepare('batch', self.plan)
@@ -315,6 +350,53 @@ class SeedPinningTests(unittest.TestCase):
         self.assertEqual((row['sha256'], row['size_bytes'], row['frames_from_filename'], row['accepted']), (None, 10, 7, False))
         row = SeedRunner._observed_xml(path)
         self.assertEqual(row['sha256'], hashlib.sha256(b'0123456789').hexdigest())
+
+
+class NativeStartupRuntimePinTests(unittest.TestCase):
+    """Claude-Mac goatai#2587 6247436506: native campaigns pin the runtime inputs only when their manifest was created
+    with startup_runtime_pins=1. An in-flight campaign (no field) keeps its exact startup bytes, so its restart sha
+    check still matches; the flag is never inferred or flipped."""
+
+    def material(self, **manifest):
+        relative = 'GOAT\\R0123456789ab'
+        return dict(plan={}, manifest=dict(native_run_relative=relative, campaign_id='c' * 64, **manifest),
+                    sections={'Charts': {'ProfileLast': 'GOAT Research'}, 'Experts': {'Enabled': '0', 'AllowLiveTrading': '0'},
+                              'Tester': dict(UseLocal='1', UseRemote='0', UseCloud='0', Visual='0', ReplaceReport='0', ShutdownTerminal='0',
+                                             Leverage='1:200', Report='MQL5\\Files\\' + relative + '\\reports\\A1.xml'),
+                              'TesterInputs': {'Grid_Size': '10.0||10.0||0||10.0||N'}},
+                    paste_inputs={'Grid_Size': '10.0||10.0||0||10.0||N'})
+
+    def test_an_in_flight_campaign_keeps_its_exact_startup_bytes(self):
+        from studio_startup_config import startup_config
+        raw, receipt = startup_config(self.material())
+        again, _ = startup_config(self.material())
+        self.assertEqual(raw, again)
+        inputs = raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1]
+        self.assertEqual(inputs, 'Grid_Size=10.0||10.0||0||10.0||N\r\n')                       # exactly the recorded inputs
+        self.assertEqual(receipt['sha256'], hashlib.sha256(raw).hexdigest())
+
+    def test_a_new_campaign_pins_every_runtime_input(self):
+        from studio_startup_config import startup_config
+        import studio_tester_report as tester_report
+        old, _ = startup_config(self.material())
+        raw, receipt = startup_config(self.material(startup_runtime_pins=1))
+        self.assertNotEqual(hashlib.sha256(old).hexdigest(), receipt['sha256'])
+        inputs = dict(line.split('=', 1) for line in raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1].splitlines() if '=' in line)
+        self.assertEqual(inputs['Grid_Size'], '10.0||10.0||0||10.0||N')                           # paste inputs unchanged
+        for name, (default, definition) in tester_report.RUNTIME_INPUT_DEFAULTS.items():
+            self.assertEqual(inputs[name], '%s||%s||0||%s||N' % (default, default, default) if definition.get('optimizable') else default, name)
+        # Claude-Mac on #252: MT5 never parses || in a string input, so string pins must be the plain empty default, and
+        # only the optimizable inputs carry the N tuple. Exact lines, as written:
+        lines = raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1].splitlines()
+        for line in ('Sequence_Export_Id=', 'Studio_MonitorRunPath=', 'Sequence_Export_Enabled=false', 'Dashboard_Resume_Saved=false',
+                     'GOAT_FitnessRunNonce=0||0||0||0||N', 'BlindExport=false||false||0||false||N'):
+            self.assertIn(line, lines)
+        self.assertFalse([line for line in lines if line.startswith(('Sequence_Export_Id=', 'Studio_MonitorRunPath=')) and '||' in line])
+
+    def test_an_unknown_flag_value_refuses(self):
+        from studio_startup_config import startup_config
+        with self.assertRaisesRegex(ValueError, 'Unknown startup_runtime_pins value'):
+            startup_config(self.material(startup_runtime_pins=2))
 
 
 class StoppedRootMessageTests(unittest.TestCase):

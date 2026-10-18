@@ -245,21 +245,25 @@ def _same_input(name, frozen, reported, definition):
     return a == b
 
 
-# Inputs the EA declares outside the input contract, with their compiled defaults as the EA source declares them
-# (GOAT_SequencePackage.mqh:4-8; GOAT V1.49.mq5:34-35 and :3136; Dashboard_Resume_Saved and Studio_MonitorRunPath since
-# V1.47). No frozen SET carries them, not even a current V1.49 export, and MT5 runs an input a startup config omits at
-# the value the terminal LAST used, not at the EA default: the 2026-10-18 hold-up reports ran Sequence_Export_Enabled=true
-# under an earlier catch-up's Sequence_Export_Id (GOAT-EA#250). So the hold-up runner pins these (and every omitted
-# contract input) to their defaults, and the report check accepts an omitted input only at its default.
+# Every input the EA declares outside the input contract (the EA source and the files it includes), with its compiled
+# default and whether it is an optimizable `input` (optimizable=True) or a fixed `sinput`. No frozen SET carries them, not
+# even a current V1.49 export, and MT5 runs an input a startup config omits at the value the terminal LAST used, not at
+# the EA default: the 2026-10-18 hold-up reports ran sequence export ON under an earlier catch-up's Sequence_Export_Id
+# (GOAT-EA#250). So the runners pin these (and every omitted contract input) to their defaults, and the report check
+# accepts an omitted input only at its default. The installed B43 report lists exactly the contract inputs plus the
+# first nine below; BlindExport is declared from the next V1.49 build on. test_studio_tester_report proves this table
+# equals every declaration in the supported sources, so a changed default or a new input fails a test.
 RUNTIME_INPUT_DEFAULTS = {
     'Sequence_Export_Enabled': ('false', dict(type='bool')),
     'Sequence_Export_Id': ('', dict(type='string')),
     'Sequence_Export_Start': ('0', dict(type='datetime')),
     'Sequence_Export_End': ('0', dict(type='datetime')),
     'Sequence_Export_Model': ('4', dict(type='int')),
-    'GOAT_FitnessRunNonce': ('0', dict(type='long')),
+    'GOAT_FitnessRunNonce': ('0', dict(type='long', optimizable=True)),
     'Studio_MonitorRunPath': ('', dict(type='string')),
+    'Studio_ReadOnlyMonitor': ('false', dict(type='bool')),        # true makes V1.48/V1.49 refuse at OnInit
     'Dashboard_Resume_Saved': ('false', dict(type='bool')),
+    'BlindExport': ('false', dict(type='bool', optimizable=True)),
 }
 
 

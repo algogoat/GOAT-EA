@@ -203,6 +203,42 @@ class ReportTests(unittest.TestCase):
         readable = {n for n, d in schema['inputs'].items() if tr._schema_default(d, schema.get('defines')) is not None}
         self.assertEqual(set(pins) - set(tr.RUNTIME_INPUT_DEFAULTS), readable - set(values))
 
+    def test_runtime_table_is_every_input_outside_the_contract_goat_ea_250(self):
+        """Claude-Mac on #251 (should-fix) and Codex P1 4306194299: RUNTIME_INPUT_DEFAULTS must hold EVERY input the
+        supported EAs declare outside the contract, at the declared default and kind. Walks GOAT V1.47 / V1.48 / V1.49.mq5
+        and every file they #include. A new input, a changed default or input/sinput fails here; it is never silently
+        accepted (or refused as unknown, which would fail every hold-up pass)."""
+        from studio_installation import contracts
+        repo = Path(__file__).resolve().parents[1]
+        contract = set(contracts('1.49')[0]['inputs'])
+        # Declared in an included file but compiled out of V1.47-V1.49: absent from the installed B43 report's inputs.
+        compiled_out = {name: 'GOATAIWireV2.mqh, inside #ifndef GOAT_AI_SIGNAL_FILTER_V147' for name in
+                        ('Bias_V2_Loss_Payoff_R', 'Bias_V2_Min_Expected_R', 'Bias_V2_Round_Trip_Cost_R', 'Bias_V2_Win_Payoff_R')}
+        compiled_out.update({name: 'GOAT_Inputs_Definitions.mqh news-panel inputs, not in the EA build' for name in (
+            'input_CommentsLabelColor', 'input_CommentsTrasparentBackground', 'input_dy', 'input_FontName', 'input_FontSize',
+            'input_NoOfNewsDisplayedOnChart', 'input_Prefix', 'input_ShowComments', 'input_StartX', 'input_StartY', 'input_TextColor')})
+        literal = {'""': '', 'false': 'false', 'true': 'true'}
+        found = {}
+        for version in ('1.47', '1.48', '1.49'):
+            queue, seen = ['GOAT V%s.mq5' % version], set()
+            while queue:
+                name = queue.pop()
+                if name in seen:
+                    continue
+                seen.add(name)
+                text = (repo / name).read_text(encoding='utf-8-sig')
+                queue.extend(re.findall(r'(?m)^[ \t]*#include[ \t]+"([^"]+)"', text))
+                for keyword, value_name, value in re.findall(r'(?m)^[ \t]*(sinput|input)[ \t]+[\w:]+[ \t]+(\w+)[ \t]*=[ \t]*([^;]*);', text):
+                    if value_name not in contract:
+                        found.setdefault(value_name, set()).add((keyword, literal.get(value.strip(), value.strip()), name))
+        self.assertEqual(set(found), set(tr.RUNTIME_INPUT_DEFAULTS) | set(compiled_out),
+                         'an input outside the contract that is neither pinned nor known to be compiled out')
+        for name, (default, definition) in tr.RUNTIME_INPUT_DEFAULTS.items():
+            for keyword, declared, source in found[name]:
+                with self.subTest(input=name, source=source):
+                    self.assertEqual(declared, default, '%s declares %s=%s; the table says %s' % (source, name, declared, default))
+                    self.assertEqual(keyword == 'input', bool(definition.get('optimizable')), '%s declares %s as %s' % (source, name, keyword))
+
     def test_values_compare_by_type_not_by_spelling(self):
         report = self.read()
         values = dict(report['inputs'], Risk='500.0||100||10||900||N', Grid_Exponent='1.00000000')

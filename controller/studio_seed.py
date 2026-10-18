@@ -370,6 +370,8 @@ class SeedRunner:
             except ValueError as exc:
                 raise ValueError('Seed batch '+batch_id+' was prepared before explicit optimization flags ('+str(exc)+
                     '); prepare a new batch ID') from None
+        # A package prepared before the input pins (GOAT-EA#250) would reuse its unpinned config: refused before any effect.
+        tester_report.refuse_unpinned_package(batch_id,manifest['members'],self.c.schema,self.COMMAND_PREFIX)
 
     def _collect_member(self,root,manifest,spec,item,paths):
         """Collect this member's single output (age, identity and content checked), else mark it failed."""

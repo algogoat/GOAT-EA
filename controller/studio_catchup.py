@@ -1296,8 +1296,10 @@ class CatchupRunner(SeedRunner):
         return found
 
     def _verify_prepared(self, batch_id, manifest):
-        """Catch-up members are single Optimization=0 passes with no axes, so saved
-        tester-profile optimize flags cannot add a search axis; nothing to refuse."""
+        """Catch-up members are single Optimization=0 passes with no axes, so saved tester-profile optimize flags cannot
+        add a search axis. A package prepared before the input pins (GOAT-EA#250) would reuse its unpinned config and
+        inherit the terminal's last-used values (Mode_News, export): refused before any process effect (Codex P1 #252)."""
+        tester_report.refuse_unpinned_package(batch_id, manifest['members'], self.c.schema, self.COMMAND_PREFIX)
 
     def _before_start(self, spec):
         """Stage the EA's capture input snapshot (GoatTraceInit refuses without it). Create-only.
@@ -1335,6 +1337,8 @@ class CatchupRunner(SeedRunner):
     def _collect(self, path, spec, manifest):
         """Verify the EA's re-test unit, move it into the evidence store and judge the new weeks."""
         from studio_catchup_verdict import evaluate
+        # Every member, build migrations included (Codex P1 on #252): the inputs it ran are checked before anything else.
+        self._check_inputs(spec, path)
         if spec.get('build_migration'):
             return self._collect_migration(path, spec, manifest)
         if len(self._outputs(spec)) != 1:
@@ -1352,7 +1356,6 @@ class CatchupRunner(SeedRunner):
         original = read_export(spec['original']['set_path'])
         if original['set_sha256'] != spec['original']['set_sha256'] or original['evidence_end'] != spec['original']['evidence_end']:
             raise ValueError('Original export changed since the catch-up was prepared')
-        self._check_inputs(spec, retest)
         moved = self._move(path, Path(spec['evidence_dir']))
         retest = read_export(moved)
         if not retest['evidence_end']:
@@ -1433,7 +1436,7 @@ class CatchupRunner(SeedRunner):
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)
 
-    def _check_inputs(self, spec, retest):
+    def _check_inputs(self, spec, set_path):
         """Refuse a re-test that did not run the inputs its sealed config set (check_retest_inputs), before its evidence
         is moved or judged, so it never reaches a pool. The config is read back by its recorded sha, never trusted.
         Members prepared before this check (no inputs_checked) keep the old collection."""
@@ -1443,7 +1446,7 @@ class CatchupRunner(SeedRunner):
         if hashlib.sha256(config).hexdigest() != spec['config_sha256']:
             raise ValueError('The catch-up startup config changed since it was prepared: ' + spec['config_path'])
         try:
-            exported = read_values(Path(retest['set_path']).read_bytes())
+            exported = read_values(Path(set_path).read_bytes())
         except (OSError, ValueError, UnicodeError):
             exported = None
         reported = None

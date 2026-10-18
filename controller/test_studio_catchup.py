@@ -619,10 +619,42 @@ class RetestInputsCheckTests(CatchupCase):
         with self.assertRaisesRegex(ValueError, "report shows input\\(s\\) off the config's pin: Dashboard_Resume_Saved set false, ran true"):
             sc.check_retest_inputs(configured, exported, dict(report, Dashboard_Resume_Saved='true'), schema)
 
+    def test_a_package_prepared_before_the_pins_is_refused_before_any_launch(self):
+        """Codex P1 on #252: an older package would reuse its unpinned config. Seed, catch-up and hold-up all refuse it
+        (structured, prepare_again) before any process effect; a freshly prepared package passes."""
+        import studio_tester_report as tr
+        from studio_holdup import HoldupRunner
+        from studio_refusal import Refusal
+        from studio_seed import SeedRunner
+        self.runner.prepare('cu1', self.plan())
+        manifest = read_json(self.runner.path('cu1') / 'manifest.json')
+        self.assertIsNone(self.runner._verify_prepared('cu1', manifest))                         # pinned: passes
+        member = manifest['members'][0]
+        ran = sc._tester_inputs_section(Path(member['config_path']).read_bytes())
+        old = Path(self.tmp.name) / 'old.ini'
+        old.write_bytes(('[Tester]\r\nModel=4\r\n[TesterInputs]\r\n' + ''.join('%s=%s\r\n' % (k, v) for k, v in ran.items()
+                                                                          if k not in tr.RUNTIME_INPUT_DEFAULTS or k.startswith('Sequence_Export_'))).encode('utf-16'))
+        self.assertEqual(tr.unpinned_inputs(old.read_bytes(), self.controller.schema),
+                         sorted(set(tr.RUNTIME_INPUT_DEFAULTS) - {k for k in tr.RUNTIME_INPUT_DEFAULTS if k.startswith('Sequence_Export_')}))
+        stale = dict(manifest, members=[dict(member, config_path=str(old), values={}, axes={})])
+        for cls, prefix in ((sc.CatchupRunner, 'catchup'), (HoldupRunner, 'holdup'), (SeedRunner, 'seed')):
+            with self.subTest(runner=prefix), self.assertRaises(Refusal) as caught:
+                cls._verify_prepared(SimpleNamespace(c=self.controller, COMMAND_PREFIX=prefix), 'old1', stale)
+            self.assertEqual(caught.exception.code, tr.PACKAGE_PREDATES_INPUT_PINNING)
+            self.assertEqual((caught.exception.fields['kind'], caught.exception.fields['prepare_again']), (prefix, True))
+            self.assertIn('Dashboard_Resume_Saved', str(caught.exception))
+
+    def test_build_migration_members_are_checked_before_their_own_collection(self):
+        """Codex P1 on #252: a build-migration member reaches the inputs check before _collect_migration."""
+        with patch.object(sc.CatchupRunner, '_check_inputs', side_effect=ValueError('inputs checked first')), \
+                patch.object(sc.CatchupRunner, '_collect_migration', side_effect=AssertionError('migration reached first')):
+            with self.assertRaisesRegex(ValueError, 'inputs checked first'):
+                self.runner._collect('x.set', dict(build_migration=True), {})
+
     def test_a_member_prepared_before_the_check_keeps_the_old_collection(self):
         runner = SimpleNamespace(c=self.controller)
         spec = dict(config_path=str(Path(self.tmp.name) / 'missing.ini'), config_sha256='0' * 64, tester=dict(Report='x'))
-        self.assertIsNone(sc.CatchupRunner._check_inputs(runner, spec, dict(set_path='nowhere.set')))   # no inputs_checked: no check
+        self.assertIsNone(sc.CatchupRunner._check_inputs(runner, spec, 'nowhere.set'))   # no inputs_checked: no check
 
 
 class SameModelAndEquivalenceTests(CatchupCase):

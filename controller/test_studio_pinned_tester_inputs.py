@@ -385,6 +385,13 @@ class NativeStartupRuntimePinTests(unittest.TestCase):
         self.assertEqual(inputs['Grid_Size'], '10.0||10.0||0||10.0||N')                           # paste inputs unchanged
         for name, (default, definition) in tester_report.RUNTIME_INPUT_DEFAULTS.items():
             self.assertEqual(inputs[name], '%s||%s||0||%s||N' % (default, default, default) if definition.get('optimizable') else default, name)
+        # Claude-Mac on #252: MT5 never parses || in a string input, so string pins must be the plain empty default, and
+        # only the optimizable inputs carry the N tuple. Exact lines, as written:
+        lines = raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1].splitlines()
+        for line in ('Sequence_Export_Id=', 'Studio_MonitorRunPath=', 'Sequence_Export_Enabled=false', 'Dashboard_Resume_Saved=false',
+                     'GOAT_FitnessRunNonce=0||0||0||0||N', 'BlindExport=false||false||0||false||N'):
+            self.assertIn(line, lines)
+        self.assertFalse([line for line in lines if line.startswith(('Sequence_Export_Id=', 'Studio_MonitorRunPath=')) and '||' in line])
 
     def test_an_unknown_flag_value_refuses(self):
         from studio_startup_config import startup_config

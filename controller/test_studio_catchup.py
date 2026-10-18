@@ -642,7 +642,10 @@ class RetestInputsCheckTests(CatchupCase):
                 cls._verify_prepared(SimpleNamespace(c=self.controller, COMMAND_PREFIX=prefix), 'old1', stale)
             self.assertEqual(caught.exception.code, tr.PACKAGE_PREDATES_INPUT_PINNING)
             self.assertEqual((caught.exception.fields['kind'], caught.exception.fields['prepare_again']), (prefix, True))
-            self.assertIn('Dashboard_Resume_Saved', str(caught.exception))
+            # The names are data for an agent, not words for a beginner (Claude-Mac goatai#2587 6253445446 / 6253512510).
+            self.assertIn('Dashboard_Resume_Saved', caught.exception.fields['unpinned_inputs'])
+            self.assertNotIn('Dashboard_Resume_Saved', str(caught.exception))
+            self.assertIn('nothing was started', str(caught.exception))
 
     def test_build_migration_members_are_checked_before_their_own_collection(self):
         """Codex P1 on #252: a build-migration member reaches the inputs check before _collect_migration."""

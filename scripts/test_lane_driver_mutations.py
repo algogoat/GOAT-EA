@@ -4,8 +4,9 @@ Each guard that keeps a detached lane drive safe is removed in a temporary copy 
 controller/test_demo_lane_driver.py must fail: the caller's own checks and start record before the
 detach, one live driver per terminal, the worker's reservation identity, the durable host's exact
 lane validation, the recorded worker refusal and the foreground budget cap, and that only driver
-records (never the durable host's receipts, never the driver's own record) can refuse a driver.
-The repository is never modified. Works with an embedded Python that ignores cwd.
+records (never the durable host's receipts, never the driver's own record) can refuse a driver. Since
+goatai#2587 6253493569 also: the caller's package pre-check, which shares the drive's own checks and never falls
+through on doubt, and the worker's 'refused' record. The repository is never modified. Works with an embedded Python that ignores cwd.
 """
 import shutil
 import subprocess
@@ -23,11 +24,26 @@ RUNNER = ('import sys,unittest\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 AGENT = 'demo_agent.py'
 HOST = 'studio_durable_driver.py'
+SEED = 'studio_seed.py'
+PRECHECK = "                    self._seed_runner(controller, kind).precheck_start(batch_id)\n"
 MUTATIONS = [
     ('detached start skips the caller\'s checks and start record', AGENT,
      "                with self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):\n"
-     "                    self._seed_unoccupied(kind)\n                    self._lane_start_record(kind, batch_id, controller, broker)",
+     "                    self._seed_unoccupied(kind)\n"
+     "                    # The package refusals the worker would raise first (old research profile, unpinned inputs) are raised\n"
+     "                    # here, before the start record, so this command returns them with their refusal_code (goatai#2587 6253493569).\n"
+     + PRECHECK + "                    self._lane_start_record(kind, batch_id, controller, broker)",
      "                pass"),
+    # goatai#2587 6253493569 / Claude-Mac 6253512510: an old package refused only inside the worker was a silent no-op.
+    ('detached start skips the package pre-check', AGENT, PRECHECK, ""),
+    ('the pre-check falls through to a launch on doubt', SEED,
+     "        except (GateBusy,ValueError,OSError,KeyError) as exc:\n",
+     "        except (GateBusy,ValueError,OSError,KeyError) as exc:\n            return\n"),
+    ('the pre-check runs its own copy of the start checks', SEED,
+     "        if state['status']!='prepared':return\n        self._start_refusals(batch_id,manifest)",
+     "        if state['status']!='prepared':return\n        self._verify_prepared(batch_id,manifest)"),
+    ('a worker refusal is recorded as a crash', AGENT,
+     "                    worker.update(status='refused', refusal_code=exc.code, refusal_fields=dict(exc.fields))", "                    pass"),
     ('a second detached driver allowed', AGENT,
      "            live = self._live_lane_worker(retire=True)\n            if live is not None:\n                if Path(live[0]) == worker_path:",
      "            live = None\n            if live is not None:\n                if Path(live[0]) == worker_path:"),

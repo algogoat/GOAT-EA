@@ -307,7 +307,7 @@ class HoldupRunner(SeedRunner):
             # [Charts]: every member runs MT5 on GOAT Research, never the monitor profile (studio_research_profile).
             # [TesterInputs]: the frozen values, then every input this build declares that the SET omits, pinned to its
             # compiled default. MT5 runs an omitted input at the value the terminal last used, so without this a run
-            # inherits another run's state (GOAT-EA#250: Sequence_Export_Enabled=true under an earlier catch-up's id).
+            # inherits another run's state (GOAT-EA#250: sequence export ON under an earlier catch-up's id).
             # The .set file and its sha stay the frozen bytes; only the startup config carries the pins.
             tester_inputs = dict(frozen_values, **tester_report.omitted_input_defaults(frozen_values, self.c.schema))
             sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Charts': {'ProfileLast': 'GOAT Research'},

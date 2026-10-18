@@ -127,7 +127,7 @@ STEP_SEEDS = {
         'controller/test_studio_seed_driver.py'),
     'test_lane_driver_mutations': (
         'scripts/test_lane_driver_mutations.py', 'controller/test_demo_lane_driver.py',
-        'controller/studio_durable_driver.py', 'controller/demo_agent.py'),
+        'controller/studio_durable_driver.py', 'controller/demo_agent.py', 'controller/studio_seed.py'),
     'test_research_launch_mutations': (
         'scripts/test_research_launch_mutations.py', 'controller/test_studio_research_launch.py',
         'controller/studio_research_launch.py', 'controller/studio_config_start.py',

@@ -3155,6 +3155,9 @@ class DemoAgent:
                 # Same broker check, owner/STOP/TAKE/disk/idle proof and exclusive start record as a foreground start.
                 with self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
                     self._seed_unoccupied(kind)
+                    # The package refusals the worker would raise first (old research profile, unpinned inputs) are raised
+                    # here, before the start record, so this command returns them with their refusal_code (goatai#2587 6253493569).
+                    self._seed_runner(controller, kind).precheck_start(batch_id)
                     self._lane_start_record(kind, batch_id, controller, broker)
             else:
                 state = self.root / lane['folder'] / batch_id / 'state.json'
@@ -3240,8 +3243,14 @@ class DemoAgent:
                           else self._lane_resume(kind, batch_id, max_seconds, locked=True, exclude_worker=worker_path))
             except Exception as exc:
                 worker.update(status='failed', error=str(exc)[:2000])
+                if isinstance(exc, Refusal):
+                    # Stopped on purpose, not crashed: the run-batch worker's shape (status 'refused', refusal_code,
+                    # refusal_fields), so a reader keys on the code on every lane (Claude-Mac goatai#2587 6253512510).
+                    # A detached resume of an old package is still refused only here; its first start is refused by the caller.
+                    worker.update(status='refused', refusal_code=exc.code, refusal_fields=dict(exc.fields))
                 write_json(worker_path, worker)
-                self._append(kind + '_driver', 'failed', batch_id=batch_id, nonce=nonce, error=str(exc)[:500])
+                self._append(kind + '_driver', worker['status'], batch_id=batch_id, nonce=nonce, error=str(exc)[:500],
+                             refusal_code=exc.code if isinstance(exc, Refusal) else None)
                 raise
             worker.update(status='returned', result_status=result.get('status'), stopped_by=result.get('stopped_by'),
                           paused=bool(result.get('paused')), driver_budget_exhausted=bool(result.get('driver_budget_exhausted')))
@@ -3278,6 +3287,7 @@ class DemoAgent:
         if alive is False:
             ended = ('returned (' + str(driver.get('result_status')) + ')' if driver.get('status') == 'returned' else
                      'failed: ' + str(driver.get('error'))[:300] if driver.get('status') == 'failed' else
+                     'was refused (' + str(driver.get('refusal_code')) + '): ' + str(driver.get('error'))[:300] if driver.get('status') == 'refused' else
                      'never started its task' if driver.get('launch_never_started') else 'is no longer running')
             return dict(state='none', basis='No detached driver is running: the last one ' + ended + '.', call=None, last_call=call)
         return dict(state='unknown', basis='GOAT cannot tell whether the detached driver is running (' + str(alive)[:300] + '). Nothing is inferred.',

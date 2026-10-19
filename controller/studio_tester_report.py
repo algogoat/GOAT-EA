@@ -307,9 +307,13 @@ def refuse_unpinned_package(batch_id, members, schema, kind):
         missing = unpinned_inputs(Path(member['config_path']).read_bytes(), schema)
         if missing:
             from studio_refusal import Refusal
-            raise Refusal('This batch was prepared by an older GOAT, before every input was pinned to its default, so a run '
-                          'could inherit the terminal\'s last-used values (%s). Nothing was started; prepare it again.'
-                          % ', '.join(missing[:6]), PACKAGE_PREDATES_INPUT_PINNING, batch_id=batch_id, kind=kind, prepare_again=True,
+            # Plain words for a beginner (Claude-Mac goatai#2587 6253445446): what happened, that nothing ran, and the one step.
+            # The engineering detail (which inputs the old package left unset) is a field for an agent, never the sentence.
+            raise Refusal('This batch was prepared by an older version of GOAT and cannot run with this one, so nothing was '
+                          'started. Prepare it again from the same plan (your agent can do this), then start the new batch. '
+                          'Batches prepared now run as they are.',
+                          PACKAGE_PREDATES_INPUT_PINNING, batch_id=batch_id, kind=kind, prepare_again=True,
+                          unpinned_inputs=missing[:12],
                           next_action='Prepare the same plan again under a new batch ID, then start that batch.')
 
 

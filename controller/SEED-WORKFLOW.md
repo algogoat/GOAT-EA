@@ -390,6 +390,8 @@ prepared again."): prepare the same plan again under a new batch ID. A running o
 batch finishes as it is. From beta.38.1, a package prepared before every omitted input was
 pinned to its compiled default is refused before any launch with `refusal_code`
 `PACKAGE_PREDATES_INPUT_PINNING` (GOAT-EA#252): prepare it again under a new batch ID the same way.
+The default detached `seed-start` returns either code in its own reply: the start checks the package before it
+hands the drive to its worker, so an old package is never refused only inside the worker, where no screen reads it.
 While seeds run, MT5 shows a plain chart and its Strategy Tester, without the GOAT
 Studio panel or queue; tell the user that is expected. On the owner demo lane (`goat.exe demo`) the seed run reopens
 MT5 itself on that profile after the last member and reads the build back

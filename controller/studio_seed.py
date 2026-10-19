@@ -373,6 +373,38 @@ class SeedRunner:
         # A package prepared before the input pins (GOAT-EA#250) would reuse its unpinned config: refused before any effect.
         tester_report.refuse_unpinned_package(batch_id,manifest['members'],self.c.schema,self.COMMAND_PREFIX)
 
+    def _start_refusals(self,batch_id,manifest):
+        """A first start's package refusals, before any effect: the ONE place both the drive ('prepared' branch, before
+        _activate) and precheck_start call, so the detached caller and its worker can never disagree (Claude-Mac
+        goatai#2587 6253512510: a copy that drifted would pass the pre-check and refuse silently in the worker again)."""
+        from studio_research_profile import legacy_package_refusal,research_profile_manifest
+        if not research_profile_manifest(manifest):
+            # Prepared before members ran on GOAT Research: refused before the monitor closes with
+            # PACKAGE_PREDATES_RESEARCH_PROFILE; the app re-prepares it automatically (goatai#2350 6120693275).
+            raise legacy_package_refusal(batch_id,kind=self.COMMAND_PREFIX)
+        self._verify_prepared(batch_id,manifest)
+
+    def precheck_start(self,batch_id):
+        """A first start's package refusals, read-only, for a caller about to hand the drive to a detached worker.
+
+        Raised only inside the detached worker, an old package's refusal left the batch 'prepared' and no screen ever
+        read it (goatai#2587 6253493569); here the start command itself returns it with its refusal_code. No MT5
+        effect, no write. It never falls through on doubt (Claude-Mac 6253512510): a busy gate or an unreadable
+        package refuses with START_PRECHECK_FAILED; only a batch that is provably past 'prepared' checks nothing more.
+        """
+        from studio_refusal import Refusal
+        try:
+            with self._gate():root,manifest,state=self._read(batch_id)
+        except Refusal:raise
+        except (GateBusy,ValueError,OSError,KeyError) as exc:
+            raise Refusal('GOAT could not check this '+self.COMMAND_PREFIX.replace('catchup','catch-up').replace('holdup','hold-up')
+                          +' batch before starting it, so nothing was started ('+str(exc)[:300]+'). Try the start again; '
+                          'if this repeats, prepare it again from the same plan.','START_PRECHECK_FAILED',batch_id=batch_id,
+                          kind=self.COMMAND_PREFIX,next_action='Run the same start again; if it is refused the same way, '
+                          'prepare the same plan again under a new batch ID.') from None
+        if state['status']!='prepared':return
+        self._start_refusals(batch_id,manifest)
+
     def _collect_member(self,root,manifest,spec,item,paths):
         """Collect this member's single output (age, identity and content checked), else mark it failed."""
         try:
@@ -1142,12 +1174,7 @@ class SeedRunner:
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
-                    from studio_research_profile import legacy_package_refusal,research_profile_manifest
-                    if not research_profile_manifest(manifest):
-                        # Prepared before members ran on GOAT Research: refused before the monitor closes with
-                        # PACKAGE_PREDATES_RESEARCH_PROFILE; the app re-prepares it automatically (goatai#2350 6120693275).
-                        raise legacy_package_refusal(batch_id,kind=self.COMMAND_PREFIX)
-                    self._verify_prepared(batch_id,manifest)
+                    self._start_refusals(batch_id,manifest)
                     # Held-out lock: a lock declared after prepare refuses the start (before the monitor closes).
                     from studio_heldout_guard import check_runner_start
                     check_runner_start(self.c,manifest)

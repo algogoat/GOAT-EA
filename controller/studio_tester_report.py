@@ -223,6 +223,10 @@ def _same_input(name, frozen, reported, definition):
         return value.lower() in truth and reported.lower() in truth and truth[value.lower()] == truth[reported.lower()]
     if kind == 'datetime':
         def moment(text):
+            # MT5's report prints a datetime input as epoch seconds (Download_StartDate=1735689600 is the SET's
+            # 2025.01.01; GOAT-EA#250): read both spellings as the same instant.
+            if re.fullmatch(r'\d{1,12}', text):
+                return datetime(1970, 1, 1) + timedelta(seconds=int(text))
             for fmt in ('%Y.%m.%d %H:%M:%S', '%Y.%m.%d %H:%M', '%Y.%m.%d'):
                 try:
                     return datetime.strptime(text, fmt)
@@ -241,6 +245,131 @@ def _same_input(name, frozen, reported, definition):
     return a == b
 
 
+# Every input the EA declares outside the input contract (the EA source and the files it includes), with its compiled
+# default and whether it is an optimizable `input` (optimizable=True) or a fixed `sinput`. No frozen SET carries them, not
+# even a current V1.49 export, and MT5 runs an input a startup config omits at the value the terminal LAST used, not at
+# the EA default: the 2026-10-18 hold-up reports ran sequence export ON under an earlier catch-up's Sequence_Export_Id
+# (GOAT-EA#250). So the runners pin these (and every omitted contract input) to their defaults, and the report check
+# accepts an omitted input only at its default. The installed B43 report lists exactly the contract inputs plus the
+# nine below. This is the beta.39 controller branch for the B43 EA (Claude-Mac goatai#2587 6273384160 / 6273600429):
+# BlindExport, declared only from B44 on, is not pinned here, since a pin MT5 ignores is not a pin.
+# test_studio_tester_report proves this table equals every declaration in the supported sources, and that the pin set
+# equals B43's compiled input set, so a changed default or a new input fails a test.
+RUNTIME_INPUT_DEFAULTS = {
+    'Sequence_Export_Enabled': ('false', dict(type='bool')),
+    'Sequence_Export_Id': ('', dict(type='string')),
+    'Sequence_Export_Start': ('0', dict(type='datetime')),
+    'Sequence_Export_End': ('0', dict(type='datetime')),
+    'Sequence_Export_Model': ('4', dict(type='int')),
+    'GOAT_FitnessRunNonce': ('0', dict(type='long', optimizable=True)),
+    'Studio_MonitorRunPath': ('', dict(type='string')),
+    'Studio_ReadOnlyMonitor': ('false', dict(type='bool')),        # true makes V1.48/V1.49 refuse at OnInit
+    'Dashboard_Resume_Saved': ('false', dict(type='bool')),
+}
+
+
+def omitted_input_defaults(values, schema):
+    """{name: default} for every input this build declares that the frozen SET omits, in SET spelling: the contract's
+    readable defaults plus RUNTIME_INPUT_DEFAULTS. The hold-up runner writes these into [TesterInputs] so MT5 never runs
+    a stale value; an omitted contract input whose default cannot be read is left out (its report check fails closed)."""
+    defaults = {}
+    for name, definition in (schema.get('inputs') or {}).items():
+        if name not in values:
+            default = _schema_default(definition, schema.get('defines'))
+            if default is not None:
+                defaults[name] = default
+    for name, (default, _) in RUNTIME_INPUT_DEFAULTS.items():
+        if name not in values:
+            defaults[name] = default
+    return defaults
+
+
+PACKAGE_PREDATES_INPUT_PINNING = 'PACKAGE_PREDATES_INPUT_PINNING'
+
+
+def unpinned_inputs(config, schema):
+    """Inputs this build declares that a persisted startup config (UTF-16 bytes) does not set: [] for a config written
+    with the pins (GOAT-EA#250), the omitted names for one prepared before them. Run before every launch (Codex P1 on
+    GOAT-EA#252): a package prepared earlier would otherwise reuse its unpinned config and inherit stale values."""
+    section, inputs = None, set()
+    for line in config.decode('utf-16').splitlines():
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            section = stripped[1:-1]
+        elif section == 'TesterInputs' and '=' in line:
+            inputs.add(line.split('=', 1)[0])
+    return sorted(omitted_input_defaults(dict.fromkeys(inputs, ''), schema))
+
+
+def refuse_unpinned_package(batch_id, members, schema, kind):
+    """Refuse (structured, before any process effect) a package whose member configs predate the input pins."""
+    from pathlib import Path
+    for member in members:
+        missing = unpinned_inputs(Path(member['config_path']).read_bytes(), schema)
+        if missing:
+            from studio_refusal import Refusal
+            # Plain words for a beginner (Claude-Mac goatai#2587 6253445446): what happened, that nothing ran, and the one step.
+            # The engineering detail (which inputs the old package left unset) is a field for an agent, never the sentence.
+            raise Refusal('This batch was prepared by an older version of GOAT and cannot run with this one, so nothing was '
+                          'started. Prepare it again from the same plan (your agent can do this), then start the new batch. '
+                          'Batches prepared now run as they are.',
+                          PACKAGE_PREDATES_INPUT_PINNING, batch_id=batch_id, kind=kind, prepare_again=True,
+                          unpinned_inputs=missing[:12],
+                          next_action='Prepare the same plan again under a new batch ID, then start that batch.')
+
+
+def pinned_tester_inputs(values, schema):
+    """[TesterInputs] for any controller-launched run: ``values`` unchanged, plus every omitted input at its compiled
+    default. An optimizable non-string pin is spelled ``d||d||0||d||N`` (studio_optimization_inputs): a plain value
+    line only replaces the value, so a stale optimize flag in the terminal's tester profile would otherwise add an
+    axis to an optimization run. Single-pass runs ignore the flag, so the same spelling is safe everywhere."""
+    pinned = dict(values)
+    for name, default in omitted_input_defaults(values, schema).items():
+        definition = (schema.get('inputs') or {}).get(name) or RUNTIME_INPUT_DEFAULTS.get(name, (None, None))[1]
+        if definition and definition.get('optimizable') and definition.get('type') != 'string':
+            default = default + '||' + default + '||0||' + default + '||N'
+        pinned[name] = default
+    return pinned
+
+
+def _schema_default(definition, defines):
+    """The SET-spelled default of a contract input, or None when it cannot be read (fails closed)."""
+    expression = (definition or {}).get('default_expression')
+    if not isinstance(expression, str) or not expression.strip():
+        return None
+    expression = expression.strip()
+    for _ in range(4):                                   # a #define name (GOAT_DEFAULT_BIAS_MODE -> Bias_Opens)
+        if expression in (defines or {}):
+            expression = str(defines[expression]).strip()
+    choices = definition.get('enum_choices') or {}
+    if expression in choices:
+        return str(choices[expression])
+    datetime_literal = re.fullmatch(r"D'([^']*)'", expression)
+    if datetime_literal:
+        return datetime_literal.group(1)
+    string_literal = re.fullmatch(r'"(.*)"', expression)
+    if string_literal:
+        return string_literal.group(1)
+    if expression in ('true', 'false') or re.fullmatch(r'-?\d+(\.\d+)?', expression):
+        return expression
+    return None
+
+
+def _unset_input_problem(name, ran, definitions, defines):
+    """An input MT5 reports that the frozen SET omits runs at the EA default (the append-only input contract). It is a
+    mismatch only when it ran at another value, or when GOAT cannot tell its default (fails closed); None when fine."""
+    if name in RUNTIME_INPUT_DEFAULTS:
+        default, definition = RUNTIME_INPUT_DEFAULTS[name]
+    elif name in definitions:
+        definition = definitions[name]
+        default = _schema_default(definition, defines)
+        if default is None:
+            return '%s ran %s (its default is unknown)' % (name, ran)
+    else:
+        return '%s ran %s (not an input GOAT knows)' % (name, ran)
+    return None if _same_input(name, default, ran, definition) else '%s ran %s, default %s' % (name, ran, default)
+
+
 def check(report, *, values, schema, expert, symbol, period, from_date, to_date, deposit, currency, leverage):
     """Every check of one report against its frozen member. Returns the checks; raises one ValueError naming
     every failure (a member with a failed check keeps no result: it fails with this reason)."""
@@ -248,11 +377,12 @@ def check(report, *, values, schema, expert, symbol, period, from_date, to_date,
     definitions = schema.get('inputs') or {}
     reported = report['inputs']
     missing = sorted(set(values) - set(reported))
-    extra = sorted(set(reported) - set(values))
+    unset = [problem for problem in (_unset_input_problem(name, reported[name], definitions, schema.get('defines'))
+                                     for name in sorted(set(reported) - set(values))) if problem]
     if missing:
         problems.append('the report does not list frozen input(s) ' + ', '.join(missing[:8]))
-    if extra:
-        problems.append('MT5 ran input(s) the frozen SET does not set: ' + ', '.join(extra[:8]))
+    if unset:
+        problems.append('MT5 ran input(s) the frozen SET does not set, not at their default: ' + '; '.join(unset[:8]))
     differ = [name for name in values if name in reported and not _same_input(name, values[name], reported[name], definitions.get(name))]
     if differ:
         problems.append('MT5 ran different inputs than the frozen SET: ' + '; '.join(

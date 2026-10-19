@@ -146,6 +146,15 @@ class HoldupTests(unittest.TestCase):
                      'Symbol=SP500', 'Period=M1', 'Login=123', 'Server=Test-Demo'):
             self.assertIn(line + '\r\n', ini)
         self.assertNotIn('Password', ini)
+        # GOAT-EA#250: inputs the SET omits are pinned to the build's defaults in [TesterInputs], so MT5 never inherits the
+        # terminal's last-used values (the 2026-10-18 repro ran Sequence_Export_Enabled=true under another run's id).
+        inputs = ini.split('[TesterInputs]\r\n')[1]
+        for line in ('Sequence_Export_Enabled=false', 'Sequence_Export_Id=', 'Sequence_Export_Start=0', 'Sequence_Export_End=0',
+                     'Sequence_Export_Model=4', 'GOAT_FitnessRunNonce=0', 'Studio_MonitorRunPath=', 'Dashboard_Resume_Saved=false'):
+            self.assertIn('\r\n' + line + '\r\n', '\r\n' + inputs)
+        for name, value in member['values'].items():                       # the frozen values still win, unchanged
+            self.assertIn('\r\n%s=%s\r\n' % (name, value), '\r\n' + inputs)
+        self.assertEqual(member['set_sha256'], hashlib.sha256(Path(member['set_path']).read_bytes()).hexdigest())
         self.assertEqual((member['named_by'], member['relation']['relation']), (['export file name'], 'after_selection'))
         self.assertEqual(member['relation']['exposure'], dict(start='2025-01-06', end='2026-01-17'))
         self.assertFalse(self.starts or self.closes)

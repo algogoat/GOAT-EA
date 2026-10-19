@@ -327,6 +327,112 @@ class LaneDriverTests(DurableReceipts, unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'A live catch-up driver \\(cu2\\) owns this terminal'):
                 self.agent.seed_start('batch', 60, detach=True)
 
+    # ---- goatai#2587 6253493569 / Claude-Mac 6253512510: an old package is refused by the detached start itself ----------
+    # Raised only inside the detached worker, the refusal left the batch 'prepared' and no screen read it: a silent no-op.
+    RUN_BATCH_REPLY_KEYS = {'ok', 'code', 'error', 'refusal_code', 'batch_id', 'kind', 'prepare_again', 'next_action'}
+
+    def old_package(self):
+        """A package prepared before the input pins: only the detector is replaced, so the real refusal is raised."""
+        return patch('studio_tester_report.unpinned_inputs', return_value=['BlindExport', 'Dashboard_Resume_Saved'])
+
+    def assert_nothing_started(self, calls, kind='seed', batch_id='batch'):
+        self.assertEqual(calls, [])                                                            # no detached launch
+        self.assertFalse(self.agent._seed_start_path(batch_id, kind).exists())                # no start record either
+        self.assertFalse((self.root / 'demo-agent/lane-workers').exists())
+        self.assertEqual((self.process.starts, self.process.closes), ([], []))                # MT5 untouched
+
+    def test_a_detached_start_of_an_old_package_is_refused_by_the_start_itself_with_its_code(self):
+        import studio_tester_report as tr
+        self.agent.seed_prepare('batch', self.plan)
+        calls, launch = self.launched()
+        with launch, self.old_package(), self.assertRaises(demo_agent.Refusal) as caught:
+            self.agent.seed_start('batch', 600, detach=True)
+        self.assertEqual(caught.exception.code, tr.PACKAGE_PREDATES_INPUT_PINNING)
+        self.assertEqual((caught.exception.fields['prepare_again'], caught.exception.fields['unpinned_inputs']),
+                         (True, ['BlindExport', 'Dashboard_Resume_Saved']))
+        self.assert_nothing_started(calls)
+        self.assertEqual(read_json(self.root / 'seeds/batch/state.json')['status'], 'prepared')   # batch state untouched
+
+    def test_the_cli_reply_has_run_batchs_shape_and_a_plain_sentence(self):
+        import studio_tester_report as tr
+        self.agent.seed_prepare('batch', self.plan)
+        calls, launch = self.launched()
+        stderr = io.StringIO()
+        with launch, self.old_package(), patch.object(demo_agent, 'DemoAgent', lambda *args, **kwargs: self.agent), redirect_stderr(stderr):
+            code = demo_agent.main(['--installation', str(self.installation), 'seed-start', '--batch-id', 'batch', '--max-seconds', '600'])
+        reply = json.loads(stderr.getvalue().strip().splitlines()[-1])
+        self.assertEqual(code, 1, reply)
+        # The same field names run-batch returns for its refusal (test_detached_refusal_passthrough), plus the inputs as data.
+        self.assertEqual(set(reply), self.RUN_BATCH_REPLY_KEYS | {'unpinned_inputs'})
+        self.assertEqual((reply['code'], reply['refusal_code'], reply['kind'], reply['prepare_again']),
+                         ('REFUSED', tr.PACKAGE_PREDATES_INPUT_PINNING, 'seed', True))
+        self.assertEqual(reply['next_action'], 'Prepare the same plan again under a new batch ID, then start that batch.')
+        # Plain words for a beginner (Claude-Mac 6253512510): nothing ran, the same plan, the one step; no input names in it.
+        self.assertIn('nothing was started', reply['error'])
+        self.assertIn('Prepare it again from the same plan', reply['error'])
+        for engineering in ('BlindExport', 'pinned', 'last-used', 'terminal'):
+            self.assertNotIn(engineering, reply['error'])
+        self.assert_nothing_started(calls)
+
+    def test_an_old_research_profile_package_is_refused_the_same_way(self):
+        from studio_research_profile import PACKAGE_REFUSAL_CODE
+        self.agent.seed_prepare('batch', self.plan)
+        calls, launch = self.launched()
+        with launch, patch('studio_research_profile.research_profile_manifest', return_value=False), \
+                self.assertRaises(demo_agent.Refusal) as caught:
+            self.agent.seed_start('batch', 600, detach=True)
+        self.assertEqual(caught.exception.code, PACKAGE_REFUSAL_CODE)
+        self.assert_nothing_started(calls)
+
+    def test_the_detached_precheck_and_the_drive_share_one_check(self):
+        """Fails if the pre-check and the drive stop calling the same _start_refusals: a copy that drifted would pass
+        the pre-check and refuse silently inside the worker again (Claude-Mac 6253512510, review point 1)."""
+        import studio_seed
+        sentinel = demo_agent.Refusal('sentinel', 'SENTINEL_CODE')
+        self.agent.seed_prepare('batch', self.plan)
+        calls, launch = self.launched()
+        with launch, patch.object(studio_seed.SeedRunner, '_start_refusals', side_effect=sentinel) as shared:
+            with self.assertRaises(demo_agent.Refusal) as detached:
+                self.agent.seed_start('batch', 600, detach=True)                                 # the caller's pre-check
+            self.assert_nothing_started(calls)
+            with self.assertRaises(demo_agent.Refusal) as foreground:
+                self.agent.seed_start('batch', 60)                                                # the drive itself
+        self.assertEqual((detached.exception.code, foreground.exception.code), ('SENTINEL_CODE', 'SENTINEL_CODE'))
+        self.assertEqual(shared.call_count, 2)
+
+    def test_a_precheck_that_cannot_check_refuses_and_never_falls_through_to_a_launch(self):
+        import studio_seed
+        from studio_native_gate import GateBusy
+        self.agent.seed_prepare('batch', self.plan)
+        calls, launch = self.launched()
+        for failure in (GateBusy('busy'), ValueError('Seed manifest/installation/schema identity changed')):
+            with launch, patch.object(studio_seed.SeedRunner, '_read', side_effect=failure), \
+                    self.assertRaises(demo_agent.Refusal) as caught:
+                self.agent.seed_start('batch', 600, detach=True)
+            self.assertEqual(caught.exception.code, 'START_PRECHECK_FAILED')
+            self.assertIn('nothing was started', str(caught.exception))
+            self.assert_nothing_started(calls)
+
+    def test_a_refusal_inside_the_worker_is_recorded_as_refused_with_its_code(self):
+        """A package that becomes old after the caller's check (or a detached resume) is still refused in the worker:
+        its record says 'refused' with the code, as run-batch's worker does, and the lane status says so."""
+        import studio_seed
+        import studio_tester_report as tr
+        self.agent.seed_prepare('batch', self.plan)
+        calls, launch = self.launched()
+        with launch:
+            self.agent.seed_start('batch', 600, detach=True)
+        nonce = self.worker()['nonce']
+        refusal = demo_agent.Refusal('old package', tr.PACKAGE_PREDATES_INPUT_PINNING, batch_id='batch', kind='seed', prepare_again=True)
+        with patch.object(studio_seed.SeedRunner, '_start_refusals', side_effect=refusal), self.assertRaises(demo_agent.Refusal):
+            self.agent._drive_lane('seed', 'batch', nonce, 600, True)
+        worker = self.worker()
+        self.assertEqual((worker['status'], worker['refusal_code'], worker['error']), ('refused', tr.PACKAGE_PREDATES_INPUT_PINNING, 'old package'))
+        self.assertEqual(worker['refusal_fields'], dict(batch_id='batch', kind='seed', prepare_again=True))
+        self.assertIn(('seed_driver', 'refused'), [(a['operation'], a['phase']) for a in self.actions()])
+        liveness = self.agent._lane_liveness(dict(worker, alive=False))
+        self.assertIn('was refused (' + tr.PACKAGE_PREDATES_INPUT_PINNING + ')', liveness['basis'])
+
     def test_the_cli_detaches_by_default_and_caps_a_foreground_drive(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -352,6 +458,17 @@ class DetachedCatchupTests(DurableReceipts, unittest.TestCase):
         self.drive_detached('catchup', 'cu1', self.agent.catchup_start, 60)
         self.assertEqual(len(self.process.starts), 2)
 
+    def test_a_detached_catchup_start_of_an_old_package_is_refused_by_the_start_itself(self):
+        import studio_tester_report as tr
+        self.assertEqual(self.agent.catchup_prepare('cu1', self.plan)['status'], 'prepared')
+        with patch('studio_durable_driver.launch', side_effect=AssertionError('launched')), \
+                patch('studio_tester_report.unpinned_inputs', return_value=['Mode_News']), self.assertRaises(demo_agent.Refusal) as caught:
+            self.agent.catchup_start('cu1', 600, detach=True)
+        self.assertEqual((caught.exception.code, caught.exception.fields['kind']), (tr.PACKAGE_PREDATES_INPUT_PINNING, 'catchup'))
+        self.assertFalse(self.agent._seed_start_path('cu1', 'catchup').exists())
+        self.assertFalse((self.root / 'demo-agent/lane-workers').exists())
+        self.assertEqual(self.process.starts, [])
+
 
 class DetachedHoldupTests(DurableReceipts, unittest.TestCase):
     """The Prove step: a detached hold-up driver drives with its own started receipt live."""
@@ -364,6 +481,19 @@ class DetachedHoldupTests(DurableReceipts, unittest.TestCase):
         self.assertEqual(self.agent.holdup_prepare('h1', self.plan)['status'], 'prepared')
         self.drive_detached('holdup', 'h1', self.agent.holdup_start, 60)
         self.assertEqual(len(self.process.starts), 1)
+
+    def test_a_detached_holdup_start_of_an_old_package_is_refused_by_the_start_itself(self):
+        """The Prove step: the 2026-10-18 audit-1018-exp03 package would now be refused here, not silently in the worker."""
+        import studio_tester_report as tr
+        self.assertEqual(self.agent.holdup_prepare('h1', self.plan)['status'], 'prepared')
+        with patch('studio_durable_driver.launch', side_effect=AssertionError('launched')), \
+                patch('studio_tester_report.unpinned_inputs', return_value=['Sequence_Export_Enabled']), \
+                self.assertRaises(demo_agent.Refusal) as caught:
+            self.agent.holdup_start('h1', 600, detach=True)
+        self.assertEqual((caught.exception.code, caught.exception.fields['kind']), (tr.PACKAGE_PREDATES_INPUT_PINNING, 'holdup'))
+        self.assertFalse(self.agent._seed_start_path('h1', 'holdup').exists())
+        self.assertFalse((self.root / 'demo-agent/lane-workers').exists())
+        self.assertEqual(self.process.starts, [])
 
 
 if __name__ == '__main__':

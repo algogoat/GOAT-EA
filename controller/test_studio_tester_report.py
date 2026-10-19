@@ -7,6 +7,7 @@ Report of one non-optimized GOAT V1.47 pass (SP500 M1, Model 4, 2026.01.19-2026.
 """
 from decimal import Decimal
 import gzip
+import hashlib
 from pathlib import Path
 import re
 import tempfile
@@ -96,7 +97,8 @@ class ReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'MT5 ran different inputs than the frozen SET: Grid_Size frozen -5, ran -4'):
             tr.check(report, **self.expected(report, values=values))
         values = {k: v for k, v in report['inputs'].items() if k != 'Grid_Factor'}
-        with self.assertRaisesRegex(ValueError, 'MT5 ran input\\(s\\) the frozen SET does not set: Grid_Factor'):
+        # The compact schema carries no default for Grid_Factor: an unset input with an unknown default fails closed.
+        with self.assertRaisesRegex(ValueError, 'the frozen SET does not set, not at their default: Grid_Factor ran .* \\(its default is unknown\\)'):
             tr.check(report, **self.expected(report, values=values, schema=schema_for(report['inputs'])))
         with self.assertRaisesRegex(ValueError, 'report symbol is SP500, the frozen test ran NDX'):
             tr.check(report, **self.expected(report, symbol='NDX'))
@@ -104,6 +106,201 @@ class ReportTests(unittest.TestCase):
             tr.check(report, **self.expected(report, to_date='2026.09.12'))
         with self.assertRaisesRegex(ValueError, 'initial deposit is 100000.00, the frozen test used 10000'):
             tr.check(report, **self.expected(report, deposit=10000))
+
+    def test_unset_inputs_pass_only_at_their_default_goat_ea_250(self):
+        """GOAT-EA#250: a frozen SET that omits an input runs it at the EA default (an older-version SET, or the runtime
+        inputs no SET carries). That is no mismatch; a non-default value, an unknown default or an unknown input is."""
+        report = self.read()
+        ran = report['inputs']['Grid_Factor']
+        values = {k: v for k, v in report['inputs'].items() if k != 'Grid_Factor'}
+        schema = schema_for(report['inputs'])
+        # 1. Omitted, ran at its contract default: passes (an older-version SET predating the input).
+        schema['inputs']['Grid_Factor'] = dict(type='double', optimizable=True, default_expression=ran)
+        self.assertTrue(tr.check(report, **self.expected(report, values=values, schema=schema))['inputs_match'])
+        # 2. Omitted, but ran at another value: fails with the value and the default.
+        schema['inputs']['Grid_Factor'] = dict(type='double', optimizable=True, default_expression='9.5')
+        with self.assertRaisesRegex(ValueError, 'Grid_Factor ran %s, default 9.5' % re.escape(ran)):
+            tr.check(report, **self.expected(report, values=values, schema=schema))
+        # 3. The runtime inputs no SET carries, as MT5 reports them when the runner pinned them: defaults pass.
+        runtime = dict(Sequence_Export_Enabled='false', Sequence_Export_Id='', Sequence_Export_Start='0', Sequence_Export_End='0',
+                       Sequence_Export_Model='4', GOAT_FitnessRunNonce='0', Studio_MonitorRunPath='', Dashboard_Resume_Saved='false')
+        report_runtime = dict(report, inputs=dict(report['inputs'], **runtime))
+        self.assertTrue(tr.check(report_runtime, **self.expected(report))['inputs_match'])
+        # 4. The 2026-10-18 repro: MT5 ran them at the terminal's last-used values (another run's export). Refused, named.
+        leaked = dict(runtime, Sequence_Export_Enabled='true', Sequence_Export_Id='catchup-c5fb36b46df64517-00103',
+                      Sequence_Export_Start='1766188800', Sequence_Export_End='1792195200')
+        with self.assertRaisesRegex(ValueError, 'Sequence_Export_Enabled ran true, default false; Sequence_Export_End ran 1792195200, default 0; '
+                                                'Sequence_Export_Id ran catchup-c5fb36b46df64517-00103, default ; Sequence_Export_Start ran 1766188800'):
+            tr.check(dict(report, inputs=dict(report['inputs'], **leaked)), **self.expected(report))
+        with self.assertRaisesRegex(ValueError, 'Dashboard_Resume_Saved ran true, default false'):
+            tr.check(dict(report, inputs=dict(report_runtime['inputs'], Dashboard_Resume_Saved='true')), **self.expected(report))
+        # 5. An input GOAT does not know at all is never waved through.
+        with self.assertRaisesRegex(ValueError, 'Mystery_Input ran 7 \\(not an input GOAT knows\\)'):
+            tr.check(dict(report, inputs=dict(report['inputs'], Mystery_Input='7')), **self.expected(report))
+        # 6. A frozen value still has to match exactly: the default rule applies only to inputs the SET omits.
+        with self.assertRaisesRegex(ValueError, 'MT5 ran different inputs than the frozen SET: Grid_Size frozen -5'):
+            tr.check(report, **self.expected(report, values=dict(report['inputs'], Grid_Size='-5')))
+
+    def test_contract_defaults_read_like_a_set_value_goat_ea_250(self):
+        """Defaults come from the shipped 1.49 input contract: datetime literals, enum labels (through #define names),
+        strings, booleans and numbers, in the spelling a SET uses; anything else is unknown (None, fails closed)."""
+        from studio_installation import contracts
+        schema = contracts('1.49')[0]
+        inputs, defines = schema['inputs'], schema.get('defines')
+        self.assertEqual(tr._schema_default(inputs['Download_StartDate'], defines), '2025.01.01')
+        self.assertEqual(tr._schema_default(inputs['Mode_Lots'], defines), str(inputs['Mode_Lots']['enum_choices'][inputs['Mode_Lots']['default_expression']]))
+        self.assertEqual(tr._schema_default(inputs['Mode_Bias'], defines), str(inputs['Mode_Bias']['enum_choices']['Bias_Opens']))   # via GOAT_DEFAULT_BIAS_MODE
+        self.assertEqual(tr._schema_default(inputs['EA_Desc'], defines), 'GOAT_Trading')
+        self.assertEqual(tr._schema_default(inputs['Allow_New_Sequence'], defines), 'true')
+        self.assertEqual(tr._schema_default(inputs['Grid_Size'], defines), '10.0')
+        self.assertIsNone(tr._schema_default(dict(type='int', default_expression='SOME_UNKNOWN_MACRO'), defines))
+        self.assertIsNone(tr._schema_default(dict(type='int'), defines))
+        # The datetime the report prints as epoch seconds equals the SET's literal (Download_StartDate in #250).
+        self.assertTrue(tr._same_input('Download_StartDate', '2025.01.01', '1735689600', dict(type='datetime')))
+        self.assertFalse(tr._same_input('Download_StartDate', '2025.01.01', '1735689601', dict(type='datetime')))
+        self.assertTrue(tr._same_input('Download_StartDate', '2025.01.01', '2025.01.01 00:00', dict(type='datetime')))
+
+    def test_older_and_current_sets_pass_against_the_v149_build_goat_ea_250(self):
+        """Mac's fixtures (goatai#2587 6247100483): a V1.47 SET, a V1.48 SET and a V1.49 export each pass when MT5 ran
+        every input they omit at the 1.49 build's default (as the runner now pins them); an omitted input at a
+        non-default value and a changed explicit input are refused. Built from the shipped contracts, not hand lists."""
+        from studio_installation import contracts
+        schema = contracts('1.49')[0]
+        pinned = tr.omitted_input_defaults({}, schema)                    # what the runner writes for an empty SET
+        report = self.read()
+        def declared(version):
+            """The input names a version's SET carries: the shipped contract (1.48, 1.49); for 1.47, the inputs of the
+            recorded V1.47 pass this suite reads (its report lists exactly the 114 inputs that SET ran)."""
+            if version in ('1.48', '1.49'):
+                return set(contracts(version)[0]['inputs'])
+            return set(report['inputs'])
+        self.assertEqual(len(declared('1.47')), 114)
+        for version in ('1.47', '1.48', '1.49'):
+            older = declared(version)
+            values = {name: pinned[name] for name in older if name in pinned}   # the SET of that version, at defaults
+            ran = dict(pinned)                                                    # MT5: SET values + the runner's pins
+            ran.update(tr.omitted_input_defaults(values, schema))
+            ok = tr.check(dict(report, inputs=ran), **self.expected(report, values=values, schema=schema))
+            self.assertTrue(ok['inputs_match'], version)
+            self.assertEqual(ok['inputs_checked'], len(values), version)
+        values = {name: pinned[name] for name in declared('1.47') if name in pinned}
+        # The V1.47 SET carries every 1.49 contract input; what it omits are the runtime inputs (as in the repro).
+        omitted = next(name for name in sorted(pinned) if name not in values and re.fullmatch(r'-?\d+(\.\d+)?', pinned[name]))
+        with self.assertRaisesRegex(ValueError, '%s ran 777, default %s' % (omitted, re.escape(pinned[omitted]))):
+            tr.check(dict(report, inputs=dict(pinned, **{omitted: '777'})), **self.expected(report, values=values, schema=schema))
+        explicit = next(name for name in sorted(values) if schema['inputs'][name]['type'] == 'int')
+        with self.assertRaisesRegex(ValueError, 'MT5 ran different inputs than the frozen SET: %s frozen' % explicit):
+            tr.check(dict(report, inputs=dict(pinned, **{explicit: str(int(values[explicit]) + 1)})),
+                     **self.expected(report, values=values, schema=schema))
+
+    def test_the_runner_pins_every_omitted_input_goat_ea_250(self):
+        from studio_installation import contracts
+        schema = contracts('1.49')[0]
+        values = {'Grid_Size': '12.0'}
+        pins = tr.omitted_input_defaults(values, schema)
+        self.assertNotIn('Grid_Size', pins)                                   # a frozen value is never overridden
+        self.assertEqual(pins['Download_StartDate'], '2025.01.01')
+        self.assertEqual((pins['Sequence_Export_Enabled'], pins['Sequence_Export_Id'], pins['GOAT_FitnessRunNonce']), ('false', '', '0'))
+        readable = {n for n, d in schema['inputs'].items() if tr._schema_default(d, schema.get('defines')) is not None}
+        self.assertEqual(set(pins) - set(tr.RUNTIME_INPUT_DEFAULTS), readable - set(values))
+
+    def test_runtime_table_is_every_input_outside_the_contract_goat_ea_250(self):
+        """Claude-Mac on #251 (should-fix) and Codex P1 4306194299: RUNTIME_INPUT_DEFAULTS must hold EVERY input the
+        supported EAs declare outside the contract, at the declared default and kind. Walks GOAT V1.47 / V1.48 / V1.49.mq5
+        and every file they #include. A new input, a changed default or input/sinput fails here; it is never silently
+        accepted (or refused as unknown, which would fail every hold-up pass)."""
+        from studio_installation import contracts
+        repo = Path(__file__).resolve().parents[1]
+        contract = set(contracts('1.49')[0]['inputs'])
+        # Declared in an included file but compiled out of V1.47-V1.49: absent from the installed B43 report's inputs.
+        compiled_out = {name: 'GOATAIWireV2.mqh, inside #ifndef GOAT_AI_SIGNAL_FILTER_V147' for name in
+                        ('Bias_V2_Loss_Payoff_R', 'Bias_V2_Min_Expected_R', 'Bias_V2_Round_Trip_Cost_R', 'Bias_V2_Win_Payoff_R')}
+        compiled_out.update({name: 'GOAT_Inputs_Definitions.mqh news-panel inputs, not in the EA build' for name in (
+            'input_CommentsLabelColor', 'input_CommentsTrasparentBackground', 'input_dy', 'input_FontName', 'input_FontSize',
+            'input_NoOfNewsDisplayedOnChart', 'input_Prefix', 'input_ShowComments', 'input_StartX', 'input_StartY', 'input_TextColor')})
+        literal = {'""': '', 'false': 'false', 'true': 'true'}
+        found = {}
+        for version in ('1.47', '1.48', '1.49'):
+            queue, seen = ['GOAT V%s.mq5' % version], set()
+            while queue:
+                name = queue.pop()
+                if name in seen:
+                    continue
+                seen.add(name)
+                text = (repo / name).read_text(encoding='utf-8-sig')
+                queue.extend(re.findall(r'(?m)^[ \t]*#include[ \t]+"([^"]+)"', text))
+                for keyword, value_name, value in re.findall(r'(?m)^[ \t]*(sinput|input)[ \t]+[\w:]+[ \t]+(\w+)[ \t]*=[ \t]*([^;]*);', text):
+                    if value_name not in contract:
+                        found.setdefault(value_name, set()).add((keyword, literal.get(value.strip(), value.strip()), name))
+        self.assertEqual(set(found), set(tr.RUNTIME_INPUT_DEFAULTS) | set(compiled_out),
+                         'an input outside the contract that is neither pinned nor known to be compiled out')
+        for name, (default, definition) in tr.RUNTIME_INPUT_DEFAULTS.items():
+            for keyword, declared, source in found[name]:
+                with self.subTest(input=name, source=source):
+                    self.assertEqual(declared, default, '%s declares %s=%s; the table says %s' % (source, name, declared, default))
+                    self.assertEqual(keyword == 'input', bool(definition.get('optimizable')), '%s declares %s as %s' % (source, name, keyword))
+
+    def test_the_pin_set_is_exactly_b43s_compiled_inputs_beta39(self):
+        """Claude-Mac goatai#2587 6273384160 / 6273600429 (beta.39 ships the B43 EA): the runner's pins plus the contract
+        inputs with no readable default (whose report check fails closed) must equal the inputs B43's GOAT V1.49.mq5
+        actually compiles: its #include closure with #ifdef/#ifndef/#else evaluated against its own #defines and
+        comments stripped. Nothing missing (a stale value could run) and nothing extra (a pin MT5 ignores, e.g.
+        BlindExport from B44 on). Compiled-out declarations are excluded by evaluation, not by a hand list."""
+        from studio_installation import contracts
+        repo = Path(__file__).resolve().parents[1]
+        entry = (repo / 'GOAT V1.49.mq5').read_bytes()
+        self.assertEqual(hashlib.sha256(entry).hexdigest()[:8], '8b980f0c', 'this branch builds against the B43 entrypoint')
+        defined, seen, declared = set(), set(), set()
+
+        def walk(path):
+            if path in seen:                                 # MQL5 includes a file once
+                return
+            seen.add(path)
+            text = re.sub(r'(?s)/\*.*?\*/', '', path.read_text(encoding='utf-8-sig'))
+            stack, active = [], True
+            for line in text.splitlines():
+                line = re.sub(r'//.*', '', line)
+                directive = re.match(r'\s*#\s*(ifdef|ifndef|else|endif|define|undef|include)\b\s*(.*)', line)
+                if directive:
+                    kind, rest = directive.groups()
+                    if kind in ('ifdef', 'ifndef'):
+                        symbol = rest.split()[0]
+                        condition = (symbol in defined) == (kind == 'ifdef')
+                        stack.append((active, condition))
+                        active = active and condition
+                    elif kind == 'else':
+                        parent, condition = stack[-1]
+                        stack[-1] = (parent, not condition)
+                        active = parent and not condition
+                    elif kind == 'endif':
+                        active = stack.pop()[0]
+                    elif not active:
+                        continue
+                    elif kind == 'define':
+                        defined.add(rest.split()[0])
+                    elif kind == 'undef':
+                        defined.discard(rest.split()[0])
+                    else:
+                        local = re.match(r'"([^"]+)"', rest.strip())
+                        if local:                            # <...> are MQL5 library headers: no GOAT inputs
+                            walk((path.parent / local.group(1)).resolve())
+                    continue
+                if active:
+                    declaration = re.match(r'\s*(?:sinput|input)\s+(?!group\b)[\w:]+\s+(\w+)', line)
+                    if declaration:
+                        declared.add(declaration.group(1))
+            self.assertEqual(stack, [], '%s leaves a conditional open' % path.name)
+
+        walk((repo / 'GOAT V1.49.mq5').resolve())
+        schema = contracts('1.49')[0]
+        unreadable = {name for name, definition in schema['inputs'].items() if tr._schema_default(definition, schema.get('defines')) is None}
+        pins = set(tr.pinned_tester_inputs({}, schema)) | unreadable
+        self.assertEqual(sorted(declared - pins), [], 'B43 inputs the runner does not pin')
+        self.assertEqual(sorted(pins - declared), [], 'pins B43 does not declare (MT5 ignores them)')
+        self.assertEqual(len(declared), 123)
+        for name in ('Bias_V2_Win_Payoff_R', 'Bias_V2_Loss_Payoff_R', 'Bias_V2_Round_Trip_Cost_R', 'Bias_V2_Min_Expected_R',
+                     'input_ShowComments', 'input_FontName', 'BlindExport'):
+            self.assertNotIn(name, declared)                 # compiled out / commented out / B44+ only
 
     def test_values_compare_by_type_not_by_spelling(self):
         report = self.read()

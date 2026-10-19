@@ -440,7 +440,9 @@ class FullRunTests(unittest.TestCase):
         self.jobs = jobs(self.text)
 
     def test_full_run_triggers_on_the_base_branch_daily_and_by_hand(self):
-        self.assertIn('on:\n  push:\n    branches: [codex/v148-research-planning]\n', self.text)
+        # release/** too (beta.39): a controller release branch needs its own per-sha record for the promote gate.
+        self.assertIn("    branches: [codex/v148-research-planning, 'release/**']\n", self.text)
+        self.assertIn('on:\n  push:\n', self.text)
         self.assertRegex(self.text, r"\n  schedule:\n    - cron: '[0-9]+ [0-9]+ \* \* \*'\n")
         self.assertIn('\n  workflow_dispatch:\n', self.text)
         self.assertNotIn('pull_request', self.text.split('\njobs:\n')[0])

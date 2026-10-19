@@ -20,7 +20,9 @@ run-name: controller-mutations full ${{ github.event_name == 'push' && github.sh
 
 on:
   push:
-    branches: [codex/v148-research-planning]
+    # release/** (2026-10-19, beta.39): a controller release branch built from an older base plus cherry-picks needs its
+    # own per-sha record, since the promote gate reads the record for the exact controller the candidate bundles.
+    branches: [codex/v148-research-planning, 'release/**']
   schedule:
     - cron: '23 7 * * *'
   workflow_dispatch:

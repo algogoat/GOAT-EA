@@ -251,8 +251,10 @@ def _same_input(name, frozen, reported, definition):
 # the EA default: the 2026-10-18 hold-up reports ran sequence export ON under an earlier catch-up's Sequence_Export_Id
 # (GOAT-EA#250). So the runners pin these (and every omitted contract input) to their defaults, and the report check
 # accepts an omitted input only at its default. The installed B43 report lists exactly the contract inputs plus the
-# first nine below; BlindExport is declared from the next V1.49 build on. test_studio_tester_report proves this table
-# equals every declaration in the supported sources, so a changed default or a new input fails a test.
+# nine below. This is the beta.39 controller branch for the B43 EA (Claude-Mac goatai#2587 6273384160 / 6273600429):
+# BlindExport, declared only from B44 on, is not pinned here, since a pin MT5 ignores is not a pin.
+# test_studio_tester_report proves this table equals every declaration in the supported sources, and that the pin set
+# equals B43's compiled input set, so a changed default or a new input fails a test.
 RUNTIME_INPUT_DEFAULTS = {
     'Sequence_Export_Enabled': ('false', dict(type='bool')),
     'Sequence_Export_Id': ('', dict(type='string')),
@@ -263,7 +265,6 @@ RUNTIME_INPUT_DEFAULTS = {
     'Studio_MonitorRunPath': ('', dict(type='string')),
     'Studio_ReadOnlyMonitor': ('false', dict(type='bool')),        # true makes V1.48/V1.49 refuse at OnInit
     'Dashboard_Resume_Saved': ('false', dict(type='bool')),
-    'BlindExport': ('false', dict(type='bool', optimizable=True)),
 }
 
 

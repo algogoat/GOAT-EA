@@ -389,8 +389,10 @@ class NativeStartupRuntimePinTests(unittest.TestCase):
         # only the optimizable inputs carry the N tuple. Exact lines, as written:
         lines = raw.decode('utf-16').split('[TesterInputs]\r\n', 1)[1].splitlines()
         for line in ('Sequence_Export_Id=', 'Studio_MonitorRunPath=', 'Sequence_Export_Enabled=false', 'Dashboard_Resume_Saved=false',
-                     'GOAT_FitnessRunNonce=0||0||0||0||N', 'BlindExport=false||false||0||false||N'):
+                     'GOAT_FitnessRunNonce=0||0||0||0||N'):
             self.assertIn(line, lines)
+        # beta.39 ships the B43 EA, which does not declare BlindExport (B44+): no pin MT5 would ignore (Claude-Mac 6273600429).
+        self.assertFalse([line for line in lines if line.startswith('BlindExport=')])
         self.assertFalse([line for line in lines if line.startswith(('Sequence_Export_Id=', 'Studio_MonitorRunPath=')) and '||' in line])
 
     def test_an_unknown_flag_value_refuses(self):

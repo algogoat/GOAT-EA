@@ -7,6 +7,7 @@ Report of one non-optimized GOAT V1.47 pass (SP500 M1, Model 4, 2026.01.19-2026.
 """
 from decimal import Decimal
 import gzip
+import hashlib
 from pathlib import Path
 import re
 import tempfile
@@ -238,6 +239,68 @@ class ReportTests(unittest.TestCase):
                 with self.subTest(input=name, source=source):
                     self.assertEqual(declared, default, '%s declares %s=%s; the table says %s' % (source, name, declared, default))
                     self.assertEqual(keyword == 'input', bool(definition.get('optimizable')), '%s declares %s as %s' % (source, name, keyword))
+
+    def test_the_pin_set_is_exactly_b43s_compiled_inputs_beta39(self):
+        """Claude-Mac goatai#2587 6273384160 / 6273600429 (beta.39 ships the B43 EA): the runner's pins plus the contract
+        inputs with no readable default (whose report check fails closed) must equal the inputs B43's GOAT V1.49.mq5
+        actually compiles: its #include closure with #ifdef/#ifndef/#else evaluated against its own #defines and
+        comments stripped. Nothing missing (a stale value could run) and nothing extra (a pin MT5 ignores, e.g.
+        BlindExport from B44 on). Compiled-out declarations are excluded by evaluation, not by a hand list."""
+        from studio_installation import contracts
+        repo = Path(__file__).resolve().parents[1]
+        entry = (repo / 'GOAT V1.49.mq5').read_bytes()
+        self.assertEqual(hashlib.sha256(entry).hexdigest()[:8], '8b980f0c', 'this branch builds against the B43 entrypoint')
+        defined, seen, declared = set(), set(), set()
+
+        def walk(path):
+            if path in seen:                                 # MQL5 includes a file once
+                return
+            seen.add(path)
+            text = re.sub(r'(?s)/\*.*?\*/', '', path.read_text(encoding='utf-8-sig'))
+            stack, active = [], True
+            for line in text.splitlines():
+                line = re.sub(r'//.*', '', line)
+                directive = re.match(r'\s*#\s*(ifdef|ifndef|else|endif|define|undef|include)\b\s*(.*)', line)
+                if directive:
+                    kind, rest = directive.groups()
+                    if kind in ('ifdef', 'ifndef'):
+                        symbol = rest.split()[0]
+                        condition = (symbol in defined) == (kind == 'ifdef')
+                        stack.append((active, condition))
+                        active = active and condition
+                    elif kind == 'else':
+                        parent, condition = stack[-1]
+                        stack[-1] = (parent, not condition)
+                        active = parent and not condition
+                    elif kind == 'endif':
+                        active = stack.pop()[0]
+                    elif not active:
+                        continue
+                    elif kind == 'define':
+                        defined.add(rest.split()[0])
+                    elif kind == 'undef':
+                        defined.discard(rest.split()[0])
+                    else:
+                        local = re.match(r'"([^"]+)"', rest.strip())
+                        if local:                            # <...> are MQL5 library headers: no GOAT inputs
+                            walk((path.parent / local.group(1)).resolve())
+                    continue
+                if active:
+                    declaration = re.match(r'\s*(?:sinput|input)\s+(?!group\b)[\w:]+\s+(\w+)', line)
+                    if declaration:
+                        declared.add(declaration.group(1))
+            self.assertEqual(stack, [], '%s leaves a conditional open' % path.name)
+
+        walk((repo / 'GOAT V1.49.mq5').resolve())
+        schema = contracts('1.49')[0]
+        unreadable = {name for name, definition in schema['inputs'].items() if tr._schema_default(definition, schema.get('defines')) is None}
+        pins = set(tr.pinned_tester_inputs({}, schema)) | unreadable
+        self.assertEqual(sorted(declared - pins), [], 'B43 inputs the runner does not pin')
+        self.assertEqual(sorted(pins - declared), [], 'pins B43 does not declare (MT5 ignores them)')
+        self.assertEqual(len(declared), 123)
+        for name in ('Bias_V2_Win_Payoff_R', 'Bias_V2_Loss_Payoff_R', 'Bias_V2_Round_Trip_Cost_R', 'Bias_V2_Min_Expected_R',
+                     'input_ShowComments', 'input_FontName', 'BlindExport'):
+            self.assertNotIn(name, declared)                 # compiled out / commented out / B44+ only
 
     def test_values_compare_by_type_not_by_spelling(self):
         report = self.read()

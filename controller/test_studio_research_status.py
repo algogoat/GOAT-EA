@@ -55,13 +55,16 @@ class MonitorTests(unittest.TestCase):
         self.observe(900)
         self.assertIn('15 minutes ago', self.state()['blocker']['message'])
 
-    def test_sign_in_replaced_by_another_terminal_is_a_re_pair_blocker(self):
+    def test_another_terminal_approval_is_never_blamed_for_a_sign_out(self):
+        # INV-CRED-01/02: pairing one terminal cannot replace another's credential slot, so the
+        # blocker must not send operators hunting a cross-terminal overwrite (Banker, 10-06).
         self.observe(3600)
         self.activation('Terminal 1 - Banker', 'awaiting_approval', NOW - 60)
         self.activation('Terminal 2 - Exp', 'approved', NOW - 1800)
         value = self.state()
         self.assertEqual((value['state'], value['blocker']['code']), ('unlicensed', 'monitor_unlicensed'))
-        self.assertEqual(value['blocker']['message'], "This terminal's GOAT sign-in was replaced by another terminal — re-pair it.")
+        self.assertEqual(value['blocker']['message'], "This terminal's GOAT EA is waiting for its sign-in to be approved — re-pair it.")
+        self.assertNotIn('another terminal', value['blocker']['message'])
         self.assertIn('connection code', value['blocker']['fix'])
 
     def test_waiting_sign_in_build_and_network_reasons_are_plain(self):

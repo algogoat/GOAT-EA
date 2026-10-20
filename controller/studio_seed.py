@@ -359,6 +359,15 @@ class SeedRunner:
     def _before_start(self,spec):
         """Stage per-member inputs before the start receipt; must raise before any process effect."""
 
+    def _tester_profile(self,spec):
+        """MT5's tester profile (MQL5\\Profiles\\Tester\\<expert>.set) written from this member's sealed startup config,
+        so the inputs MT5 last used equal the config's pins, empty strings included (Banker hold-up F-01, 2026-10-20:
+        MT5 does not apply an empty [TesterInputs] value and ran the previous batch's Sequence_Export_Id). Seed, catch-up
+        and hold-up members all launch here; called with the native gate held and the selected MT5 closed (this pass's
+        inventory). Returns the receipt kept on the member next to its config sha."""
+        from studio_tester_profile import write_profile
+        return write_profile(self.c.install,spec['config_path'],config_sha256=spec['config_sha256'])
+
     def _verify_prepared(self,batch_id,manifest):
         """Refuse a seed package frozen before explicit ||N flags (MT5 could add axes).
 
@@ -1220,7 +1229,11 @@ class SeedRunner:
                         if holding is None:
                             self._before_start(spec)
                             runner_tag(self.c.install,state,item)
-                            item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
+                            # Last, right before the launch, MT5 stopped and the gate held: the terminal's tester profile
+                            # becomes this member's own [TesterInputs] (studio_tester_profile). A refusal raises here, with
+                            # the member still pending and nothing launched.
+                            profile=self._tester_profile(spec)
+                            item.update(status='starting',attempts=1,started_unix=self.clock(),tester_profile=profile);self._save(root,state)
                             try:
                                 identity=self.process.start(spec['config_path'])
                                 item.update(status='running',process=identity);self._save(root,state)

@@ -181,6 +181,47 @@ class HandoverTests(unittest.TestCase):
         inventory.return_value = json.dumps([own, *requester, *waiter])
         self.assertEqual(apply(self.c, planned['review_id'], True)['status'], 'complete')
 
+    def test_button_flow_with_agent_in_events_wait_never_reaches_owner_maintenance_recheck(self):
+        # Claude-Mac goatai#2587 6301648760: prepareSwitch -> the person's confirm -> switch-apply
+        # --confirm-reviewed -> switch-verify-park, while the agent's `goat.exe desktop events.wait`
+        # stays open. The owner-maintenance re-check (apply's completed branch) needs
+        # owner_maintenance, which --confirm-reviewed excludes; verify-park is the step that must
+        # recognize the waiting client.
+        real_stopped = inspect_stopped
+        self.process_patch.stop()
+        fences = []
+        def recording(*args, **kwargs):
+            fences.append(kwargs)
+            return real_stopped(*args, **kwargs)
+        patch('studio_handover.stopped', side_effect=recording).start()
+        bundle = self.fixture.root/'bundle with spaces'
+        write_hashed_bundle(bundle)
+        patch.object(studio_desktop_client, '__file__', str(bundle/'controller/studio_desktop_client.py')).start()
+        patch.object(studio_desktop_client, 'windows_argv', side_effect=lambda raw: json.loads(raw)).start()
+        own = dict(ProcessId=os.getpid(), ParentProcessId=0, Name='python.exe', ExecutablePath='test-python', CommandLine='test')
+        requester = desktop_rpc_pair(bundle, 98770, 'onboarding.prepareSwitch')
+        waiter = desktop_rpc_pair(bundle, 98772, 'events.wait', ['--timeout-ms', '60000', '--session', 'agentSession01'])
+        inventory = patch('studio_handover.subprocess.check_output').start()
+        inventory.return_value = json.dumps([own, *requester, *waiter])
+        planned = review(self.c)
+        inventory.return_value = json.dumps([own, *waiter])  # prepareSwitch answered; events.wait still open
+        self.assertEqual(apply(self.c, planned['review_id'], True)['status'], 'complete')
+        # A retried confirm of the completed park returns the receipt without any process fence.
+        self.assertEqual(apply(self.c, planned['review_id'], True)['status'], 'complete')
+        # Every fence the button reached recognized desktop RPC clients; the full-fence
+        # owner-maintenance re-check (called without the keyword) never ran.
+        self.assertEqual(fences, [dict(allow_desktop_rpc_client=True)]*3)
+        with self.assertRaisesRegex(ValueError, 'one explicit handover authorization route'):
+            apply(self.c, planned['review_id'], True, owner_maintenance='owner-record')
+        self.assertEqual(len(fences), 3)
+        # switch-verify-park with the agent still in events.wait (old code: "Stop the existing
+        # controller/runner ... (PID 98772)").
+        self.assertEqual(verify_park(self.c, planned['review_id'])['status'], 'parked_verified')
+        runner = desktop_rpc_pair(bundle, 98780, 'serve', ['--installation', str(self.receipt)], surface='studio')
+        inventory.return_value = json.dumps([own, *waiter, *runner])
+        with self.assertRaisesRegex(ValueError, r'Stop the existing controller/runner before switching \(PID 9878[01]\)'):
+            verify_park(self.c, planned['review_id'])
+
     def test_restore_parks_new_work_and_does_not_restore_agent_grant(self):
         first = review(self.c)['review_id']; apply(self.c, first, True)
         new = Controller(self.receipt); new.bootstrap('123456', 'Customer-Demo')

@@ -396,13 +396,35 @@ class QualificationScopeTests(unittest.TestCase):
         self.assertEqual(self.enabling_sites('allow_qualification_client'),
                          [('studio_installation_upgrade.py', 'inspect_park')])
 
-    def test_only_reviewed_handover_inspect_and_apply_enable_desktop_rpc_recognition(self):
-        # One fence call each in inspect() and apply(); every other stopped() caller keeps the
-        # full fence (owner continuation, historical pointers, receipt upgrade, completed-park
-        # owner maintenance).
-        self.assertEqual(self.enabling_sites('allow_desktop_rpc_client'),
-                         [('studio_handover.py', 'apply'), ('studio_handover.py', 'inspect')])
+    def test_only_reviewed_handover_inspect_apply_and_verify_park_enable_desktop_rpc_recognition(self):
+        # One fence call each in inspect() and apply(), and switch-verify-park (verify_park ->
+        # inspect_park, which forwards its False-by-default keyword). Every other stopped() and
+        # inspect_park() caller keeps the full fence: owner continuation, historical pointers,
+        # receipt replacement, build upgrade and completed-park owner maintenance.
         root = Path(studio_handover.__file__).parent
+        for file, name in (('studio_handover.py', 'stopped'), ('studio_installation_upgrade.py', 'inspect_park')):
+            tree = ast.parse((root/file).read_text(encoding='utf-8-sig'))
+            definition = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+            index = [a.arg for a in definition.args.kwonlyargs].index('allow_desktop_rpc_client')
+            self.assertIsInstance(definition.args.kw_defaults[index], ast.Constant)
+            self.assertIs(definition.args.kw_defaults[index].value, False)
+        sites = []
+        for source in root.glob('*.py'):
+            if source.name.startswith('test_'):
+                continue
+            module = ast.parse(source.read_text(encoding='utf-8-sig'))
+            for function in [n for n in ast.walk(module) if isinstance(n, ast.FunctionDef)]:
+                for call in [n for n in ast.walk(function) if isinstance(n, ast.Call)]:
+                    for keyword in call.keywords:
+                        if keyword.arg == 'allow_desktop_rpc_client':
+                            value = (keyword.value.value if isinstance(keyword.value, ast.Constant)
+                                     else getattr(keyword.value, 'id', None))
+                            sites.append((source.name, function.name, getattr(call.func, 'id', None), value))
+        self.assertEqual(sorted(sites, key=str), sorted([
+            ('studio_handover.py', 'apply', 'stopped', True),
+            ('studio_handover.py', 'inspect', 'stopped', True),
+            ('studio_installation_upgrade.py', 'inspect_park', 'stopped', 'allow_desktop_rpc_client'),
+            ('studio_installation_upgrade.py', 'verify_park', 'inspect_park', True)], key=str))
         module = ast.parse((root/'studio_handover.py').read_text(encoding='utf-8-sig'))
         calls = sorted((call.lineno, function.name, any(k.arg == 'allow_desktop_rpc_client' for k in call.keywords))
                        for function in module.body if isinstance(function, ast.FunctionDef)

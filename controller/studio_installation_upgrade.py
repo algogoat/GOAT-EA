@@ -20,7 +20,7 @@ from studio_native_gate import exclusive_gate
 from studio_handover import paths, safe_path, load_plan, tree, database_view, stopped, guard, session_lock
 
 
-def inspect_park(c, review_id, *, allowed_receipt_sha256=None, build_update_fence=None):
+def inspect_park(c, review_id, *, allowed_receipt_sha256=None, build_update_fence=None, allow_desktop_rpc_client=False):
     guard(c,build_update_fence=build_update_fence)
     from studio_bootstrap_retirement import handover_guard
     handover_guard(c)
@@ -41,13 +41,18 @@ def inspect_park(c, review_id, *, allowed_receipt_sha256=None, build_update_fenc
     for view in plan['after_ownership']:
         if not Path(view['path']).is_relative_to(root) and database_view(view['path'])!=view:
             raise ValueError('External parked controller database changed')
-    stopped(c,[v['path'] for v in plan['after_ownership']],allow_qualification_client=True)
+    stopped(c,[v['path'] for v in plan['after_ownership']],allow_qualification_client=True,
+            allow_desktop_rpc_client=allow_desktop_rpc_client)
     return dict(status='parked_verified',review_id=review_id,installation_sha256=sha(c.install),
                 receipt_sha256=digest,review_sha256=hashlib.sha256((folder/'receipt.json').read_bytes()).hexdigest())
 
 
 def verify_park(c, review_id):
-    with session_lock(c):return inspect_park(c,review_id)
+    # switch-verify-park is the read-only last step of the reviewed switch (the demo-login bind runs it
+    # after the person's confirm); an agent's open `goat.exe desktop events.wait` is not a controller
+    # (P-beta40-prepare-switch-self-pid). Receipt replacement, build upgrade and owner continuation keep
+    # the full fence.
+    with session_lock(c):return inspect_park(c,review_id,allow_desktop_rpc_client=True)
 
 
 def replace_receipt(c, review_id, candidate, expected_sha256):

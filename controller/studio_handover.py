@@ -80,8 +80,12 @@ def paths(c):
     return root, local, archive, lock
 
 
-def stopped(c, databases, *, allow_qualification_client=False):
-    """Read complete process identities, excluding only this invocation's parents."""
+def stopped(c, databases, *, allow_qualification_client=False, allow_desktop_rpc_client=False):
+    """Read complete process identities, excluding only this invocation's parents.
+
+    allow_desktop_rpc_client (inspect/apply only) also excludes the hashed `goat.exe desktop`
+    client that asked the app for this handover: it is an HTTP client of the app, while the
+    app's own switch-plan/switch-apply child is the controller (P-beta40-prepare-switch-self-pid)."""
     command = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
     from studio_process_query import powershell_text
     from studio_process_query import POLL_BUDGET
@@ -107,6 +111,9 @@ def stopped(c, databases, *, allow_qualification_client=False):
     if allow_qualification_client:
         from studio_desktop_client import qualification_clients
         clients = qualification_clients(c, rows)
+    if allow_desktop_rpc_client:
+        from studio_desktop_client import desktop_rpc_clients
+        clients = clients | desktop_rpc_clients(c, rows)
     needles = [str(c.local).lower(), str(c.root).lower(), *(str(p).lower() for p in databases)]
     for row in rows:
         if row['ProcessId'] in ancestors or row['ProcessId'] in clients:
@@ -183,7 +190,7 @@ def inspect(c):
             bindings.append(dict(kind='native-gate', path=str(owner.parent), database=value['database']))
     if (root/'studio.sqlite').exists():
         databases.add(str(root/'studio.sqlite'))
-    stopped(c, databases)
+    stopped(c, databases, allow_desktop_rpc_client=True)
     views = [database_view(p) for p in sorted(databases)]
     for view in views:
         if Path(view['path']).is_relative_to(local):
@@ -445,7 +452,7 @@ def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
         observation = plan['observation']
         from studio_bootstrap_retirement import handover_guard, handover_gate
         handover_guard(c)
-        stopped(c, [v['path'] for v in observation['databases']])
+        stopped(c, [v['path'] for v in observation['databases']], allow_desktop_rpc_client=True)
         if owner_maintenance is not None:
             from studio_owner_maintenance import authorize_park
             authorize_park(c, owner_maintenance, plan, publish=plan['status']!='review')

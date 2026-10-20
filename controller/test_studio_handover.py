@@ -17,7 +17,10 @@ from studio_installation_upgrade import verify_park
 from studio_native_gate import exclusive_gate, shared_gate
 from studio_handover import stopped as inspect_stopped
 from studio_bridge import write_json,worker_lock
+from studio_installation import read_json
 from test_goat_studio import PortableControllerTests
+import studio_desktop_client
+from test_studio_desktop_client import desktop_rpc_pair, write_hashed_bundle
 
 
 class HandoverTests(unittest.TestCase):
@@ -29,7 +32,8 @@ class HandoverTests(unittest.TestCase):
         self.fixture.prepare(self.c)
         self.c.store.close(); self.c.store = None
         self.before = database_view(self.c.root/'studio.sqlite')
-        self.process = patch('studio_handover.stopped').start()
+        self.process_patch = patch('studio_handover.stopped')
+        self.process = self.process_patch.start()
         self.addCleanup(patch.stopall)
         # Customer receipts normally live in the controller directory.
         write_json(self.c.root/'installation.json', self.fixture.receipt)
@@ -93,6 +97,89 @@ class HandoverTests(unittest.TestCase):
         finally:
             if new.store: new.store.close()
         self.assertEqual(apply(self.c, planned['review_id'], True), result)
+
+    def test_park_then_bootstrap_a_different_demo_login_moves_the_binding(self):
+        # P-beta40-demo-login-switch gate (Claude-Mac goatai#2587 6300398545): an expired demo
+        # login (123456) is parked and the same installation bootstraps a new login (654321).
+        old_session = read_json(self.c.root/'session.json')
+        self.assertEqual(old_session['account'], {'login': '123456', 'server': 'Customer-Demo'})
+        before_files = tree(self.c.local)
+        probe = Controller(self.receipt)
+        try:
+            with self.assertRaisesRegex(ValueError, 'Existing account binding differs'):
+                probe.bootstrap('654321', 'Customer-Demo')
+        finally:
+            if probe.store: probe.store.close()
+        planned = review(self.c)
+        self.assertEqual(apply(self.c, planned['review_id'], True)['status'], 'complete')
+        with patch('studio_installation_upgrade.stopped'):
+            self.assertEqual(verify_park(self.c, planned['review_id'])['status'], 'parked_verified')
+        new = Controller(self.receipt)
+        try:
+            session = new.bootstrap('654321', 'Customer-Demo')
+            self.assertEqual(session['account'], {'login': '654321', 'server': 'Customer-Demo'})
+            self.assertTrue(session['demo_only'])
+            self.assertEqual(session['authority_kind'], 'native_human_control')
+            self.assertNotEqual(session['run_id'], old_session['run_id'])
+            self.assertEqual(new.store.snapshot(session['terminal_id'], session['run_id'])['owner'], 'human')
+        finally:
+            if new.store: new.store.close()
+        # The binding moved: the new login re-opens without refusal, the old one now differs.
+        for login, refusal in (('654321', None), ('123456', 'Existing account binding differs')):
+            again = Controller(self.receipt)
+            try:
+                if refusal:
+                    with self.assertRaisesRegex(ValueError, refusal): again.bootstrap(login, 'Customer-Demo')
+                else:
+                    self.assertEqual(again.bootstrap(login, 'Customer-Demo')['run_id'], session['run_id'])
+            finally:
+                if again.store: again.store.close()
+        self.assertEqual(read_json(self.c.root/'session.json')['account']['login'], '654321')
+        self.assertEqual(read_json(self.c.local/'active.json')['run_id'], session['run_id'])
+        # The old session sits in the archive, research and terminal files intact, human-owned.
+        saved = paths(self.c)[2]/planned['review_id']
+        self.assertEqual(read_json(saved/'state'/'session.json'), old_session)
+        self.assertEqual(read_json(saved/'terminal'/'active.json')['run_id'], old_session['run_id'])
+        self.assertEqual(tree(saved/'terminal'), before_files)
+        archived = database_view(saved/'state'/'studio.sqlite')
+        self.assertEqual(archived['content'], self.before['content'])
+        self.assertEqual(archived['counts'], {'pending': 1})
+        self.assertEqual(archived['states'][0][3], 'human')
+
+    def test_inspect_and_apply_fence_recognize_desktop_rpc_clients(self):
+        planned = review(self.c)
+        self.assertEqual([call.kwargs for call in self.process.call_args_list],
+                         [dict(allow_desktop_rpc_client=True)])
+        self.process.reset_mock()
+        apply(self.c, planned['review_id'], True)
+        # apply's own fence and its re-inspection both recognize the requesting client.
+        self.assertEqual([call.kwargs for call in self.process.call_args_list],
+                         [dict(allow_desktop_rpc_client=True)]*2)
+
+    def test_real_fence_accepts_requesting_prepare_switch_client_but_not_a_runner(self):
+        # P-beta40-prepare-switch-self-pid (goatai#2587 6300078347): the agent's own
+        # `goat.exe desktop onboarding.prepareSwitch` was refused as "the existing controller".
+        self.process_patch.stop()
+        bundle = self.fixture.root/'bundle with spaces'
+        write_hashed_bundle(bundle)
+        patch.object(studio_desktop_client, '__file__', str(bundle/'controller/studio_desktop_client.py')).start()
+        patch.object(studio_desktop_client, 'windows_argv', side_effect=lambda raw: json.loads(raw)).start()
+        own = dict(ProcessId=os.getpid(), ParentProcessId=0, Name='python.exe', ExecutablePath='test-python', CommandLine='test')
+        requester = desktop_rpc_pair(bundle, 98770, 'onboarding.prepareSwitch')
+        waiter = desktop_rpc_pair(bundle, 98772, 'events.wait', ['--timeout-ms', '60000', '--session', 'agentSession01'])
+        runner = desktop_rpc_pair(bundle, 98780, 'serve', ['--installation', str(self.receipt)], surface='studio')
+        inventory = patch('studio_handover.subprocess.check_output').start()
+        inventory.return_value = json.dumps([own, *requester])
+        planned = review(self.c)  # Old code: "Stop the existing controller/runner ... (PID 98770)".
+        self.assertEqual(planned['status'], 'review')
+        inventory.return_value = json.dumps([own, *requester, *runner])
+        with self.assertRaisesRegex(ValueError, r'Stop the existing controller/runner before switching \(PID 9878[01]\)'):
+            review(self.c)
+        inventory.return_value = json.dumps([own, *requester, *waiter, *runner])
+        with self.assertRaisesRegex(ValueError, r'Stop the existing controller/runner before switching \(PID 9878[01]\)'):
+            apply(self.c, planned['review_id'], True)
+        inventory.return_value = json.dumps([own, *requester, *waiter])
+        self.assertEqual(apply(self.c, planned['review_id'], True)['status'], 'complete')
 
     def test_restore_parks_new_work_and_does_not_restore_agent_grant(self):
         first = review(self.c)['review_id']; apply(self.c, first, True)

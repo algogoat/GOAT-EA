@@ -108,5 +108,10 @@ hand-picked ranges found no profitable setting in 18 of their first 31 runs). Ha
 ideas overfit easily, because every filter the user picked is part of the search, so
 the 13-week held-out lock matters even more: declare it with `heldOut.declare` as the
 strategy enters Prove, let those unseen weeks close, and never tune against them.
+`heldOut.declare` arrives as a desktop agent method in beta.41; until then the desktop
+cannot record the lock. Write the planned lock instead: the strategy key (the variant's
+own key, never its parent template's), the 13-week window and the date, in the study's
+pre-registration and in the template's VARIANTS.md. Never prepare that strategy on any
+date inside the planned window before the lock is declared. The controller keys forks to their parent today; beta.41 aligns attribution for registered variants so the variant's key binds.
 Never claim or imply performance. Demo only; real money stays the user's own
 decision outside this workflow.

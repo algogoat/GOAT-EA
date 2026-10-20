@@ -100,9 +100,14 @@ class StarterSetTests(unittest.TestCase):
                 [warning] = validate_raw(('﻿' + old.lstrip('﻿')).encode('utf-16-le'), schema, policy)['warnings']
                 self.assertIn('Delay_Trade=1, Delay_Trade_Live=1, Delay_Lots_Add=true', warning)
                 self.assertIn('2 x Lots', warning)
+                # What F-01 observed (goatai issue 2587 6298611357): two delay stages, and it may never trade.
+                self.assertIn('by a grid gap, twice (a virtual level, then a paper level)', warning)
+                self.assertIn('may never trade', warning)
                 live_only = text.replace('Delay_Trade_Live=0\r\n', 'Delay_Trade_Live=2\r\n')
                 [warning] = validate_raw(('﻿' + live_only.lstrip('﻿')).encode('utf-16-le'), schema, policy)['warnings']
                 self.assertIn('(Delay_Trade_Live=2)', warning, 'Delay_Lots_Add=false is not named')
+                self.assertIn('twice (a paper level)', warning)
+                self.assertNotIn('2 x Lots', warning, 'no summed lots without Delay_Lots_Add')
                 sequence = Path(self.starter('sequence', version, name=f'{version}-seq.set')['output']['path']).read_bytes()
                 self.assertEqual(validate_raw(sequence, schema, policy)['warnings'], [], 'delays are a sequence feature')
 

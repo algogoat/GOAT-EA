@@ -94,9 +94,20 @@ def single_trade_delay_warnings(values):
     # Delay_Lots_Add sums the real sequence's paper levels, so it only bites with Delay_Trade_Live above 0 (mq5:1716).
     if current('Delay_Lots_Add').lower()=='true' and 'Delay_Trade_Live' in on: on.append('Delay_Lots_Add')
     if not on: return []
-    return ['Single trade with delayed entry ('+', '.join(name+'='+current(name) for name in on)+'): the one order goes in '
-            'after the delayed levels, not on the signal, and with Delay_Lots_Add its size is the delayed levels\' lots added '
-            'together (2 x Lots for one delayed level). For a single trade set Delay_Trade=0, Delay_Trade_Live=0 and '
+    # What happens, as observed in GOAT's F-01 test (goatai issue 2587 6298595025, 6298611357): each delay stage needs one
+    # more grid level against the signal before the real order (virtual levels mq5:1643, paper levels mq5:1782-1801).
+    def count(name):
+        try: return abs(int(float(current(name) or '0')))
+        except ValueError: return 1
+    stages=count('Delay_Trade')+count('Delay_Trade_Live')
+    times='once' if stages==1 else 'twice' if stages==2 else str(stages)+' times'
+    kinds=' ('+', then '.join(kind for name,kind in (('Delay_Trade','a virtual level'),('Delay_Trade_Live','a paper level'))
+                              if name in on)+')'
+    size=(" if it does trade, it opens late at the delayed levels' lots added together (2 x Lots for one paper level)."
+          if 'Delay_Lots_Add' in on else ' if it does trade, it opens late.')
+    return ['Single trade with delayed entry ('+', '.join(name+'='+current(name) for name in on)+'): the one order waits until '
+            'price has moved against the signal by a grid gap, '+times+kinds+', so with a day-end close it may never trade '
+            "(0 trades in a month in GOAT's test);"+size+' For a single trade set Delay_Trade=0, Delay_Trade_Live=0 and '
             'Delay_Lots_Add=false.']
 
 def validate_raw(raw,schema,policy,*,require_optimization=False):

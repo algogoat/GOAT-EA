@@ -15,6 +15,35 @@ from studio_handover import stopped
 import test_goat_studio
 
 
+BUNDLE_FILES = ['goat.exe', 'python/python.exe', 'controller/goat_agent.py',
+                'controller/studio_desktop_client.py', 'controller/studio_handover.py']
+
+
+def write_hashed_bundle(bundle):
+    """A fixture bundle whose manifest hashes every file the client recognition checks."""
+    files = []
+    for name in BUNDLE_FILES:
+        p = bundle/name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        raw = ('fixture:'+name).encode()
+        p.write_bytes(raw)
+        files.append(dict(path=name, size=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+    (bundle/'manifest.json').write_text(json.dumps(dict(files=files)))
+
+
+def desktop_rpc_pair(bundle, pid, method='onboarding.prepareSwitch', flags=None, surface='desktop'):
+    """Process rows of one `goat.exe desktop <method>` launcher and its goat_agent.py child."""
+    if flags is None:
+        flags = ['--params', str(bundle/'prepare-switch.json'), '--request-id', 'agent-switch-1',
+                 '--timeout-ms', '120000', '--session', 'agentSession01']
+    args = [str(bundle/'goat.exe'), surface, method, *flags]
+    child = [str(bundle/'python/python.exe'), '-B', str(bundle/'controller/goat_agent.py'), *args[1:]]
+    return [dict(ProcessId=pid, ParentProcessId=0, Name='goat.exe', ExecutablePath=args[0],
+                 CommandLine=json.dumps(args)),
+            dict(ProcessId=pid+1, ParentProcessId=pid, Name='python.exe', ExecutablePath=child[0],
+                 CommandLine=json.dumps(child))]
+
+
 class DesktopClientTests(unittest.TestCase):
     def setUp(self):
         self.fixture = test_goat_studio.PortableControllerTests()
@@ -22,16 +51,7 @@ class DesktopClientTests(unittest.TestCase):
         self.addCleanup(self.fixture.tearDown)
         self.c = self.fixture.bound()
         self.bundle = self.c.root.parent/'bundle with spaces'
-        names = ['goat.exe', 'python/python.exe', 'controller/goat_agent.py',
-                 'controller/studio_desktop_client.py', 'controller/studio_handover.py']
-        files = []
-        for name in names:
-            p = self.bundle/name
-            p.parent.mkdir(parents=True, exist_ok=True)
-            raw = ('fixture:'+name).encode()
-            p.write_bytes(raw)
-            files.append(dict(path=name, size=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
-        (self.bundle/'manifest.json').write_text(json.dumps(dict(files=files)))
+        write_hashed_bundle(self.bundle)
         self.params = self.bundle/'request.json'
         self.params.write_text(json.dumps(dict(accountId='123456', buildId='reviewed-build',
             parkReviewId='a'*32, selection=dict(terminalExecutable=self.c.install['terminal_executable'],
@@ -52,6 +72,105 @@ class DesktopClientTests(unittest.TestCase):
     def guard(self, allow=True):
         with patch('studio_handover.subprocess.check_output', return_value=json.dumps(self.rows)):
             stopped(self.c, [], allow_qualification_client=allow)
+
+    def rpc_guard(self, rows, allow=True, qualification=False):
+        with patch('studio_handover.subprocess.check_output', return_value=json.dumps([self.rows[0], *rows])):
+            stopped(self.c, [], allow_qualification_client=qualification, allow_desktop_rpc_client=allow)
+
+    def assert_rpc_fenced(self, rows):
+        self.assertEqual(client.desktop_rpc_clients(self.c, [self.rows[0], *rows]), set())
+        with self.assertRaisesRegex(ValueError, 'Stop the existing'):
+            self.rpc_guard(rows)
+
+    # P-beta40-prepare-switch-self-pid: the agent's own `goat.exe desktop onboarding.prepareSwitch`
+    # call is an HTTP client of the app, not the controller the handover must wait for.
+    def test_desktop_rpc_client_with_allowed_method_is_exempt_only_when_enabled(self):
+        for method in client.DESKTOP_RPC_METHODS:
+            with self.subTest(method=method):
+                pair = desktop_rpc_pair(self.bundle, 98770, method)
+                self.assertEqual(client.desktop_rpc_clients(self.c, [self.rows[0], *pair]), {98770, 98771})
+                self.rpc_guard(pair)
+                with self.assertRaisesRegex(ValueError, r'Stop the existing.*PID 98770'):
+                    self.rpc_guard(pair, allow=False)
+                # The receipt-upgrade exemption never covers a desktop RPC client.
+                with self.assertRaisesRegex(ValueError, r'Stop the existing.*PID 98770'):
+                    self.rpc_guard(pair, allow=False, qualification=True)
+                self.assertEqual(client.qualification_clients(self.c, [self.rows[0], *pair]), set())
+
+    def test_several_desktop_rpc_pairs_and_every_allowed_flag_shape_are_exempt(self):
+        rows = [*desktop_rpc_pair(self.bundle, 98770),
+                *desktop_rpc_pair(self.bundle, 98772, 'events.wait', ['--timeout-ms', '60000']),
+                *desktop_rpc_pair(self.bundle, 98774, 'onboarding.switchStatus', []),
+                *desktop_rpc_pair(self.bundle, 98776, 'onboarding.prepareSwitch',
+                                  ['--data-dir', str(self.bundle/'data dir'), '--params', str(self.params)])]
+        self.assertEqual(client.desktop_rpc_clients(self.c, [self.rows[0], *rows]), set(range(98770, 98778)))
+        self.rpc_guard(rows)
+
+    def test_desktop_rpc_changed_bundle_file_stays_fenced(self):
+        pair = desktop_rpc_pair(self.bundle, 98770)
+        for name in BUNDLE_FILES:
+            with self.subTest(name=name):
+                target = self.bundle/name
+                original = target.read_bytes()
+                target.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                self.assert_rpc_fenced(pair)
+                target.write_bytes(original)
+        manifest = self.bundle/'manifest.json'
+        manifest.unlink()
+        self.assert_rpc_fenced(pair)
+
+    def test_desktop_rpc_studio_demo_surface_and_unknown_method_stay_fenced(self):
+        for surface, method in [('studio', 'onboarding.prepareSwitch'), ('demo', 'events.wait'),
+                                ('studio', 'switch-plan'), ('desktop', 'suite.applyUpdate'),
+                                ('desktop', 'suite.migrateInstallation'), ('desktop', 'onboarding.switchApply'),
+                                ('desktop', 'onboarding.prepareswitch'), ('desktop', 'events.wait.extra')]:
+            with self.subTest(surface=surface, method=method):
+                self.assert_rpc_fenced(desktop_rpc_pair(self.bundle, 98770, method, surface=surface))
+        args = [str(self.bundle/'goat.exe'), 'desktop']
+        self.assert_rpc_fenced([dict(ProcessId=98770, ParentProcessId=0, Name='goat.exe',
+                                     ExecutablePath=args[0], CommandLine=json.dumps(args))])
+
+    def test_desktop_rpc_unknown_duplicate_or_malformed_flags_stay_fenced(self):
+        for flags in [['--force', 'yes'], ['--params='+str(self.params)], ['--params'],
+                      ['--params', str(self.params), '--params', str(self.params)],
+                      ['--timeout-ms', '0'], ['--timeout-ms', '3600001'], ['--timeout-ms', '1e3'],
+                      ['--request-id', 'bad id'], ['--session', 'short'], ['--session', 'bad/session!'],
+                      ['--params', '--request-id'], ['--data-dir', ''], ['--installation', str(self.bundle)]]:
+            with self.subTest(flags=flags):
+                self.assert_rpc_fenced(desktop_rpc_pair(self.bundle, 98770, flags=flags))
+
+    def test_desktop_rpc_missing_extra_or_mismatched_child_stays_fenced(self):
+        pair = desktop_rpc_pair(self.bundle, 98770)
+        self.assert_rpc_fenced(pair[:1])
+        self.assert_rpc_fenced([*pair, dict(ProcessId=98772, ParentProcessId=98770, Name='conhost.exe',
+                                            ExecutablePath='console', CommandLine='console')])
+        twin = copy.deepcopy(pair[1]); twin['ProcessId'] = 98772
+        self.assert_rpc_fenced([*pair, twin])
+        child_args = json.loads(pair[1]['CommandLine'])
+        for index, value in [(0, 'other-python'), (1, '-I'), (2, str(self.bundle/'controller/goat_studio.py')),
+                             (3, 'studio'), (4, 'events.wait')]:
+            with self.subTest(index=index):
+                changed = copy.deepcopy(pair)
+                args = child_args.copy(); args[index] = value
+                changed[1]['CommandLine'] = json.dumps(args)
+                self.assert_rpc_fenced(changed)
+        changed = copy.deepcopy(pair); changed[1]['ExecutablePath'] = 'other-python'
+        self.assert_rpc_fenced(changed)
+        changed = copy.deepcopy(pair); changed[0]['ExecutablePath'] = str(self.bundle.parent/'other'/'goat.exe')
+        self.assert_rpc_fenced(changed)
+
+    def test_desktop_rpc_client_never_hides_a_running_controller_or_runner(self):
+        pair = desktop_rpc_pair(self.bundle, 98770)
+        runner = desktop_rpc_pair(self.bundle, 98780, 'serve', ['--installation', str(self.bundle)], surface='studio')
+        for extra in [runner, runner[1:],
+                      [dict(ProcessId=98780, ParentProcessId=0, Name='goat.exe', ExecutablePath='other', CommandLine='other')],
+                      [dict(ProcessId=98780, ParentProcessId=0, Name='python.exe', ExecutablePath='python',
+                            CommandLine='goat_studio.py serve')]]:
+            with self.subTest(extra=extra[0]['CommandLine']):
+                with self.assertRaisesRegex(ValueError, r'Stop the existing.*PID 9878[01]\)'):
+                    self.rpc_guard([*pair, *extra])
+        with self.assertRaisesRegex(ValueError, 'Close MT5'):
+            self.rpc_guard([*pair, dict(ProcessId=98780, ParentProcessId=0, Name='terminal64.exe')])
 
     def public_request(self):
         receipt = self.c.root/'installation.json'
@@ -250,11 +369,11 @@ class NativeArgumentTests(unittest.TestCase):
 
 
 class QualificationScopeTests(unittest.TestCase):
-    def test_only_completed_park_inspection_can_enable_client_recognition(self):
+    def enabling_sites(self, keyword_name):
         root = Path(studio_handover.__file__).parent
         tree = ast.parse((root/'studio_handover.py').read_text(encoding='utf-8-sig'))
         definition = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'stopped')
-        index = [a.arg for a in definition.args.kwonlyargs].index('allow_qualification_client')
+        index = [a.arg for a in definition.args.kwonlyargs].index(keyword_name)
         default = definition.args.kw_defaults[index]
         self.assertIsInstance(default, ast.Constant)
         self.assertIs(default.value, False)
@@ -266,11 +385,53 @@ class QualificationScopeTests(unittest.TestCase):
             for function in [n for n in ast.walk(module) if isinstance(n, ast.FunctionDef)]:
                 for call in [n for n in ast.walk(function) if isinstance(n, ast.Call)]:
                     for keyword in call.keywords:
-                        if keyword.arg == 'allow_qualification_client':
+                        if keyword.arg == keyword_name:
                             self.assertIsInstance(keyword.value, ast.Constant)
                             self.assertIs(keyword.value.value, True)
+                            self.assertEqual(getattr(call.func, 'id', None), 'stopped')
                             sites.append((source.name, function.name))
-        self.assertEqual(sites, [('studio_installation_upgrade.py', 'inspect_park')])
+        return sorted(sites)
+
+    def test_only_completed_park_inspection_can_enable_client_recognition(self):
+        self.assertEqual(self.enabling_sites('allow_qualification_client'),
+                         [('studio_installation_upgrade.py', 'inspect_park')])
+
+    def test_only_reviewed_handover_inspect_apply_and_verify_park_enable_desktop_rpc_recognition(self):
+        # One fence call each in inspect() and apply(), and switch-verify-park (verify_park ->
+        # inspect_park, which forwards its False-by-default keyword). Every other stopped() and
+        # inspect_park() caller keeps the full fence: owner continuation, historical pointers,
+        # receipt replacement, build upgrade and completed-park owner maintenance.
+        root = Path(studio_handover.__file__).parent
+        for file, name in (('studio_handover.py', 'stopped'), ('studio_installation_upgrade.py', 'inspect_park')):
+            tree = ast.parse((root/file).read_text(encoding='utf-8-sig'))
+            definition = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+            index = [a.arg for a in definition.args.kwonlyargs].index('allow_desktop_rpc_client')
+            self.assertIsInstance(definition.args.kw_defaults[index], ast.Constant)
+            self.assertIs(definition.args.kw_defaults[index].value, False)
+        sites = []
+        for source in root.glob('*.py'):
+            if source.name.startswith('test_'):
+                continue
+            module = ast.parse(source.read_text(encoding='utf-8-sig'))
+            for function in [n for n in ast.walk(module) if isinstance(n, ast.FunctionDef)]:
+                for call in [n for n in ast.walk(function) if isinstance(n, ast.Call)]:
+                    for keyword in call.keywords:
+                        if keyword.arg == 'allow_desktop_rpc_client':
+                            value = (keyword.value.value if isinstance(keyword.value, ast.Constant)
+                                     else getattr(keyword.value, 'id', None))
+                            sites.append((source.name, function.name, getattr(call.func, 'id', None), value))
+        self.assertEqual(sorted(sites, key=str), sorted([
+            ('studio_handover.py', 'apply', 'stopped', True),
+            ('studio_handover.py', 'inspect', 'stopped', True),
+            ('studio_installation_upgrade.py', 'inspect_park', 'stopped', 'allow_desktop_rpc_client'),
+            ('studio_installation_upgrade.py', 'verify_park', 'inspect_park', True)], key=str))
+        module = ast.parse((root/'studio_handover.py').read_text(encoding='utf-8-sig'))
+        calls = sorted((call.lineno, function.name, any(k.arg == 'allow_desktop_rpc_client' for k in call.keywords))
+                       for function in module.body if isinstance(function, ast.FunctionDef)
+                       for call in ast.walk(function)
+                       if isinstance(call, ast.Call) and getattr(call.func, 'id', None) == 'stopped')
+        # apply's completed-park owner-maintenance re-check (first) keeps the full fence.
+        self.assertEqual([call[1:] for call in calls], [('inspect', True), ('apply', False), ('apply', True)])
 
 
 if __name__ == '__main__':

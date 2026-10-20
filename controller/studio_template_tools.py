@@ -185,6 +185,11 @@ def starter_values(shape,schema,policy):
         fix('Max_Seq_Trades','1','Single trade: one entry per signal and no adds (Max_Seq_Trades=1).')
         fix('CloseAtMaxLevels','true','With one trade, reaching the next gap against it closes it, so Grid_Size acts as the stop. '
             'Off, a losing single trade would be held with no stop (SL_Pips defaults to 0).')
+        # The schema defaults (1, 1, true) start every sequence as a virtual level, then a paper level, so the one real
+        # order would come two gaps after the signal at the summed delayed lots (2 x Lots); goatai issue 2587 F-01.
+        fix('Delay_Trade','0','Single trade: the order goes in on the signal itself, not after a virtual level a gap later.')
+        fix('Delay_Trade_Live','0','Single trade: no paper level before the real one, so the first level is the traded one.')
+        fix('Delay_Lots_Add','false','Single trade: no delayed levels to add, so the order is exactly Lots, never a summed size.')
     else:
         fix('Max_Seq_Trades',STARTER_SEQUENCE_MAX_TRADES,'Conservative sequence: at most '+STARTER_SEQUENCE_MAX_TRADES+
             ' trades (schema default 10). Grid_* gaps and lot growth stay at their declared defaults.')

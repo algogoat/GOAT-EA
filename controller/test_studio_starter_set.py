@@ -79,6 +79,9 @@ class StarterSetTests(unittest.TestCase):
                     if shape == 'single':
                         self.assertEqual((values['EA_Desc'], values['Max_Seq_Trades'], values['Mode_Lots']),
                                          ('Starter Single Trade', '1', '0'))   # FixedLots: RiskperSeq needs >1 trade
+                        # F-01: the one order goes in on the signal at Lots, not two gaps later at the summed delayed lots.
+                        self.assertEqual((values['Delay_Trade'], values['Delay_Trade_Live'], values['Delay_Lots_Add']), ('0', '0', 'false'))
+                        self.assertTrue({'Delay_Trade', 'Delay_Trade_Live', 'Delay_Lots_Add'} <= set(fixed), 'listed in the receipt fixes')
                     else:
                         self.assertEqual((values['EA_Desc'], values['Max_Seq_Trades'], values['Mode_Lots'],
                                           values['Sequence_MLPS_Hard_Close']), ('Starter Sequence', '5', '2', 'true'))

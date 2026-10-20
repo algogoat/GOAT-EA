@@ -85,7 +85,7 @@ first 31 runs.
    the held-out lock (`heldOut.declare`) as it enters Prove; the method arrives in beta.41,
    and until then the planned lock (the variant's own key, the 13-week window and the date)
    goes in the pre-registration and VARIANTS.md, with no prepare inside that window before
-   the lock is declared (AGENT-START-HERE, Held-out locks). Its files enter a pool by
+   the lock is declared (AGENT-START-HERE, Held-out locks). The controller keys forks to their parent today; beta.41 aligns attribution for registered variants so the variant's key binds. Its files enter a pool by
    the product's qualifying rule (AGENT-START-HERE step 20), like every file. Each
    promoted or changed version counts as its own variant.
 

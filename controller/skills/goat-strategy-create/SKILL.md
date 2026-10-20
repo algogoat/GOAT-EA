@@ -112,6 +112,6 @@ strategy enters Prove, let those unseen weeks close, and never tune against them
 cannot record the lock. Write the planned lock instead: the strategy key (the variant's
 own key, never its parent template's), the 13-week window and the date, in the study's
 pre-registration and in the template's VARIANTS.md. Never prepare that strategy on any
-date inside the planned window before the lock is declared.
+date inside the planned window before the lock is declared. The controller keys forks to their parent today; beta.41 aligns attribution for registered variants so the variant's key binds.
 Never claim or imply performance. Demo only; real money stays the user's own
 decision outside this workflow.

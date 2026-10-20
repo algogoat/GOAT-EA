@@ -86,6 +86,30 @@ def check_risk_chosen(raw,values,schema):
     if not is_starter(values) and risk_not_chosen(raw) and uses_risk(values,schema):
         raise ValueError(RISK_NOT_CHOSEN_CODE+': '+RISK_NOT_CHOSEN_MESSAGE)
 
+def single_trade_delay_warnings(values):
+    """A single-trade SET (Max_Seq_Trades=1) with any delay input on enters late and at summed lots (goatai issue 2587 F-01)."""
+    current=lambda name: str(values.get(name,'')).split('||',1)[0].strip()
+    if current('Max_Seq_Trades')!='1': return []
+    on=[name for name in ('Delay_Trade','Delay_Trade_Live') if current(name) not in ('','0')]
+    # Delay_Lots_Add sums the real sequence's paper levels, so it only bites with Delay_Trade_Live above 0 (mq5:1716).
+    if current('Delay_Lots_Add').lower()=='true' and 'Delay_Trade_Live' in on: on.append('Delay_Lots_Add')
+    if not on: return []
+    # What happens, as observed in GOAT's F-01 test (goatai issue 2587 6298595025, 6298611357): each delay stage needs one
+    # more grid level against the signal before the real order (virtual levels mq5:1643, paper levels mq5:1782-1801).
+    def count(name):
+        try: return abs(int(float(current(name) or '0')))
+        except ValueError: return 1
+    stages=count('Delay_Trade')+count('Delay_Trade_Live')
+    times='once' if stages==1 else 'twice' if stages==2 else str(stages)+' times'
+    kinds=' ('+', then '.join(kind for name,kind in (('Delay_Trade','a virtual level'),('Delay_Trade_Live','a paper level'))
+                              if name in on)+')'
+    size=(" if it does trade, it opens late at the delayed levels' lots added together (2 x Lots for one paper level)."
+          if 'Delay_Lots_Add' in on else ' if it does trade, it opens late.')
+    return ['Single trade with delayed entry ('+', '.join(name+'='+current(name) for name in on)+'): the one order waits until '
+            'price has moved against the signal by a grid gap, '+times+kinds+', so with a day-end close it may never trade '
+            "(0 trades in a month in GOAT's test);"+size+' For a single trade set Delay_Trade=0, Delay_Trade_Live=0 and '
+            'Delay_Lots_Add=false.']
+
 def validate_raw(raw,schema,policy,*,require_optimization=False):
     values=read_values(raw)
     checked=validate_strategy(values,schema)   # includes the unconditional risk-per-sequence rule
@@ -99,7 +123,8 @@ def validate_raw(raw,schema,policy,*,require_optimization=False):
         schema_hash=sha(schema),input_count=len(values),ea_desc=values['EA_Desc'],encoding='utf-16-le-bom',newline='CRLF',
         kind='optimization_template' if checked['axes'] else 'fixed_settings',
         active_axes=checked['axes'],cartesian_combinations=math.prod(checked['axes'].values()),
-        dependency_audit=audit,execution_ready=False,performance_evidence='not_tested_by_this_command',limitations=LIMITATIONS)
+        dependency_audit=audit,warnings=single_trade_delay_warnings(values),
+        execution_ready=False,performance_evidence='not_tested_by_this_command',limitations=LIMITATIONS)
 
 def validate_set(path,schema,policy,*,require_optimization=False):
     resolved,raw,_=source_bytes(path)
@@ -185,6 +210,11 @@ def starter_values(shape,schema,policy):
         fix('Max_Seq_Trades','1','Single trade: one entry per signal and no adds (Max_Seq_Trades=1).')
         fix('CloseAtMaxLevels','true','With one trade, reaching the next gap against it closes it, so Grid_Size acts as the stop. '
             'Off, a losing single trade would be held with no stop (SL_Pips defaults to 0).')
+        # The schema defaults (1, 1, true) start every sequence as a virtual level, then a paper level, so the one real
+        # order would come two gaps after the signal at the summed delayed lots (2 x Lots); goatai issue 2587 F-01.
+        fix('Delay_Trade','0','Single trade: the order goes in on the signal itself, not after a virtual level a gap later.')
+        fix('Delay_Trade_Live','0','Single trade: no paper level before the real one, so the first level is the traded one.')
+        fix('Delay_Lots_Add','false','Single trade: no delayed levels to add, so the order is exactly Lots, never a summed size.')
     else:
         fix('Max_Seq_Trades',STARTER_SEQUENCE_MAX_TRADES,'Conservative sequence: at most '+STARTER_SEQUENCE_MAX_TRADES+
             ' trades (schema default 10). Grid_* gaps and lot growth stay at their declared defaults.')

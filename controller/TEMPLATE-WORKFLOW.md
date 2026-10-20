@@ -82,7 +82,10 @@ first 31 runs.
    forward, then FOOS. Never put `fixed.set` in that batch: `prepare-batch` validates
    every member as an optimization template and refuses a SET with no active axis.
    `fixed.set` is the exact candidate for a single test only, such as a hold-up test. Declare
-   the held-out lock (`heldOut.declare`) as it enters Prove. Its files enter a pool by
+   the held-out lock (`heldOut.declare`) as it enters Prove; the method arrives in beta.41,
+   and until then the planned lock (the variant's own key, the 13-week window and the date)
+   goes in the pre-registration and VARIANTS.md, with no prepare inside that window before
+   the lock is declared (AGENT-START-HERE, Held-out locks). Its files enter a pool by
    the product's qualifying rule (AGENT-START-HERE step 20), like every file. Each
    promoted or changed version counts as its own variant.
 

@@ -15,7 +15,7 @@ from studio_installation import contracts
 from studio_research_authority import LOCAL_FILE_OPERATIONS, OPERATIONS, READ_OPERATIONS, authority, operation
 from studio_strategy_settings import read_values
 from studio_template_tools import (RISK_SIZING_CODE, RISK_SIZING_MESSAGE, STARTER_SHAPES, build_set, schema_default,
-                                   signal_modes, starter_set, validate_set)
+                                   signal_modes, starter_set, validate_raw, validate_set)
 from unittest.mock import patch
 import test_demo_seed_agent as seed_agent_fixture
 import test_goat_studio as goat_fixture
@@ -79,10 +79,37 @@ class StarterSetTests(unittest.TestCase):
                     if shape == 'single':
                         self.assertEqual((values['EA_Desc'], values['Max_Seq_Trades'], values['Mode_Lots']),
                                          ('Starter Single Trade', '1', '0'))   # FixedLots: RiskperSeq needs >1 trade
+                        # F-01: the one order goes in on the signal at Lots, not two gaps later at the summed delayed lots.
+                        self.assertEqual((values['Delay_Trade'], values['Delay_Trade_Live'], values['Delay_Lots_Add']), ('0', '0', 'false'))
+                        self.assertTrue({'Delay_Trade', 'Delay_Trade_Live', 'Delay_Lots_Add'} <= set(fixed), 'listed in the receipt fixes')
                     else:
                         self.assertEqual((values['EA_Desc'], values['Max_Seq_Trades'], values['Mode_Lots'],
                                           values['Sequence_MLPS_Hard_Close']), ('Starter Sequence', '5', '2', 'true'))
                         self.assertGreater(int(values['Max_Seq_Trades']), 1)
+
+    def test_validate_warns_on_a_single_trade_with_delayed_entry(self):
+        # F-01: the old single starter's defaults (1, 1, true) are warned about; the fixed starter and a sequence are not.
+        for version, (schema, policy) in CONTRACTS.items():
+            with self.subTest(version=version):
+                raw = Path(self.starter('single', version)['output']['path']).read_bytes()
+                self.assertEqual(validate_raw(raw, schema, policy)['warnings'], [])
+                text = raw.decode('utf-16')
+                old = (text.replace('Delay_Trade=0\r\n', 'Delay_Trade=1\r\n').replace('Delay_Trade_Live=0\r\n', 'Delay_Trade_Live=1\r\n')
+                       .replace('Delay_Lots_Add=false\r\n', 'Delay_Lots_Add=true\r\n'))
+                self.assertNotEqual(old, text)
+                [warning] = validate_raw(('﻿' + old.lstrip('﻿')).encode('utf-16-le'), schema, policy)['warnings']
+                self.assertIn('Delay_Trade=1, Delay_Trade_Live=1, Delay_Lots_Add=true', warning)
+                self.assertIn('2 x Lots', warning)
+                # What F-01 observed (goatai issue 2587 6298611357): two delay stages, and it may never trade.
+                self.assertIn('by a grid gap, twice (a virtual level, then a paper level)', warning)
+                self.assertIn('may never trade', warning)
+                live_only = text.replace('Delay_Trade_Live=0\r\n', 'Delay_Trade_Live=2\r\n')
+                [warning] = validate_raw(('﻿' + live_only.lstrip('﻿')).encode('utf-16-le'), schema, policy)['warnings']
+                self.assertIn('(Delay_Trade_Live=2)', warning, 'Delay_Lots_Add=false is not named')
+                self.assertIn('twice (a paper level)', warning)
+                self.assertNotIn('2 x Lots', warning, 'no summed lots without Delay_Lots_Add')
+                sequence = Path(self.starter('sequence', version, name=f'{version}-seq.set')['output']['path']).read_bytes()
+                self.assertEqual(validate_raw(sequence, schema, policy)['warnings'], [], 'delays are a sequence feature')
 
     def test_receipt_binds_schema_versions_shape_and_hash(self):
         result = self.starter('sequence')

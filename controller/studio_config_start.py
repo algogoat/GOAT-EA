@@ -348,7 +348,11 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         if hashlib.sha256(startup.read_bytes()).hexdigest()!=material['startup_receipt']['sha256']:
             raise ValueError('Startup bytes changed after close')
         bridge_verify(bridge)
-        phase(c,job_id,generation,'research_exited','launch_issued',profile_last_select=profile_select)
+        # Last before the launch, MT5 stopped: its tester profile becomes this startup's own [TesterInputs], so an empty
+        # pin (MT5 never applies an empty value) does not run the previous batch's last-used value (F-01, 2026-10-20).
+        tester_profile=_tester_profile(c,startup,material['startup_receipt']['sha256'],process)
+        phase(c,job_id,generation,'research_exited','launch_issued',profile_last_select=profile_select,
+              tester_profile=tester_profile)
         # The batch's first /config start is a research MT5 launch (goatai#1885 PR E): created
         # suspended at low priority inside this terminal's job, or refused with nothing run. The EA's
         # own per-member relaunches stay inside that job.
@@ -366,7 +370,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
                 process=launched,dispatch=published,native_running_verified=False,
                 research_profile=research_profile,monitor_profile_migration=migration,batch_process=batch_process,
-                profile_last_select=profile_select,
+                profile_last_select=profile_select,tester_profile=tester_profile,
                 **({'monitor_chart_record':monitor_chart_record} if monitor_chart_record is not None else {}))
 
 
@@ -387,6 +391,14 @@ def _select_research_profile(c,attempt_id,process):
     """common.ini ProfileLast -> GOAT Research with MT5 stopped (studio_research_profile.select). Raises before any launch."""
     from studio_research_profile import select
     return select(c,'config-start-'+attempt_id,inspect=process.inspect)
+
+
+def _tester_profile(c,startup,startup_sha256,process):
+    """MT5's tester profile from this launch's own startup bytes (studio_tester_profile.write_profile): with MT5 stopped
+    (re-inspected) and the native gate held, as select() writes common.ini. Raises before any launch."""
+    from studio_tester_profile import write_profile
+    with exclusive_gate(c.local/'native-gate',wait_seconds=1):
+        return write_profile(c.install,startup,config_sha256=startup_sha256,inspect=process.inspect)
 
 
 def _rollback_profile_last(c,attempt_id,process):

@@ -129,6 +129,18 @@ SETs inherit the pinned form; `base_values` and candidate hashes use the plain v
 Axes must be exactly representable by the native seed XML's eight-decimal output;
 unrepresentable search precision is rejected instead of silently changing it.
 
+**The tester profile is written before every launch.** MT5 does not apply an empty
+value from `[TesterInputs]` (`Sequence_Export_Id=`): it keeps the profile's last-used
+one, so a hold-up after an exporting batch ran that batch's export id and the report
+check refused it (Banker F-01, 2026-10-20). Right before each seed, catch-up and
+hold-up member launch, and before a native batch's first `/config` launch, GOAT
+replaces `<data root>\MQL5\Profiles\Tester\<expert>.set` with exactly the
+`[TesterInputs]` lines of the startup config MT5 is about to read (UTF-16 LE BOM,
+CRLF, tails kept; studio_tester_profile), with MT5 stopped and the native gate held.
+The member's state keeps the receipt (`tester_profile`: path, sha256, config_sha256,
+previous_sha256, changed). Other files in `Profiles\Tester` are never touched. Never
+edit the tester profile by hand.
+
 Retained source, frozen SET and startup INI bytes together are limited to 128 MiB
 per prepared matrix. The public plan JSON is limited to 64 MiB. Manifest JSON is limited to 128 MiB, state JSON to 32 MiB,
 and each native XML and candidate result artifact to 64 MiB. These are explicit

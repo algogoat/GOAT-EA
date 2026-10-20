@@ -86,6 +86,19 @@ def check_risk_chosen(raw,values,schema):
     if not is_starter(values) and risk_not_chosen(raw) and uses_risk(values,schema):
         raise ValueError(RISK_NOT_CHOSEN_CODE+': '+RISK_NOT_CHOSEN_MESSAGE)
 
+def single_trade_delay_warnings(values):
+    """A single-trade SET (Max_Seq_Trades=1) with any delay input on enters late and at summed lots (goatai issue 2587 F-01)."""
+    current=lambda name: str(values.get(name,'')).split('||',1)[0].strip()
+    if current('Max_Seq_Trades')!='1': return []
+    on=[name for name in ('Delay_Trade','Delay_Trade_Live') if current(name) not in ('','0')]
+    # Delay_Lots_Add sums the real sequence's paper levels, so it only bites with Delay_Trade_Live above 0 (mq5:1716).
+    if current('Delay_Lots_Add').lower()=='true' and 'Delay_Trade_Live' in on: on.append('Delay_Lots_Add')
+    if not on: return []
+    return ['Single trade with delayed entry ('+', '.join(name+'='+current(name) for name in on)+'): the one order goes in '
+            'after the delayed levels, not on the signal, and with Delay_Lots_Add its size is the delayed levels\' lots added '
+            'together (2 x Lots for one delayed level). For a single trade set Delay_Trade=0, Delay_Trade_Live=0 and '
+            'Delay_Lots_Add=false.']
+
 def validate_raw(raw,schema,policy,*,require_optimization=False):
     values=read_values(raw)
     checked=validate_strategy(values,schema)   # includes the unconditional risk-per-sequence rule
@@ -99,7 +112,8 @@ def validate_raw(raw,schema,policy,*,require_optimization=False):
         schema_hash=sha(schema),input_count=len(values),ea_desc=values['EA_Desc'],encoding='utf-16-le-bom',newline='CRLF',
         kind='optimization_template' if checked['axes'] else 'fixed_settings',
         active_axes=checked['axes'],cartesian_combinations=math.prod(checked['axes'].values()),
-        dependency_audit=audit,execution_ready=False,performance_evidence='not_tested_by_this_command',limitations=LIMITATIONS)
+        dependency_audit=audit,warnings=single_trade_delay_warnings(values),
+        execution_ready=False,performance_evidence='not_tested_by_this_command',limitations=LIMITATIONS)
 
 def validate_set(path,schema,policy,*,require_optimization=False):
     resolved,raw,_=source_bytes(path)

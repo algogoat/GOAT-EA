@@ -1,0 +1,9 @@
+; GOAT V1.49 export
+; ===== Risk =====
+EA_Desc=P1 GBPUSD runpath
+Mode_Operation=9
+Risk=250
+Studio_MonitorRunPath=
+Mode_Bias=1
+Bias_threshold=40
+TP_Points=120.50

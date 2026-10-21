@@ -12,7 +12,10 @@ def startup_config(material):
     sections = material['sections']
     if set(sections) != {'Charts', 'Experts', 'Tester', 'TesterInputs'}:
         raise ValueError('Unexpected startup sections')
-    if sections['Charts'] != {'ProfileLast': 'GOAT Research'}:
+    profile=material.get('plan',{}).get('research_binding',{}).get('research_profile','GOAT Research')
+    if profile!='GOAT Research' and not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}',profile):
+        raise ValueError('Unsafe bound research profile')
+    if sections['Charts'] != {'ProfileLast': profile}:
         raise ValueError('Research profile required')
     if sections['Experts'] != {'Enabled': '0', 'AllowLiveTrading': '0'}:
         raise ValueError('Disabled chart trading required')
@@ -31,9 +34,28 @@ def startup_config(material):
         raise ValueError('Unsafe report path')
     payload = {k: dict(v) for k, v in sections.items()}
     payload['TesterInputs'] = dict(material['paste_inputs'])
+    pins = material['manifest'].get('startup_runtime_pins')
+    if pins not in (None, 1):
+        raise ValueError('Unknown startup_runtime_pins value')
+    if pins == 1:
+        # The campaign was created with runtime pins (frozen in its manifest): every input the EA declares outside the
+        # contract runs at its compiled default for the whole native session, never at the terminal's last-used value
+        # (GOAT-EA#250). The paste inputs already carry the complete contract set (validate_strategy). A campaign
+        # without the field keeps exactly its recorded startup bytes, so its restart sha check still matches.
+        from studio_tester_report import RUNTIME_INPUT_DEFAULTS
+        for name, (default, definition) in RUNTIME_INPUT_DEFAULTS.items():
+            if name not in payload['TesterInputs']:
+                payload['TesterInputs'][name] = ('%s||%s||0||%s||N' % (default, default, default)
+                                                 if definition.get('optimizable') else default)
     if 'startup_monitor' in material:
         payload['StartUp']=dict(material['startup_monitor'])
-        if set(payload['StartUp'])!={'Expert','ExpertParameters','Symbol','Period'}:
+        keys=set(payload['StartUp'])
+        if keys=={'Expert','ExpertParameters','Period'}:
+            # GOAT Research packages (studio_research_profile): the monitor_launch shape, no Symbol, M1, and only on
+            # GOAT's own research profile, never the monitor profile.
+            if profile!='GOAT Research' or payload['StartUp']['Period']!='M1':
+                raise ValueError('Symbol-free monitor startup requires the GOAT Research profile and Period=M1')
+        elif keys!={'Expert','ExpertParameters','Symbol','Period'}:
             raise ValueError('Only verified monitor startup is supported')
     text = ''
     for section in payload:

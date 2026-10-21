@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from campaign_ledger import sha
 from goat_studio import Controller
+from studio_bridge import StudioBridge
 from studio_installation import VERSION,load_installation,contracts
 from studio_process_check import classify_processes
 from studio_settings import validate_export,serialize_export
@@ -48,6 +49,49 @@ class PortableControllerTests(unittest.TestCase):
         source=self.root/'strategy.set';source.write_bytes('EA_Desc=Customer Template\r\nLots=0.1||0.1||0.1||0.3||Y\r\n'.encode('utf-16'))
         config=self.root/'settings.json';config.write_text(json.dumps(dict(tester=self.tester,export=self.exports)))
         return c.prepare('beta-job',source,config)
+
+    def test_human_archive_keeps_full_receipt_under_default_windows_path_limit(self):
+        c=self.bound()
+        filler='x'*max(1,168-len(str(self.root))-1)
+        long_root=self.root/filler
+        bridge=StudioBridge(long_root,c.store,c.terminal,c.run)
+        request_id='ui-'+'a'*32
+        state=c.state()
+        request=dict(schema_version=1,request_id=request_id,terminal_id=c.terminal,
+                     run_id=c.run,expected_revision=state['revision'],
+                     generation=state['generation'],command='control.grant_agent',payload={})
+        raw=(json.dumps(request)+'\n').encode()
+        inbox=long_root/'human/inbox';inbox.mkdir(parents=True,exist_ok=True)
+        (inbox/(request_id+'.json')).write_bytes(raw)
+        self.assertEqual(bridge.pump()[0]['ok'],True)
+        saved=list((long_root/'human/archive').glob(request_id+'.*.json'))
+        self.assertEqual(len(saved),1)
+        self.assertEqual(saved[0].read_bytes(),raw)
+        self.assertLess(len(str(saved[0])),260)
+        fingerprint=hashlib.sha256(raw).hexdigest()
+        self.assertGreater(len(str(long_root/'human/archive'/(request_id+'.'+fingerprint+'.json'))),260)
+        receipt=json.loads((long_root/'human/outbox'/(request_id+'.json')).read_text())
+        self.assertEqual(receipt['request_sha256'],fingerprint)
+
+    def test_human_archive_name_collision_preserves_original_request(self):
+        c=self.bound()
+        request_id='ui-'+'b'*32
+        state=c.state()
+        request=dict(schema_version=1,request_id=request_id,terminal_id=c.terminal,
+                     run_id=c.run,expected_revision=state['revision'],
+                     generation=state['generation'],command='control.grant_agent',payload={})
+        raw=(json.dumps(request)+'\n').encode()
+        inbox=c.bridge.root/'human/inbox';inbox.mkdir(parents=True,exist_ok=True)
+        (inbox/(request_id+'.json')).write_bytes(raw)
+        fingerprint=hashlib.sha256(raw).hexdigest()
+        archive=c.bridge.root/'human/archive'/(request_id+'.'+fingerprint[:24]+'.json')
+        archive.parent.mkdir(parents=True,exist_ok=True)
+        archive.write_bytes(b'foreign archive bytes')
+        with self.assertRaisesRegex(ValueError,'archive name collision'):
+            c.bridge.pump()
+        self.assertEqual(archive.read_bytes(),b'foreign archive bytes')
+        self.assertEqual((c.bridge.root/'human/processing'/(request_id+'.json')).read_bytes(),raw)
+        self.assertTrue((c.bridge.root/'human/outbox'/(request_id+'.json')).is_file())
 
     def test_receipt_paths_and_exact_binary(self):
         self.assertEqual(load_installation(self.path)['terminal_data_root'],str(self.data))
@@ -136,12 +180,17 @@ class PortableControllerTests(unittest.TestCase):
         for rule in policy['rules']:
             self.assertIn(rule['input'],schema['inputs']);self.assertIn(rule['controller'],schema['inputs'])
 
-    def activated_fixture(self):
+    def activated_fixture(self,*,large_manifest=False):
         """Exact real package/store/ownership files; MT5 itself is not started."""
         from studio_launch_intent import record_intent
         from native_control_transaction import begin,NAMES
         c=self.bound();self.grant(c);result=self.prepare(c)
         package=Path(result['package']);manifest=result['manifest'];job=c.job('beta-job')
+        if large_manifest:
+            # Valid JSON formatting makes the frozen package exceed the small
+            # installation-receipt bound without inventing manifest fields.
+            path=package/'manifest.json'
+            path.write_bytes(b' ' * 2_000_001 + path.read_bytes())
         c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()),'beta-job-reserve')
         state=c.state();intent=record_intent(c.store,c.terminal,c.run,'beta-job',package,actor='agent',revision=state['revision'],generation=state['generation'])
         native=self.common/manifest['native_run_relative'].replace('\\','/');shutil.copytree(package,native)
@@ -187,6 +236,22 @@ class PortableControllerTests(unittest.TestCase):
         self.assertFalse((base/'agent-native-control-owner.json').exists())
         self.assertEqual(c.job('beta-job')['status'],'cancelled')
         self.assertEqual(finish(c,'beta-job')['reused'],True)
+
+    def test_finish_cancelled_large_batch_manifest_keeps_small_receipt_bound(self):
+        from studio_finish import finish
+        from studio_installation import read_json
+        c,native,base,evidence=self.activated_fixture(large_manifest=True)
+        package=Path(c.job('beta-job')['launch_intent']['package'])
+        with self.assertRaisesRegex(ValueError,'JSON exceeds 2 MB'):
+            read_json(package/'manifest.json')
+        queue=native/'queue.GOAT'
+        queue.write_bytes(queue.read_bytes().decode('utf-16').replace(';Pending_',';Cancelled_').encode('utf-16'))
+        with patch.object(c,'runtime',return_value=({},{})):
+            result=finish(c,'beta-job')
+        self.assertEqual(result['status'],'cancelled')
+        self.assertFalse((base/'agent-native-control-owner.json').exists())
+        self.assertEqual(c.job('beta-job')['status'],'cancelled')
+        self.assertTrue(Path(result['result_path']).is_file())
 
     def test_finish_unknown_state_preserves_ownership(self):
         from studio_finish import finish

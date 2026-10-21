@@ -1,0 +1,12 @@
+{
+  "schema": "goat-house-portfolio-signing-keys-v1",
+  "about": "OPS-33 house portfolio signing keys: public halves only. A house manifest's signature { alg: 'ed25519', keyId, sig } is the ed25519 signature over the 32 raw bytes of its manifestSha256; scripts/house_portfolio.cjs verifies every signature it makes against the entry for its keyId here before anything is written (HOUSE_SIGNING_KEY_MISMATCH otherwise). spkiDerSha256 is the lower-case hex SHA-256 of the key's SPKI DER bytes. The private key lives only in Secret Manager and is never committed.",
+  "keys": [
+    {
+      "keyId": "goat-house-2026-10-v1",
+      "alg": "ed25519",
+      "spkiPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAgRsMl21NUsBAz+u6qlFqa0F9fpzMa9pVwXUFq7lDNe0=\n-----END PUBLIC KEY-----\n",
+      "spkiDerSha256": "be69c584db212f1da378ffa1fa797d6b79bd1a05b89a3bea21c699e327c86dad"
+    }
+  ]
+}

@@ -1,0 +1,209 @@
+name: Controller mutation shard
+
+# One shard of the controller mutation suite, called by controller-tests.yml (pull requests, PR-scoped
+# selection) and controller-mutations-full.yml (full runs on codex/v148-research-planning).
+#
+# Every mutation step runs in exactly one shard. A step runs when `inputs.shard` is its shard and
+# `inputs.steps` is 'all' or names it as |step id|, where the step id is the script's stem.
+# scripts/ci_mutation_select.py reads this table (keep the `if:` form exactly as below), and
+# controller/test_ci_mutation_shards.py checks every step is in one shard, has a dependency map and
+# that the union is the full 26-step set.
+#
+# The split is by MEASURED step time (GOAT-EA#204): per-step durations from the GitHub Actions jobs
+# API, every attempt of the 17 controller-tests runs from b7dedd2 (2026-10-08 10:14Z) to 2026-10-09
+# 16:50Z, 12-19 samples per step. Per-shard sums of each step's median / slowest observed time in
+# minutes (setup adds ~0.5 min); the 3-shard layout before was 36.4 / 49.7, 31.8 / 41.6, 32.1 / 43.7:
+#   shard  median  slowest
+#   1/4    23.7    34.0    research outcome controller 11.8 / 19.8, switch hold 5.8 / 6.6, 7 more
+#   2/4    25.3    32.5    process query (58 mutations) 23.2 / 30.1, lane driver, research launch
+#   3/4    23.8    33.8    restore lane never-started 12.2 / 17.3, 6 more
+#   4/4    27.6    34.7    catch-up rebase (83 mutations) 10.1 / 13.0, OOS windows 6.5 / 9.1,
+#                          setup registration 6.9 / 8.0, 3 more
+#
+# B47 (Claude-Mac, goatai#2350 6186991728): the 45-min cap kept cancelling shards whose every mutant
+# was caught (run 38522134071 shard 3, 38689745736 shard 4 at 45.2 min). Re-measured on the 12
+# controller-tests runs 38514661762..38689745736 (11-13 samples per step), per-step median / p90 /
+# slowest in minutes:
+#   1/4  research outcome controller 12.95 / 14.77 / 18.25, switch hold 8.11 / 8.72 / 11.53, 7 more
+#        (2.43 / 2.45 the largest); sum of medians 27.4, of slowest 36.7; jobs 22.2-36.8
+#   2/4  process query 26.07 / 33.15 / 34.95, research launch 1.25, lane driver 0.78;
+#        sum 28.1 / 37.6; jobs 23.1-38.2
+#   3/4  restore lane never-started 14.75 / 17.38 / 29.53, seed member failure 4.64 / 5.97,
+#        peers 3.75 / 5.55, peer restart 2.23 / 4.92, hold-up 2.18, 2 more; sum 28.3 / 49.7;
+#        jobs 21.0-35.9, one cancelled at 45.2
+#   4/4  catch-up rebase 11.57 / 14.42 / 14.53, OOS windows 10.72 / 13.53 / 20.20, setup registration
+#        6.93 / 8.73, 3 more; sum 33.5 / 48.1; jobs 24.5-38.1, one cancelled at 45.2
+# Rebalancing cannot give every shard <= 30 min with margin: process query is one step of 26.1 min
+# median and 35.0 slowest, and the cancellations were single steps running ~2x their median on a slow
+# runner (restore lane 29.5 vs 14.8, OOS windows 20.2 vs 10.7), which a different split does not
+# absorb. So the cap is 60 min (the slowest observed job, 38.2, is 64% of it) and the slow steps log a
+# per-mutant time budget (scripts/mutation_budget.py: each mutant's seconds, a budget line per step and
+# a ::warning:: for any mutant over GOAT_MUTANT_BUDGET_SECONDS, default 60 s), so drift is visible in
+# the run summary before it cancels a shard. The B47 CID guard step (~3 s) is on shard 1.
+# A new mutation check goes in the shard with the most headroom, into STEP_SEEDS of
+# scripts/ci_mutation_select.py and into the expected set of controller/test_ci_mutation_shards.py;
+# keep each shard's slowest-observed sum well under its timeout.
+
+on:
+  workflow_call:
+    inputs:
+      shard:
+        description: Shard number, 1-4.
+        type: number
+        required: true
+      steps:
+        description: "'all', or the selected step ids as |id|id|"
+        type: string
+        default: all
+      ref:
+        description: Commit to test; empty checks out the triggering event's commit (a PR's merge commit).
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: run
+    runs-on: windows-2022
+    # B47: 60 min (see the table above): slowest observed job 38.2 min, slowest per-step sums 36.7-49.7 min.
+    timeout-minutes: 60
+    env:
+      PYTHONUTF8: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:1
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Windows x64 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: Install only the publisher's hash-pinned native wheels
+        run: |
+          python -m pip install --no-index --no-deps --only-binary=:all: --require-hashes -r controller/ci-requirements.txt
+
+      - name: Verify native imports without connecting to MT5
+        shell: python
+        env:
+          # Hosted Windows TEMP defaults to a short-name alias; require canonical fixtures.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          import sys
+          import tempfile
+          from pathlib import Path
+          import numpy
+          import MetaTrader5
+          assert sys.platform == "win32" and sys.version_info[:2] == (3, 13)
+          fixture_temp = Path(tempfile.gettempdir())
+          assert fixture_temp.is_absolute() and fixture_temp.resolve() == fixture_temp
+          print("Canonical fixture temp", fixture_temp)
+          assert numpy.__version__ == "2.2.6"
+          assert MetaTrader5.__version__ == "5.0.6180"
+          assert numpy.dot(numpy.array([2, 3]), numpy.array([4, 5])).item() == 23
+          print(sys.version)
+          print("Verified NumPy", numpy.__version__, "and MetaTrader5", MetaTrader5.__version__)
+
+      - name: Mutation steps this shard runs and skips
+        env:
+          SHARD: ${{ inputs.shard }}
+          STEPS: ${{ inputs.steps }}
+        run: python scripts/ci_mutation_select.py explain --shard "$env:SHARD" --steps "$env:STEPS"
+
+      # One command per step: a multi-line pwsh step only fails on its last exit code.
+
+      # ---- Shard 1/4 ----
+      - name: Recorded bias gate mutation check (every guard is load-bearing)
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_bias_reader_parity_mutations|'))
+        run: node scripts/test_bias_reader_parity_mutations.cjs
+      - name: Research outcome mutation check (every EA guard is load-bearing)
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_research_outcome_mutations|'))
+        run: node scripts/test_research_outcome_mutations.cjs
+      - name: Research outcome controller mutation check
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_research_outcome_controller_mutations|'))
+        run: python scripts/test_research_outcome_controller_mutations.py
+      - name: Steady Studio panel mutation check
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_studio_steady_panel_mutations|'))
+        run: node scripts/test_studio_steady_panel_mutations.cjs
+      - name: FU35 mutation check (every EA guard is load-bearing)
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_ea_followups_mutations|'))
+        run: node scripts/test_ea_followups_mutations.cjs
+      - name: EvidenceEnd controller staging mutation check
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_evidence_end_export_controller_mutations|'))
+        run: python scripts/test_evidence_end_export_controller_mutations.py
+      - name: Terminal isolation mutation check (every guard is load-bearing)
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_terminal_isolation_mutations|'))
+        run: node scripts/test_terminal_isolation_mutations.cjs
+      - name: Terminal isolation controller mutation check (every guard is load-bearing)
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_terminal_isolation_controller_mutations|'))
+        run: python scripts/test_terminal_isolation_controller_mutations.py
+      - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_switch_hold_mutations|'))
+        run: python scripts/test_switch_hold_mutations.py
+      - name: 'CID guard mutation check (B46/B47: stale record, claim heartbeat, unreadable claim, login 0, cid_duplicate add freeze, entry gate)'
+        if: inputs.shard == 1 && (inputs.steps == 'all' || contains(inputs.steps, '|test_cid_guard_mutations|'))
+        run: node scripts/test_cid_guard_mutations.cjs
+
+      # ---- Shard 2/4 ----
+      - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
+        if: inputs.shard == 2 && (inputs.steps == 'all' || contains(inputs.steps, '|test_process_query_mutations|'))
+        run: python scripts/test_process_query_mutations.py
+      - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
+        if: inputs.shard == 2 && (inputs.steps == 'all' || contains(inputs.steps, '|test_lane_driver_mutations|'))
+        run: python scripts/test_lane_driver_mutations.py
+      - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
+        if: inputs.shard == 2 && (inputs.steps == 'all' || contains(inputs.steps, '|test_research_launch_mutations|'))
+        run: python scripts/test_research_launch_mutations.py
+
+      # ---- Shard 3/4 ----
+      - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_restore_lane_never_started_mutations|'))
+        run: python scripts/test_restore_lane_never_started_mutations.py
+      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_holdup_mutations|'))
+        run: python scripts/test_holdup_mutations.py
+      - name: Protected peer restart mutation check (every refusal is load-bearing)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_peer_restart_mutations|'))
+        run: python scripts/test_peer_restart_mutations.py
+      - name: GOAT peers mutation check (unknown, moved, unsigned or namespace-sharing MT5 still refuse)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_peer_roster_mutations|'))
+        run: python scripts/test_peer_roster_mutations.py
+      - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_seed_member_failure_mutations|'))
+        run: python scripts/test_seed_member_failure_mutations.py
+      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_export_qualification_mutations|'))
+        run: python scripts/test_export_qualification_mutations.py
+      - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
+        if: inputs.shard == 3 && (inputs.steps == 'all' || contains(inputs.steps, '|test_driver_backoff_mutations|'))
+        run: python scripts/test_driver_backoff_mutations.py
+
+      # ---- Shard 4/4 ----
+      - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
+        if: inputs.shard == 4 && (inputs.steps == 'all' || contains(inputs.steps, '|test_catchup_rebase_controller_mutations|'))
+        run: python scripts/test_catchup_rebase_controller_mutations.py
+      - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
+        if: inputs.shard == 4 && (inputs.steps == 'all' || contains(inputs.steps, '|test_lane_final_write_mutations|'))
+        run: python scripts/test_lane_final_write_mutations.py
+      - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
+        if: inputs.shard == 4 && (inputs.steps == 'all' || contains(inputs.steps, '|test_oos_windows_controller_mutations|'))
+        run: python scripts/test_oos_windows_controller_mutations.py
+      - name: Setup registration mutation check (an expired other-build registration is archived with its sha, a live one refuses, no phantom close journal)
+        if: inputs.shard == 4 && (inputs.steps == 'all' || contains(inputs.steps, '|test_setup_registration_mutations|'))
+        run: python scripts/test_setup_registration_mutations.py
+      - name: Profile-staged adoption mutation check (every adoption guard, the deploy_next refusal, the disabled buttons and the retired template path)
+        if: inputs.shard == 4 && (inputs.steps == 'all' || contains(inputs.steps, '|test_profile_staged_adoption_mutations|'))
+        run: node scripts/test_profile_staged_adoption_mutations.cjs
+      - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
+        if: inputs.shard == 4 && (inputs.steps == 'all' || contains(inputs.steps, '|test_profile_staged_deploy_mutations|'))
+        run: python scripts/test_profile_staged_deploy_mutations.py

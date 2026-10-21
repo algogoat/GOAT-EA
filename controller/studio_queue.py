@@ -6,7 +6,7 @@ from studio_settings import validate_tester, validate_export
 from studio_strategy_settings import validate_strategy
 from studio_dependencies import audit_dependencies
 
-COMMANDS = ('queue.enqueue', 'queue.enqueue_batch', 'queue.revise', 'queue.cancel', 'queue.remove', 'queue.reorder', 'queue.reserve', 'queue.release_reservation')
+COMMANDS = ('queue.enqueue', 'queue.enqueue_batch', 'queue.revise', 'queue.cancel', 'queue.remove', 'queue.clear_pending', 'queue.reorder', 'queue.reserve', 'queue.release_reservation')
 
 
 def validate_batch_members(members, schema, policy):
@@ -53,9 +53,12 @@ def reserve_job(state, payload, reservation_id):
                    for k in ('configuration_sha256','package_sha256'))):
         raise ValueError('Job identity and explicit configuration/package hashes required')
     jobs = copy.deepcopy(state['queue'])
-    pending = next((j for j in jobs if j['status'] == 'pending'), None)
-    if pending is None or pending['job_id'] != payload['job_id']:
-        raise ValueError('Only the first pending job can be reserved')
+    # The named pending job, wherever it sits: one dead or stale pending job must
+    # never block every later batch. Only one job is ever reserved at a time
+    # (callers refuse while any job is reserved/starting/running).
+    pending = next((j for j in jobs if j['job_id'] == payload['job_id'] and j['status'] == 'pending'), None)
+    if pending is None:
+        raise ValueError('Only a pending job can be reserved')
     if sha(pending['configuration']) != payload['configuration_sha256'] or pending['configuration_sha256'] != payload['configuration_sha256']:
         raise ValueError('Reservation configuration mismatch')
     pending.update(status='reserved', reservation=dict(reservation_id=reservation_id,
@@ -140,6 +143,12 @@ def change_queue(command, payload, state, schema, policy):
         if job is None or job['status'] != 'pending':
             raise ValueError('Only an existing pending job can be cancelled or removed')
         job['status'] = 'cancelled' if command == 'queue.cancel' else 'removed'
+    elif command == 'queue.clear_pending':
+        if payload != {}:
+            raise ValueError('Clear pending requires an empty payload; selection is frozen by the state revision')
+        for job in jobs:
+            if job['status'] == 'pending':
+                job['status'] = 'removed'
     elif command == 'queue.reorder':
         ids = payload.get('job_ids')
         pending = {j['job_id']: j for j in jobs if j['status'] == 'pending'}

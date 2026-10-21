@@ -253,6 +253,17 @@ class DeploymentTests(unittest.TestCase):
                 def request(self,a):raise AssertionError('mutation repeated')
             runner=o.Runner(API(),{},journal)
             with self.assertRaises(o.Stop):runner.call('deploy_next','deploy:0')
+    def test_deploy_next_waits_the_90s_maximum_for_an_async_child_attach(self):
+        # B41.1 settles a child attach within 75 s (above the 60 s licence startup); a 60 s
+        # wait reported receipt_timeout for a good attach. audit keeps 90 s, the rest 60 s.
+        api=object.__new__(o.NativeAPI);waits=[]
+        api.root,api.manifest,api.digest=Path('native'),Path('terminal-07.json'),'d'*64
+        class Module:
+            def read_bounded(self,path):return {},'d'*64
+            def request(self,manifest,action,timeout):waits.append((action,timeout));return {}
+        api.module=Module()
+        for action in ('status','configure','deploy_next','apply_policy','audit'):api.request(action)
+        self.assertEqual(waits,[('status',60),('configure',60),('deploy_next',90),('apply_policy',60),('audit',90)])
     def test_journal_corruption_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);journal=o.Journal(path);journal.add('intent',target='deploy:0')

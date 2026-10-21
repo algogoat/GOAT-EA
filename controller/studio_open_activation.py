@@ -12,8 +12,10 @@ import shutil
 from native_control_transaction import begin,NAMES
 from studio_native_inventory import inventory
 from studio_native_request import validate_launch_material,validate_activated_job,validate_restart_controls
-from studio_process_check import revalidate_processes
+from studio_process_check import revalidate_processes, role_unchanged
 from studio_report_paths import report_paths
+from studio_resilient_read import read_observation
+from studio_terminal_isolation import binding_base, binding_relative, preflight as isolation_preflight
 
 
 def activate_open(state,job,**arguments):
@@ -38,10 +40,13 @@ def _install_controls(state,job,*,restart,account,observation_path,monitor_path,
             raise ValueError('Prepared restart attempt required')
         if prior['startup_sha256']!=material['startup_receipt']['sha256'] or prior['account']!=dict(login=str(account['login']),server=server):
             raise ValueError('Restart configuration or account changed')
-        if any(prior['process_baseline'][role]!=processes[role] for role in ('research','protected')):
+        if any(not role_unchanged(binding,role,processes[role],prior['process_baseline'][role]) for role in ('research','protected')):
             raise ValueError('Terminal identity changed after preparation')
-    common=Path(binding['common_files_root']).resolve();base=common/'GOAT'/('GOAT V'+binding['ea_version']+'-'+server)
-    before=inventory(common,server,binding['ea_version'])
+    # INV-BATCH-01: this terminal's own batch folder, proven before any control is read.
+    isolation=isolation_preflight(binding,account,observation=read_observation(Path(observation_path))[0],
+                                  controller_root=Path(evidence).resolve().parent.parent)
+    common=Path(binding['common_files_root']).resolve();base=binding_base(binding,account)
+    before=inventory(common,server,binding['ea_version'],login=str(account['login']),data_root=binding['research_data_root'])
     if before['controls']['agent-native-control-owner.json'] is not None:
         raise ValueError('Existing native owner requires reconciliation')
     if before['queue'] and (before['queue'].get('status')=='missing' or before['queue'].get('unresolved')):
@@ -62,7 +67,7 @@ def _install_controls(state,job,*,restart,account,observation_path,monitor_path,
     pointer='[ActiveOptimizationRun]\r\nRunPath='+relative+'\r\n'
     config=(package/(alias+'.ini')).read_bytes()
     guard='[ActiveOptimizationLaunch]\r\n'+''.join(k+'='+v+'\r\n' for k,v in dict(
-        LaunchId=owner,RunPath=relative,ConfigPath='GOAT\\GOAT V'+binding['ea_version']+'-'+server+'\\active_optimization_config.ini',
+        LaunchId=owner,RunPath=relative,ConfigPath=binding_relative(binding,account)+'\\active_optimization_config.ini',
         AuditConfigPath=relative+'\\inputs\\'+alias+'\\config.ini',QueuedTitle=title,
         Symbol=job['configuration']['tester']['Symbol'],Strategy=alias).items())
     replacements=dict(zip(NAMES,[pointer.encode('utf-16'),config,guard.encode('utf-16')]))
@@ -89,7 +94,7 @@ def _install_controls(state,job,*,restart,account,observation_path,monitor_path,
     receipt=dict(stage='CONTROLS_INSTALLED_NOT_ARMED',attempt_id=owner,run=str(run),
         report_destinations={key:str(value) for key,value in reports.items()},
         member_report_destinations=[{key:str(value) for key,value in member.items()} for member in all_reports],
-        observed_at=datetime.now(timezone.utc).isoformat(),transaction_phase=transaction['phase'],
+        observed_at=datetime.now(timezone.utc).isoformat(),transaction_phase=transaction['phase'],batch_state=isolation,
         request_fields_sha256=hashlib.sha256(json.dumps(fields,sort_keys=True).encode()).hexdigest())
     (evidence/'activation.json').write_text(json.dumps(receipt,indent=2),encoding='utf-8')
     return fields

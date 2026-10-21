@@ -2,6 +2,16 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.49 reviewed research recovery candidate
+
+The forward-only orphan recovery action allows the matched controller to request
+clearing a positively identified stale BatchOnGoing flag inside the inert Studio
+monitor. It never launches/stops work, edits research queues or changes grants.
+Foreign gates and active/uncertain attempts are refused. The public controller
+also supports atomic pending-queue cleanup and a retained time-budgeted batch
+driver. See [controller workflow and native qualification requirements](controller/NATIVE-RECOVERY-CONTRACT.md).
+Source/compile evidence is not a production activation or completed native test.
+
 ### V1.48 integrated sequence exports
 
 Selected batch export backtests can capture native sequence evidence beside the
@@ -126,6 +136,11 @@ Live API authentication is never stored in source or `.set` files. Provision the
 rotated bearer as the only non-empty line in
 `Common\Files\GOAT\Credentials\api-bearer.token` on each MT5 host. The EA
 validates the local file and fails initialization when it is missing or malformed.
+V1.49 terminal-isolation builds (SM32 and later) keep one credential per MT5 login,
+`Common\Files\GOAT\Credentials\api-bearer-v149-<login>.token`, written by the EA's
+own activation, so several licensed terminals can run on one PC (INV-CRED-01 in
+`docs/operations/INVARIANTS.md`). Their Common batch state is likewise per
+terminal/account (INV-BATCH-01).
 The production `LICENSE_GATEWAY_TOKEN` must be rotated whenever a prior token may
 have appeared in repository history; deploy/provision the replacement before
 retiring the old value to avoid an unsafe partial cutover.
@@ -194,6 +209,16 @@ Use this workflow when the current branch has standing GOAT changes that should 
 Keeping multiple versioned `.mq5` files side by side preserves the released entrypoints, but it does not fully freeze historical behavior if shared `.mqh` files continue to evolve.
 
 If exact historical reproducibility becomes important, version the shared include graph together with each main `.mq5` release or keep release tags that point to the exact source tree used for that version.
+
+### Agent display and retained human edits
+
+The managed agent view displays committed snapshot settings, while preserving
+any separate local human draft for later human ownership. Retained unsaved edits
+are labelled and do not describe the running batch. Taking control stops the
+agent's research; saving a future draft does not rewrite an already frozen native
+package. Export thresholds are captured at each member's exporter start, while
+sequence capture is read for each candidate. There is no supported policy for
+editing a frozen active run by changing its native files directly.
 
 Following these rules ensures the repository remains a complete, reproducible history of all GOAT-EA versions, source code, binaries, and visual assets.
 

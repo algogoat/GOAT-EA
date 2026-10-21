@@ -190,11 +190,11 @@ an active pointer by copying one from another terminal.
    `draft.replace_strategy` against the discovered schema hash.
 3. Edit settings, then **SAVE SETTINGS**. This submits tester and export objects
    together with the observed revision/generation. Wait for validation/receipt.
-4. **Queue saved** enqueues the saved strategy/settings. Unsaved edits prevent
+4. **Add to queue** enqueues the saved strategy/settings. Unsaved edits prevent
    queueing. **Remove**, **Cancel**, Up and Down apply only to pending managed
-   jobs. **Delete All** and local native-start controls are not available here.
-5. **LOAD SAVED** reloads committed controller settings; unresolved commands or
-   damaged recovery drafts require resolution first. It is not a batch loader.
+   jobs. **Delete All** is hidden and local native-start controls are not available here.
+5. **DISCARD EDITS** reloads committed controller settings (your unsaved edits are dropped);
+   unresolved commands or damaged recovery drafts require resolution first. It is not a batch loader.
 6. **GIVE TO AGENT** requires saved/reloaded settings and explicitly grants agent
    ownership. Human editors become read-only while the agent owns the binding.
 

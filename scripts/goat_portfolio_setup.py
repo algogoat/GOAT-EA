@@ -20,6 +20,9 @@ RESULTS = {'observed', 'started', 'rejected_portfolio_mismatch', 'rejected_not_i
            'configured', 'configure_failed', 'rejected_ai_policy_mismatch',
            'rejected_partial_deployment', 'all_attached', 'child_attached',
            'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched'}
+# A B41.1 child attach settles within 75 s (above the child's 60 s licence startup), so the
+# CLI's deploy_next waits the 90 s maximum request() accepts; its request lives 120 s.
+DEPLOY_NEXT_WAIT_SECONDS = 90
 
 
 def read_bounded(path):
@@ -230,7 +233,12 @@ def main():
     try:
         if args.operation == 'register' and not args.draft:
             raise ValueError('draft required')
-        result = register(args.manifest, args.draft) if args.operation == 'register' else request(args.manifest, args.operation)
+        if args.operation == 'register':
+            result = register(args.manifest, args.draft)
+        elif args.operation == 'deploy_next':
+            result = request(args.manifest, args.operation, timeout=DEPLOY_NEXT_WAIT_SECONDS)
+        else:
+            result = request(args.manifest, args.operation)
         print(json.dumps(result))
         return 0 if result['result'] == 'registered' or result['result'] in SUCCESSES.get(args.operation, set()) else 1
     except (OSError, ValueError, KeyError, TypeError):

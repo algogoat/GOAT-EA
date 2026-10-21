@@ -1034,7 +1034,10 @@ own journals.
 - **Status.** `locked` until the AUTO evidence end reaches `revealableAfter`, then
   `revealable`; `revealing` after the desktop's reveal event; `revealed` and `breached`
   locks bind nothing. `heldout-status` lists them; `discover` reports
-  `capabilities.heldout_enforcement` and `capabilities.trial_journal`.
+  `capabilities.heldout_enforcement` and `capabilities.trial_journal` (and
+  `capabilities.binding_lock` `{supported: true, version: 1}`: `bootstrap`,
+  `switch-verify-park` and `switch-apply` hold one exclusive per-installation OS lock
+  and a second one refuses `BINDING_IN_PROGRESS`; see `studio_binding_lock.py`).
 - **Enforcement.** A member reads `[min(BackOOSDate, FromDate), max(ToDate, export
   end))`; an EA build without EvidenceEnd has no known export end before it runs, so
   its span is open. `prepare-batch` (and load-batch, resume-batch, batch-continue,

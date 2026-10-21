@@ -22,6 +22,7 @@ from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate, shared_gate
+from studio_binding_lock import holds_binding_lock
 
 SETTLED = {'pending', 'completed', 'failed', 'cancelled', 'removed', 'superseded'}
 MAX_FILES = 50000
@@ -430,6 +431,7 @@ def copy_move_once(source, target, expected, identity, transfer, journal):
     write_json(journal, record)
 
 
+@holds_binding_lock('switch-apply')   # never beside a bootstrap or switch-verify-park (studio_binding_lock)
 def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
     if type(confirmed) is not bool or (confirmed and owner_maintenance is not None):
         raise ValueError('Choose one explicit handover authorization route')

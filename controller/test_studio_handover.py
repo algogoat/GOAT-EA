@@ -686,6 +686,17 @@ class BindingLockTests(unittest.TestCase):
         self.assertEqual(self.bootstrap(other.path)['account'], {'login': '123456', 'server': 'Customer-Demo'})
         self.assertBindingRefused(lambda: self.bootstrap(self.fixture.path))
 
+    def test_discover_advertises_binding_lock_version_1_even_while_held(self):
+        # Claude-Mac goatai#2587 6304933280: beside heldout_enforcement. discover is not a binding step, so a held
+        # lock never blocks it.
+        child, _ = self.hold(self.fixture.path)
+        code, reply = self.cli('--installation', str(self.fixture.path), 'discover')
+        self.assertEqual(code, 0, reply)
+        capabilities = reply['result']['capabilities']
+        self.assertEqual(capabilities['binding_lock'], {'supported': True, 'version': 1})
+        self.assertIn('heldout_enforcement', capabilities)
+        self.assertBindingRefused(lambda: self.bootstrap(self.fixture.path))
+
     def test_lock_file_is_derived_from_the_installation_not_the_arguments(self):
         # The holder runs from a copy of the receipt in another folder with another login; the lock is still the
         # installation's own, beside its state root (switch-apply moves the state root itself).

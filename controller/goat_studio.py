@@ -46,7 +46,7 @@ from studio_installation import VERSION,load_installation,read_json,contracts
 from studio_bridge import StudioBridge,write_json,pump_for,display_state
 from studio_command_store import StudioStore
 from studio_native_gate import configure_gate,exclusive_gate
-from studio_binding_lock import BINDING_OPERATIONS,binding_lock,holds_binding_lock
+from studio_binding_lock import BINDING_OPERATIONS,CAPABILITY as BINDING_LOCK_CAPABILITY,binding_lock,holds_binding_lock
 from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
@@ -687,7 +687,9 @@ def main(argv=None):
             registry=read_registry(controller.install)
             capabilities=dict(heldout_enforcement=dict(supported=True,schema=LOCK_SCHEMA,registry=registry['state'],
                                                        registry_path=registry['path'],registry_head=registry['head']),
-                              trial_journal=dict(supported=True,schema=TRIAL_SCHEMA,count_schema=COUNT_SCHEMA))
+                              trial_journal=dict(supported=True,schema=TRIAL_SCHEMA,count_schema=COUNT_SCHEMA),
+                              # bootstrap/switch-verify-park/switch-apply refuse BINDING_IN_PROGRESS (goatai#2587 6304933280)
+                              binding_lock=dict(BINDING_LOCK_CAPABILITY))
             result=dict(agent_skills=customer_skills(),capabilities=capabilities,controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),tester_recommendations=dict(Model=1,model_name='1 minute OHLC',policy='Default for new optimization plans; retain explicit user overrides and never rewrite frozen runs'),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5, its reviewed protected peer and (V1.49) its GOAT peers (peer-add, GOAT-installed terminals; peer-list) may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','GOAT-OPERATING-MODEL.md','CUSTOMER-SKILLS.md','OPTIMIZATION-PLAYBOOK.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':
             from studio_resources import resource_profile

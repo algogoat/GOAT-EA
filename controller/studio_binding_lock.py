@@ -31,6 +31,8 @@ import threading
 from studio_refusal import Refusal
 
 BINDING_OPERATIONS = frozenset(('bootstrap', 'switch-verify-park', 'switch-apply'))
+# discover's capabilities.binding_lock (Claude-Mac goatai#2587 6304933280): the app may rely on BINDING_IN_PROGRESS.
+CAPABILITY = dict(supported=True, version=1)
 LOCK_FOLDER = '.studio-binding'
 LOCK_NAME = 'binding.lock'
 BUSY_CODE = 'BINDING_IN_PROGRESS'

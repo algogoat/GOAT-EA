@@ -17,6 +17,7 @@ from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_installation import load_installation, read_json
 from studio_native_gate import exclusive_gate
+from studio_binding_lock import holds_binding_lock
 from studio_handover import paths, safe_path, load_plan, tree, database_view, stopped, guard, session_lock
 
 
@@ -47,6 +48,7 @@ def inspect_park(c, review_id, *, allowed_receipt_sha256=None, build_update_fenc
                 receipt_sha256=digest,review_sha256=hashlib.sha256((folder/'receipt.json').read_bytes()).hexdigest())
 
 
+@holds_binding_lock('switch-verify-park')   # never beside a bootstrap or switch-apply (studio_binding_lock)
 def verify_park(c, review_id):
     # switch-verify-park is the read-only last step of the reviewed switch (the demo-login bind runs it
     # after the person's confirm); an agent's open `goat.exe desktop events.wait` is not a controller

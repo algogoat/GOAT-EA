@@ -1,4 +1,5 @@
 """Windows filesystem/SQLite handover tests; no broker or tester is launched."""
+import io
 import json
 import errno
 import os
@@ -6,11 +7,13 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from unittest.mock import patch
 
+import goat_studio
 from goat_studio import Controller
 from studio_handover import apply, database_view, filesystem_path, guard, inspect, load_plan, paths, review, tree, session_lock
 from studio_installation_upgrade import verify_park
@@ -556,6 +559,144 @@ class WorkerContentionTests(unittest.TestCase):
                 finally:
                     out,err=child.communicate(timeout=5)
                     self.assertEqual(child.returncode,0,out+err)
+
+
+# A real `goat_studio.py bootstrap` in a second Python process, paused inside its first guard(): after the CLI took
+# the binding lock and before any state write. argv: controller folder, receipt, held marker, release marker, login.
+CHILD_BOOTSTRAP = r'''
+import pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+import studio_handover
+real, paused = studio_handover.guard, []
+def guard(*args, **kwargs):
+    if not paused:
+        paused.append(True)
+        pathlib.Path(sys.argv[3]).write_text('held')
+        while not pathlib.Path(sys.argv[4]).exists():
+            time.sleep(.05)
+    return real(*args, **kwargs)
+studio_handover.guard = guard
+import goat_studio
+raise SystemExit(goat_studio.main(['--installation', sys.argv[2], 'bootstrap',
+                                   '--account-login', sys.argv[5], '--account-server', 'Customer-Demo']))
+'''
+
+
+class BindingLockTests(unittest.TestCase):
+    """Claude-Mac goatai#2587 6304681152: bootstrap, switch-verify-park and switch-apply hold one exclusive OS lock
+    per installation, owned by the controller's own Python process. The old controller let them overlap: the
+    shared session_lock is no exclusion, and bootstrap took no lock at all."""
+
+    def setUp(self):
+        self.fixture = PortableControllerTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.tearDown)
+        self.state = Path(self.fixture.receipt['controller_state_root'])
+
+    def hold(self, receipt, login='123456'):
+        folder = Path(tempfile.mkdtemp(dir=self.fixture.root))
+        held, release, errors = folder/'held.txt', folder/'release.txt', folder/'child.err'
+        log = errors.open('wb')
+        child = subprocess.Popen([sys.executable, '-c', CHILD_BOOTSTRAP, str(Path(__file__).resolve().parent),
+                                  str(receipt), str(held), str(release), login], stdout=subprocess.DEVNULL, stderr=log)
+        def stop():
+            if child.poll() is None:
+                child.kill()
+            child.wait(30)
+            log.close()
+        self.addCleanup(stop)
+        deadline = time.monotonic() + 90
+        while not held.exists():
+            if child.poll() is not None:
+                log.flush()
+                self.fail('the holding bootstrap exited early: '+errors.read_text(errors='replace'))
+            if time.monotonic() > deadline:
+                self.fail('the holding bootstrap never reached its pause')
+            time.sleep(.05)
+        return child, release
+
+    def bootstrap(self, receipt, login='123456'):
+        c = Controller(receipt)
+        try:
+            return c.bootstrap(login, 'Customer-Demo')
+        finally:
+            if c.store: c.store.close()
+
+    def cli(self, *argv):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = goat_studio.main(list(argv))
+        return code, json.loads(out.getvalue())
+
+    def assertBindingRefused(self, call):
+        with self.assertRaises(ValueError) as caught:
+            call()
+        self.assertEqual(getattr(caught.exception, 'code', None), 'BINDING_IN_PROGRESS', str(caught.exception))
+        self.assertIn('GOAT is still finishing an earlier step on this terminal; wait, then check again',
+                      str(caught.exception))
+
+    def test_second_concurrent_bootstrap_refuses_binding_in_progress(self):
+        child, release = self.hold(self.fixture.path)
+        self.assertBindingRefused(lambda: self.bootstrap(self.fixture.path))
+        code, reply = self.cli('--installation', str(self.fixture.path), 'bootstrap',
+                               '--account-login', '123456', '--account-server', 'Customer-Demo')
+        self.assertEqual((code, reply['ok'], reply.get('refusal_code'), reply.get('operation')),
+                         (2, False, 'BINDING_IN_PROGRESS', 'bootstrap'), reply)
+        self.assertFalse((self.state/'session.json').exists(), 'a refused bootstrap writes nothing')
+        release.write_text('go')
+        self.assertEqual(child.wait(90), 0)
+        self.assertEqual(read_json(self.state/'session.json')['account'], {'login': '123456', 'server': 'Customer-Demo'})
+
+    def test_killed_holder_frees_the_lock_and_a_retry_passes(self):
+        child, _ = self.hold(self.fixture.path)
+        self.assertBindingRefused(lambda: self.bootstrap(self.fixture.path))
+        child.kill(); child.wait(30)                         # TerminateProcess on Windows, SIGKILL elsewhere
+        lock = self.state.parent/'.studio-binding'/self.state.name/'binding.lock'
+        self.assertTrue(lock.is_file(), 'the lock file stays; only the OS lock ever counted')
+        code, reply = self.cli('--installation', str(self.fixture.path), 'bootstrap',
+                               '--account-login', '123456', '--account-server', 'Customer-Demo')
+        self.assertEqual((code, reply['ok']), (0, True), reply)
+        self.assertEqual(reply['result']['account'], {'login': '123456', 'server': 'Customer-Demo'})
+
+    def test_verify_park_and_apply_refuse_while_a_bootstrap_holds_the_lock(self):
+        c = self.fixture.bound(); self.fixture.grant(c); self.fixture.prepare(c)
+        c.store.close(); c.store = None
+        receipt = c.root/'installation.json'; write_json(receipt, self.fixture.receipt)
+        patch('studio_handover.stopped').start(); patch('studio_installation_upgrade.stopped').start()
+        self.addCleanup(patch.stopall)
+        planned = review(c)['review_id']
+        self.assertEqual(apply(c, planned, True)['status'], 'complete')
+        child, _ = self.hold(receipt)
+        self.assertBindingRefused(lambda: verify_park(c, planned))
+        self.assertBindingRefused(lambda: apply(c, planned, True))
+        for argv in (('switch-verify-park', '--review-id', planned),
+                     ('switch-apply', '--review-id', planned, '--confirm-reviewed')):
+            code, reply = self.cli('--installation', str(receipt), *argv)
+            self.assertEqual((code, reply.get('refusal_code'), reply.get('operation')), (2, 'BINDING_IN_PROGRESS', argv[0]), reply)
+        child.kill(); child.wait(30)
+        self.assertEqual(verify_park(c, planned)['status'], 'parked_verified')
+        self.assertEqual(apply(c, planned, True)['status'], 'complete')
+
+    def test_different_installations_do_not_block_each_other(self):
+        other = PortableControllerTests(); other.setUp(); self.addCleanup(other.tearDown)
+        # A second installation whose state root sits in the SAME parent folder as the first one's.
+        other.receipt['controller_state_root'] = str(self.state.parent/'second customer state')
+        other.path.write_text(json.dumps(other.receipt))
+        child, _ = self.hold(self.fixture.path)
+        self.assertEqual(self.bootstrap(other.path)['account'], {'login': '123456', 'server': 'Customer-Demo'})
+        self.assertBindingRefused(lambda: self.bootstrap(self.fixture.path))
+
+    def test_lock_file_is_derived_from_the_installation_not_the_arguments(self):
+        # The holder runs from a copy of the receipt in another folder with another login; the lock is still the
+        # installation's own, beside its state root (switch-apply moves the state root itself).
+        copy = self.fixture.root/'elsewhere'/'receipt copy.json'
+        copy.parent.mkdir(); copy.write_text(json.dumps(self.fixture.receipt))
+        child, _ = self.hold(copy, login='999999')
+        lock = self.state.parent/'.studio-binding'/self.state.name/'binding.lock'
+        self.assertTrue(lock.is_file())
+        self.assertFalse((copy.parent/'.studio-binding').exists())
+        self.assertFalse(self.state.exists() and any(p.name == 'binding.lock' for p in self.state.rglob('*')))
+        self.assertBindingRefused(lambda: self.bootstrap(self.fixture.path, login='123456'))
 
 
 if __name__ == '__main__': unittest.main()

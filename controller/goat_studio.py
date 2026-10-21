@@ -46,6 +46,7 @@ from studio_installation import VERSION,load_installation,read_json,contracts
 from studio_bridge import StudioBridge,write_json,pump_for,display_state
 from studio_command_store import StudioStore
 from studio_native_gate import configure_gate,exclusive_gate
+from studio_binding_lock import BINDING_OPERATIONS,binding_lock,holds_binding_lock
 from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
@@ -265,6 +266,7 @@ class Controller:
                     monitor_path=Path(i['terminal_data_root'])/'MQL5/Experts'/i['ea_relative_path'].replace('\\','/'),
                     monitor_sha256=i['ea_sha256'],input_schema=self.schema)
 
+    @holds_binding_lock('bootstrap')   # one binding step per installation at a time (studio_binding_lock)
     def bootstrap(self,login,server):
         from studio_handover import guard
         guard(self)
@@ -548,6 +550,10 @@ def main(argv=None):
             result=rebind(args.installation)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         controller=Controller(args.installation)
+        if args.operation in BINDING_OPERATIONS:
+            # Before any state read: a second bootstrap/switch-verify-park/switch-apply on this installation refuses
+            # BINDING_IN_PROGRESS at once (Claude-Mac goatai#2587 6304681152). Held until this command returns.
+            locks.enter_context(binding_lock(controller,purpose=args.operation))
         import studio_process_query
         studio_process_query.configure(Path(controller.root)/'process-query.jsonl')   # failed WMI attempts (goatai#1885)
         from studio_build_upgrade import guard_pending

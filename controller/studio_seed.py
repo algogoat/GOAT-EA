@@ -187,8 +187,8 @@ class SeedRunner:
         # and parsing it twice here took 1.9 s of each 5 s drive slice, so no catch-up member started in 40 min
         # (goatai#2587 6396050245). The store's light reads answer the same two questions without building the queue.
         store=getattr(self.c,'store',None)
-        light=hasattr(self.c,'control') and hasattr(store,'any_job_status')
-        state=self.c.control() if light else self.c.state()
+        light=hasattr(store,'control') and hasattr(store,'any_job_status')
+        state=store.control(self.c.terminal,self.c.run) if light else self.c.state()
         if state['owner']!='agent' or (generation is not None and state['generation']!=generation):raise ValueError('Human Studio grant is missing or changed; no further seed effects')
         if light:
             busy=store.any_job_status(BUSY)

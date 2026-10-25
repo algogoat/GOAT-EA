@@ -204,6 +204,8 @@ class Controller:
 
     def state(self): return self.store.snapshot(self.terminal,self.run)
 
+    def control(self): return self.store.control(self.terminal,self.run)
+
     def submit(self,command,payload,request_id,*,expected_revision=None,expected_generation=None):
         state = self.state()
         request = dict(schema_version=1,request_id=request_id,terminal_id=self.terminal,run_id=self.run,

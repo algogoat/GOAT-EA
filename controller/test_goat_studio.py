@@ -171,6 +171,22 @@ class PortableControllerTests(unittest.TestCase):
         c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256='a'*64),'owner-light-reserve')
         same('busy: reserved job','refused')
         self.assertEqual(answer(runner._owner)[1],'Unresolved native batch must finish before seed workflow')
+        # Other statuses on a second queue row, each alone: the light read agrees with the shipped one.
+        def other_row(jobs):
+            c.store.db.execute('DELETE FROM studio_queues WHERE binding=?',('other-binding',))
+            c.store.db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)',('other-binding',json.dumps(jobs)))
+        reserved=c.job('beta-job');c.store.db.execute("UPDATE studio_queues SET jobs=? WHERE binding!='other-binding'",
+                                                      (json.dumps([dict(reserved,status='pending')]),))
+        for status,kind in (('running','refused'),('verifying','refused'),('launching','ok'),('completed','ok')):
+            other_row([dict(job_id='x',status=status)]);same('status '+status,kind)
+        # Fails closed (Claude-Mac 6396446948 fold 2): a job with no status or a non-string status reads as busy. The
+        # shipped read raised (KeyError / TypeError) or, for a number, let it through; the light read always refuses.
+        for label,job in (('no status',dict(job_id='x')),('number status',dict(job_id='x',status=7)),
+                          ('list status',dict(job_id='x',status=['running'])),('null status',dict(job_id='x',status=None))):
+            other_row([job])
+            self.assertTrue(c.store.any_job_status(BUSY),label)
+            self.assertEqual(answer(runner._owner),('refused','Unresolved native batch must finish before seed workflow'),label)
+        other_row([])
         # The binding's authority row is native human control (immutable); a typed research continuation appearing
         # beside it is a mismatch studio_research_authority.authority refuses.
         (c.root/'research-authority.json').write_text('{}')

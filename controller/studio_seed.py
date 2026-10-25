@@ -1102,6 +1102,12 @@ class SeedRunner:
             state['switch_hold']=result['hold'];self._save(root,state)
         return result['hold']['deadline_unix']
 
+    def _stop_now(self):
+        """True when the caller's STOP is set. An unreadable stop check counts as a stop, as in _hold_wait."""
+        if self.stop_requested is None:return False
+        try:return bool(self.stop_requested())
+        except Exception:return True
+
     def _hold_wait(self,batch_id,seconds):
         """Wait out part of a switch hold. A stop ('stop'), a pause request ('pause') or any state change such as
         a cancel ('state_changed') ends it at once; the caller's next pass applies them before any start."""
@@ -1176,7 +1182,8 @@ class SeedRunner:
                 # Whether this pass may start a member is decided when the pass begins, not after its checks: on Banker
                 # (2026-10-25) the reads before the start step outlasted the 5 s drive slice, so a check placed after them
                 # was never true and no member started (goatai#2587 6396050245). A pass that begins inside the budget
-                # finishes, so the budget is overrun by at most one pass and STOP is still read between slices.
+                # finishes, so a slice lasts at most its budget plus one pass; STOP is read between slices and again
+                # right before a start.
                 pass_open=self.clock()<deadline
                 root,manifest,state=self._read(batch_id)
                 if self.driver_record and 'token' not in call:
@@ -1240,6 +1247,11 @@ class SeedRunner:
                         from studio_news_guard import runner_check,runner_tag
                         runner_check(self.c.install,state,manifest,what=self._news_what(batch_id),legacy_refuses=False)
                         holding=self._switch_hold(root,state,item)
+                        if holding is None and self._stop_now():
+                            # A STOP that arrived during this pass's checks (they can outlast the slice) wins before any
+                            # start effect: the member stays pending with its one attempt unused, and the caller applies the
+                            # STOP between slices (Claude-Mac, goatai#2587 6396446948).
+                            return self._public(root,state)|dict(stopped_before_launch=True)
                         if holding is None:
                             self._before_start(spec)
                             runner_tag(self.c.install,state,item)

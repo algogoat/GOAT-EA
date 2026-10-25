@@ -109,22 +109,42 @@ class SeedTests(unittest.TestCase):
         self.assertFalse(self.runner.cancel_request_path('batch').exists())
         self.assertTrue((self.runner.path('batch')/'cancel-request.honoured.json').is_file(),'kept as the record of who stopped it')
 
-    def test_a_pass_that_begins_inside_its_slice_starts_the_member(self):
+    def slow_grant_reads(self,cost=2.6):
+        # Each grant read costs `cost` s of the fake clock: two of them before the start step outlast a 5 s slice.
+        grant=self.controller.state;reads=[]
+        def slow():
+            self.now+=cost;reads.append(self.now)
+            return grant()
+        self.controller.state=slow
+        return reads
+
+    def test_a_pass_that_begins_inside_its_slice_starts_the_member_and_the_slice_ends_after_that_pass(self):
         # goatai#2587 6396050245 (Banker, 2026-10-25): the reads before the start step outlasted the 5 s drive slice, and
         # the start check came after them, so it was never true and no catch-up member started in 40 min.
         second=copy.deepcopy(self.plan['jobs'][0]);second['tester']['Symbol']='GBPUSD';self.plan['jobs'].append(second)
-        self.prepare();grant=self.controller.state;reads=[]
-        def slow_grant():
-            self.now+=2.6;reads.append(self.now)            # two grant reads before the start step: 5.2 s > the 5 s slice
-            return grant()
-        self.controller.state=slow_grant
+        self.prepare();reads=self.slow_grant_reads()
         started=self.now;result=self.runner.start('batch',5)
         self.assertGreater(reads[1]-started,5,'the fixture puts the start step past the slice, as on Banker')
         self.assertEqual(len(self.starts),1,'the pass began inside its slice, so member 1 starts')
         self.assertEqual(result['members'][0]['status'],'running')
         self.assertEqual(result['members'][1]['status'],'pending','one pass, one member: no further pass after the slice')
-        # STOP is read between slices (demo_agent._drive_lane), so this slice's length is the STOP latency.
-        self.assertLessEqual(self.now-started,10,'the slice overran by this one pass only: STOP latency stays within 10 s')
+        # The bound is the slice plus the one pass that began inside it (process.start itself may wait for the MT5
+        # identity; here it is immediate): every clock tick after the slice belongs to that pass's own grant reads.
+        self.assertAlmostEqual(self.now-started,len(reads)*2.6,places=6,msg='no time passed outside this one pass')
+        self.assertEqual(len(reads),3,'one pass: the activation, the pass and the start step each read the grant once')
+
+    def test_a_stop_during_a_slow_pass_launches_nothing_and_keeps_the_attempt(self):
+        # Claude-Mac 6396446948 fold 1: a STOP read during a pass that outlasts its slice must not still launch a member
+        # and burn its single attempt.
+        self.prepare();self.slow_grant_reads();stop_at=self.now+5
+        self.runner.stop_requested=lambda:'owner_stop' if self.now>=stop_at else None
+        result=self.runner.start('batch',5)
+        self.assertEqual(self.starts,[],'nothing launched after the STOP')
+        self.assertTrue(result['stopped_before_launch'])
+        state=read_json(self.runner.path('batch')/'state.json')
+        self.assertEqual((state['members'][0]['status'],state['members'][0]['attempts']),('pending',0),'the attempt is not consumed')
+        self.runner.stop_requested=lambda:(_ for _ in ()).throw(OSError('stop file unreadable'))
+        self.assertTrue(self.runner._stop_now(),'an unreadable stop check counts as a stop')
 
     def test_a_cancel_request_never_outlives_its_run(self):
         # goatai#2350 (Claude-Mac 6099732097 item 2): a request is bound to the activation, refused when nothing runs,

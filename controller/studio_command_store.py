@@ -141,11 +141,13 @@ class StudioStore:
                     generation=row['generation'], owner=row['owner'])
 
     def any_job_status(self, statuses):
-        """True when a job in any queue row has one of ``statuses``. Parsed in SQLite (json_each), not in Python:
-        0.49 s instead of 0.76 s per json.loads on Banker's 148 MB row, with nothing built in memory."""
+        """True when a job in any queue row has one of ``statuses``, or has no status or a status that is not a string
+        (fails closed: the full Python read refused such a job with KeyError/TypeError; Claude-Mac 6396446948).
+        Parsed in SQLite (json_each), not in Python: 0.49 s instead of 0.76 s per json.loads on Banker's 148 MB row."""
         statuses = tuple(sorted(statuses))
-        return self.db.execute("SELECT 1 FROM studio_queues q, json_each(q.jobs) j WHERE json_extract(j.value,'$.status') IN ("
-                               + ','.join('?' * len(statuses)) + ') LIMIT 1', statuses).fetchone() is not None
+        return self.db.execute("SELECT 1 FROM studio_queues q, json_each(q.jobs) j WHERE json_type(j.value,'$.status') IS NOT 'text' "
+                               "OR json_extract(j.value,'$.status') IN (" + ','.join('?' * len(statuses)) + ') LIMIT 1',
+                               statuses).fetchone() is not None
 
     def submit(self, request, *, actor):
         fields = {'schema_version', 'request_id', 'terminal_id', 'run_id',

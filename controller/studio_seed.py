@@ -183,12 +183,21 @@ class SeedRunner:
             members_omitted=True,state_path=str(root/'state.json'),manifest_path=str(root/'manifest.json'),native_launch_qualified=False)
 
     def _owner(self,generation=None):
-        state=self.c.state()
+        # The grant and the busy check only. The queue row keeps every finished job: on Banker (2026-10-25) it was 148 MB,
+        # and parsing it twice here took 1.9 s of each 5 s drive slice, so no catch-up member started in 40 min
+        # (goatai#2587 6396050245). The store's light reads answer the same two questions without building the queue.
+        store=getattr(self.c,'store',None)
+        light=hasattr(self.c,'control') and hasattr(store,'any_job_status')
+        state=self.c.control() if light else self.c.state()
         if state['owner']!='agent' or (generation is not None and state['generation']!=generation):raise ValueError('Human Studio grant is missing or changed; no further seed effects')
-        queues=[state['queue']]
-        if hasattr(self.c,'store'):
-            queues=[json.loads(row[0]) for row in self.c.store.db.execute('SELECT jobs FROM studio_queues')]
-        if any(j['status'] in BUSY for jobs in queues for j in jobs):raise ValueError('Unresolved native batch must finish before seed workflow')
+        if light:
+            busy=store.any_job_status(BUSY)
+        else:
+            queues=[state['queue']]
+            if store is not None:
+                queues=[json.loads(row[0]) for row in store.db.execute('SELECT jobs FROM studio_queues')]
+            busy=any(j['status'] in BUSY for jobs in queues for j in jobs)
+        if busy:raise ValueError('Unresolved native batch must finish before seed workflow')
         return state
 
     def _slot(self,batch_id,state):
@@ -1164,6 +1173,11 @@ class SeedRunner:
                 if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))
                 continue
             with held:
+                # Whether this pass may start a member is decided when the pass begins, not after its checks: on Banker
+                # (2026-10-25) the reads before the start step outlasted the 5 s drive slice, so a check placed after them
+                # was never true and no member started (goatai#2587 6396050245). A pass that begins inside the budget
+                # finishes, so the budget is overrun by at most one pass and STOP is still read between slices.
+                pass_open=self.clock()<deadline
                 root,manifest,state=self._read(batch_id)
                 if self.driver_record and 'token' not in call:
                     from studio_seed_driver import begin
@@ -1211,7 +1225,7 @@ class SeedRunner:
                 elif current is None and state['status']=='active' and self.paused(batch_id):
                     return self._public(root,state)|dict(paused=True,pause_requested=True,
                         next_action='Paused between members; batch-resume releases the pause and continues the pending members')
-                elif current is None and state['status']=='active' and self.clock()<deadline:
+                elif current is None and state['status']=='active' and pass_open:
                     index=next((i for i,m in enumerate(state['members']) if m['status']=='pending'),None)
                     if index is not None:
                         item=state['members'][index];spec=manifest['members'][index]

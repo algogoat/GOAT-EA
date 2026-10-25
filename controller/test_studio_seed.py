@@ -109,6 +109,23 @@ class SeedTests(unittest.TestCase):
         self.assertFalse(self.runner.cancel_request_path('batch').exists())
         self.assertTrue((self.runner.path('batch')/'cancel-request.honoured.json').is_file(),'kept as the record of who stopped it')
 
+    def test_a_pass_that_begins_inside_its_slice_starts_the_member(self):
+        # goatai#2587 6396050245 (Banker, 2026-10-25): the reads before the start step outlasted the 5 s drive slice, and
+        # the start check came after them, so it was never true and no catch-up member started in 40 min.
+        second=copy.deepcopy(self.plan['jobs'][0]);second['tester']['Symbol']='GBPUSD';self.plan['jobs'].append(second)
+        self.prepare();grant=self.controller.state;reads=[]
+        def slow_grant():
+            self.now+=2.6;reads.append(self.now)            # two grant reads before the start step: 5.2 s > the 5 s slice
+            return grant()
+        self.controller.state=slow_grant
+        started=self.now;result=self.runner.start('batch',5)
+        self.assertGreater(reads[1]-started,5,'the fixture puts the start step past the slice, as on Banker')
+        self.assertEqual(len(self.starts),1,'the pass began inside its slice, so member 1 starts')
+        self.assertEqual(result['members'][0]['status'],'running')
+        self.assertEqual(result['members'][1]['status'],'pending','one pass, one member: no further pass after the slice')
+        # STOP is read between slices (demo_agent._drive_lane), so this slice's length is the STOP latency.
+        self.assertLessEqual(self.now-started,10,'the slice overran by this one pass only: STOP latency stays within 10 s')
+
     def test_a_cancel_request_never_outlives_its_run(self):
         # goatai#2350 (Claude-Mac 6099732097 item 2): a request is bound to the activation, refused when nothing runs,
         # cleared by any cancel or terminal state, and discarded (never honoured) once the batch was re-activated.

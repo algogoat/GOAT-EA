@@ -143,7 +143,8 @@ class StudioStore:
     def any_job_status(self, statuses):
         """True when a job in any queue row has one of ``statuses``, or has no status or a status that is not a string
         (fails closed: the full Python read refused such a job with KeyError/TypeError; Claude-Mac 6396446948).
-        Parsed in SQLite (json_each), not in Python: 0.49 s instead of 0.76 s per json.loads on Banker's 148 MB row."""
+        Parsed in SQLite (json_each), not in Python: 0.70 s on a copy of Banker's 148 MB row, where _owner's two
+        json.loads took 1.87 s."""
         statuses = tuple(sorted(statuses))
         return self.db.execute("SELECT 1 FROM studio_queues q, json_each(q.jobs) j WHERE json_type(j.value,'$.status') IS NOT 'text' "
                                "OR json_extract(j.value,'$.status') IN (" + ','.join('?' * len(statuses)) + ') LIMIT 1',

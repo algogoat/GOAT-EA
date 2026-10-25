@@ -183,12 +183,21 @@ class SeedRunner:
             members_omitted=True,state_path=str(root/'state.json'),manifest_path=str(root/'manifest.json'),native_launch_qualified=False)
 
     def _owner(self,generation=None):
-        state=self.c.state()
+        # The grant and the busy check only. The queue row keeps every finished job: on Banker (2026-10-25) it was 148 MB,
+        # and parsing it twice here took 1.9 s of each 5 s drive slice, so no catch-up member started in 40 min
+        # (goatai#2587 6396050245). The store's light reads answer the same two questions without building the queue.
+        store=getattr(self.c,'store',None)
+        light=hasattr(store,'control') and hasattr(store,'any_job_status')
+        state=store.control(self.c.terminal,self.c.run) if light else self.c.state()
         if state['owner']!='agent' or (generation is not None and state['generation']!=generation):raise ValueError('Human Studio grant is missing or changed; no further seed effects')
-        queues=[state['queue']]
-        if hasattr(self.c,'store'):
-            queues=[json.loads(row[0]) for row in self.c.store.db.execute('SELECT jobs FROM studio_queues')]
-        if any(j['status'] in BUSY for jobs in queues for j in jobs):raise ValueError('Unresolved native batch must finish before seed workflow')
+        if light:
+            busy=store.any_job_status(BUSY)
+        else:
+            queues=[state['queue']]
+            if store is not None:
+                queues=[json.loads(row[0]) for row in store.db.execute('SELECT jobs FROM studio_queues')]
+            busy=any(j['status'] in BUSY for jobs in queues for j in jobs)
+        if busy:raise ValueError('Unresolved native batch must finish before seed workflow')
         return state
 
     def _slot(self,batch_id,state):
@@ -1093,6 +1102,12 @@ class SeedRunner:
             state['switch_hold']=result['hold'];self._save(root,state)
         return result['hold']['deadline_unix']
 
+    def _stop_now(self):
+        """True when the caller's STOP is set. An unreadable stop check counts as a stop, as in _hold_wait."""
+        if self.stop_requested is None:return False
+        try:return bool(self.stop_requested())
+        except Exception:return True
+
     def _hold_wait(self,batch_id,seconds):
         """Wait out part of a switch hold. A stop ('stop'), a pause request ('pause') or any state change such as
         a cancel ('state_changed') ends it at once; the caller's next pass applies them before any start."""
@@ -1164,6 +1179,12 @@ class SeedRunner:
                 if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))
                 continue
             with held:
+                # Whether this pass may start a member is decided when the pass begins, not after its checks: on Banker
+                # (2026-10-25) the reads before the start step outlasted the 5 s drive slice, so a check placed after them
+                # was never true and no member started (goatai#2587 6396050245). A pass that begins inside the budget
+                # finishes, so a slice lasts at most its budget plus one pass; STOP is read between slices and again
+                # right before a start.
+                pass_open=self.clock()<deadline
                 root,manifest,state=self._read(batch_id)
                 if self.driver_record and 'token' not in call:
                     from studio_seed_driver import begin
@@ -1211,7 +1232,7 @@ class SeedRunner:
                 elif current is None and state['status']=='active' and self.paused(batch_id):
                     return self._public(root,state)|dict(paused=True,pause_requested=True,
                         next_action='Paused between members; batch-resume releases the pause and continues the pending members')
-                elif current is None and state['status']=='active' and self.clock()<deadline:
+                elif current is None and state['status']=='active' and pass_open:
                     index=next((i for i,m in enumerate(state['members']) if m['status']=='pending'),None)
                     if index is not None:
                         item=state['members'][index];spec=manifest['members'][index]
@@ -1226,6 +1247,11 @@ class SeedRunner:
                         from studio_news_guard import runner_check,runner_tag
                         runner_check(self.c.install,state,manifest,what=self._news_what(batch_id),legacy_refuses=False)
                         holding=self._switch_hold(root,state,item)
+                        if holding is None and self._stop_now():
+                            # A STOP that arrived during this pass's checks (they can outlast the slice) wins before any
+                            # start effect: the member stays pending with its one attempt unused, and the caller applies the
+                            # STOP between slices (Claude-Mac, goatai#2587 6396446948).
+                            return self._public(root,state)|dict(stopped_before_launch=True)
                         if holding is None:
                             self._before_start(spec)
                             runner_tag(self.c.install,state,item)

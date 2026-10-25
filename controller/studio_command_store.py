@@ -125,6 +125,31 @@ class StudioStore:
                     strategy_draft=None if row['strategy'] is None else json.loads(row['strategy']),
                     queue=[] if row['jobs'] is None else json.loads(row['jobs']))
 
+    def control(self, terminal_id, run_id):
+        """``snapshot`` without the drafts and the queue: revision, generation and owner, after the same authority check.
+
+        The queue row keeps every finished job's configuration and completion. On Banker (2026-10-25, goatai#2587
+        6396050245) it was 148 MB, so each snapshot spent ~0.9 s in json.loads; a caller that only needs the grant
+        reads this instead."""
+        binding = packed(dict(terminal_id=terminal_id, run_id=run_id))
+        row = self.db.execute('SELECT revision,generation,owner FROM studio_state WHERE binding=?', (binding,)).fetchone()
+        if row is None:
+            raise ValueError('Unknown terminal/run binding')
+        from studio_research_authority import authority
+        authority(self.db,binding,dict(owner=row['owner'],generation=row['generation']))
+        return dict(terminal_id=terminal_id, run_id=run_id, revision=row['revision'],
+                    generation=row['generation'], owner=row['owner'])
+
+    def any_job_status(self, statuses):
+        """True when a job in any queue row has one of ``statuses``, or has no status or a status that is not a string
+        (fails closed: the full Python read refused such a job with KeyError/TypeError; Claude-Mac 6396446948).
+        Parsed in SQLite (json_each), not in Python: 0.70 s on a copy of Banker's 148 MB row, where _owner's two
+        json.loads took 1.87 s."""
+        statuses = tuple(sorted(statuses))
+        return self.db.execute("SELECT 1 FROM studio_queues q, json_each(q.jobs) j WHERE json_type(j.value,'$.status') IS NOT 'text' "
+                               "OR json_extract(j.value,'$.status') IN (" + ','.join('?' * len(statuses)) + ') LIMIT 1',
+                               statuses).fetchone() is not None
+
     def submit(self, request, *, actor):
         fields = {'schema_version', 'request_id', 'terminal_id', 'run_id',
                   'expected_revision', 'generation', 'command', 'payload'}

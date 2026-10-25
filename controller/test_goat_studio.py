@@ -133,6 +133,73 @@ class PortableControllerTests(unittest.TestCase):
         c.submit('queue.reserve',payload,'native-reserve-after-seed')
         self.assertEqual(c.job('beta-job')['status'],'reserved')
 
+    def test_seed_owner_light_read_gives_the_shipped_answer(self):
+        # goatai#2587 6396050245 (Banker, 2026-10-25): SeedRunner._owner parsed the whole queue row twice per pass (148 MB),
+        # so no catch-up member started. The light read (control + any_job_status) must answer exactly as the shipped
+        # read did, on every fixture Claude-Mac named (6396069706): busy, not busy, authority mismatch, empty row.
+        import json
+        from types import SimpleNamespace
+        from studio_seed import BUSY,SeedRunner
+        def shipped(c,generation=None):                     # studio_seed._owner as shipped in f5e0ddc, verbatim
+            state=c.state()
+            if state['owner']!='agent' or (generation is not None and state['generation']!=generation):raise ValueError('Human Studio grant is missing or changed; no further seed effects')
+            queues=[state['queue']]
+            if hasattr(c,'store'):
+                queues=[json.loads(row[0]) for row in c.store.db.execute('SELECT jobs FROM studio_queues')]
+            if any(j['status'] in BUSY for jobs in queues for j in jobs):raise ValueError('Unresolved native batch must finish before seed workflow')
+            return state
+        def answer(read,*args):
+            try:state=read(*args)
+            except ValueError as error:return 'refused',str(error)
+            return 'ok',{k:state[k] for k in ('terminal_id','run_id','revision','generation','owner')}
+        c=self.bound();runner=SeedRunner(c,process=SimpleNamespace(inspect=lambda:None),clock=lambda:0,sleep=lambda s:None)
+        def same(label,expected_kind):
+            current=c.store.db.execute('SELECT generation FROM studio_state').fetchone()[0]   # not through authority()
+            for generation in (None,current,current+1):
+                with patch.object(c,'state',side_effect=AssertionError('the light read never builds the full snapshot')):
+                    light=answer(runner._owner,generation)
+                self.assertEqual(light,answer(shipped,c,generation),label+', generation '+str(generation))
+            self.assertEqual(answer(shipped,c)[0],expected_kind,label)
+        same('human owner, no queue row','refused')
+        self.grant(c)
+        self.assertIsNone(c.store.db.execute('SELECT jobs FROM studio_queues').fetchone(),'fixture: no queue row yet')
+        same('empty: no queue row','ok')
+        c.store.db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)',('other-binding','[]'))
+        same('empty: a row holding []','ok')
+        self.prepare(c);same('not busy: pending job','ok')
+        job=c.job('beta-job')
+        c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256='a'*64),'owner-light-reserve')
+        same('busy: reserved job','refused')
+        self.assertEqual(answer(runner._owner)[1],'Unresolved native batch must finish before seed workflow')
+        # Other statuses on a second queue row, each alone: the light read agrees with the shipped one.
+        def other_row(jobs):
+            c.store.db.execute('DELETE FROM studio_queues WHERE binding=?',('other-binding',))
+            c.store.db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)',('other-binding',json.dumps(jobs)))
+        reserved=c.job('beta-job');c.store.db.execute("UPDATE studio_queues SET jobs=? WHERE binding!='other-binding'",
+                                                      (json.dumps([dict(reserved,status='pending')]),))
+        for status,kind in (('running','refused'),('verifying','refused'),('launching','ok'),('completed','ok')):
+            other_row([dict(job_id='x',status=status)]);same('status '+status,kind)
+        # Fails closed (Claude-Mac 6396446948 fold 2): a job with no status or a non-string status reads as busy. The
+        # shipped read raised (KeyError / TypeError) or, for a number, let it through; the light read always refuses.
+        for label,job in (('no status',dict(job_id='x')),('number status',dict(job_id='x',status=7)),
+                          ('list status',dict(job_id='x',status=['running'])),('null status',dict(job_id='x',status=None))):
+            other_row([job])
+            self.assertTrue(c.store.any_job_status(BUSY),label)
+            self.assertEqual(answer(runner._owner),('refused','Unresolved native batch must finish before seed workflow'),label)
+        other_row([])
+        # The binding's authority row is native human control (immutable); a typed research continuation appearing
+        # beside it is a mismatch studio_research_authority.authority refuses.
+        (c.root/'research-authority.json').write_text('{}')
+        same('authority mismatch','refused')
+        self.assertEqual(answer(runner._owner)[1],'Native authority cannot downgrade a typed continuation')
+        # Mutant: a control() that skips authority() answers differently on the mismatch fixture, so this test kills it.
+        from studio_command_store import StudioStore
+        def no_authority(store,terminal_id,run_id):
+            row=store.db.execute('SELECT revision,generation,owner FROM studio_state').fetchone()
+            return dict(terminal_id=terminal_id,run_id=run_id,revision=row['revision'],generation=row['generation'],owner=row['owner'])
+        with patch.object(StudioStore,'control',no_authority):
+            self.assertNotEqual(answer(runner._owner),answer(shipped,c),'the authority-skipping mutant is caught')
+
     def test_prepare_exact_inputs_server_version_ninth_setting(self):
         c=self.bound();self.grant(c);result=self.prepare(c)
         package=Path(result['package']);manifest=result['manifest'];alias=manifest['jobs'][0]['run_alias']

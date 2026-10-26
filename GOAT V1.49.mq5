@@ -591,6 +591,7 @@ void GoatCidDailyTouch(void)
    }
    g_GoatCidTouchFailed=false;
    g_GoatCidTouchedDay=cidt_day;
+   GlobalVariablesFlush();   // to gvariables.dat now: a hard kill or VPS reboot before a clean exit keeps the renewal
    Print("GOAT CID touch: "+(cidt_had ? "renewed " : "restored missing ")+cidt_own+" for UTC day "+TimeToString(cidt_day,TIME_DATE));
   }
 // B49a:end b48

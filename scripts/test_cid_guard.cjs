@@ -119,6 +119,7 @@ function terminal({acct=account(),gv=new Map(),login=LOGIN,dataPath=DATA_A,chart
   // between the check and the read); GlobalVariableGetRef is the bool GlobalVariableGet(name,&value) overload.
   GlobalVariableCheck:k=>{const has=gv.has(k);if(c.wipeAfterCheck===k){gv.delete(k);c.wipeAfterCheck=null;}return has;},wipeAfterCheck:null,
   GlobalVariableGetRef:(k,set)=>{if(!gv.has(k))return false;set(gv.get(k));return true;},
+  GlobalVariablesFlush:()=>{reads.gvFlush=(reads.gvFlush||0)+1;},
   // B49a (B48): every write is counted; gvSetFails makes the terminal refuse writes (GlobalVariableSet returns 0).
   GlobalVariableSet:(k,v)=>{reads.gvSet=(reads.gvSet||0)+1;if(c.gvSetFails)return 0;gv.set(k,Number(v));return 1;},gvSetFails:false,
   GetLastError:()=>4501,TIME_DATE:1,
@@ -439,6 +440,7 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
  const sets=()=>t.reads.gvSet||0;
  t.c.GoatCidGuardHeartbeat();
  assert.equal(sets(),1,'the first heartbeat of the UTC day re-sets the record');assert.equal(t.gv.get(own),value,'to its own value');
+ assert.equal(t.reads.gvFlush,1,'and flushes it to disk (Ops/Mac GOAT-EA#264: a hard kill keeps the renewal)');
  assert.deepEqual(touchLogs(t),['GOAT CID touch: renewed '+own+' for UTC day 2026.10.15']);
  t.c.now+=DEFS.GOAT_CID_CLAIM_HEARTBEAT_MS;t.acct.clock.gmt+=DAY/2;t.c.GoatCidGuardHeartbeat();
  assert.equal(sets(),1,'not again the same UTC day');
@@ -452,6 +454,7 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
  t.acct.clock.gmt+=DAY;t.c.gvSetFails=true;const before=sets();
  t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+1);
  assert.equal(touchLogs(t).at(-1),'GOAT CID touch: write failed for '+own+' (error 4501); retrying');
+ assert.equal(t.reads.gvFlush,3,'a refused write is not flushed');
  t.c.now+=DEFS.GOAT_CID_TOUCH_RETRY_MS-1;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+1,'no retry within 60 s');
  t.c.now+=1;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+2,'retried at 60 s');
  assert.equal(touchLogs(t).filter(l=>l.includes('write failed')).length,1,'the failure is logged once');

@@ -41,6 +41,7 @@ const MUTANTS=[
  ['the touch overwrites the record\'s value','   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;','   cidt_value=(double)cidt_chart+1;'],
  ['a record wiped between check and read is re-set to 0','   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;','   if(cidt_had) GlobalVariableGet(cidt_own,cidt_value);'],
  ['a 0 record is renewed','   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;','   if(cidt_had && !GlobalVariableGet(cidt_own,cidt_value)) return;'],
+ ['the renewal is not flushed to disk','   GlobalVariablesFlush();   // to gvariables.dat now','   ;   // to gvariables.dat now'],
  ['the touch does not restore a missing record','   if(GlobalVariableSet(cidt_own,cidt_value)==0)','   if(!cidt_had || GlobalVariableSet(cidt_own,cidt_value)==0)'],
  // B46: the refusal itself.
  ['the entry gate is dropped','   if(GoatCidGuardRefuses(true)) return false; // B46: a missing or duplicate CID record refuses new sequences (GoatCidGuardEvaluate)\n',''],

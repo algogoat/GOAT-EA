@@ -743,6 +743,8 @@ class SEQUENCE
    double      StartLots,PeakLots,PeakCumLots,ScaleFactor,LotsRaw[],LotsNorm[],LotsCum[],Distances[];
    double      SequenceRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
    ulong       LedgerPositions[],LedgerDeals[]; // B49a (F2): this sequence's position ids, and the deals already booked
+   bool        Adopted,AdoptMatched,AdoptSizes,PersistFailed,ManageOnlyLogged; // B49a (F1-lite): restart adoption, manage-only
+   long        PersistStartMsc; double PersistedRealized; uint PersistFlushedMs; ulong PersistFirstTicket; datetime PersistTouchedDay; // B49a (F1-lite): the restart record
    //double      FirstTradeEquity;
 
    SEQUENCE()
@@ -756,6 +758,7 @@ class SEQUENCE
     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
     SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
+    PersistReset(); // B49a (F1-lite)
     //FirstTradeEquity=0.0;
    }
 //----------------------
@@ -812,6 +815,7 @@ class SEQUENCE
       Sequences_PL++;
      }
      GoatTraceEnd(TraceSequenceID,desc);
+     PersistEnd(); PersistReset(); // B49a (F1-lite): the restart record ends with the sequence; manage-only ends
      TraceSequenceID=0;
      if(!Virtual) GoatDirectionGuardEnd(dir);
      GuardRealStarted=false;
@@ -1543,6 +1547,188 @@ class SEQUENCE
     SequenceRealizedPL += HistoryDealGetDouble(deal_ticket,DEAL_FEE);   // a fee-charging broker's per-deal fee (the export and GoatRankPF count it)
    }
 // B49a:end f2-ledger
+// B49a:begin f1-lite
+//---------------------- B49a (F1-lite; roadmap F1/D8, WEEKEND-1031 goatai#2587 6427772701 / 6428370704): restart adoption.
+// Through B47 OnInit re-created empty sequences, so after a restart an open basket kept only its broker TP/SL: MLPS
+// never fired again, and a new sequence could start beside it. Live charts only (never the tester, a batch or the
+// dashboard); no input.
+// The restart record, per magic + symbol + direction (terminal GlobalVariables <Key>_SQ_<magic>_<symbol>_<B|S>_<field>):
+// the first level's ticket (TK) and the five sizes frozen at start (G, L, TP, SL, TS), written once; the level count
+// (N), written with each real level; the realized P/L (R), on change, flushed from the timer at most every
+// GOAT_SQ_FLUSH_MS; the first position's open time in ms (T), written last, so a record without T is incomplete. Once
+// per UTC day the timer re-sets every field (MT5 drops a GlobalVariable nothing accesses for 4 weeks). Every write is
+// flushed to gvariables.dat (a hard kill or VPS reboot keeps it). The sequence's end deletes the record. A failed
+// write freezes adds (manage-only) until a write succeeds. Records live in the terminal's own folder: a migrated
+// terminal has none, so its baskets adopt unmatched (broker SL/TP untouched).
+#define GOAT_SQ_FLUSH_MS 5000
+   void PersistReset()
+   {
+    Adopted=AdoptMatched=AdoptSizes=PersistFailed=ManageOnlyLogged=false;
+    PersistStartMsc=0; PersistedRealized=0.0; PersistFlushedMs=0; PersistFirstTicket=0; PersistTouchedDay=0;
+   }
+   bool PersistLive()
+   {
+    if(Virtual || MAGIC1<=0) return false;
+    if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+    return(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash);
+   }
+   string PersistKey(const string field)
+   {
+    return Key+"_SQ_"+IntegerToString(MAGIC1)+"_"+_Symbol+"_"+(dir==OP_BUY ? "B" : "S")+"_"+field;
+   }
+   bool PersistWrite(const string field,const double value)
+   {
+    if(GlobalVariableSet(PersistKey(field),value)>0) return true;
+    if(!PersistFailed)
+       Alert(Desc+": GOAT restart record not written ("+PersistKey(field)+", error "+IntegerToString(GetLastError())
+             +"). Adds are frozen until a write succeeds; closes, stops and MLPS continue.");
+    PersistFailed=true;
+    return false;
+   }
+   // The first real level starts the record (retried from the timer while it fails).
+   void PersistStart(const ulong first_ticket)
+   {
+    if(!PersistLive() || PersistStartMsc>0 || first_ticket==0) return;
+    PersistFirstTicket=first_ticket;
+    long start_msc=(PositionSelectByTicket(first_ticket) ? PositionGetInteger(POSITION_TIME_MSC) : (long)TimeCurrent()*1000);
+    if(!(PersistWrite("TK",(double)first_ticket) && PersistWrite("G",Size_Grid) && PersistWrite("L",Size_Lock)
+         && PersistWrite("TP",Size_TP) && PersistWrite("SL",Size_SL) && PersistWrite("TS",Size_TSL)
+         && PersistWrite("N",(double)Level_Count) && PersistWrite("R",SequenceRealizedPL) && PersistWrite("T",(double)start_msc))) return;
+    GlobalVariablesFlush();
+    PersistStartMsc=start_msc;
+    PersistedRealized=SequenceRealizedPL;
+    PersistTouchedDay=TimeGMT()-TimeGMT()%86400;
+    if(PersistFailed) {PersistFailed=false; Print(Desc,": GOAT restart record written; adds resume.");}
+   }
+   // Each later real level updates the record's level count at once (adds are rare; the match rule bounds by it).
+   void PersistLevels()
+   {
+    if(!PersistLive() || PersistStartMsc==0) return;
+    if(PersistWrite("N",(double)Level_Count)) GlobalVariablesFlush();
+   }
+   // From the timer: the realized P/L when it changed, at most every GOAT_SQ_FLUSH_MS (force: at once, OnDeinit).
+   void PersistFlush(const bool force=false)
+   {
+    if(!PersistLive() || !Active || !Traded) return;
+    if(!force && GetTickCount()-PersistFlushedMs<GOAT_SQ_FLUSH_MS) return;
+    if(PersistStartMsc==0) {if(PersistFirstTicket>0) {PersistFlushedMs=GetTickCount(); PersistStart(PersistFirstTicket);} return;}
+    datetime day=TimeGMT()-TimeGMT()%86400;
+    bool touch=(day!=PersistTouchedDay);
+    if(!touch && !PersistFailed && SequenceRealizedPL==PersistedRealized) return;
+    PersistFlushedMs=GetTickCount();
+    if(!PersistWrite("R",SequenceRealizedPL)) return;
+    if(touch)
+    {
+     // The daily read-and-set: every field keeps its value, and its 4-week GlobalVariable expiry starts again.
+     string fields[]={"TK","G","L","TP","SL","TS","N","T"};
+     for(int i=0; i<ArraySize(fields); i++)
+     {
+      double kept=0.0;
+      if(!PersistRead(fields[i],kept) || !PersistWrite(fields[i],kept)) return;
+     }
+     PersistTouchedDay=day;
+    }
+    GlobalVariablesFlush();
+    PersistedRealized=SequenceRealizedPL;
+    if(PersistFailed) {PersistFailed=false; Print(Desc,": GOAT restart record written",(Adopted ? " (still manage-only)." : "; adds resume."));}
+   }
+   void PersistEnd()
+   {
+    if(!PersistLive()) return;
+    string fields[]={"T","TK","G","L","TP","SL","TS","N","R"};
+    for(int i=0; i<ArraySize(fields); i++) GlobalVariableDel(PersistKey(fields[i]));
+    GlobalVariablesFlush();
+   }
+   // Adds stay frozen while the basket is adopted (manage-only) or its record cannot be written; logged once.
+   bool ManageOnlyFrozen(const int level)
+   {
+    if(!Adopted && !PersistFailed) {ManageOnlyLogged=false; return false;}
+    if(!ManageOnlyLogged)
+    {
+       ManageOnlyLogged=true;
+       Print("GOAT restart: add_frozen=",(Adopted ? "manage_only" : "record_unwritten")," side=",(dir==OP_BUY ? "BUY" : "SELL"),
+             " magic=",IntegerToString(MAGIC1)," symbol=",_Symbol," level=",IntegerToString(level)," closes_stops_mlps=continue");
+    }
+    return true;
+   }
+   bool PersistRead(const string field,double &value)
+   {
+    return GlobalVariableGet(PersistKey(field),value);
+   }
+   // OnInit: an open basket (MAGIC1, this symbol, this direction) with no running sequence is rebuilt from its live
+   // positions and managed, never added to. Its record is trusted only when it matches (magic + symbol + direction by
+   // its key, and ticket: the record's first ticket is still live, or every live position opened at or after its start
+// and their count is within its level count).
+   bool AdoptOpenPositions()
+   {
+    if(!PersistLive() || Active) return false;
+    ulong tickets[]; long opened[];
+    for(int i=PositionsTotal()-1; i>=0; i--)
+    {
+     ulong tk=PositionGetTicket(i);
+     if(tk==0 || PositionGetInteger(POSITION_MAGIC)!=MAGIC1 || PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+     long type=PositionGetInteger(POSITION_TYPE);
+     if((dir==OP_BUY && type!=POSITION_TYPE_BUY) || (dir==OP_SELL && type!=POSITION_TYPE_SELL)) continue;
+     long msc=PositionGetInteger(POSITION_TIME_MSC);
+     int n=ArraySize(tickets),at=n;
+     while(at>0 && (opened[at-1]>msc || (opened[at-1]==msc && tickets[at-1]>tk))) at--;
+     ArrayResize(tickets,n+1); ArrayResize(opened,n+1);
+     for(int j=n; j>at; j--) {tickets[j]=tickets[j-1]; opened[j]=opened[j-1];}
+     tickets[at]=tk; opened[at]=msc;
+    }
+    int count=ArraySize(tickets);
+    if(count==0) return false;
+    double rec_t=0.0,rec_tk=0.0,rec_r=0.0;
+    double size[5];
+    bool record=PersistRead("T",rec_t) && PersistRead("TK",rec_tk) && PersistRead("R",rec_r) && rec_t>0.0;
+    bool matched=false;
+    if(record)
+    {
+     // Every live position opened at or after the record's start AND no more of them than its levels (Claude-Mac
+     // 6428447507: a later, unrelated basket on the same key cannot match a stale record).
+     double rec_n=0.0;
+     matched=(opened[0]>=(long)rec_t && PersistRead("N",rec_n) && count<=(int)rec_n);
+     for(int i=0; i<count && !matched; i++) if(tickets[i]==(ulong)rec_tk) matched=true;
+    }
+    bool sizes=matched && PersistRead("G",size[0]) && PersistRead("L",size[1]) && PersistRead("TP",size[2])
+                       && PersistRead("SL",size[3]) && PersistRead("TS",size[4]);
+    for(int i=0; i<5 && sizes; i++) if(size[i]==1234.5 || !MathIsValidNumber(size[i])) sizes=false;
+    Level_Count=Trades_Count=ArrayResize(TradeLevels,count,Max_Seq_Levels);
+    for(int i=0; i<count; i++)
+    {
+     if(!PositionSelectByTicket(tickets[i])) continue;
+     TradeLevels[i].ticket      = (long)tickets[i];
+     TradeLevels[i].price_level = PositionGetDouble(POSITION_PRICE_OPEN);
+     TradeLevels[i].price_trade = PositionGetDouble(POSITION_PRICE_OPEN);
+     TradeLevels[i].lots        = PositionGetDouble(POSITION_VOLUME);
+     TradeLevels[i].sl          = PositionGetDouble(POSITION_SL);
+     TradeLevels[i].tp          = PositionGetDouble(POSITION_TP);
+     if(Ledger_Mode==Ledger_PositionJoin) LedgerAddPosition(tickets[i]);
+    }
+    Level_Last=TradeLevels[count-1].price_level;
+    Level_SL=TradeLevels[count-1].sl;
+    Active=Traded=true;
+    Adopted=true; AdoptMatched=matched; AdoptSizes=sizes;
+    if(matched)
+    {
+     SequenceRealizedPL=rec_r;
+     PersistStartMsc=(long)rec_t; PersistFirstTicket=(ulong)rec_tk; PersistedRealized=rec_r;
+     if(sizes) {Size_Grid=size[0]; Size_Lock=size[1]; Size_TP=size[2]; Size_SL=size[3]; Size_TSL=size[4];}
+    }
+    else
+    {
+     SequenceRealizedPL=0.0;
+     PersistEnd();                       // a record that does not match this basket is not this basket's
+     PersistStart(tickets[0]);           // sizes unknown: written as the sentinel, so a later restart keeps the stops
+    }
+    if(sizes) UpdateLockTPSL(Trades_Count);
+    Alert(Desc,": GOAT restart adopted ",IntegerToString(count)," open position(s) of magic ",IntegerToString(MAGIC1),
+          " as manage-only (adds frozen). ",(matched ? "Record matched: MLPS sees realized "+DoubleToString(rec_r,2)+" + open P/L"
+          : "No matching record: MLPS sees open P/L only"),". ",(sizes ? "Lock/TP/SL and trailing resume from the frozen sizes."
+          : "The EA leaves this basket's broker SL/TP untouched."));
+    return true;
+   }
+// B49a:end f1-lite
 //---------------------- true sequence P/L = realized ledger + live open P/L
    double CurrentSequencePL()
    {
@@ -2083,6 +2269,7 @@ class SEQUENCE
     if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
   //if(!IsLicensed())        {Alert("Trial Expired"); return false;}
     if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: cid_duplicate freezes adds (grid and rescue) of a real sequence
+    if(!Virtual && ManageOnlyFrozen(Level_Count+1)) return false; // B49a (F1-lite): an adopted basket, or a failed restart record, freezes adds
     if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)
     {
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
@@ -2214,6 +2401,7 @@ class SEQUENCE
         TradeLevels[Level_Count-1].tp          = LastTP;
         TradeLevels[Level_Count-1].ticket      = LastOrderTicket;
         if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {LedgerAddPosition((ulong)LastOrderTicket); AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission
+        if(LastOrderTicket>0) {if(PersistStartMsc==0) PersistStart((ulong)LastOrderTicket); else PersistLevels();} // B49a (F1-lite): the first real level starts the restart record, each later one updates its level count
         if(BiasRescueActive && Lots_Order>0.0) BiasRescuePositiveAdds++;
         if(Mode_Lots_Prog==Lots_Prog_PeakSmart && hadPriorLevel) {Level_Retrace=prevLevel; Retrace_Triggered=false;}
         if(Mode_Lots_Prog==Lots_Prog_CumPartial && hadPriorLevel && !Retrace_Triggered) Level_Retrace = prevLevel;
@@ -2265,6 +2453,7 @@ class SEQUENCE
 //----------------------
    void UpdateLockTPSL(int count=0)
    {
+    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP
     Level_Lock=Level_TP=Level_Entry=LotsTotal=0.0;
     double Lock_Factor=1;
     if(count>0 && Lock_Profit_Flexibility<1.0)
@@ -2404,6 +2593,7 @@ class SEQUENCE
 //----------------------
    void TrailingStoploss()
    {
+    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     CTrade Trade;
     if(Ledger_Mode==Ledger_PositionJoin) Trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
@@ -4215,6 +4405,7 @@ int OnInit()
 
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)
+     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions(); // B49a (F1-lite): a restart adopts its open baskets, manage-only (live charts only)
      if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
      DashboardBusRebuildClosedStats();
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
@@ -4270,6 +4461,7 @@ void OnDeinit(const int reason)
   {
    GoatTraceClose(reason);
    GoatDirectionGuardDeinit();
+   Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true); // B49a (F1-lite): the restart record is current when the chart stops
    if(g_GoatStudioReadOnlyMonitor)
    {GOATDeviceActivationWithdrawCode();TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
@@ -5596,6 +5788,7 @@ void GoatTimerBody(void)
     return;
    }
    GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
+   Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush(); // B49a (F1-lite): the restart record's realized P/L (at most every GOAT_SQ_FLUSH_MS)
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)

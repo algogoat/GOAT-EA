@@ -130,7 +130,7 @@ function chart(acct,mode,text=main){
 }
 const HOOK_LINE='        if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {LedgerAddPosition((ulong)LastOrderTicket); AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission';
 assert.ok(main.includes('        TradeLevels[Level_Count-1].ticket      = LastOrderTicket;\n'+HOOK_LINE+'\n'),'the hook follows the new level\'s ticket in Add_Level');
-assert.equal(main.split('LedgerAddPosition(').length-1,3,'LedgerAddPosition: defined once, called by the Add_Level hook and the Init backfill');
+assert.equal(main.split('LedgerAddPosition(').length-1,4,'LedgerAddPosition: defined once, called by the Add_Level hook, the Init backfill and F1-lite adoption (test_restart_adopt.cjs)');
 
 // A buy sequence of three levels; a CumPartial harvest closes part of level 1 at a loss with the close helper's magic.
 function harvest(mode,{exitMagic,text=main}={}){

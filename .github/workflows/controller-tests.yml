@@ -24,7 +24,7 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation, test_profile_staged_adoption, test_b47_no_drift,
+#           test_terminal_isolation, test_profile_staged_adoption, test_b49a_no_drift, test_ticket_width,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -70,6 +70,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # B49a: test_b49a_no_drift, test_ticket_width and test_ledger_join read B47's source (ccb0a07) from history.
+          fetch-depth: 0
 
       - name: Set up Windows x64 Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -133,8 +135,10 @@ jobs:
         run: node scripts/test_dashboard_overview.cjs
       - name: Profile-staged deploy adoption, link_children, retired deploy_next and disabled dashboard deploy (beta.25, goatai#1885)
         run: node scripts/test_profile_staged_adoption.cjs
-      - name: B47 no drift from B46 (entrypoint only; trade-path units and input header byte-identical, marked guard lines)
-        run: node scripts/test_b47_no_drift.cjs
+      - name: B49a no drift from B47 (every changed line marked; contract follows the tree; inputs append-only)
+        run: node scripts/test_b49a_no_drift.cjs
+      - name: B49a 64-bit tickets (no int holds a ticket; tickets above INT_MAX replayed; B47 caught)
+        run: node scripts/test_ticket_width.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness

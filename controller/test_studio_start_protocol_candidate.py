@@ -101,14 +101,21 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # B39 differed from B38 only in the entrypoint (build ID and license-check payload) and the activation header.
         self.assertEqual(sorted(name for name in b39['sources'] if b39['sources'][name] != b38['sources'].get(name)),
                          ['GOAT V1.49.mq5', 'GOATEADeviceActivation.mqh'])
+        # B49a in progress (claude-pc/b49a): the tree is B47 plus marked B49a lines in the files
+        # scripts/test_b49a_no_drift.cjs lists, and every other B47 source is byte-identical (proven there).
+        # The B49a assembly binds the tree to its own compiled identity.
+        b49a_changed = {'GOAT V1.49.mq5', 'GOAT_Inputs_Definitions.mqh'}
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b49a_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
         self.assertFalse(identity['native_qualified'])
         self.assertFalse(identity['customer_delivery'])
+        # The controller's input contract follows the tree (B49a changes the header).
         policy = json.loads((ROOT / 'controller/contracts/v149/dependencies.json').read_text(encoding='utf-8-sig'))
-        self.assertEqual(policy['main_sha256'], identity['sources']['GOAT V1.49.mq5'])
-        self.assertEqual(policy['header_sha256'], identity['sources']['GOAT_Inputs_Definitions.mqh'])
-        # The pinned input header is SM32's, unchanged by EX33, B38, B39, B40, B41, B43, B44, B45, B46 and B47, so SM32 batch packages stay valid.
+        self.assertEqual(policy['main_sha256'], hashlib.sha256((ROOT / 'GOAT V1.49.mq5').read_bytes()).hexdigest())
+        self.assertEqual(policy['header_sha256'], hashlib.sha256((ROOT / 'GOAT_Inputs_Definitions.mqh').read_bytes()).hexdigest())
+        # B47's input header is SM32's, unchanged by EX33, B38, B39, B40, B41, B43, B44, B45, B46 and B47, so SM32 batch packages stay valid.
+        # B49a changes it (64-bit tickets; F2's input is appended), so B49a batch packages carry B49a's header pin.
         sm32 = json.loads((RETAINED_SM32 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm32['sources']['GOAT_Inputs_Definitions.mqh'])
         self.assertEqual(hashlib.sha256((ROOT / 'GOAT V1.49.ex5').read_bytes()).hexdigest(), RETAINED_ROOT_BINARY)

@@ -89,7 +89,8 @@ const code=
  +'function GoatCidGuardRefuses(cidg_force=false){'
   +once(js(G.refuses),'let cidg_reason=GoatCidGuardEvaluate(cidg_detail);','const __b={v:""};let cidg_reason=GoatCidGuardEvaluate(__b);cidg_detail=__b.v;','evaluate call')+'}\n'
  +fn('GoatCidGuardStatus',[],G.status)+fn('GoatCidGuardHeartbeat',[],G.heartbeat)+fn('GoatCidGuardAddFrozen',['cidg_dir','cidg_level'],G.addFrozen)
- +fn('GoatCidDailyTouch',[],G.touch)
+ // B49a (B48): the bool GlobalVariableGet(name,&value) overload becomes a setter callback.
+ +fn('GoatCidDailyTouch',[],G.touch.replace(/GlobalVariableGet\((\w+),(\w+)\)/g,'GlobalVariableGetRef($1,v=>$2=v)'))
  +fn('DashboardEntryAllowed',['op'],ENTRY)+fn('DashboardTradeAllowed',['op'],TRADE);
 
 const KEY=(header.match(/^#define\s+Key\s+"(\w+)"/m)||[])[1];assert.equal(KEY,'GOAT');
@@ -114,7 +115,10 @@ function terminal({acct=account(),gv=new Map(),login=LOGIN,dataPath=DATA_A,chart
   StringToInteger:s=>{const m=String(s).match(/^\s*-?\d+/);if(!m)return 0;const b=BigInt(m[0]);return b>=-(2n**53n)&&b<=2n**53n?Number(b):b;},
   ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},
   GlobalVariablesTotal:()=>{reads.gv++;return gv.size;},GlobalVariableName:i=>[...gv.keys()][i],GlobalVariableGet:k=>gv.get(k)??0,
-  GlobalVariableCheck:k=>gv.has(k),
+  // B49a (B48): wipeAfterCheck deletes the named record right after GlobalVariableCheck answers (a dashboard reset
+  // between the check and the read); GlobalVariableGetRef is the bool GlobalVariableGet(name,&value) overload.
+  GlobalVariableCheck:k=>{const has=gv.has(k);if(c.wipeAfterCheck===k){gv.delete(k);c.wipeAfterCheck=null;}return has;},wipeAfterCheck:null,
+  GlobalVariableGetRef:(k,set)=>{if(!gv.has(k))return false;set(gv.get(k));return true;},
   // B49a (B48): every write is counted; gvSetFails makes the terminal refuse writes (GlobalVariableSet returns 0).
   GlobalVariableSet:(k,v)=>{reads.gvSet=(reads.gvSet||0)+1;if(c.gvSetFails)return 0;gv.set(k,Number(v));return 1;},gvSetFails:false,
   GetLastError:()=>4501,TIME_DATE:1,
@@ -454,6 +458,17 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
  t.c.gvSetFails=false;t.c.now+=DEFS.GOAT_CID_TOUCH_RETRY_MS;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+3);
  assert.equal(touchLogs(t).at(-1),'GOAT CID touch: renewed '+own+' for UTC day 2026.10.18');
  t.c.now+=DEFS.GOAT_CID_TOUCH_RETRY_MS;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+3,'done for the day');
+ // Claude-Mac GOAT-EA#264 P2: a record wiped between the check and the read is never re-set to 0 (that would orphan
+ // this chart's positions at the next restart); the touch skips, and the next heartbeat restores it to the chart id.
+ {const w=terminal({magic:M}),wsets=()=>w.reads.gvSet||0;
+  w.c.wipeAfterCheck=own;w.c.GoatCidGuardHeartbeat();
+  assert.equal(wsets(),0,'no write after the record vanished between check and read');assert.equal(w.gv.has(own),false);
+  assert.equal(w.c.g_GoatCidTouchedDay,0,'the day is not marked');
+  w.c.now+=DEFS.GOAT_CID_CLAIM_HEARTBEAT_MS;w.c.GoatCidGuardHeartbeat();
+  assert.equal(w.gv.get(own),Number(w.c.GoatTruncateCidValue(CHART)),'the next heartbeat restores the chart id, never 0');
+  // A record that holds 0 or less is not renewed either (it is not this chart's id).
+  const z=terminal({magic:M});z.gv.set(own,0);z.c.GoatCidGuardHeartbeat();
+  assert.equal(z.reads.gvSet||0,0,'a 0 record is never re-set');assert.equal(z.gv.get(own),0);}
  // Never in the tester, a batch or the dashboard (the B47 heartbeat returns first), and never without a magic.
  for(const opts of [{tester:true,magic:M},{mode:6,magic:M},{mode:7,magic:M},{magic:0}]){
   const x=terminal(opts);x.c.GoatCidGuardHeartbeat();assert.equal(x.reads.gvSet||0,0,JSON.stringify(opts));

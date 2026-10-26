@@ -38,7 +38,9 @@ const MUTANTS=[
  ['the touch runs every heartbeat','if(cidt_day<=0 || cidt_day==g_GoatCidTouchedDay) return;','if(cidt_day<=0) return;'],
  ['a failed write retries every heartbeat','if(g_GoatCidTouchFailed && cidt_now-g_GoatCidTouchFailedMs<GOAT_CID_TOUCH_RETRY_MS) return;','if(false) return;'],
  ['a failed write marks the day done','      g_GoatCidTouchFailedMs=cidt_now;\n      return;','      g_GoatCidTouchFailedMs=cidt_now;\n      g_GoatCidTouchedDay=cidt_day;\n      return;'],
- ['the touch overwrites the record with this chart\'s id','double cidt_value=(cidt_had ? GlobalVariableGet(cidt_own) : (double)cidt_chart);','double cidt_value=(double)cidt_chart+1;'],
+ ['the touch overwrites the record\'s value','   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;','   cidt_value=(double)cidt_chart+1;'],
+ ['a record wiped between check and read is re-set to 0','   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;','   if(cidt_had) GlobalVariableGet(cidt_own,cidt_value);'],
+ ['a 0 record is renewed','   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;','   if(cidt_had && !GlobalVariableGet(cidt_own,cidt_value)) return;'],
  ['the touch does not restore a missing record','   if(GlobalVariableSet(cidt_own,cidt_value)==0)','   if(!cidt_had || GlobalVariableSet(cidt_own,cidt_value)==0)'],
  // B46: the refusal itself.
  ['the entry gate is dropped','   if(GoatCidGuardRefuses(true)) return false; // B46: a missing or duplicate CID record refuses new sequences (GoatCidGuardEvaluate)\n',''],

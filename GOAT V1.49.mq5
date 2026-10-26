@@ -576,8 +576,11 @@ void GoatCidDailyTouch(void)
    long cidt_chart=GoatTruncateCidValue(ChartID());
    if(cidt_chart<=0) return;
    string cidt_own=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID);
+   double cidt_value=(double)cidt_chart;
    bool cidt_had=GlobalVariableCheck(cidt_own);
-   double cidt_value=(cidt_had ? GlobalVariableGet(cidt_own) : (double)cidt_chart);
+   // A record wiped between the check and the read (a dashboard reset) must never be re-set to 0: GoatFindMagicByCid
+   // would miss it at the next restart and orphan this chart's positions. Skip; the next heartbeat restores it.
+   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;
    if(GlobalVariableSet(cidt_own,cidt_value)==0)
    {
       if(!g_GoatCidTouchFailed)

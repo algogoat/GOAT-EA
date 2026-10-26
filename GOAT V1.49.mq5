@@ -555,12 +555,53 @@ string GoatCidGuardStatus(void)
    if(g_GoatCidGuardReason=="cid_duplicate")    return "CID Duplicate";
    return "";
   }
+// B49a:begin b48
+// B48 (roadmap F0; WEEKEND-1031, goatai#2587 6427654059): MT5 deletes a GlobalVariable that nothing accesses for 4
+// weeks. Only OnInit and the guard's new-sequence checks touch this chart's CID record, so a chart that runs 4+ weeks
+// without a restart or a new sequence loses it, and the guard then refuses (orphan_suspected). Once per UTC day (TimeGMT,
+// the guard's one clock) the timer heartbeat re-sets the record to its own value; a missing one is restored to this chart's id, as
+// GoatCidGuardEvaluate does. A failed write is logged once and retried no sooner than GOAT_CID_TOUCH_RETRY_MS.
+// Live charts only (the heartbeat skips the tester, batch and dashboard charts): no input, no backtest change.
+#define GOAT_CID_TOUCH_RETRY_MS     60000
+datetime g_GoatCidTouchedDay=0;
+uint     g_GoatCidTouchFailedMs=0;
+bool     g_GoatCidTouchFailed=false;
+void GoatCidDailyTouch(void)
+  {
+   datetime cidt_gmt=TimeGMT();
+   datetime cidt_day=cidt_gmt-cidt_gmt%86400;
+   if(cidt_day<=0 || cidt_day==g_GoatCidTouchedDay) return;
+   uint cidt_now=GetTickCount();
+   if(g_GoatCidTouchFailed && cidt_now-g_GoatCidTouchFailedMs<GOAT_CID_TOUCH_RETRY_MS) return;
+   long cidt_chart=GoatTruncateCidValue(ChartID());
+   if(cidt_chart<=0) return;
+   string cidt_own=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID);
+   double cidt_value=(double)cidt_chart;
+   bool cidt_had=GlobalVariableCheck(cidt_own);
+   // A record wiped between the check and the read (a dashboard reset) must never be re-set to 0: GoatFindMagicByCid
+   // would miss it at the next restart and orphan this chart's positions. Skip; the next heartbeat restores it.
+   if(cidt_had && (!GlobalVariableGet(cidt_own,cidt_value) || cidt_value<=0.0)) return;
+   if(GlobalVariableSet(cidt_own,cidt_value)==0)
+   {
+      if(!g_GoatCidTouchFailed)
+         Print("GOAT CID touch: write failed for "+cidt_own+" (error "+IntegerToString(GetLastError())+"); retrying");
+      g_GoatCidTouchFailed=true;
+      g_GoatCidTouchFailedMs=cidt_now;
+      return;
+   }
+   g_GoatCidTouchFailed=false;
+   g_GoatCidTouchedDay=cidt_day;
+   GlobalVariablesFlush();   // to gvariables.dat now: a hard kill or VPS reboot before a clean exit keeps the renewal
+   Print("GOAT CID touch: "+(cidt_had ? "renewed " : "restored missing ")+cidt_own+" for UTC day "+TimeToString(cidt_day,TIME_DATE));
+  }
+// B49a:end b48
 // B47: this chart's claim heartbeat, from OnTimer (GoatTimerBody), so a claim stays fresh without ticks.
 void GoatCidGuardHeartbeat(void)
   {
    if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash || MAGIC1<=0) return;
    GoatCidGuardClaim(GoatChildMagicSalt(),false);
+   GoatCidDailyTouch(); // B49a (B48): the daily CID record touch
   }
 // B47: true while cid_duplicate freezes the adds (grid and rescue) of a running real sequence; logged once per side.
 // Re-evaluates when the last check is older than GOAT_CID_ADD_RECHECK_MS. Never in the tester.

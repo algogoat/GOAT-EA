@@ -223,6 +223,16 @@ function midBasket(){
  assert.ok(bodyOf(main,'void OnDeinit(const int reason)').includes('   Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true);'),'OnDeinit forces it');
  const END=bodyOf(main,'   void End_Sequence(string desc)');
  assert.ok(END.indexOf('PersistEnd(); PersistReset();')>END.indexOf('GoatTraceEnd(TraceSequenceID,desc);')&&END.indexOf('PersistEnd(); PersistReset();')<END.indexOf('Active=Traded=Trailing=Retrace_Triggered=false;'),'the end deletes the record while the sequence is still known');
+ // Alert is a one-argument macro (#define Alert(goat_alert_text) GoatDeployNotice(...)): a second argument is a
+ // compile warning and the rest of the text is lost, so every Alert in the F1-lite block passes one string.
+ assert.match(main,/^#define Alert\(goat_alert_text\) GoatDeployNotice\(goat_alert_text\)$/m);
+ const block=main.slice(main.indexOf('// B49a:begin f1-lite'),main.indexOf('// B49a:end f1-lite'));
+ for(const m of block.matchAll(/\bAlert\(/g)){
+  let depth=0,commas=0,i=m.index+6;
+  for(;i<block.length;i++){const ch=block[i];if(ch==='"'){i=block.indexOf('"',i+1);continue;}
+   if(ch==='(')depth++;else if(ch===')'){if(depth===0)break;depth--;}else if(ch===','&&depth===0)commas++;}
+  assert.equal(commas,0,'one-argument Alert: '+block.slice(m.index,m.index+60));
+ }
  // MLPS needs Active, Traded and a real sequence, which adoption provides.
  assert.ok(bodyOf(main,'   bool EnforceSequenceMLPS(const string context)').includes('if(Virtual || !Active || !Traded)'));
  ok();}

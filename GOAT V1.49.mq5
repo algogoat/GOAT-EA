@@ -1722,10 +1722,12 @@ class SEQUENCE
      PersistStart(tickets[0]);           // sizes unknown: written as the sentinel, so a later restart keeps the stops
     }
     if(sizes) UpdateLockTPSL(Trades_Count);
-    Alert(Desc,": GOAT restart adopted ",IntegerToString(count)," open position(s) of magic ",IntegerToString(MAGIC1),
-          " as manage-only (adds frozen). ",(matched ? "Record matched: MLPS sees realized "+DoubleToString(rec_r,2)+" + open P/L"
-          : "No matching record: MLPS sees open P/L only"),". ",(sizes ? "Lock/TP/SL and trailing resume from the frozen sizes."
-          : "The EA leaves this basket's broker SL/TP untouched."));
+    // Alert is a one-argument macro here (GoatDeployNotice): one string.
+    string adopted=Desc+": GOAT restart adopted "+IntegerToString(count)+" open position(s) of magic "+IntegerToString(MAGIC1)
+          +" as manage-only (adds frozen). "+(matched ? "Record matched: MLPS sees realized "+DoubleToString(rec_r,2)+" + open P/L"
+          : "No matching record: MLPS sees open P/L only")+". "+(sizes ? "Lock/TP/SL and trailing resume from the frozen sizes."
+          : "The EA leaves this basket's broker SL/TP untouched.");
+    Alert(adopted);
     return true;
    }
 // B49a:end f1-lite

@@ -61,8 +61,33 @@ def numeric(value, definition, *, step=False):
     return Fraction(number)
 
 
+# B49a (F2, GOAT-EA#265): inputs appended to the v149 input header after B47's 114. A SET written before an input
+# existed omits it, and the EA then runs that input's declared default, which reproduces the earlier build (SET
+# compatibility: append-only inputs with legacy-reproducing defaults). Every other input stays required.
+APPENDED_INPUTS = ('Ledger_Mode',)
+
+
+def appended_default(definition):
+    """The declared default of an appended input as a SET value; an enum label resolves to its declared number."""
+    expression = definition['default_expression']
+    enum = definition.get('enum_choices')
+    return str(enum[expression]) if enum is not None and expression in enum else expression
+
+
+def complete_appended_inputs(values, schema):
+    """A copy of `values` in which every appended input it omits carries its declared default."""
+    if not isinstance(values, dict):
+        return values
+    completed = dict(values)
+    for name in APPENDED_INPUTS:
+        if name in schema['inputs'] and name not in completed:
+            completed[name] = appended_default(schema['inputs'][name])
+    return completed
+
+
 def validate_strategy(values, schema):
     definitions = schema['inputs']  # Trusted adapter supplies schema, not command JSON.
+    values = complete_appended_inputs(values, schema)
     if not isinstance(values, dict) or set(values) != set(definitions):
         missing = sorted(set(definitions)-set(values)) if isinstance(values, dict) else []
         extra = sorted(set(values)-set(definitions)) if isinstance(values, dict) else []

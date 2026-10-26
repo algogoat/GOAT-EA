@@ -3,12 +3,14 @@
 Does not prove runtime binary identity, replay coverage or performance metrics.
 """
 import hashlib
-from studio_strategy_settings import read_values, validate_strategy, numeric
+from studio_strategy_settings import complete_appended_inputs, read_values, validate_strategy, numeric
 
 
 def verify_export_inputs(source_raw, export_raw, schema, back_passes, forward_passes,
                          *, alias, standard_mode, adjusted_lots=None):
-    source, exported = read_values(source_raw), read_values(export_raw)
+    # B49a: a SET or export written before an appended input existed carries it at its default.
+    source = complete_appended_inputs(read_values(source_raw), schema)
+    exported = complete_appended_inputs(read_values(export_raw), schema)
     checked = validate_strategy(source, schema)
     if set(source) != set(exported):
         raise ValueError('Export input set differs from source')

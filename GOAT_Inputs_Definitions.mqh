@@ -768,6 +768,19 @@ sinput   int                     Trades_min_inp                =                
 sinput   int                     Trades_Max                    =                          1500;       // Max Trades Opened
 sinput   int                     Minutes_Max                   =                          1000;       // Max Avg Trade duration (Minutes)
 sinput   bool                    Trade_December                =                          true;       // Trade December ?
+// B49a:begin f2-input
+// B49a (F2; roadmap D1/D6/D15, WEEKEND-1031 goatai#2587 6427654059): how the sequence ledger (MLPS, BE, Smart Peak),
+// the daily P/L (MaxDaily*) and the dashboard's closed P/L attribute exits. Legacy keeps B47: only deals carrying
+// MAGIC1 count, and the EA's own closes carry magic 0, so they are missed. PositionJoin: an exit joins its sequence by
+// DEAL_POSITION_ID, booked once per deal, entry commission included, and the EA's closes carry MAGIC1. Appended last;
+// the default reproduces B47.
+enum ENUM_LEDGER_MODE
+  {
+   Ledger_Legacy=0,       // Legacy (magic only)
+   Ledger_PositionJoin=1  // Position join
+  };
+sinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;       // Ledger: exits join by position
+// B49a:end f2-input
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label

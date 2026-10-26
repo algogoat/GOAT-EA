@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -104,7 +105,10 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # B49a in progress (claude-pc/b49a): the tree is B47 plus marked B49a lines in the files
         # scripts/test_b49a_no_drift.cjs lists, and every other B47 source is byte-identical (proven there).
         # The B49a assembly binds the tree to its own compiled identity.
-        b49a_changed = {'GOAT V1.49.mq5', 'GOAT_Inputs_Definitions.mqh'}
+        # One list: the no-drift guard's CHANGED, which each B49a item extends.
+        guard = (ROOT / 'scripts/test_b49a_no_drift.cjs').read_text(encoding='utf-8')
+        b49a_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", guard, re.M)[1].replace("'", '"') + ']'))
+        self.assertIn('GOAT V1.49.mq5', b49a_changed)
         for relative, expected in identity['sources'].items():
             if relative not in b49a_changed:
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)

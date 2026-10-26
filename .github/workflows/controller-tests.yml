@@ -25,6 +25,7 @@ concurrency:
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
 #           test_terminal_isolation, test_profile_staged_adoption, test_b49a_no_drift, test_ticket_width,
+#           test_ledger_join, test_ledger_join_mutations,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -139,6 +140,10 @@ jobs:
         run: node scripts/test_b49a_no_drift.cjs
       - name: B49a 64-bit tickets (no int holds a ticket; tickets above INT_MAX replayed; B47 caught)
         run: node scripts/test_ticket_width.cjs
+      - name: B49a F2 Ledger_Mode (exits join by position; Legacy reproduces B47; MT5 history-selection rules)
+        run: node scripts/test_ledger_join.cjs
+      - name: B49a F2 Ledger_Mode mutations (every part of the join and the Legacy gate is load-bearing)
+        run: node scripts/test_ledger_join_mutations.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness

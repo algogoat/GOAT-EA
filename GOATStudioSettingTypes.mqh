@@ -10,6 +10,7 @@ string GoatStudioSettingType(const string key)
    if(StringFind("|Download_StartDate|","|"+key+"|")>=0) return "datetime";
    if(key=="Dashboard_Resume_Saved" || key=="Studio_ReadOnlyMonitor") return "bool";
    if(key=="Studio_MonitorRunPath") return "string";
+   if(key=="Ledger_Mode") return "int"; // B49a (F2): the appended ENUM_LEDGER_MODE sinput (never an optimization axis)
    return "";
   }
 string GoatStudioOptimizationNames()

@@ -27,7 +27,7 @@ function region(text,start,end){
  return text.slice(a,b);
 }
 const once=(text,from,to,label)=>{assert.equal(text.split(from).length,2,'exactly one '+label);return text.replace(from,()=>to);};
-const TYPES='(?:const )?(?:string|int|uint|long|ulong|bool|ushort|double)';
+const TYPES='(?:const )?(?:string|int|uint|long|ulong|bool|ushort|double|datetime)';
 function js(text){
  return text.replace(/\/\/.*$/gm,'')
   .replace(/'([^'\\])'/g,(_,c)=>String(c.charCodeAt(0)))   // MQL char literals ('_') are ushort codes
@@ -59,6 +59,7 @@ const G={
  refuses:bodyOf(main,'bool GoatCidGuardRefuses(const bool cidg_force=false)'),
  status:bodyOf(main,'string GoatCidGuardStatus(void)'),
  heartbeat:bodyOf(main,'void GoatCidGuardHeartbeat(void)'),
+ touch:bodyOf(main,'void GoatCidDailyTouch(void)'),   // B49a (B48)
  addFrozen:bodyOf(main,'bool GoatCidGuardAddFrozen(const int cidg_dir,const int cidg_level)'),
 };
 const ENTRY=bodyOf(main,'bool DashboardEntryAllowed(const int op)');
@@ -88,6 +89,7 @@ const code=
  +'function GoatCidGuardRefuses(cidg_force=false){'
   +once(js(G.refuses),'let cidg_reason=GoatCidGuardEvaluate(cidg_detail);','const __b={v:""};let cidg_reason=GoatCidGuardEvaluate(__b);cidg_detail=__b.v;','evaluate call')+'}\n'
  +fn('GoatCidGuardStatus',[],G.status)+fn('GoatCidGuardHeartbeat',[],G.heartbeat)+fn('GoatCidGuardAddFrozen',['cidg_dir','cidg_level'],G.addFrozen)
+ +fn('GoatCidDailyTouch',[],G.touch)
  +fn('DashboardEntryAllowed',['op'],ENTRY)+fn('DashboardTradeAllowed',['op'],TRADE);
 
 const KEY=(header.match(/^#define\s+Key\s+"(\w+)"/m)||[])[1];assert.equal(KEY,'GOAT');
@@ -112,7 +114,12 @@ function terminal({acct=account(),gv=new Map(),login=LOGIN,dataPath=DATA_A,chart
   StringToInteger:s=>{const m=String(s).match(/^\s*-?\d+/);if(!m)return 0;const b=BigInt(m[0]);return b>=-(2n**53n)&&b<=2n**53n?Number(b):b;},
   ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},
   GlobalVariablesTotal:()=>{reads.gv++;return gv.size;},GlobalVariableName:i=>[...gv.keys()][i],GlobalVariableGet:k=>gv.get(k)??0,
-  GlobalVariableCheck:k=>gv.has(k),GlobalVariableSet:(k,v)=>{gv.set(k,Number(v));return 1;},
+  GlobalVariableCheck:k=>gv.has(k),
+  // B49a (B48): every write is counted; gvSetFails makes the terminal refuse writes (GlobalVariableSet returns 0).
+  GlobalVariableSet:(k,v)=>{reads.gvSet=(reads.gvSet||0)+1;if(c.gvSetFails)return 0;gv.set(k,Number(v));return 1;},gvSetFails:false,
+  GetLastError:()=>4501,TIME_DATE:1,
+  TimeToString:(t,f)=>{assert.equal(f,1);return new Date(Number(t)*1000).toISOString().slice(0,10).replace(/-/g,'.');},
+  g_GoatCidTouchedDay:0,g_GoatCidTouchFailedMs:0,g_GoatCidTouchFailed:false,
   Symbol:()=>symbol,ChartID:()=>chart,charts,CHART_EXPERT_NAME:31,
   ChartFirst:()=>c.charts.length?c.charts[0].id:-1n,
   ChartNext:id=>{const i=c.charts.findIndex(x=>x.id===id);return i>=0&&i+1<c.charts.length?c.charts[i+1].id:-1n;},
@@ -416,6 +423,46 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
  assert.ok(ADD.includes('OpenPosition(dir,MAGIC1,')&&ADD.includes('BiasRescuePositiveAdds++'));
  assert.equal((main.match(/\bOpenPosition\(/g)||[]).length,2,'OpenPosition: defined once, called once (in Add_Level)');
  assert.equal((main.match(/GoatCidGuardAddFrozen\(/g)||[]).length,2,'the freeze: defined once, called once (in Add_Level)');
+ ok();}
+
+// 13. B49a (B48): the daily CID touch. MT5 drops a GlobalVariable after 4 weeks without access, so once per UTC day
+// the timer heartbeat re-sets this chart's own record to its own value (a missing one is restored to this chart's id).
+// A failed write is logged once and retried no sooner than 60 s. Live charts only, through the B47 heartbeat.
+{const DAY=86400,own=KEY+'_ID_'+M+'_EURUSD_'+CID;
+ assert.equal(DEFS.GOAT_CID_TOUCH_RETRY_MS,60000);
+ const touchLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID touch: '));
+ const t=terminal({magic:M});const value=t.gv.get(own);assert.ok(value>0,'OnInit wrote the record');
+ const sets=()=>t.reads.gvSet||0;
+ t.c.GoatCidGuardHeartbeat();
+ assert.equal(sets(),1,'the first heartbeat of the UTC day re-sets the record');assert.equal(t.gv.get(own),value,'to its own value');
+ assert.deepEqual(touchLogs(t),['GOAT CID touch: renewed '+own+' for UTC day 2026.10.15']);
+ t.c.now+=DEFS.GOAT_CID_CLAIM_HEARTBEAT_MS;t.acct.clock.gmt+=DAY/2;t.c.GoatCidGuardHeartbeat();
+ assert.equal(sets(),1,'not again the same UTC day');
+ t.acct.clock.gmt+=DAY/2;t.c.now+=DEFS.GOAT_CID_CLAIM_HEARTBEAT_MS;t.c.GoatCidGuardHeartbeat();
+ assert.equal(sets(),2,'once on the next UTC day');assert.equal(touchLogs(t).at(-1),'GOAT CID touch: renewed '+own+' for UTC day 2026.10.16');
+ // A missing record (dropped by MT5) is restored to this chart's id, the value GoatCidGuardEvaluate writes.
+ t.gv.delete(own);t.acct.clock.gmt+=DAY;t.c.GoatCidGuardHeartbeat();
+ assert.equal(t.gv.get(own),Number(t.c.GoatTruncateCidValue(CHART)));
+ assert.equal(touchLogs(t).at(-1),'GOAT CID touch: restored missing '+own+' for UTC day 2026.10.17');
+ // A refused write: logged once, retried no sooner than 60 s, and the day is only marked once a write succeeds.
+ t.acct.clock.gmt+=DAY;t.c.gvSetFails=true;const before=sets();
+ t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+1);
+ assert.equal(touchLogs(t).at(-1),'GOAT CID touch: write failed for '+own+' (error 4501); retrying');
+ t.c.now+=DEFS.GOAT_CID_TOUCH_RETRY_MS-1;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+1,'no retry within 60 s');
+ t.c.now+=1;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+2,'retried at 60 s');
+ assert.equal(touchLogs(t).filter(l=>l.includes('write failed')).length,1,'the failure is logged once');
+ t.c.gvSetFails=false;t.c.now+=DEFS.GOAT_CID_TOUCH_RETRY_MS;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+3);
+ assert.equal(touchLogs(t).at(-1),'GOAT CID touch: renewed '+own+' for UTC day 2026.10.18');
+ t.c.now+=DEFS.GOAT_CID_TOUCH_RETRY_MS;t.c.GoatCidGuardHeartbeat();assert.equal(sets(),before+3,'done for the day');
+ // Never in the tester, a batch or the dashboard (the B47 heartbeat returns first), and never without a magic.
+ for(const opts of [{tester:true,magic:M},{mode:6,magic:M},{mode:7,magic:M},{magic:0}]){
+  const x=terminal(opts);x.c.GoatCidGuardHeartbeat();assert.equal(x.reads.gvSet||0,0,JSON.stringify(opts));
+ }
+ // Where it runs: GoatCidGuardHeartbeat, which only GoatTimerBody calls, so it needs no tick.
+ assert.ok(G.heartbeat.includes('   GoatCidDailyTouch(); // B49a (B48): the daily CID record touch'));
+ assert.equal((main.match(/\bGoatCidDailyTouch\(/g)||[]).length,2,'GoatCidDailyTouch: defined once, called once (the heartbeat)');
+ assert.equal((main.match(/\bGoatCidGuardHeartbeat\(\);/g)||[]).length,1,'the heartbeat: called once');
+ assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('GoatCidGuardHeartbeat();'),'from the timer');
  ok();}
 
 console.log(JSON.stringify({passed,test:'cid_guard',productionFunctions:Object.keys(G).map(k=>'GoatCidGuard.'+k).concat(['DashboardEntryAllowed','DashboardTradeAllowed','GoatChildMagicSalt','GoatParseChildGVName','GoatTruncateCidValue','GoatChildGVName','GoatTickBody add branch'])}));

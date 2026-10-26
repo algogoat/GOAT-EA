@@ -33,6 +33,13 @@ const MUTANTS=[
  ['Add_Level does not consult the freeze','    if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false;','    if(false) return false;'],
  ['the freeze logs every add','if(!g_GoatCidGuardFreezeLogged[cidg_side])','if(true)'],
  ['the freeze never re-evaluates','GoatCidGuardRefuses(!g_GoatCidGuardChecked || GetTickCount()-g_GoatCidGuardCheckedMs>=GOAT_CID_ADD_RECHECK_MS);','GoatCidGuardRefuses(false);'],
+ // B49a (B48): the daily CID touch.
+ ['the touch is not on the heartbeat','   GoatCidDailyTouch(); // B49a (B48)','   // GoatCidDailyTouch(); // B49a (B48)'],
+ ['the touch runs every heartbeat','if(cidt_day<=0 || cidt_day==g_GoatCidTouchedDay) return;','if(cidt_day<=0) return;'],
+ ['a failed write retries every heartbeat','if(g_GoatCidTouchFailed && cidt_now-g_GoatCidTouchFailedMs<GOAT_CID_TOUCH_RETRY_MS) return;','if(false) return;'],
+ ['a failed write marks the day done','      g_GoatCidTouchFailedMs=cidt_now;\n      return;','      g_GoatCidTouchFailedMs=cidt_now;\n      g_GoatCidTouchedDay=cidt_day;\n      return;'],
+ ['the touch overwrites the record with this chart\'s id','double cidt_value=(cidt_had ? GlobalVariableGet(cidt_own) : (double)cidt_chart);','double cidt_value=(double)cidt_chart+1;'],
+ ['the touch does not restore a missing record','   if(GlobalVariableSet(cidt_own,cidt_value)==0)','   if(!cidt_had || GlobalVariableSet(cidt_own,cidt_value)==0)'],
  // B46: the refusal itself.
  ['the entry gate is dropped','   if(GoatCidGuardRefuses(true)) return false; // B46: a missing or duplicate CID record refuses new sequences (GoatCidGuardEvaluate)\n',''],
  ['a duplicate CID record is not refused','if(ArraySize(cidg_mine)>1 || (ArraySize(cidg_mine)==1 && cidg_mine[0]!=MAGIC1))','if(false)'],

@@ -26,11 +26,15 @@ const REMOVED={
  'GOAT V1.49.mq5':[
   'LastOrderTicket=(int)resolvedPositionTicket;','LastDealTicket=LastBuyTicket=(int)result.deal;',                // tickets
   'LastOrderTicket=(int)resolvedPositionTicket;','LastDealTicket=LastSellTicket=(int)result.deal;',               // tickets
+  'if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MAGIC1)       continue;',                                           // F2: dashboard rebuild
+  'if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;',                                              // F2: transaction path
+  'if(HistoryDealGetInteger(ticket,DEAL_MAGIC) != MAGIC1)        continue;',                                        // F2: daily P/L
  ],
  'GOAT_Inputs_Definitions.mqh':[
   'int      LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket,LastTradeCountBuy=0,LastTradeCountSell=0;', // tickets
  ],
 };
+const NEW_INPUTS=['Ledger_Mode'];   // F2
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
@@ -110,10 +114,10 @@ const before=JSON.parse(git(['show',B47_SOURCE+':controller/contracts/v149/input
 const names=Object.keys(schema.inputs),beforeNames=Object.keys(before.inputs);
 assert.deepEqual(names.slice(0,beforeNames.length),beforeNames,'B47\'s inputs keep their order');
 for(const name of beforeNames) assert.deepEqual(schema.inputs[name],before.inputs[name],'B47 input unchanged: '+name);
-// New inputs are declared after BlindExport, B47's last input in the entrypoint.
-const declared=[...read('GOAT V1.49.mq5').toString('utf8').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
-const blind=declared.indexOf('BlindExport');assert.ok(blind>=0,'BlindExport is declared');
-for(const name of declared.slice(0,blind+1)) assert.ok(!names.includes(name)||beforeNames.includes(name),'new input before BlindExport: '+name);
+// The header's new inputs are exactly NEW_INPUTS, appended after B47's; the entrypoint's own inputs are B47's.
+assert.deepEqual(names.slice(beforeNames.length),NEW_INPUTS,'new inputs (appended to the header)');
+const declared=text=>[...text.matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
+assert.deepEqual(declared(read('GOAT V1.49.mq5').toString('utf8')),declared(git(['show',B47_SOURCE+':GOAT V1.49.mq5']).toString('utf8')),'no input added to the entrypoint');
 checks++;
 
 console.log('b49a_no_drift: '+checks+' checks passed (B47 '+B47_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');

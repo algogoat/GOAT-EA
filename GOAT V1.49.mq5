@@ -742,6 +742,7 @@ class SEQUENCE
    double      Size_Grid,Size_Lock,Size_TP,Size_SL,Size_TSL;
    double      StartLots,PeakLots,PeakCumLots,ScaleFactor,LotsRaw[],LotsNorm[],LotsCum[],Distances[];
    double      SequenceRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
+   ulong       LedgerPositions[],LedgerDeals[]; // B49a (F2): this sequence's position ids, and the deals already booked
    //double      FirstTradeEquity;
 
    SEQUENCE()
@@ -837,6 +838,7 @@ class SEQUENCE
     BiasRescueBEProtected=false;
     BiasRescuePositiveAdds=0;
     SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
+    if(!Active) {ArrayResize(LedgerPositions,0); ArrayResize(LedgerDeals,0);} // B49a (F2): the join starts empty with a sequence (a live re-init of a running one keeps it)
    }
 //---------------------- Round any raw volume to the nearest tradable lot
    double NormalizedLots(double raw_volume)
@@ -1488,6 +1490,7 @@ class SEQUENCE
    void AccumulateSequenceDealPL(const ulong deal_ticket)
    {
     if(deal_ticket==0 || !HistoryDealSelect(deal_ticket)) return;
+    if(Ledger_Mode==Ledger_PositionJoin) {AccumulateJoinedDealPL(deal_ticket); return;} // B49a (F2): Ledger_PositionJoin
     if(HistoryDealGetInteger(deal_ticket,DEAL_MAGIC)!=MAGIC1) return;
     if(HistoryDealGetString(deal_ticket,DEAL_SYMBOL)!=_Symbol) return;
 
@@ -1495,6 +1498,49 @@ class SEQUENCE
     if(deal_entry==DEAL_ENTRY_OUT || deal_entry==DEAL_ENTRY_OUT_BY)
        SequenceRealizedPL += ClosedDealPL(deal_ticket);
    }
+// B49a:begin f2-ledger
+//---------------------- B49a (F2): the position join (GOAT_SequenceExport.mqh's GoatTraceDeal join, for the ledger)
+   bool LedgerHasPosition(const ulong position_id)
+   {
+    if(position_id==0) return false;
+    for(int i=ArraySize(LedgerPositions)-1; i>=0; i--) if(LedgerPositions[i]==position_id) return true;
+    return false;
+   }
+   // A level's position joins the sequence by its identifier (the opening order's ticket on a hedging account).
+   void LedgerAddPosition(const ulong position_ticket)
+   {
+    if(position_ticket==0) return;
+    ulong position_id=position_ticket;
+    if(PositionSelectByTicket(position_ticket)) position_id=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+    if(position_id==0 || LedgerHasPosition(position_id)) return;
+    int n=ArraySize(LedgerPositions);
+    ArrayResize(LedgerPositions,n+1,Max_Seq_Levels);
+    LedgerPositions[n]=position_id;
+   }
+   // True the first time a deal is booked; the close helpers book their result deal and OnTradeTransaction sees it again.
+   bool LedgerBook(const ulong deal_ticket)
+   {
+    for(int i=ArraySize(LedgerDeals)-1; i>=0; i--) if(LedgerDeals[i]==deal_ticket) return false;
+    int n=ArraySize(LedgerDeals);
+    ArrayResize(LedgerDeals,n+1,2*Max_Seq_Levels);
+    LedgerDeals[n]=deal_ticket;
+    return true;
+   }
+   // An exit of one of this sequence's positions books its profit, commission and swap whatever magic it carries
+   // (an EA close, a broker stop, a dashboard close); an entry books its commission (D15). Each deal once.
+   void AccumulateJoinedDealPL(const ulong deal_ticket)
+   {
+    if(HistoryDealGetString(deal_ticket,DEAL_SYMBOL)!=_Symbol) return;
+    long deal_type=HistoryDealGetInteger(deal_ticket,DEAL_TYPE);
+    if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL) return;
+    if(!LedgerHasPosition((ulong)HistoryDealGetInteger(deal_ticket,DEAL_POSITION_ID))) return;
+    long deal_entry=HistoryDealGetInteger(deal_ticket,DEAL_ENTRY);
+    if(deal_entry!=DEAL_ENTRY_IN && deal_entry!=DEAL_ENTRY_OUT && deal_entry!=DEAL_ENTRY_OUT_BY) return;
+    if(!LedgerBook(deal_ticket)) return;
+    if(deal_entry==DEAL_ENTRY_IN) SequenceRealizedPL += HistoryDealGetDouble(deal_ticket,DEAL_COMMISSION);
+    else                          SequenceRealizedPL += ClosedDealPL(deal_ticket);
+   }
+// B49a:end f2-ledger
 //---------------------- true sequence P/L = realized ledger + live open P/L
    double CurrentSequencePL()
    {
@@ -2165,6 +2211,7 @@ class SEQUENCE
         TradeLevels[Level_Count-1].sl          = Level_SL = LastSL;
         TradeLevels[Level_Count-1].tp          = LastTP;
         TradeLevels[Level_Count-1].ticket      = LastOrderTicket;
+        if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {LedgerAddPosition((ulong)LastOrderTicket); AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission
         if(BiasRescueActive && Lots_Order>0.0) BiasRescuePositiveAdds++;
         if(Mode_Lots_Prog==Lots_Prog_PeakSmart && hadPriorLevel) {Level_Retrace=prevLevel; Retrace_Triggered=false;}
         if(Mode_Lots_Prog==Lots_Prog_CumPartial && hadPriorLevel && !Retrace_Triggered) Level_Retrace = prevLevel;
@@ -2320,6 +2367,7 @@ class SEQUENCE
     if(Traded)
     {
      CTrade Trade;
+     if(Ledger_Mode==Ledger_PositionJoin) Trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
      for(int i=0; i<Level_Count; i++)
      {
       double Level_TP_ = (Level_TP==999999)?0:Level_TP;
@@ -2356,6 +2404,7 @@ class SEQUENCE
    {
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     CTrade Trade;
+    if(Ledger_Mode==Ledger_PositionJoin) Trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
     double SL;
     int MIN_SL_DELTA=5, MIN_SPLVL=(int)MathMax((long)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL),(long)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL));
     MIN_SPLVL=MathMax(MIN_SPLVL,1); // atleast 1 point to avoid boundary errors
@@ -2432,6 +2481,7 @@ class SEQUENCE
       if(lotsReq < VolMin - 1e-9) return true;
 
       CTrade tr;
+      if(Ledger_Mode==Ledger_PositionJoin) tr.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
       int     safety = 64;
 
       while(lotsReq >= VolMin - 1e-9 && safety-- > 0)
@@ -2509,6 +2559,7 @@ class SEQUENCE
       if(lotsReq < VolMin - 1e-9) return true;
 
       CTrade tr;
+      if(Ledger_Mode==Ledger_PositionJoin) tr.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
       int safety=64;
 
       while(lotsReq >= VolMin - 1e-9 && safety-- > 0)
@@ -2600,6 +2651,7 @@ class SEQUENCE
       if(lotsReq < VolMin - 1e-9) return true;          // nothing to do
       lotsReq  = MathFloor(lotsReq / VolStep) * VolStep;
       CTrade tr;
+      if(Ledger_Mode==Ledger_PositionJoin) tr.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
       while(lotsReq >= VolMin - 1e-9)
       {
          // --- locate largest remaining ticket -----------------------------
@@ -2682,6 +2734,66 @@ class SEQUENCE
 SEQUENCE       Seq_Buy,Seq_Sell,Seq_Buy_Virtual,Seq_Sell_Virtual;
 CPositionInfo  m_position;       // object of CPositionInfo class
 COrderInfo     m_order;          // object of COrderInfo class
+// B49a:begin f2-owner
+// B49a (F2): is a position this chart's? Under Ledger_PositionJoin an exit counts for this chart when its position was
+// opened here (entry deal: MAGIC1 on this symbol), whatever magic the exit carries. The running sequences know their
+// own positions; any other answer comes from the position's history once and is kept (newest GOAT_LEDGER_OWNER_CACHE).
+// HistorySelectByPosition replaces the history selection, so callers that walk a selection collect first
+// (GoatLedgerCollectExit) and ask afterwards.
+#define GOAT_LEDGER_OWNER_CACHE 256
+ulong g_GoatLedgerOwnerPosition[];
+bool  g_GoatLedgerOwnerMine[];
+bool GoatLedgerPositionMine(const ulong position_id)
+  {
+   if(position_id==0) return false;
+   if(Seq_Buy.LedgerHasPosition(position_id) || Seq_Sell.LedgerHasPosition(position_id)) return true;
+   for(int i=ArraySize(g_GoatLedgerOwnerPosition)-1; i>=0; i--)
+      if(g_GoatLedgerOwnerPosition[i]==position_id) return g_GoatLedgerOwnerMine[i];
+   if(!HistorySelectByPosition(position_id)) return false;   // unknown now: not cached, asked again next time
+   bool mine=false;
+   for(int i=0; i<HistoryDealsTotal(); i++)
+   {
+      ulong deal=HistoryDealGetTicket(i);
+      if(deal==0 || HistoryDealGetInteger(deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
+      mine=(HistoryDealGetInteger(deal,DEAL_MAGIC)==MAGIC1 && HistoryDealGetString(deal,DEAL_SYMBOL)==_Symbol);
+      break;
+   }
+   int n=ArraySize(g_GoatLedgerOwnerPosition);
+   if(n>=GOAT_LEDGER_OWNER_CACHE)
+   {
+      ArrayRemove(g_GoatLedgerOwnerPosition,0,1);
+      ArrayRemove(g_GoatLedgerOwnerMine,0,1);
+      n--;
+   }
+   ArrayResize(g_GoatLedgerOwnerPosition,n+1);
+   ArrayResize(g_GoatLedgerOwnerMine,n+1);
+   g_GoatLedgerOwnerPosition[n]=position_id;
+   g_GoatLedgerOwnerMine[n]=mine;
+   return mine;
+  }
+// A selected deal that the magic filter skipped: keep it for the join when it is an exit on this symbol.
+void GoatLedgerCollectExit(const ulong deal,ulong &positions[],double &profits[],datetime &times[])
+  {
+   if(HistoryDealGetString(deal,DEAL_SYMBOL)!=_Symbol) return;
+   long entry=HistoryDealGetInteger(deal,DEAL_ENTRY);
+   if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY) return;
+   long type=HistoryDealGetInteger(deal,DEAL_TYPE);
+   if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL) return;
+   int n=ArraySize(positions);
+   ArrayResize(positions,n+1); ArrayResize(profits,n+1); ArrayResize(times,n+1);
+   positions[n]=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+   profits[n]=HistoryDealGetDouble(deal,DEAL_PROFIT)+HistoryDealGetDouble(deal,DEAL_COMMISSION)+HistoryDealGetDouble(deal,DEAL_SWAP);
+   times[n]=(datetime)HistoryDealGetInteger(deal,DEAL_TIME);
+  }
+// The transaction path: the one deal just added (OnTradeTransaction), an exit of this chart's position.
+bool GoatLedgerJoinedExit(const ulong deal)
+  {
+   if(Ledger_Mode!=Ledger_PositionJoin) return false;
+   ulong positions[]; double profits[]; datetime times[];
+   GoatLedgerCollectExit(deal,positions,profits,times);
+   return(ArraySize(positions)==1 && GoatLedgerPositionMine(positions[0]));
+  }
+// B49a:end f2-owner
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B44 item 4 (goatai#2350): the AI gate log. One Print per bias decision on a new entry signal: VETO where the
 // signal's onset is counted as skipped by the bias (Sequence_Skipped_Bias_*), ALLOW where it starts a sequence.
@@ -2950,13 +3062,14 @@ void DashboardBusRebuildClosedStats(void)
 
    if(!HistorySelect(0,now)) return;
    int total=HistoryDealsTotal();
+   ulong joinPositions[]; double joinProfits[]; datetime joinTimes[]; // B49a (F2): exits the magic filter skips
 
    for(int i=0;i<total;++i)
    {
       ulong ticket=HistoryDealGetTicket(i);
       if(ticket==0)                                              continue;
       if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol)      continue;
-      if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MAGIC1)       continue;
+      if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MAGIC1)       {if(Ledger_Mode==Ledger_PositionJoin) GoatLedgerCollectExit(ticket,joinPositions,joinProfits,joinTimes); continue;} // B49a (F2)
 
       long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
       if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)      continue;
@@ -2974,6 +3087,18 @@ void DashboardBusRebuildClosedStats(void)
       if(close_time>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=closed_pl;
       if(close_time>=DashboardBusWeekStart) DashboardBusClosedPLWeekly+=closed_pl;
    }
+   // B49a:begin f2-dashboard
+   // B49a (F2): this chart's exits that carry another magic, joined by position (asked after the walk: the owner
+   // lookup replaces the history selection).
+   for(int j=0;j<ArraySize(joinPositions);j++)
+   {
+      if(!GoatLedgerPositionMine(joinPositions[j])) continue;
+      DashboardBusClosedPLTotal+=joinProfits[j];
+      DashboardBusClosedTradesTotal++;
+      if(joinTimes[j]>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=joinProfits[j];
+      if(joinTimes[j]>=DashboardBusWeekStart) DashboardBusClosedPLWeekly+=joinProfits[j];
+   }
+   // B49a:end f2-dashboard
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void DashboardBusAckCommand(const long command_id,const int ack_status)
@@ -2996,6 +3121,7 @@ int DashboardBusCloseOwnPositions(int &close_errors)
    close_errors=0;
    int closed_positions=0;
    CTrade m_trade;
+   if(Ledger_Mode==Ledger_PositionJoin) m_trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
 
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -3022,6 +3148,7 @@ int DashboardBusCloseScopePositions(const int scope,int &close_errors)
       return 0;
 
    CTrade m_trade;
+   if(Ledger_Mode==Ledger_PositionJoin) m_trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
    CPositionInfo position;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -5568,6 +5695,7 @@ void GoatTradeTransactionBody(const MqlTradeTransaction &trans,
    if(GOATDeviceActivationOnly()) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
    GoatDirectionGuardDeal(trans.deal,Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
+   if(Ledger_Mode==Ledger_PositionJoin) {Seq_Buy.AccumulateSequenceDealPL(trans.deal); Seq_Sell.AccumulateSequenceDealPL(trans.deal);} // B49a (F2): every exit (and entry commission) of a sequence's positions, once
 
    int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
    if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
@@ -5585,7 +5713,7 @@ void GoatTradeTransactionBody(const MqlTradeTransaction &trans,
 
    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
    if(!HistoryDealSelect(trans.deal)) return;
-   if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;
+   if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1 && !GoatLedgerJoinedExit(trans.deal)) return; // B49a (F2): or an exit of this chart's position
    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
 
    int deal_type=(int)HistoryDealGetInteger(trans.deal,DEAL_TYPE);
@@ -6226,17 +6354,19 @@ void GoatTickBody()
      HistorySelect(DStartTime,TimeCurrent());
      uint     total=HistoryDealsTotal();
      ulong    ticket=0;
+     ulong    joinPositions[]; double joinProfits[]; datetime joinTimes[]; // B49a (F2): exits the magic filter skips
 
      for(uint i=0;i<total;i++)
      {
       if((ticket=HistoryDealGetTicket(i))>0)
       {
        if(HistoryDealGetString(ticket,DEAL_SYMBOL) != _Symbol)       continue;
-       if(HistoryDealGetInteger(ticket,DEAL_MAGIC) != MAGIC1)        continue;
+       if(HistoryDealGetInteger(ticket,DEAL_MAGIC) != MAGIC1)        {if(Ledger_Mode==Ledger_PositionJoin) GoatLedgerCollectExit(ticket,joinPositions,joinProfits,joinTimes); continue;} // B49a (F2)
        //entry =HistoryDealGetInteger(ticket,DEAL_ENTRY);
        PL_Closed+=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_COMMISSION)+HistoryDealGetDouble(ticket,DEAL_SWAP);
       }
      }
+     for(int j=0;j<ArraySize(joinPositions);j++) if(GoatLedgerPositionMine(joinPositions[j])) PL_Closed+=joinProfits[j]; // B49a (F2): this chart's exits, joined by position
      PL_Today = PL_Total-DStartLocalLoss+PL_Closed;
     }//Comment("PLTot=",PL_Total," DStart=",DStartLocalLoss," PLCld=",PL_Closed);
 //-------
@@ -6919,6 +7049,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
 void CloseAllPositions(int OP,int magic=0)
   {
    CTrade m_trade;
+   if(Ledger_Mode==Ledger_PositionJoin) m_trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
    //CPositionInfo   m_position;                   // object of CPositionInfo class
    for(int i=PositionsTotal()-1;i>=0;i--)
    {

@@ -70,6 +70,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # B49a: test_b49a_no_drift, test_ticket_width and test_ledger_join read B47's source (ccb0a07) from history.
+          fetch-depth: 0
 
       - name: Set up Windows x64 Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5

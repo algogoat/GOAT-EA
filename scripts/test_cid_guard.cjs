@@ -307,7 +307,7 @@ const M=1843920117,O=907113355,Y=1210448821;   // this chart's magic, an orphane
 {assert.match(main,/^#define   GOAT_BUILD_ID "V1\.49-BETA17-47"$/m);assert.match(main,/^#define   GOAT_BUILD_MARKER "B47"$/m);
  const sha=crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'))).digest('hex');
  const deps=JSON.parse(fs.readFileSync(path.join(ROOT,'controller/contracts/v149/dependencies.json'),'utf8').replace(/^\uFEFF/,''));
- assert.equal(sha,deps.header_sha256,'GOAT_Inputs_Definitions.mqh is unchanged (input contract pin)');
+ assert.equal(sha,deps.header_sha256,'the input contract pins this GOAT_Inputs_Definitions.mqh (B49a changes it; test_b49a_no_drift.cjs)');
  // No new input, and the guard's claim files stay inside Common\Files\GOAT\CidGuard.
  assert.ok(!/cidg|CidGuard/i.test(main.split('\n').filter(l=>/^\s*s?input\b/.test(l)).join('\n')),'no B46/B47 input');
  assert.match(G.claimPath,/return "GOAT\\\\CidGuard\\\\"\+/);

@@ -878,7 +878,8 @@ double   bid,ask;
 long     Hour_Start[7],Hour_End[7],Minute_Start[7],Minute_End[7];
 datetime tm_cur,LastTradeTime,LastStopoutTime,DStartTime;
 uint     LastRetCode,Shift_Sig;
-int      LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket,LastTradeCountBuy=0,LastTradeCountSell=0;
+long     LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket; // B49a: 64-bit; an int wraps negative above INT_MAX (scripts/test_ticket_width.cjs)
+int      LastTradeCountBuy=0,LastTradeCountSell=0; // B49a: split from the ticket line, unchanged
 double   LastOpen,LastSL,LastTP;
 double   Grid_Min_,Grid_Max_,LP_Size_,TP_Pips_,SL_Pips_,TSL_Size_;//,Lots_Max_;
 

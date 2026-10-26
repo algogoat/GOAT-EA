@@ -7058,8 +7058,8 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
      ret++;
      LastSL=SL; LastTP=TP;
      resolvedPositionTicket=ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
-     LastOrderTicket=(int)resolvedPositionTicket;
-     LastDealTicket=LastBuyTicket=(int)result.deal;
+     LastOrderTicket=(long)resolvedPositionTicket; // B49a: 64-bit ticket
+     LastDealTicket=LastBuyTicket=(long)result.deal; // B49a: 64-bit ticket
    //Print(PositionSelectByTicket(LastOrderTicket)+" "+LastOrderTicket+" "+LastDealTicket+" "+PositionGetInteger(POSITION_TICKET)+" "+PositionGetInteger(POSITION_IDENTIFIER));
    //LastTradeTime = tm_cur;
    //TradesInSession++;
@@ -7112,8 +7112,8 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
      ret++;
      LastSL=SL; LastTP=TP;
      resolvedPositionTicket=ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
-     LastOrderTicket=(int)resolvedPositionTicket;
-     LastDealTicket=LastSellTicket=(int)result.deal;
+     LastOrderTicket=(long)resolvedPositionTicket; // B49a: 64-bit ticket
+     LastDealTicket=LastSellTicket=(long)result.deal; // B49a: 64-bit ticket
    //LastTradeTime = tm_cur;
    //TradesInSession++;
    //TradesInDay++;

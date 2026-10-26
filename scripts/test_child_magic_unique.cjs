@@ -208,7 +208,7 @@ const nextId=()=>{seed=(seed*6364136223846793005n+1442695040888963407n)&((1n<<64
  for(const text of [main,header])assert.ok(!/^\s*s?input\b[^\n]*\bMAGIC[12]\b/m.test(text),'MAGIC1/2 are not inputs');
  const sha=crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'))).digest('hex');
  const deps=JSON.parse(fs.readFileSync(path.join(ROOT,'controller/contracts/v149/dependencies.json'),'utf8').replace(/^\uFEFF/,''));
- assert.equal(sha,deps.header_sha256,'GOAT_Inputs_Definitions.mqh is unchanged (input contract pin)');
+ assert.equal(sha,deps.header_sha256,'the input contract pins this GOAT_Inputs_Definitions.mqh (B49a changes it; test_b49a_no_drift.cjs)');
  ok();}
 
 // 7. GlobalVariable names stay within MT5's 63 characters with a 10-digit magic and a 12-character symbol,

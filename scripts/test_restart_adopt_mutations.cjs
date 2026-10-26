@@ -28,6 +28,20 @@ const MUTANTS=[
  ['an adopted basket\'s SL can be loosened (P1-b)','       if(Adopted) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);','       ;'],
  ['the trailing level is not seeded','    for(int i=0; i<count; i++) Level_TSL=TighterBiasStop(Level_TSL,TradeLevels[i].sl);','    ;'],
  ['the position count is not seeded (P2-1)','    if(dir==OP_BUY) LastTradeCountBuy=count; else LastTradeCountSell=count;','    ;'],
+ // Claude-Mac's re-check of 1c8cc21: OnInit's first tick before the ATR indicator is ready.
+ ['the adopted buy runs the grid check','      if(Seq_Buy.Adopted) LastBuyTradeSignal = false; else // B49a','      // B49a'],
+ ['the adopted sell runs the grid check','      if(Seq_Sell.Adopted) LastSellTradeSignal = false; else // B49a','      // B49a'],
+ ['GetSize indexes an empty ATR_Buf','   if(ArraySize(ATR_Buf)==0) {if(GoatSizeNeedsAtr(type)) return GoatAtrUnavailable(type);} else g_goat_atr_unavailable_logged=false;','   ;'],
+ ['the shift-1 ATR_Pips reads an empty buffer','CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); if(ArraySize(ATR_Buf)>0) ATR_Pips','CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); ATR_Pips'],
+ ['the shift-0 ATR_Pips reads an empty buffer','CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); if(ArraySize(ATR_Buf)>0) ATR_Pips','CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); ATR_Pips'],
+ ['a pips-mode size answers the sentinel','   if(type==OP_SL)      return SL_Pips_<0;','   if(type==OP_SL)      return true;'],
+ ['the unavailable log is never re-armed','} else g_goat_atr_unavailable_logged=false; // B49a','} // B49a'],
+ ['every unavailable size is logged','   if(!g_goat_atr_unavailable_logged)\n','   if(true)\n'],
+ ['a start on an unread ATR size goes ahead','     if(SizesUnavailable()) return false; // B49a','     // B49a'],
+ ['a refused start keeps the sentinel size','    if(Size_Grid==GOAT_ATR_UNAVAILABLE) Size_Grid=1234.5;\n',''],
+ ['known sizes are refused too','       && Size_SL!=GOAT_ATR_UNAVAILABLE && Size_TSL!=GOAT_ATR_UNAVAILABLE) return false;','       && Size_SL!=GOAT_ATR_UNAVAILABLE && Size_TSL!=GOAT_ATR_UNAVAILABLE) return true;'],
+ // Not a mutant: GoatSizeNeedsAtr's GRID_VALID rule is defence in depth. Without it GRID_VALID reads GRID_MIN and
+ // GRID_MAX through GetSize, which answer the sentinel themselves, so the result is the sentinel or a pips clamp.
  // Manage-only.
  ['manage-only does not freeze adds','    if(!Adopted && !PersistFailed) {ManageOnlyLogged=false; return false;}','    {ManageOnlyLogged=false; return false;}'],
  ['the freeze logs every add','    if(!ManageOnlyLogged)\n','    if(true)\n'],

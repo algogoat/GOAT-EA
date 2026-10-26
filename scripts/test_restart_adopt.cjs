@@ -66,6 +66,8 @@ const METHODS=[
  ['ClosedDealPL',['deal_ticket'],'   double ClosedDealPL(const ulong deal_ticket)'],
  ['TighterBiasStop',['first_sl','second_sl'],'   double TighterBiasStop(const double first_sl,const double second_sl)'],
  ['UpdateLockTPSL',['count=0'],'   void UpdateLockTPSL(int count=0)'],
+ ['SizesUnavailable',[],'   bool SizesUnavailable()'],
+ ['EnforceSequenceMLPS',['context'],'   bool EnforceSequenceMLPS(const string context)'],
 ];
 const FLUSH_MS=Number((main.match(/^#define GOAT_SQ_FLUSH_MS (\d+)$/m)||[])[1]);assert.equal(FLUSH_MS,5000);
 const UPDATE_GUARD='    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP';
@@ -82,7 +84,7 @@ const K={POSITION_MAGIC:'magic',POSITION_SYMBOL:'symbol',POSITION_TYPE:'type',PO
 const GMT0=Math.floor(T0/1000)+3600;   // TimeGMT() at the first level
 function terminal({positions=[],gv=new Map(),tester=false,mode=0,ledger=1}={}){
  return {positions,gv,tester,mode,ledger,deals:[],now:1000,gmt:GMT0,flushes:0,writes:[],failWrites:new Set(),logs:[],alerts:[],modifies:[],
-  counts:{buy:0,sell:0}};
+  counts:{buy:0,sell:0},closes:[]};
 }
 const pos=(ticket,{magic=M,type=0,msc=T0,open=1.1,volume=0.1,sl=0,tp=0,symbol=SYM}={})=>({ticket,magic,type,msc,open,volume,sl,tp,symbol,identifier:ticket});
 // A deal in the account history (entries carry the opening magic; exits may carry any).
@@ -115,6 +117,9 @@ function sequence(t,{dir=0,virtual=false}={}){
   HistoryDealsTotal:()=>history.length,HistoryDealGetTicket:i=>history[i]??0,
   HistoryDealGetInteger:(d,k)=>t.deals.find(x=>x.ticket===d)[k],HistoryDealGetDouble:(d,k)=>t.deals.find(x=>x.ticket===d)[k],
   HistoryDealGetString:(d,k)=>t.deals.find(x=>x.ticket===d)[k],
+  // EnforceSequenceMLPS: the sequence's P/L (realized + open) is modelled; a breach closes the basket.
+  GOAT_ATR_UNAVAILABLE:Number.MAX_VALUE,Sequence_MLPS_Hard_Close:true,Risk:500,g_PerformanceProfileTester:false,GoatPerformanceRecord:()=>{},g_PerfMLPSUS:0,g_PerfMLPSCalls:0,
+  OpenPL:0,CurrentSequencePL:()=>c.SequenceRealizedPL+c.OpenPL,CloseSequencePositions:why=>{t.closes.push(why);},
  };
  vm.createContext(c);
  vm.runInContext(METHODS.map(([n,a,s])=>fn(n,a,bodyOf(main,s))).join(''),c);
@@ -293,15 +298,23 @@ const ENTRY=(1.1*0.05+1.0985*0.2+1.0970*0.3)/0.55, COMPUTED=Number((ENTRY-0.0030
 //    sequence was active, so in ATR mode its next read was out of range and MT5 removed the EA (worse than B47). Now an
 //    empty ATR_Buf is refilled on any call. B47's GetSize runs on the same state and crashes; MT5's out-of-range read is
 //    modelled by an array that throws.
-function getSize(text,{active=true,ready=true}={}){
+function getSize(text,{active=true,ready=true,context=null}={}){
  const buf=new Proxy([],{get(a,p){if(typeof p==='string'&&/^\d+$/.test(p)&&Number(p)>=a.length)throw new Error('array out of range');return Reflect.get(a,p);}});
- const g={GRID:121,GRID_MIN:122,GRID_MAX:123,GRID_VALID:124,LOCK:125,TSL:126,OP_SL:1,OP_TP:2,
+ const g=Object.assign(context||{},{GRID:121,GRID_MIN:122,GRID_MAX:123,GRID_VALID:124,LOCK:125,TSL:126,OP_SL:1,OP_TP:2,
   Grid_Size:-1.5,LP_Size_:-0.8,SL_Pips_:0,TP_Pips_:0,TSL_Size_:-0.4,Grid_Min_:-0.5,Grid_Max_:-6,Grid_Exponent:1.2,Grid_Factor:1.0,Max_Seq_Trades:10,
   bid:1.0950,ask:1.0951,LastATRBid:0,LastATRAsk:0,Seq_Buy:{Active:active},Seq_Sell:{Active:false},ATR_MA_handle:7,ATR_Buf:buf,ATR_Pips:0,
-  CopyBuffer:(h,b,shift,n,arr)=>{if(!ready)return -1;arr.length=0;arr.push(0.0010);return 1;},ArraySize:a=>a.length,
+  ready,copies:0,sizeCalls:0,logs:[],
+  CopyBuffer:(h,b,shift,n,arr)=>{g.copies++;if(!g.ready)return -1;arr.length=0;arr.push(0.0010);return 1;},ArraySize:a=>a.length,
   NormalizeDouble:(v,d)=>Number(Number(v).toFixed(d)),_Point:0.00001,Point:()=>0.00001,FastSpeed_Flag:true,SetEdit:()=>{},PanelDialog:{},
-  MathPow:Math.pow,MathMax:Math.max,MathMin:Math.min};
- vm.createContext(g);vm.runInContext(fn('GetSize',['type','level_count=0','grid_size=0'],bodyOf(text,'double GetSize(int type,int level_count=0,double grid_size=0)')),g);
+  MathPow:Math.pow,MathMax:Math.max,MathMin:Math.min,
+  // B49a's atr-ready block (B47 has none): GOAT_ATR_UNAVAILABLE is MQL's EMPTY_VALUE (DBL_MAX).
+  GOAT_ATR_UNAVAILABLE:Number.MAX_VALUE,g_goat_atr_unavailable_logged:false,_Symbol:SYM,GetLastError:()=>4806,IntegerToString:v=>String(v),
+  Print:(...a)=>g.logs.push(a.join(''))});
+ vm.createContext(g);
+ const atr=text.includes('// B49a:begin atr-ready')?fn('GoatSizeNeedsAtr',['type'],bodyOf(text,'bool GoatSizeNeedsAtr(const int type)'))
+  +fn('GoatAtrUnavailable',['type'],bodyOf(text,'double GoatAtrUnavailable(const int type)')):'';
+ vm.runInContext(atr+fn('GetSizeBody',['type','level_count=0','grid_size=0'],bodyOf(text,'double GetSize(int type,int level_count=0,double grid_size=0)'))
+  +'function GetSize(type,level_count=0,grid_size=0){sizeCalls++;return GetSizeBody(type,level_count,grid_size);}\n',g);
  return g;
 }
 {const tree=getSize(main),b47=getSize(mainB47);
@@ -311,10 +324,24 @@ function getSize(text,{active=true,ready=true}={}){
  assert.equal(tree.GetSize(121),0.0015,'GRID = 1.5 x ATR');assert.equal(tree.ATR_Buf.length,1);
  // Unchanged while a sequence is active and the buffer is full (the frozen-ATR rule of B47).
  tree.ATR_Buf[0]=0.0020;tree.bid=1.0960;assert.equal(tree.GetSize(121),0.003,'no refresh over a full buffer while active');
- // Honest limit: an ATR indicator not ready yet (CopyBuffer fails) still leaves the buffer empty, exactly as at any
- // B47 start; Ops' drill checks 30 min of ticks after each adoption for this.
- assert.throws(()=>getSize(main,{ready:false}).GetSize(121),/array out of range/);
  assert.match(bodyOf(main,'double GetSize(int type,int level_count=0,double grid_size=0)'),/\|\| ArraySize\(ATR_Buf\)==0\) \/\/ B49a \(F1-lite\)/);
+ // Claude-Mac's re-check: the indicator not ready yet (CopyBuffer fails, as on OnInit's own first tick after a restart).
+ // B47 indexes the empty array (MT5 removes the EA). B49a never does: every ATR-mode size answers the sentinel
+ // (EMPTY_VALUE), logged once until the buffer fills; a pips-mode size is unaffected.
+ assert.throws(()=>getSize(mainB47,{ready:false}).GetSize(121),/array out of range/,'B47 crashes');
+ const cold=getSize(main,{ready:false});
+ for(const type of [121,122,123,125,126]) assert.equal(cold.GetSize(type),Number.MAX_VALUE,'ATR-mode size '+type+': the sentinel');
+ assert.equal(cold.GetSize(124,3,0.0015),Number.MAX_VALUE,'GRID_VALID (its min and max read ATR)');
+ assert.equal(cold.GetSize(1),0,'SL in pips mode (0): read without ATR, unchanged');
+ assert.equal(cold.ATR_Buf.length,0);assert.ok(cold.copies>0,'each call tried CopyBuffer');
+ assert.deepEqual(cold.logs,['GOAT sizes: atr_unavailable type=121 symbol=EURUSD err=4806 (the ATR indicator is not ready: no add and no start on an ATR size until it is; closes, stops and MLPS continue)'],'logged once');
+ // A grid compare against the sentinel never adds (buy: ask < last - size; sell: bid > last + size).
+ assert.equal(1.0951<1.1-Number.MAX_VALUE,false);assert.equal(1.2>1.1+Number.MAX_VALUE,false);
+ // A frozen base grid with pips min/max needs no ATR: a real distance, even with the buffer empty.
+ const mixed=getSize(main,{ready:false});mixed.Grid_Min_=5;mixed.Grid_Max_=60;
+ const d=mixed.GetSize(124,3,0.0015);assert.ok(d>=0.0005&&d<=0.006,'clamped to the pips min/max: '+d);assert.deepEqual(mixed.logs,[]);
+ // The indicator ready: the next call fills the buffer, and a later failure logs again.
+ cold.ready=true;assert.equal(cold.GetSize(121),0.0015);assert.equal(cold.g_goat_atr_unavailable_logged,false,'re-armed');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#266 P1-b (Ops' case D): a trailed SL survives a restart. The matched restore recomputes
@@ -370,6 +397,54 @@ function getSize(text,{active=true,ready=true}={}){
  assert.equal(t.gv.has(key('T')),false,'the older record\'s T is gone');assert.equal(t.gv.get(key('TK')),1001,'the new fields so far');
  assert.equal(t.gv.has(key('N')),false,'nothing after the failed field');
  const x=sequence(t);x.AdoptOpenPositions();assert.equal(x.AdoptMatched,false,'incomplete: unmatched');
+ ok();}
+
+// 12. Claude-Mac's re-check of 1c8cc21 (P1): OnInit's own OnTick runs right after adoption, before the ATR indicator is
+//     ready (CopyBuffer fails). OnTick's production MLPS and grid-check segment runs here over the adopted basket (the
+//     real SEQUENCE methods, GetSize with CopyBuffer failing): no out-of-range read, the adopted side never reaches
+//     GetSize, an active non-adopted side refuses its add against the sentinel, and MLPS still fires at -Risk on that
+//     same tick. A start whose ATR sizes could not be read is refused and recomputed next time.
+const TICK_START='   bool buyMlpsExit=false,sellMlpsExit=false;\n',TICK_END='\n//-------------------------------------------------------------------------\n   return;\n  }\n';
+function firstTick(text,buy,sell,{ready=false}={}){
+ const a=text.indexOf(TICK_START);assert.ok(a>0&&text.indexOf(TICK_START,a+1)<0,'one MLPS and grid-check segment');
+ const b=text.indexOf(TICK_END,a);assert.ok(b>a);
+ const k=getSize(text,{ready,context:{}});
+ Object.assign(k,{Seq_Buy:buy,Seq_Sell:sell,Seq_Buy_Virtual:{Active:false},Seq_Sell_Virtual:{Active:false},adds:[],
+  GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
+  Sequence_Pause_Bias_B:false,Sequence_Pause_Bias_S:false,DashboardPortfolioPaused:false,DashboardTradeAllowed:()=>true,
+  Mode_Lots_Prog:0,Lots_Prog_CumPartial:5,Lots_Prog_PeakSmart:6,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
+  RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,OP_BUY:0,OP_SELL:1,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,Trades_Skipped_Bias_S:0,
+  LastBuyTradeSignal:true,LastSellTradeSignal:true,bid:1.2000,ask:1.0000});
+ for(const s of [buy,sell]) if(s.Add_Level===undefined) s.Add_Level=p=>{k.adds.push([s.dir,p]);return true;};
+ vm.runInContext('function Tick(){'+js(text.slice(a,b))+'}',k);
+ return k;
+}
+{const t=midBasket(),s=sequence(t);s.AdoptOpenPositions();s.Add_Level=p=>{throw new Error('an adopted basket was added to at '+p);};
+ // An unrelated active sell (not adopted, frozen sizes) far beyond its grid: its compare reads the sentinel.
+ const sell={dir:1,Active:true,Traded:true,Adopted:false,Level_Last:1.1,Level_Count:2,Size_Grid:0.0012,Level_Retrace:0,EnforceSequenceMLPS:()=>false};
+ const k=firstTick(main,s,sell);
+ k.Tick();
+ assert.deepEqual(k.adds,[],'no add on either side');assert.equal(k.LastBuyTradeSignal,false);
+ assert.equal(k.ATR_Buf.length,0,'the buffer is still empty (and was never indexed)');
+ assert.equal(k.sizeCalls>0,true,'the non-adopted sell reached GetSize');assert.equal(k.LastSellTradeSignal,false,'and refused its add');
+ assert.equal(k.logs.length,1,'atr_unavailable logged once');assert.deepEqual(t.closes,[],'P/L above -Risk: nothing closed');
+ // The adopted side never reaches GetSize: with the sell flat, no size is read at all on this tick.
+ const k2=firstTick(main,s,{dir:1,Active:false});k2.Tick();assert.equal(k2.sizeCalls,0,'the adopted buy skips the grid check');
+ const st=terminal({positions:[pos(2001,{type:1,open:1.1})]}),ss=sequence(st,{dir:1});ss.AdoptOpenPositions();
+ ss.Add_Level=p=>{throw new Error('an adopted sell was added to at '+p);};
+ const k4=firstTick(main,{dir:0,Active:false},ss);k4.Tick();
+ assert.deepEqual([k4.sizeCalls,k4.LastSellTradeSignal],[0,false],'the adopted sell skips it too');
+ // MLPS on that same first tick: realized -51.5 plus open -450 breaches -Risk (500), and the basket closes.
+ s.OpenPL=-450;const k3=firstTick(main,s,{dir:1,Active:false});k3.Tick();
+ assert.deepEqual(t.closes,['Sequence Exit: MLPS breached']);assert.equal(k3.LastBuyTradeSignal,false);
+ // B47's segment over the same adopted state reaches GetSize, and B47's GetSize indexes the empty buffer.
+ s.OpenPL=0;assert.throws(()=>firstTick(mainB47,s,{dir:1,Active:false}).Tick(),/array out of range/,'B47 crashes here');
+ // A start whose ATR sizes could not be read: refused, and the unknown sizes go back to the sentinel 1234.5.
+ const f=sequence(terminal());Object.assign(f,{Size_Grid:Number.MAX_VALUE,Size_Lock:Number.MAX_VALUE,Size_TP:0,Size_SL:0.003,Size_TSL:Number.MAX_VALUE});
+ assert.equal(f.SizesUnavailable(),true);assert.deepEqual([f.Size_Grid,f.Size_Lock,f.Size_TP,f.Size_SL,f.Size_TSL],[1234.5,1234.5,0,0.003,1234.5]);
+ assert.equal(f.SizesUnavailable(),false,'known sizes start');
+ const ADD=bodyOf(main,'   bool Add_Level(double Level_New)');
+ assert.ok(ADD.includes('     if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);\n     if(SizesUnavailable()) return false; // B49a (F1-lite)'),'refused right after the sizes are read, before any order');
  ok();}
 
 console.log(JSON.stringify({passed,test:'restart_adopt'}));

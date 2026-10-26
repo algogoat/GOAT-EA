@@ -1561,6 +1561,23 @@ class SEQUENCE
 // write freezes adds (manage-only) until a write succeeds. Records live in the terminal's own folder: a migrated
 // terminal has none, so its baskets adopt unmatched (broker SL/TP untouched).
 #define GOAT_SQ_FLUSH_MS 5000
+// GetSize's answer for an ATR-mode size while ATR_Buf is still empty (CopyBuffer failed: the indicator is not ready,
+// as on OnInit's own first tick after a restart). Never a usable distance: a grid compare against it never adds, and a
+// start whose frozen sizes would hold it is refused (SizesUnavailable). Claude-Mac GOAT-EA#266.
+#define GOAT_ATR_UNAVAILABLE EMPTY_VALUE
+   // A start (or a virtual sequence's add) whose sizes are unknown because ATR_Buf is still empty is refused; the
+   // unknown sizes go back to the sentinel, so the next attempt recomputes them. GetSize logs the cause once.
+   bool SizesUnavailable()
+   {
+    if(Size_Grid!=GOAT_ATR_UNAVAILABLE && Size_Lock!=GOAT_ATR_UNAVAILABLE && Size_TP!=GOAT_ATR_UNAVAILABLE
+       && Size_SL!=GOAT_ATR_UNAVAILABLE && Size_TSL!=GOAT_ATR_UNAVAILABLE) return false;
+    if(Size_Grid==GOAT_ATR_UNAVAILABLE) Size_Grid=1234.5;
+    if(Size_Lock==GOAT_ATR_UNAVAILABLE) Size_Lock=1234.5;
+    if(Size_TP  ==GOAT_ATR_UNAVAILABLE) Size_TP  =1234.5;
+    if(Size_SL  ==GOAT_ATR_UNAVAILABLE) Size_SL  =1234.5;
+    if(Size_TSL ==GOAT_ATR_UNAVAILABLE) Size_TSL =1234.5;
+    return true;
+   }
    void PersistReset()
    {
     Adopted=AdoptMatched=AdoptSizes=PersistFailed=ManageOnlyLogged=false;
@@ -2332,6 +2349,7 @@ class SEQUENCE
      if(Size_TP  ==1234.5) Size_TP   = GetSize(OP_TP);
      if(Size_SL  ==1234.5) Size_SL   = GetSize(OP_SL);
      if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);
+     if(SizesUnavailable()) return false; // B49a (F1-lite): no start on an ATR size GetSize could not read (Claude-Mac GOAT-EA#266)
      if(EnforceSequenceMLPS("add level")) return false;
 
      bool   hadPriorLevel = (Level_Count>0);
@@ -6907,6 +6925,7 @@ void GoatTickBody()
       if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && bid >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
          Seq_Buy.HandlePeakSmartRetrace(bid);
 
+      if(Seq_Buy.Adopted) LastBuyTradeSignal = false; else // B49a (F1-lite): an adopted basket's adds are frozen, so no grid check and no GetSize (OnInit's own tick runs before the ATR indicator is ready; Claude-Mac GOAT-EA#266)
       if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
       {
        if(Sequence_Pause_News)
@@ -6942,6 +6961,7 @@ void GoatTickBody()
       if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && ask <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
          Seq_Sell.HandlePeakSmartRetrace(ask);
 
+      if(Seq_Sell.Adopted) LastSellTradeSignal = false; else // B49a (F1-lite): an adopted basket's adds are frozen, so no grid check and no GetSize (Claude-Mac GOAT-EA#266)
       if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
       {
        if(Sequence_Pause_News)
@@ -7777,6 +7797,36 @@ double GetNormalizedLots(double size)
 //   return Lots_Order;
 //  }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49a:begin atr-ready
+// B49a (F1-lite; Claude-Mac GOAT-EA#266): GetSize never indexes an empty ATR_Buf. An adopted basket is active from
+// OnInit, and OnInit's own first tick can reach GetSize before the ATR indicator is ready (CopyBuffer fails, the buffer
+// stays empty). The sizes that read ATR_Buf[0] answer GOAT_ATR_UNAVAILABLE instead, logged once until it fills: a grid
+// compare against it never adds, and a start refuses (SEQUENCE::SizesUnavailable). B47 indexed the empty array here
+// (array out of range: MT5 removes the EA), so a B47 run that did not crash never reaches this branch.
+bool g_goat_atr_unavailable_logged=false;
+bool GoatSizeNeedsAtr(const int type)
+  {
+   if(type==GRID)       return !(Grid_Size>0);
+   if(type==GRID_MIN)   return !(Grid_Min_>0);
+   if(type==GRID_MAX)   return !(Grid_Max_>0);
+   if(type==GRID_VALID) return (Grid_Exponent<=0.0) ? GoatSizeNeedsAtr(GRID) : (GoatSizeNeedsAtr(GRID_MIN) || GoatSizeNeedsAtr(GRID_MAX));
+   if(type==LOCK)       return LP_Size_<0;
+   if(type==OP_TP)      return TP_Pips_<0;
+   if(type==OP_SL)      return SL_Pips_<0;
+   if(type==TSL)        return TSL_Size_<0;
+   return false;
+  }
+double GoatAtrUnavailable(const int type)
+  {
+   if(!g_goat_atr_unavailable_logged)
+     {
+      g_goat_atr_unavailable_logged=true;
+      Print("GOAT sizes: atr_unavailable type=",IntegerToString(type)," symbol=",_Symbol," err=",IntegerToString(GetLastError()),
+            " (the ATR indicator is not ready: no add and no start on an ATR size until it is; closes, stops and MLPS continue)");
+     }
+   return GOAT_ATR_UNAVAILABLE;
+  }
+// B49a:end atr-ready
 double GetSize(int type,int level_count=0,double grid_size=0)
   {
    if(Grid_Size<0||LP_Size_<0||SL_Pips_<0||TP_Pips_<0||TSL_Size_<0||Grid_Min_<0||Grid_Max_<0)
@@ -7801,12 +7851,13 @@ double GetSize(int type,int level_count=0,double grid_size=0)
          }
          else {ATR_Buf[0] = tmp[0];}
       }*/
-     CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10.0),1);
+     CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); if(ArraySize(ATR_Buf)>0) ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10.0),1); // B49a (F1-lite): never index an empty ATR_Buf
      if(!FastSpeed_Flag) SetEdit(PanelDialog.m_edit_Det6_2,DoubleToString(ATR_Pips,1));
-     CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10),1);
+     CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); if(ArraySize(ATR_Buf)>0) ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10),1); // B49a (F1-lite): never index an empty ATR_Buf
      LastATRBid=bid; LastATRAsk=ask;
     }
    }
+   if(ArraySize(ATR_Buf)==0) {if(GoatSizeNeedsAtr(type)) return GoatAtrUnavailable(type);} else g_goat_atr_unavailable_logged=false; // B49a (F1-lite): Claude-Mac GOAT-EA#266
    if(type==GRID)
    {
     if(Grid_Size>0)        return  Grid_Size*10*Point();//*(MathPow(Grid_Exponent,StepCount-1));

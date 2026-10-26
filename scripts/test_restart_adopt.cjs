@@ -1,33 +1,42 @@
-// B49a (F1-lite; roadmap F1/D8, WEEKEND-1031 goatai#2587 6427772701 / 6428370704): restart adoption, manage-only.
+// B49a (F1-lite; roadmap F1/D8, WEEKEND-1031 goatai#2587 6427772701 / 6428370704 / 6428447507): restart adoption.
 // Through B47 OnInit re-created empty sequences, so after a restart an open basket kept only its broker TP/SL: MLPS
 // never fired again and a new sequence could start beside it. Now, on live charts only:
 // - a restart record per magic + symbol + direction (terminal GlobalVariables): the first level's ticket and the five
-//   sizes frozen at start (written once), the realized P/L (flushed from the timer at most every GOAT_SQ_FLUSH_MS), the
-//   first position's open time in ms (written last); the sequence's end deletes it; a failed write freezes adds;
-// - OnInit adopts an open basket with no running sequence: levels rebuilt from the live positions, the sequence Active,
-//   Traded and manage-only (adds frozen). A matching record (its first ticket still live, or every live position opened
-//   at or after its start) restores the realized P/L, so MLPS sees realized + open, and the frozen sizes, so Lock/TP/SL
-//   and trailing resume. Without them the EA leaves that basket's broker SL/TP untouched.
-// This runs the production SEQUENCE methods (syntax-only MQL-to-JS conversion) against modelled positions and
-// GlobalVariables, one fresh SEQUENCE per "terminal start". Source semantics only: Ops' kill-and-restart drill on T2
-// is the native check (MLPS fires at -Risk, adds stay frozen, no second same-direction sequence).
+//   sizes frozen at start, the level count, the realized P/L (the timer, at most every GOAT_SQ_FLUSH_MS), the first
+//   position's open time in ms (written last); the whole record rewritten from memory once per UTC day; every write
+//   flushed to gvariables.dat; deleted at the end, and before a new start; a failed write freezes adds;
+// - OnInit adopts an open basket with no running sequence: levels from the live positions, Active, Traded and
+//   manage-only (adds frozen). A matching record (its first ticket still live, or every live position opened at or after
+//   its start with their count within its level count) restores the realized P/L (under PositionJoin recounted from
+//   history, so closes made while the EA was down count) and the frozen sizes; the stops are never loosened. Without a
+//   match the EA leaves that basket's broker SL/TP untouched.
+// This runs the production SEQUENCE methods, UpdateLockTPSL included, and GetSize (syntax-only MQL-to-JS conversion)
+// against modelled positions, deals and GlobalVariables, one fresh SEQUENCE per "terminal start"; B47's GetSize runs
+// on the same state. Source semantics only: Ops' drill on T2 is the native check (ATR-mode SET; MLPS fires at -Risk,
+// adds stay frozen, no second same-direction sequence, a trailed SL survives a hard kill, no array out of range).
 'use strict';
-const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
-const ROOT=path.join(__dirname,'..');
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
+const ROOT=path.join(__dirname,'..'),B47_SOURCE='ccb0a07';
 const clean=t=>t.replace(/^﻿/,'').replace(/\r\n/g,'\n');
 // test_restart_adopt_mutations.cjs points GOAT_EA_MAIN at a mutated entrypoint.
 const main=clean(fs.readFileSync(process.env.GOAT_EA_MAIN||path.join(ROOT,'GOAT V1.49.mq5'),'utf8'));
+const mainB47=clean(execFileSync('git',['show',B47_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
 let passed=0;const ok=()=>passed++;
 
 function bodyOf(text,signature){
  const a=text.indexOf(signature);assert.ok(a>=0,'missing '+signature);
  assert.equal(text.indexOf(signature,a+1),-1,'one definition of '+signature);
- let i=text.indexOf('{',a),depth=1,j=i+1;for(;depth&&j<text.length;j++){if(text[j]==='{')depth++;if(text[j]==='}')depth--;}
+ // Braces are counted outside comments and strings (UpdateLockTPSL keeps commented-out code with braces).
+ const blank=text.replace(/"(?:\\.|[^"\\\n])*"|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,m=>m.replace(/[^\n]/g,' '));
+ let i=blank.indexOf('{',a),depth=1,j=i+1;for(;depth&&j<blank.length;j++){if(blank[j]==='{')depth++;if(blank[j]==='}')depth--;}
  return text.slice(i+1,j-1);
 }
 const TYPE='(?:const\\s+)?(?:string|int|uint|long|ulong|bool|double|datetime)';
 function js(text){
- return text.replace(/\/\/.*$/gm,'')
+ return text.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'')
+  .replace(/C'\d+,\d+,\d+'/g,'0')                                   // MQL color literals
+  .replace(/^\s*static\s+double\s+LastATRBid,LastATRAsk;\s*$/m,'')   // GetSize's statics live in the context
+  .replace(/\bCTrade\s+(\w+);/g,'let $1=CTrade();')
   .replace(new RegExp('\\b'+TYPE+'\\s+(\\w+)\\[\\]\\s*=\\s*\\{([^}]*)\\};','g'),'let $1=[$2];')
   .replace(new RegExp('\\b'+TYPE+'\\s+(\\w+)\\[(\\d+)\\];','g'),'let $1=new Array($2).fill(0);')
   .replace(new RegExp('\\b'+TYPE+'\\s+(\\w+)\\[\\]','g'),'let $1=[]')
@@ -42,49 +51,71 @@ const METHODS=[
  ['PersistReset',[],'   void PersistReset()'],['PersistLive',[],'   bool PersistLive()'],
  ['PersistKey',['field'],'   string PersistKey(const string field)'],
  ['PersistWrite',['field','value'],'   bool PersistWrite(const string field,const double value)'],
+ ['PersistWriteAll',['start_msc'],'   bool PersistWriteAll(const long start_msc)'],
  ['PersistStart',['first_ticket'],'   void PersistStart(const ulong first_ticket)'],
  ['PersistLevels',[],'   void PersistLevels()'],
  ['PersistFlush',['force=false'],'   void PersistFlush(const bool force=false)'],
  ['PersistEnd',[],'   void PersistEnd()'],
  ['ManageOnlyFrozen',['level'],'   bool ManageOnlyFrozen(const int level)'],
  ['PersistRead',['field','value'],'   bool PersistRead(const string field,double &value)'],
+ ['RealizedFromHistory',['start_msc','fallback'],'   double RealizedFromHistory(const long start_msc,const double fallback)'],
  ['AdoptOpenPositions',[],'   bool AdoptOpenPositions()'],
  ['LedgerHasPosition',['position_id'],'   bool LedgerHasPosition(const ulong position_id)'],
  ['LedgerAddPosition',['position_ticket'],'   void LedgerAddPosition(const ulong position_ticket)'],
+ ['LedgerBook',['deal_ticket'],'   bool LedgerBook(const ulong deal_ticket)'],
+ ['ClosedDealPL',['deal_ticket'],'   double ClosedDealPL(const ulong deal_ticket)'],
+ ['TighterBiasStop',['first_sl','second_sl'],'   double TighterBiasStop(const double first_sl,const double second_sl)'],
+ ['UpdateLockTPSL',['count=0'],'   void UpdateLockTPSL(int count=0)'],
 ];
 const FLUSH_MS=Number((main.match(/^#define GOAT_SQ_FLUSH_MS (\d+)$/m)||[])[1]);assert.equal(FLUSH_MS,5000);
 const UPDATE_GUARD='    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP';
 const firstStatement=body=>body.split('\n').filter(l=>l.trim()&&!/^\s*\/\//.test(l))[0];
 
-// ---- the modelled terminal: positions (account-wide), GlobalVariables (this terminal), the clock ----
+// ---- the modelled terminal: positions and deals (account-wide), GlobalVariables (this terminal), the clocks ----
 const M=1843920117,Y=907113355,SYM='EURUSD',T0=1792054800000;
 const K={POSITION_MAGIC:'magic',POSITION_SYMBOL:'symbol',POSITION_TYPE:'type',POSITION_TIME_MSC:'msc',POSITION_PRICE_OPEN:'open',
  POSITION_VOLUME:'volume',POSITION_SL:'sl',POSITION_TP:'tp',POSITION_IDENTIFIER:'identifier',POSITION_TYPE_BUY:0,POSITION_TYPE_SELL:1,
- OP_BUY:0,OP_SELL:1,Key:'GOAT',Ledger_Legacy:0,Ledger_PositionJoin:1,Operation_Batch:6,Operation_Dash:7,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3};
+ DEAL_ENTRY:'entry',DEAL_ENTRY_IN:0,DEAL_ENTRY_OUT:1,DEAL_ENTRY_OUT_BY:3,DEAL_TYPE:'type',DEAL_TYPE_BUY:0,DEAL_TYPE_SELL:1,DEAL_MAGIC:'magic',
+ DEAL_SYMBOL:'symbol',DEAL_POSITION_ID:'position',DEAL_TIME_MSC:'msc',DEAL_PROFIT:'profit',DEAL_COMMISSION:'commission',DEAL_SWAP:'swap',
+ DEAL_FEE:'fee',OP_BUY:0,OP_SELL:1,Key:'GOAT',Ledger_Legacy:0,Ledger_PositionJoin:1,Operation_Batch:6,Operation_Dash:7,Operation_Standard:0,
+ MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,Lots_Prog_CumPartial:5,Lots_Prog_PeakSmart:6};
 const GMT0=Math.floor(T0/1000)+3600;   // TimeGMT() at the first level
-function terminal({positions=[],gv=new Map(),tester=false,mode=0,ledger=1}={}){return {positions,gv,tester,mode,ledger,now:1000,gmt:GMT0,flushes:0,writes:[],failWrites:new Set(),logs:[],alerts:[]};}
+function terminal({positions=[],gv=new Map(),tester=false,mode=0,ledger=1}={}){
+ return {positions,gv,tester,mode,ledger,deals:[],now:1000,gmt:GMT0,flushes:0,writes:[],failWrites:new Set(),logs:[],alerts:[],modifies:[],
+  counts:{buy:0,sell:0}};
+}
 const pos=(ticket,{magic=M,type=0,msc=T0,open=1.1,volume=0.1,sl=0,tp=0,symbol=SYM}={})=>({ticket,magic,type,msc,open,volume,sl,tp,symbol,identifier:ticket});
+// A deal in the account history (entries carry the opening magic; exits may carry any).
+const deal=(t,d)=>{const ticket=5000+t.deals.length+1;t.deals.push({ticket,symbol:SYM,commission:0,swap:0,fee:0,profit:0,...d,ticket});return ticket;};
 // One SEQUENCE in a terminal start (a restart is a fresh SEQUENCE over the same terminal).
 function sequence(t,{dir=0,virtual=false}={}){
- let sel=null;
+ let sel=null,history=[];
  const levels=[];levels.objects=true;
  const c={...K,MAGIC1:M,_Symbol:SYM,dir,Virtual:virtual,Desc:'Trend '+(dir?'Sell':'Buy'),Ledger_Mode:t.ledger,Mode_Operation:t.mode,
-  Max_Seq_Levels:64,GOAT_SQ_FLUSH_MS:FLUSH_MS,TradeLevels:levels,LedgerPositions:[],LedgerDeals:[],
-  Active:false,Traded:false,Level_Count:0,Trades_Count:0,Level_Last:0,Level_SL:0,SequenceRealizedPL:0,
-  Size_Grid:1234.5,Size_Lock:1234.5,Size_TP:1234.5,Size_SL:1234.5,Size_TSL:1234.5,updates:[],
+  Max_Seq_Levels:64,Max_Seq_Trades:10,Lock_Profit_Flexibility:1.0,Mode_Lots_Prog:5,_Digits:5,GOAT_SQ_FLUSH_MS:FLUSH_MS,TradeLevels:levels,
+  LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,Level_Count:0,Trades_Count:0,Level_Last:0,Level_SL:0,
+  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,
+  Size_Grid:1234.5,Size_Lock:1234.5,Size_TP:1234.5,Size_SL:1234.5,Size_TSL:1234.5,
+  get LastTradeCountBuy(){return t.counts.buy;},set LastTradeCountBuy(v){t.counts.buy=v;},
+  get LastTradeCountSell(){return t.counts.sell;},set LastTradeCountSell(v){t.counts.sell=v;},
   MQLInfoInteger:k=>(k===1&&t.tester)?1:0,GetTickCount:()=>t.now,TimeCurrent:()=>Math.floor(T0/1000)+3600,TimeGMT:()=>t.gmt,
-  GlobalVariablesFlush:()=>{t.flushes++;},
+  GlobalVariablesFlush:()=>{t.flushes++;},NormalizeDouble:(v,d)=>Number(Number(v).toFixed(d)),MathMax:Math.max,MathMin:Math.min,MathPow:Math.pow,
   IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),MathIsValidNumber:v=>Number.isFinite(v),GetLastError:()=>4501,
   ArraySize:a=>a.length,ArrayResize:(a,n)=>{while(a.length<n)a.push(a.objects?{ticket:0,price_level:0,price_trade:0,lots:0,sl:0,tp:0}:0);a.length=n;return n;},
   Print:(...a)=>t.logs.push(a.join('')),Alert:(...a)=>t.alerts.push(a.join('')),
+  HLineCreate:()=>true,HLineDelete:()=>true,ObjectFind:()=>-1,clrAqua:0,clrBlue:0,STYLE_DASHDOT:0,STYLE_SOLID:0,STYLE_DASH:0,
   GlobalVariableSet:(k,v)=>{t.writes.push(k);if(t.failWrites.has(k.split('_').pop())||t.failWrites.has('*'))return 0;t.gv.set(k,Number(v));return 1;},
   GlobalVariableGetRef:(k,set)=>{if(!t.gv.has(k))return false;set(t.gv.get(k));return true;},
   GlobalVariableDel:k=>t.gv.delete(k),
   PositionsTotal:()=>t.positions.length,PositionGetTicket:i=>{sel=t.positions[i];return sel?sel.ticket:0;},
   PositionSelectByTicket:tk=>{sel=t.positions.find(p=>p.ticket===tk)||null;return !!sel;},
   PositionGetInteger:k=>sel[k],PositionGetString:k=>sel[k],PositionGetDouble:k=>sel[k],
+  CTrade:()=>({SetExpertMagicNumber:()=>{},PositionModify:(tk,sl,tp)=>{const p=t.positions.find(x=>x.ticket===tk);t.modifies.push({ticket:tk,from:p.sl,sl,tp});p.sl=sl;p.tp=tp;return true;}}),
+  HistorySelect:(from,to)=>{history=t.deals.filter(d=>d.msc/1000>=from&&d.msc/1000<=to).map(d=>d.ticket);return true;},
+  HistoryDealsTotal:()=>history.length,HistoryDealGetTicket:i=>history[i]??0,
+  HistoryDealGetInteger:(d,k)=>t.deals.find(x=>x.ticket===d)[k],HistoryDealGetDouble:(d,k)=>t.deals.find(x=>x.ticket===d)[k],
+  HistoryDealGetString:(d,k)=>t.deals.find(x=>x.ticket===d)[k],
  };
- c.UpdateLockTPSL=n=>c.updates.push(n);   // its own first statement is checked from the source (section 6)
  vm.createContext(c);
  vm.runInContext(METHODS.map(([n,a,s])=>fn(n,a,bodyOf(main,s))).join(''),c);
  c.PersistReset();
@@ -98,62 +129,75 @@ function startSequence(s,t,ticket,sizes=[0.0012,0.0008,0,0.0030,0.0004]){
 }
 const addLevel=s=>{s.Level_Count++;s.PersistLevels();};
 
-// 1. The record: written at the first level (T last), its level count with each later level, the realized P/L at
-//    most every 5 s, every field re-set once per UTC day, each write flushed to disk, deleted at the end.
+// 1. The record: written at the first level (T last, any earlier record deleted first), its level count with each
+//    later level, the realized P/L and level count at most every 5 s, the whole record from memory once per UTC day,
+//    every write flushed to disk, deleted at the end.
 {const t=terminal({positions:[pos(1001,{msc:T0})]}),s=sequence(t);
+ t.gv.set(key('T'),T0-999);   // a stale record from an older sequence on the same key
  startSequence(s,t,1001);
  assert.deepEqual(t.writes,['TK','G','L','TP','SL','TS','N','R','T'].map(f=>key(f)),'the start record, T written last');
- assert.equal(t.gv.get(key('T')),T0);assert.equal(t.gv.get(key('TK')),1001);assert.equal(t.gv.get(key('TS')),0.0004);
- assert.equal(t.gv.get(key('N')),1);assert.equal(t.flushes,1,'flushed to gvariables.dat');
- addLevel(s);addLevel(s);assert.equal(t.gv.get(key('N')),3,'each later level updates the level count');assert.equal(t.flushes,3);
+ assert.equal(t.gv.get(key('T')),T0,'the stale record went first');assert.equal(t.gv.get(key('TK')),1001);assert.equal(t.gv.get(key('TS')),0.0004);
+ assert.equal(t.gv.get(key('N')),1);assert.equal(t.flushes,2,'the deletion and the record, each flushed to gvariables.dat');
+ addLevel(s);addLevel(s);assert.equal(t.gv.get(key('N')),3,'each later level updates the level count');assert.equal(t.flushes,4);
  t.writes.length=0;s.SequenceRealizedPL=-12.5;
  s.PersistFlush();assert.deepEqual(t.writes,[],'within 5 s of the last write nothing is written');
  for(let i=0;i<10;i++){s.SequenceRealizedPL-=1;t.now+=400;s.PersistFlush();}
- assert.deepEqual(t.writes,[key('R')],'ten changes inside 5 s: one write');assert.equal(t.flushes,4);
- t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.writes.length,1,'unchanged: no write');
- // The next UTC day: one read-and-set of every field (the 4-week expiry), inside the same rate bound, then flushed.
- s.SequenceRealizedPL-=1;t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.flushes,5);    // a write, now
+ assert.deepEqual(t.writes,[key('R'),key('N')],'ten changes inside 5 s: one write');assert.equal(t.flushes,5);
+ t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.writes.length,2,'unchanged: no write');
+ s.SequenceRealizedPL-=1;t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.flushes,6);    // a write, now
+ // The next UTC day: the whole record from memory (every field's 4-week expiry), inside the same rate bound.
  t.writes.length=0;t.gmt+=86400;s.PersistFlush();assert.deepEqual(t.writes,[],'within 5 s of that write: not yet');
+ t.gv.set(key('N'),1);   // a stale field (a lost write): the daily rewrite repairs it from memory (Claude-Mac P3)
  t.now+=FLUSH_MS;s.PersistFlush();
- assert.deepEqual(t.writes,['R','TK','G','L','TP','SL','TS','N','T'].map(f=>key(f)),'every field re-set once that day');
- assert.equal(t.gv.get(key('T')),T0,'with its own value');assert.equal(t.flushes,6);
+ assert.deepEqual(t.writes,['TK','G','L','TP','SL','TS','N','R','T'].map(f=>key(f)),'the whole record once that day');
+ assert.equal(t.gv.get(key('N')),3,'from memory');assert.equal(t.gv.get(key('T')),T0);assert.equal(t.flushes,7);
  t.writes.length=0;t.now+=FLUSH_MS;s.PersistFlush();assert.deepEqual(t.writes,[],'not again that day');
+ // A level the Add_Level hook does not see (the CumPartial unwind branch appends a virtual level row) reaches N at the
+ // next flush, with the realized P/L unchanged.
+ s.Level_Count++;t.writes.length=0;t.now+=FLUSH_MS;s.PersistFlush();
+ assert.deepEqual(t.writes,[key('R'),key('N')]);assert.equal(t.gv.get(key('N')),4);
  s.SequenceRealizedPL=-30;s.PersistFlush(true);assert.equal(t.gv.get(key('R')),-30,'OnDeinit forces the flush');
- s.PersistEnd();assert.equal(t.gv.size,0,'the end deletes the record');assert.equal(t.flushes,8,'and flushes the deletion');
+ s.PersistEnd();assert.equal(t.gv.size,0,'the end deletes the record');assert.equal(t.flushes,10,'and flushes the deletion');
  ok();}
 
-// 2. A restart mid-basket (CumPartial: level 1 partly harvested at a loss, realized -41.5): matched, everything back.
-function midBasket(){
- const t=terminal({positions:[pos(1002,{msc:T0+60000,open:1.0985,volume:0.2,sl:1.0900}),pos(1001,{msc:T0,open:1.1,volume:0.05,sl:1.0900}),
-  pos(1003,{msc:T0+120000,open:1.0970,volume:0.3,sl:1.0900})]});
- const before=sequence(t);startSequence(before,t,1001);addLevel(before);addLevel(before);
- before.SequenceRealizedPL=-41.5;t.now+=FLUSH_MS;before.PersistFlush();
+// A basket mid-way (CumPartial: level 1 partly harvested at a loss) whose terminal stops; the stops are at the levels'
+// computed SL or tighter (a trailed one), as the EA left them.
+const SIZES=[0.0012,0.0008,0,0.0030,0.0004];
+function midBasket({sl=[0,0,0],ledger=1}={}){
+ const t=terminal({ledger,positions:[pos(1002,{msc:T0+60000,open:1.0985,volume:0.2,sl:sl[1]}),pos(1001,{msc:T0,open:1.1,volume:0.05,sl:sl[0]}),
+  pos(1003,{msc:T0+120000,open:1.0970,volume:0.3,sl:sl[2]})]});
+ for(const [p,msc] of [[1001,T0],[1002,T0+60000],[1003,T0+120000]]) deal(t,{entry:0,type:0,magic:M,position:p,msc,commission:-3.5});
+ deal(t,{entry:1,type:1,magic:M,position:1001,msc:T0+150000,profit:-40,commission:-1});   // the harvest
+ const before=sequence(t);startSequence(before,t,1001,SIZES);addLevel(before);addLevel(before);
+ before.SequenceRealizedPL=-51.5;t.now+=FLUSH_MS;before.PersistFlush();   // the join ledger: 3 entry commissions + the harvest
+ t.modifies.length=0;t.alerts.length=0;t.logs.length=0;
  return t;
 }
-{const t=midBasket(),s=sequence(t);   // the terminal restarts: a fresh SEQUENCE, the same positions and GlobalVariables
+// The levels' computed SL (Level_Entry - Size_SL): what UpdateLockTPSL writes on a basket that never trailed.
+const ENTRY=(1.1*0.05+1.0985*0.2+1.0970*0.3)/0.55, COMPUTED=Number((ENTRY-0.0030).toFixed(5));
+
+// 2. A restart mid-basket: matched, everything back, nothing loosened.
+{const t=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED]}),s=sequence(t);   // a fresh SEQUENCE, the same positions, deals and GVs
  assert.equal(s.AdoptOpenPositions(),true);
  assert.deepEqual([s.Active,s.Traded,s.Adopted,s.AdoptMatched,s.AdoptSizes],[true,true,true,true,true]);
- assert.equal(s.SequenceRealizedPL,-41.5,'MLPS sees realized + open, not open only');
+ assert.equal(s.SequenceRealizedPL,-51.5,'MLPS sees realized + open (recounted from history under PositionJoin: the same here)');
  assert.deepEqual(s.TradeLevels.map(l=>l.ticket),[1001,1002,1003],'levels by open time');
- assert.deepEqual(s.TradeLevels.map(l=>[l.price_level,l.lots,l.sl]),[[1.1,0.05,1.09],[1.0985,0.2,1.09],[1.097,0.3,1.09]]);
  assert.deepEqual([s.Level_Count,s.Trades_Count,s.Level_Last],[3,3,1.097]);
- assert.deepEqual([s.Size_Grid,s.Size_Lock,s.Size_TP,s.Size_SL,s.Size_TSL],[0.0012,0.0008,0,0.0030,0.0004],'the frozen sizes');
- assert.deepEqual(s.updates,[3],'Lock/TP/SL recomputed from the frozen sizes');
+ assert.deepEqual([s.Size_Grid,s.Size_Lock,s.Size_TP,s.Size_SL,s.Size_TSL],SIZES,'the frozen sizes');
+ assert.equal(s.Level_Lock,Number((ENTRY+0.0008).toFixed(5)),'Lock recomputed from the frozen sizes');
+ assert.deepEqual(t.modifies,[],'the stops already at the computed SL: nothing written');
  assert.deepEqual(s.LedgerPositions,[1001,1002,1003],'the positions join F2\'s ledger');
- assert.equal(t.alerts.length,1);assert.match(t.alerts[0],/adopted 3 open position\(s\) of magic 1843920117 as manage-only \(adds frozen\)\. Record matched: MLPS sees realized -41\.50 \+ open P\/L\. Lock\/TP\/SL and trailing resume/);
- // Manage-only: adds frozen (logged once), closes and MLPS untouched; the record is the same sequence's.
+ assert.equal(t.alerts.length,1);assert.match(t.alerts[0],/adopted 3 open position\(s\) of magic 1843920117 as manage-only \(adds frozen\)\. Record matched: MLPS sees realized -51\.50 \+ open P\/L\. Lock\/TP\/SL and trailing resume/);
  assert.equal(s.ManageOnlyFrozen(4),true);assert.equal(s.ManageOnlyFrozen(4),true);
  assert.deepEqual(t.logs.filter(l=>l.startsWith('GOAT restart: add_frozen=')),['GOAT restart: add_frozen=manage_only side=BUY magic=1843920117 symbol=EURUSD level=4 closes_stops_mlps=continue']);
  assert.equal(t.gv.get(key('T')),T0,'the record carries on');
  // The first level was closed by a harvest: every live position opened at or after the start still matches.
  const t2=midBasket();t2.positions=t2.positions.filter(p=>p.ticket!==1001);const s2=sequence(t2);s2.AdoptOpenPositions();
- assert.deepEqual([s2.AdoptMatched,s2.SequenceRealizedPL,s2.Level_Count],[true,-41.5,2]);
+ assert.deepEqual([s2.AdoptMatched,s2.Level_Count],[true,2]);
  // A start time stamped late (PositionSelectByTicket failed at the start, so TimeCurrent stood in): the oldest live
  // position predates the record, and its first ticket, still live, is what matches.
- const t3=midBasket();t3.gv.set(key('T'),T0+5000);const s3=sequence(t3);s3.AdoptOpenPositions();
- assert.deepEqual([s3.AdoptMatched,s3.SequenceRealizedPL],[true,-41.5]);
- // Claude-Mac 6428447507: the start-time rule also needs the live count within the record's level count, so a later,
- // unrelated basket on the same key (more positions than the stale record ever had) does not match it.
+ const t3=midBasket();t3.gv.set(key('T'),T0+5000);const s3=sequence(t3);s3.AdoptOpenPositions();assert.equal(s3.AdoptMatched,true);
+ // Claude-Mac 6428447507: the start-time rule also needs the live count within the record's level count.
  const t4=midBasket();t4.gv.set(key('N'),2);t4.gv.set(key('TK'),999);const s4=sequence(t4);s4.AdoptOpenPositions();
  assert.deepEqual([s4.AdoptMatched,s4.SequenceRealizedPL],[false,0],'3 live positions, a record of 2 levels, its ticket gone');
  const t5=midBasket();t5.gv.set(key('N'),2);const s5=sequence(t5);s5.AdoptOpenPositions();
@@ -161,23 +205,23 @@ function midBasket(){
  ok();}
 
 // 3. No matching record: open P/L only, broker SL/TP untouched, the stale record replaced by this basket's.
-{const t=midBasket();t.gv.set(key('T'),T0+600000);t.gv.set(key('TK'),999);   // a later sequence's record, ticket gone
+{const t=midBasket({sl:[1.08,1.08,1.08]});t.gv.set(key('T'),T0+600000);t.gv.set(key('TK'),999);   // a later sequence's record, ticket gone
  const s=sequence(t);s.AdoptOpenPositions();
  assert.deepEqual([s.Adopted,s.AdoptMatched,s.AdoptSizes,s.SequenceRealizedPL],[true,false,false,0]);
- assert.deepEqual(s.updates,[],'no Lock/TP/SL write from guessed sizes');
+ s.UpdateLockTPSL(3);assert.deepEqual(t.modifies,[],'no Lock/TP/SL write from guessed sizes, even when asked');
  assert.match(t.alerts[0],/No matching record: MLPS sees open P\/L only\. The EA leaves this basket's broker SL\/TP untouched\./);
  assert.equal(t.gv.get(key('T')),T0,'a new record starts at the oldest live position');assert.equal(t.gv.get(key('TK')),1001);
  assert.equal(t.gv.get(key('G')),1234.5,'its sizes are unknown (the sentinel)');
  // The stale record is deleted before the new one is written: if the new start time cannot be written, no stale T
- // is left to pair with the new fields at the next restart (the record reads as incomplete, so unmatched).
+ // is left to pair with the new fields at the next restart (Claude-Mac P2-3: no mixed record).
  const f=midBasket();f.gv.set(key('T'),T0+600000);f.gv.set(key('TK'),999);f.failWrites.add('T');
  const fs1=sequence(f);fs1.AdoptOpenPositions();
  assert.equal(f.gv.has(key('T')),false,'no stale start time survives');assert.equal(fs1.PersistFailed,true,'adds frozen');
  // The next restart matches that record, but its sizes stay unknown: the stops stay untouched.
- const s2=sequence(t);s2.AdoptOpenPositions();assert.deepEqual([s2.AdoptMatched,s2.AdoptSizes,s2.updates.length],[true,false,0]);
+ const s2=sequence(t);s2.AdoptOpenPositions();s2.UpdateLockTPSL(3);assert.deepEqual([s2.AdoptMatched,s2.AdoptSizes,t.modifies.length],[true,false,0]);
  // No record at all, or an incomplete one (no T, the field written last): the same as unmatched.
- for(const drop of [['T','TK','G','L','TP','SL','TS','R'],['T']]){
-  const u=midBasket();for(const f of drop)u.gv.delete(key(f));const x=sequence(u);x.AdoptOpenPositions();
+ for(const drop of [['T','TK','G','L','TP','SL','TS','N','R'],['T']]){
+  const u=midBasket();for(const fl of drop)u.gv.delete(key(fl));const x=sequence(u);x.AdoptOpenPositions();
   assert.deepEqual([x.Adopted,x.AdoptMatched,x.SequenceRealizedPL],[true,false,0],'dropped '+drop.join(','));
  }
  ok();}
@@ -195,7 +239,8 @@ function midBasket(){
  const r=terminal({positions:[pos(1001)]}),rs=sequence(r);rs.Active=true;assert.equal(rs.AdoptOpenPositions(),false);
  ok();}
 
-// 5. A failed record write freezes adds (logged and alerted once) until a write succeeds.
+// 5. A failed record write freezes adds (alerted once) until everything pending is written; a failed level-count
+//    write is retried before adds resume (Codex GOAT-EA#266).
 {const t=terminal({positions:[pos(1001)]});t.failWrites.add('*');const s=sequence(t);
  startSequence(s,t,1001);
  assert.equal(s.PersistFailed,true);assert.equal(t.alerts.length,1);assert.match(t.alerts[0],/restart record not written .*Adds are frozen until a write succeeds/);
@@ -204,9 +249,14 @@ function midBasket(){
  t.failWrites.clear();t.now+=FLUSH_MS;s.PersistFlush();
  assert.equal(s.PersistFailed,false,'the retried start succeeded');assert.equal(t.gv.get(key('T')),T0);
  assert.equal(s.ManageOnlyFrozen(2),false,'adds resume');
+ // A later level whose count cannot be written: frozen; the timer rewrites the whole record (N included) before resuming.
+ t.failWrites.add('N');addLevel(s);assert.equal(t.gv.get(key('N')),1);assert.equal(s.ManageOnlyFrozen(3),true);
+ t.now+=FLUSH_MS;s.PersistFlush();assert.equal(s.ManageOnlyFrozen(3),true,'still failing: still frozen');
+ t.failWrites.clear();t.now+=FLUSH_MS;s.PersistFlush();
+ assert.deepEqual([t.gv.get(key('N')),s.PersistFailed,s.ManageOnlyFrozen(3)],[2,false,false],'N repaired before adds resume');
  // A later realized write fails: frozen again, then resumes.
- t.failWrites.add('R');s.SequenceRealizedPL=-5;t.now+=FLUSH_MS;s.PersistFlush();assert.equal(s.ManageOnlyFrozen(2),true);
- t.failWrites.clear();t.now+=FLUSH_MS;s.PersistFlush();assert.equal(s.ManageOnlyFrozen(2),false);assert.equal(t.gv.get(key('R')),-5);
+ t.failWrites.add('R');s.SequenceRealizedPL=-5;t.now+=FLUSH_MS;s.PersistFlush();assert.equal(s.ManageOnlyFrozen(3),true);
+ t.failWrites.clear();t.now+=FLUSH_MS;s.PersistFlush();assert.equal(s.ManageOnlyFrozen(3),false);assert.equal(t.gv.get(key('R')),-5);
  ok();}
 
 // 6. Where it sits in the source.
@@ -217,7 +267,9 @@ function midBasket(){
  assert.ok(ADD.includes('        if(LastOrderTicket>0) {if(PersistStartMsc==0) PersistStart((ulong)LastOrderTicket); else PersistLevels();} // B49a (F1-lite): the first real level starts the restart record, each later one updates its level count'));
  assert.equal(firstStatement(bodyOf(main,'   void UpdateLockTPSL(int count=0)')),UPDATE_GUARD);
  assert.equal(firstStatement(bodyOf(main,'   void TrailingStoploss()')),UPDATE_GUARD);
- assert.ok(main.includes('                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);\n     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();'),'OnInit adopts right after the sequences\' Init');
+ assert.ok(main.includes('                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);\n     GoatLedgerOwnerReset();'
+  +' // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)\n     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();'),
+  'OnInit adopts right after the sequences\' Init (and F2\'s owner-cache reset)');
  assert.equal((main.match(/\.AdoptOpenPositions\(\)/g)||[]).length,2,'adoption: OnInit only');
  assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('   GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)\n   Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush();'),'the timer flushes');
  assert.ok(bodyOf(main,'void OnDeinit(const int reason)').includes('   Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true);'),'OnDeinit forces it');
@@ -235,6 +287,89 @@ function midBasket(){
  }
  // MLPS needs Active, Traded and a real sequence, which adoption provides.
  assert.ok(bodyOf(main,'   bool EnforceSequenceMLPS(const string context)').includes('if(Virtual || !Active || !Traded)'));
+ ok();}
+
+// 7. Claude-Mac GOAT-EA#266 P1-a: an adopted basket is active from OnInit, and GetSize refreshed ATR_Buf only while no
+//    sequence was active, so in ATR mode its next read was out of range and MT5 removed the EA (worse than B47). Now an
+//    empty ATR_Buf is refilled on any call. B47's GetSize runs on the same state and crashes; MT5's out-of-range read is
+//    modelled by an array that throws.
+function getSize(text,{active=true,ready=true}={}){
+ const buf=new Proxy([],{get(a,p){if(typeof p==='string'&&/^\d+$/.test(p)&&Number(p)>=a.length)throw new Error('array out of range');return Reflect.get(a,p);}});
+ const g={GRID:121,GRID_MIN:122,GRID_MAX:123,GRID_VALID:124,LOCK:125,TSL:126,OP_SL:1,OP_TP:2,
+  Grid_Size:-1.5,LP_Size_:-0.8,SL_Pips_:0,TP_Pips_:0,TSL_Size_:-0.4,Grid_Min_:-0.5,Grid_Max_:-6,Grid_Exponent:1.2,Grid_Factor:1.0,Max_Seq_Trades:10,
+  bid:1.0950,ask:1.0951,LastATRBid:0,LastATRAsk:0,Seq_Buy:{Active:active},Seq_Sell:{Active:false},ATR_MA_handle:7,ATR_Buf:buf,ATR_Pips:0,
+  CopyBuffer:(h,b,shift,n,arr)=>{if(!ready)return -1;arr.length=0;arr.push(0.0010);return 1;},ArraySize:a=>a.length,
+  NormalizeDouble:(v,d)=>Number(Number(v).toFixed(d)),_Point:0.00001,Point:()=>0.00001,FastSpeed_Flag:true,SetEdit:()=>{},PanelDialog:{},
+  MathPow:Math.pow,MathMax:Math.max,MathMin:Math.min};
+ vm.createContext(g);vm.runInContext(fn('GetSize',['type','level_count=0','grid_size=0'],bodyOf(text,'double GetSize(int type,int level_count=0,double grid_size=0)')),g);
+ return g;
+}
+{const tree=getSize(main),b47=getSize(mainB47);
+ assert.throws(()=>b47.GetSize(124,3,0.0015),/array out of range/,'B47: the GRID_VALID compare after adoption crashes');
+ assert.throws(()=>b47.GetSize(121),/array out of range/,'B47: so does the opposite side\'s start');
+ const valid=tree.GetSize(124,3,0.0015);assert.ok(Number.isFinite(valid)&&valid>0,'B49a: the buffer is refilled');
+ assert.equal(tree.GetSize(121),0.0015,'GRID = 1.5 x ATR');assert.equal(tree.ATR_Buf.length,1);
+ // Unchanged while a sequence is active and the buffer is full (the frozen-ATR rule of B47).
+ tree.ATR_Buf[0]=0.0020;tree.bid=1.0960;assert.equal(tree.GetSize(121),0.003,'no refresh over a full buffer while active');
+ // Honest limit: an ATR indicator not ready yet (CopyBuffer fails) still leaves the buffer empty, exactly as at any
+ // B47 start; Ops' drill checks 30 min of ticks after each adoption for this.
+ assert.throws(()=>getSize(main,{ready:false}).GetSize(121),/array out of range/);
+ assert.match(bodyOf(main,'double GetSize(int type,int level_count=0,double grid_size=0)'),/\|\| ArraySize\(ATR_Buf\)==0\) \/\/ B49a \(F1-lite\)/);
+ ok();}
+
+// 8. Claude-Mac GOAT-EA#266 P1-b (Ops' case D): a trailed SL survives a restart. The matched restore recomputes
+//    Lock/TP/SL, and for an adopted basket each position keeps the tighter of its broker SL and the computed one; a
+//    looser broker SL is tightened to the computed level, never the other way. The trailing level starts there.
+{const TRAILED=1.0990;
+ const t=midBasket({sl:[TRAILED,TRAILED,TRAILED]}),s=sequence(t);s.AdoptOpenPositions();
+ assert.ok(COMPUTED<TRAILED,'the trailed SL is above the computed one (a buy)');
+ assert.deepEqual(t.modifies,[],'case D: the trailed SL is unchanged');assert.deepEqual(t.positions.map(p=>p.sl),[TRAILED,TRAILED,TRAILED]);
+ assert.equal(s.Level_TSL,TRAILED,'the trailing level starts at the tightest broker SL');
+ const loose=midBasket({sl:[1.0800,COMPUTED,1.0990]}),l=sequence(loose);l.AdoptOpenPositions();
+ assert.deepEqual(loose.modifies.map(m=>[m.ticket,m.from,m.sl]),[[1001,1.08,COMPUTED]],'only a looser SL moves, and only tighter');
+ assert.deepEqual(loose.positions.map(p=>[p.ticket,p.sl]).sort(),[[1001,COMPUTED],[1002,COMPUTED],[1003,1.099]]);
+ assert.equal(l.Level_TSL,1.099);
+ // A sell keeps the lower of the two.
+ const sellT=terminal({positions:[pos(2001,{type:1,open:1.1,sl:1.0960,msc:T0})]});deal(sellT,{entry:0,type:1,magic:M,position:2001,msc:T0,commission:-3.5});
+ const sb=sequence(sellT,{dir:1});startSequence(sb,sellT,2001,SIZES);sellT.modifies.length=0;
+ const sa=sequence(sellT,{dir:1});sa.AdoptOpenPositions();assert.deepEqual(sellT.modifies,[],'a trailed sell SL below the computed one stays');
+ assert.equal(sa.Level_TSL,1.096);
+ assert.ok(bodyOf(main,'   void UpdateLockTPSL(int count=0)').includes('       if(Adopted) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);'));
+ ok();}
+
+// 9. Claude-Mac GOAT-EA#266 P2-1: the transaction path's position count starts at the adopted basket's, so a broker
+//    close that empties the side ends the sequence instead of leaving a manage-only zombie.
+{const t=midBasket();const s=sequence(t);s.AdoptOpenPositions();assert.deepEqual([t.counts.buy,t.counts.sell],[3,0]);
+ const sell=terminal({positions:[pos(2001,{type:1}),pos(2002,{type:1,msc:T0+1})]});sequence(sell,{dir:1}).AdoptOpenPositions();assert.equal(sell.counts.sell,2);
+ const BODY=bodyOf(main,'void GoatTradeTransactionBody(');
+ assert.ok(BODY.includes('if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)'),'B47\'s end rule, which needs a non-zero last count');
+ ok();}
+
+// 10. Claude-Mac GOAT-EA#266 P2-2: under PositionJoin a matched basket's realized P/L is recounted from history, so a
+//     close made while the EA was down (or after its last flush) counts; fees included. Legacy keeps the record's R.
+{const down=t=>{t.positions.push(pos(1004,{msc:T0+130000,open:1.0960,volume:0.3}));
+  deal(t,{entry:0,type:0,magic:M,position:1004,msc:T0+130000,commission:-3.5,fee:-0.25});
+  t.positions=t.positions.filter(p=>p.ticket!==1004);                                   // a broker stop closed it while down
+  deal(t,{entry:1,type:1,magic:M,position:1004,msc:T0+170000,profit:-30,commission:-1,fee:-0.25});};
+ const t=midBasket();t.gv.set(key('N'),4);down(t);const s=sequence(t);s.AdoptOpenPositions();
+ assert.equal(s.SequenceRealizedPL,-51.5-3.5-0.25-31-0.25,'the record\'s -51.5 plus the close made while down, fees included');
+ assert.ok(s.LedgerDeals.length>=6,'every counted deal is booked, so it is never counted twice');
+ const legacy=midBasket({ledger:0});legacy.gv.set(key('N'),4);down(legacy);const l=sequence(legacy);l.AdoptOpenPositions();
+ assert.equal(l.SequenceRealizedPL,-51.5,'Legacy: the record\'s R (the B47 ledger never booked such a close)');
+ // A foreign position (another magic) and the opposite side never count.
+ const f=midBasket();deal(f,{entry:0,type:0,magic:Y,position:9001,msc:T0+1000,commission:-9});deal(f,{entry:1,type:1,magic:0,position:9001,msc:T0+2000,profit:-99});
+ deal(f,{entry:0,type:1,magic:M,position:9002,msc:T0+1000,commission:-9});deal(f,{entry:1,type:0,magic:M,position:9002,msc:T0+2000,profit:-99});
+ const fs1=sequence(f);fs1.AdoptOpenPositions();assert.equal(fs1.SequenceRealizedPL,-51.5);
+ ok();}
+
+// 11. Claude-Mac GOAT-EA#266 P2-3: a start that fails midway never leaves a mix of two records (the older one is
+//     deleted first), so a later restart reads it as incomplete.
+{const t=terminal({positions:[pos(1001,{msc:T0})]});
+ for(const f of ['T','TK','G','L','TP','SL','TS','N','R'])t.gv.set(key(f),f==='T'?T0-5000:f==='TK'?777:1);
+ t.failWrites.add('SL');const s=sequence(t);startSequence(s,t,1001);
+ assert.equal(t.gv.has(key('T')),false,'the older record\'s T is gone');assert.equal(t.gv.get(key('TK')),1001,'the new fields so far');
+ assert.equal(t.gv.has(key('N')),false,'nothing after the failed field');
+ const x=sequence(t);x.AdoptOpenPositions();assert.equal(x.AdoptMatched,false,'incomplete: unmatched');
  ok();}
 
 console.log(JSON.stringify({passed,test:'restart_adopt'}));

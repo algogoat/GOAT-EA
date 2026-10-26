@@ -1,0 +1,86 @@
+{
+  "schema": "goat-forward-candidate-identity-v1",
+  "version": "1.49",
+  "build_id": "V1.49-BETA17-49",
+  "build_marker": "B49a",
+  "source_base": "ccb0a071f23a22e3ad766f4898266aeaa0226306",
+  "consolidates": [
+    "B49a.1",
+    "B49a.2",
+    "B49a.3",
+    "B49a.4"
+  ],
+  "consolidated_heads": {
+    "B49a.1": {
+      "change": "every ticket is held as a 64-bit value (LastOrderTicket, LastDealTicket, LastBuyTicket, LastSellTicket are long; the four (int) casts are gone), so a ticket above INT_MAX is never truncated",
+      "pr": "algogoat/GOAT-EA#263 (claude-pc/b49a-tickets)",
+      "coordination": "algogoat/goatai#2587 (WEEKEND-1031, 6427654059 / 6427772701)"
+    },
+    "B49a.2": {
+      "change": "B48: a live chart rewrites its own CID GlobalVariable once per UTC day (the value it read; skipped on a failed read or a value <= 0; flushed after a successful write; retried after 60 s), so MT5's 4-week expiry never drops a running chart's record",
+      "pr": "algogoat/GOAT-EA#264 (claude-pc/b49a-b48)",
+      "coordination": "algogoat/goatai#2587 (WEEKEND-1031, 6427654059 / 6427772701)"
+    },
+    "B49a.3": {
+      "change": "F2: the appended input Ledger_Mode (default Ledger_Legacy = B47). Ledger_PositionJoin books an exit by the position it closes (positions this sequence opened under MAGIC1), with fees, in the daily P/L, the dashboard rebuild and the transaction path; closes carry MAGIC1. The controller completes an omitted Ledger_Mode with its default; the Studio accepts it only at 0",
+      "pr": "algogoat/GOAT-EA#265 (claude-pc/b49a-f2)",
+      "coordination": "algogoat/goatai#2587 (WEEKEND-1031, 6427654059 / 6427772701)"
+    },
+    "B49a.4": {
+      "change": "F1-lite: each live real sequence keeps a restart record (GlobalVariables, flushed); on OnInit an open basket whose record matches is adopted manage-only (sizes, the tightest broker SL, the level count and, under PositionJoin, realized P/L from history); stops are only ever tightened; adds stay frozen until the basket ends. Live charts only",
+      "pr": "algogoat/GOAT-EA#266 (claude-pc/b49a-f1lite)",
+      "coordination": "algogoat/goatai#2587 (WEEKEND-1031, 6427654059 / 6427772701)"
+    }
+  },
+  "change": "B47 plus WEEKEND-1031: B49a.1 64-bit tickets, B49a.2 the B48 daily CID touch, B49a.3 F2 Ledger_Mode (position-join ledger, default Legacy = B47), B49a.4 F1-lite restart adoption (manage-only). Every changed line since B47 is marked B49a (scripts/test_b49a_no_drift.cjs); the input header gains the appended Ledger_Mode, so B49a batch packages carry its own header pin. Restart adoption and the CID touch run on live charts only.",
+  "supersedes_candidate": "beta17-B47",
+  "sources": {
+    "Dashboard.mqh": "34f9fbc47d2c18c76ab52a6ebd9b0ba140f5b61151596410696b634821480f40",
+    "GOAT V1.49.mq5": "eab5f1f4500cd09b249f5fc833d24a5fe3b4c95dd1dc733936fb2a8027794965",
+    "GOATAIWireV2.mqh": "14a1f0f2ae0baf65494fea67df0d8efc26ce547cd346fbbc47d3264d00006c90",
+    "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
+    "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",
+    "GOATEADeviceActivation.mqh": "71f3956405b599911ff70dd37c981a820b859b5b312a5ea363c94d617d43a17b",
+    "GOATEvidenceEnd.mqh": "c4765e143bf005cd326b8e388639fb90f34ac9fc99a89c77334b3b561e15ec7f",
+    "GOATLicenseInitRetry.mqh": "e8ebe975238350d7838791eccb0e1cd844a13dd0f73c9d5765e13425fc192379",
+    "GOATOptimizationInputs.mqh": "5896ee257a4562fb0a6a9857324047e21cec368bf65dbc64692f9bc92b4f773c",
+    "GOATPortfolioChildAudit.mqh": "b6e8ae02d76ef4ef8e7a06e29c195229989937999f0ab1201d7861098d4cc966",
+    "GOATPortfolioSetupControl.mqh": "d1cd09294c88b29a37acdd75223a73ba7cf88a1b36593d3f68b64e5fa1aace86",
+    "GOATSetupControl.mqh": "b4ac1c18c6f4a19b67acd513994cfc76baaa39d0f6f60bfbaf48a074988b6d70",
+    "GOATStudioBridge.mqh": "3d3b314d74d9f9e6031be0be2f2964dbda5234ebda3222b05bd6a0f8a3d196c6",
+    "GOATStudioCompletion.mqh": "94395d1c2729378df724aaa03a652e2cbafc3888d1b5353fa32b5df314fd5f47",
+    "GOATStudioControlFeedback.mqh": "50d8cad0d64b7730ed90b7e4b692cf74530dcb8952ff5aa3914dbb16be1934ca",
+    "GOATStudioDispatch.mqh": "a8292c3f1fb8c48288880a2389f74d4eb5134cbae6237efda8d22b7168838250",
+    "GOATStudioDraftDisplayPolicy.mqh": "5626e0d51afffc9e74116de3daf8805c3d9f057eaaefa1565f26473e9106c226",
+    "GOATStudioExportDates.mqh": "ed5fe016c3beaf75632a11a1f2142b69239a2e5055d638cb4922c5d055195358",
+    "GOATStudioNative.mqh": "1fa4458dc58f13bc9113232d35c596f95f2da360b59a50ba194b5fe6eed04c56",
+    "GOATStudioQueueList.mqh": "924592b9ad494f23b3cd0a6c8c8c33c580a874308ffc781ee4772351d3a2d4e0",
+    "GOATStudioRecovery.mqh": "8280f8d3194075183b087061d6d4d0193b4d9c3db5db7b2d99fca845032c3993",
+    "GOATStudioRecoveryFiles.mqh": "ed3192689d9e7f02ca05c8034caf82778989ab5a8481372ca8e46c64610220c8",
+    "GOATStudioSettingCompare.mqh": "4168e5abe6c5e1229466b9261490a31bd235232d2a8db79a050779ea312d8104",
+    "GOATStudioSettingTypes.mqh": "e84492c8381f212c8e13f8d414c8d6dbb700612035919e31b59bea3aa3470c23",
+    "GOATStudioSettingValues.mqh": "8483511a7e9a7498d268c95923342f620a8a6de6eaffa7afcd8d228c8daadabf",
+    "GOATStudioUI.mqh": "88313c21db89bb0293619191eb988503c3aa1b06dcf2cd26bfb822f666d8666a",
+    "GOATStudioWorkers.mqh": "5ef12818f142840e9f6964caa0a231fff6d1a2742ceca1ed0c6449d5a42640e2",
+    "GOATTesterStopConfirm.mqh": "796cd047c12d633bef8616ae63b356f265a87efebc50f6651d3a2a2f7afd3732",
+    "GOAT_DashboardAILaunchPolicy.mqh": "835a1e98906353fed9b6f3f668b6a4e2f5c1f1381fbd2de33dc6b70579f920c8",
+    "GOAT_DashboardOverview.mqh": "f7011e51e21ffe25a026d24cab548713c7bb9095d46d6e210efe62c56e3284ad",
+    "GOAT_DirectionGuard.mqh": "a682957659fa16f534d2dab54cdfa5d4def759cde522f4991487cb62bf10bfea",
+    "GOAT_DirectionGuardCore.mqh": "dc46e1c6f1deef1414af73126fbd58098ae32ac54cbf163565a9d2ee4d602f78",
+    "GOAT_Inputs_Definitions.mqh": "38b3270e8bfca6e037097ff9b716ada2d9d62a665057c92346393af455953909",
+    "GOAT_SequenceExport.mqh": "2b969d5fa363beba69398569d94911ae901cec1e52f9ffb7eb75113adb90a54c",
+    "GOAT_SequenceHostIO.mqh": "fbde0abaa7d1f9bca3318f2707b2d278581c2887dea419fe5495146004c1d9d9",
+    "GOAT_SequencePackage.mqh": "5db878a58b7080dbdc110554bc46a64c2dad867c9f1f3d0972974b8f3ad9fc9a",
+    "MTTester.mqh": "a86dbdee543c944357ca45f28c69f4f01e247138d14a879eec5ad04f74c3b179",
+    "NewsBiasFilter.mqh": "d0aa07a7e8dbe1c64a90d8e3b43293428a0eff398e47987c28ce270eb4b50285",
+    "Optimizer.mqh": "0f21071b8418b0ef32663c5d7a3ee4b9807989000e1d435104065c6f6bd729c0",
+    "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
+    "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
+  },
+  "binary": null,
+  "compile": "pending",
+  "native_qualified": false,
+  "customer_delivery": false,
+  "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",
+  "dependencies": "External MT5 include/resource qualification and native execution remain unproven; compile is not admission."
+}

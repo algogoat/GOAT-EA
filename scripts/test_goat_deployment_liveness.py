@@ -93,7 +93,7 @@ class DeploymentLivenessTests(unittest.TestCase):
             data = (ROOT / name).read_bytes()
             self.assertTrue(data.startswith(b'\xef\xbb\xbf'), name)
             self.assertNotIn(b'\n', data.replace(b'\r\n', b''), name)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-BETA17-47"', (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig'))
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-BETA17-49"', (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig'))
 
 
 if __name__ == '__main__':

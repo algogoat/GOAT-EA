@@ -10,8 +10,10 @@
 // - the controller's v149 input contract follows the tree: dependencies.json pins this header and entrypoint, and
 //   inputs.json is exactly what studio_input_schema.discover reads from this header (test_studio_optimization_inputs);
 //   inputs are append-only: B47's 114 inputs keep their type, default and enum choices, and new ones follow BlindExport.
-// Replaces test_b47_no_drift.cjs (B47's guard against B46), which pinned the tree to B47 by design. The B49a
-// assembly PR adds the compiled identity and binds the tree to it.
+// - the tree is B49a's identity (candidate-builds/beta17-B49a/identity.json): every source hashes to it, it differs from
+//   B47 in exactly CHANGED, and the build ID and marker are its own. The build ID line is the one unmarked change
+//   (IDENTITY_LINES): its value "V1.49-BETA17-49" is the build's name, so it cannot carry the marker inside the string.
+// Replaces test_b47_no_drift.cjs (B47's guard against B46), which pinned the tree to B47 by design.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B49a change is marked, listed and reviewable. A marked line
 // or a marked block can still change behaviour. Neutrality with the new inputs at their defaults is proven only by
 // the tester parity on Banker (flags off, B49a against B47 byte-identical on the 48 templates and sampled exports).
@@ -32,12 +34,15 @@ const REMOVED={
   'if((bid!=LastATRBid || ask!=LastATRAsk) && !Seq_Buy.Active && !Seq_Sell.Active)// && !Seq_Buy_Virtual.Active && !Seq_Sell_Virtual.Active)', // F1-lite: GetSize refills an empty ATR_Buf
   'CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10.0),1);',            // F1-lite: never index an empty ATR_Buf
   'CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10),1);',              // F1-lite: never index an empty ATR_Buf
+  '#define   GOAT_BUILD_ID "V1.49-BETA17-47"','#define   GOAT_BUILD_MARKER "B47"',                                     // assembly: the build identity
  ],
  'GOAT_Inputs_Definitions.mqh':[
   'int      LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket,LastTradeCountBuy=0,LastTradeCountSell=0;', // tickets
  ],
 };
 const NEW_INPUTS=['Ledger_Mode'];   // F2
+// The assembly's build ID line (exact text in GOAT V1.49.mq5); the marker line carries "B49a" in its value.
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-49"'];
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
@@ -100,7 +105,7 @@ for(const f of CHANGED){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B47 line(s) is unmarked');
   for(const n of added){
    const text=lines[n-1];
-   assert.ok(/B49a/.test(text)||inBlock[n-1],f+':'+n+' changed since B47 without a B49a marker: '+text.trim());
+   assert.ok(/B49a/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)),f+':'+n+' changed since B47 without a B49a marker: '+text.trim());
   }
  }
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[])].sort(),f+': the B47 lines removed are exactly REMOVED');
@@ -121,6 +126,19 @@ for(const name of beforeNames) assert.deepEqual(schema.inputs[name],before.input
 assert.deepEqual(names.slice(beforeNames.length),NEW_INPUTS,'new inputs (appended to the header)');
 const declared=text=>[...text.matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
 assert.deepEqual(declared(read('GOAT V1.49.mq5').toString('utf8')),declared(git(['show',B47_SOURCE+':GOAT V1.49.mq5']).toString('utf8')),'no input added to the entrypoint');
+checks++;
+
+// 6. The tree is B49a's identity.
+const b49a=JSON.parse(read('candidate-builds/beta17-B49a/identity.json'));
+assert.equal(b49a.build_id,'V1.49-BETA17-49');assert.equal(b49a.build_marker,'B49a');assert.equal(b49a.supersedes_candidate,'beta17-B47');
+assert.deepEqual(Object.keys(b49a.sources).sort(),[...Object.keys(b47.sources),...ADDED].sort(),'B49a\'s identity covers B47\'s closure plus ADDED');
+for(const [f,h] of Object.entries(b49a.sources)) assert.equal(sha(read(f)),h,'B49a identity pins '+f);
+assert.deepEqual(Object.keys(b49a.sources).filter(f=>b49a.sources[f]!==b47.sources[f]).sort(),[...CHANGED,...ADDED].sort(),'B49a differs from B47 in exactly CHANGED and ADDED');
+const mainText=read('GOAT V1.49.mq5').toString('utf8');
+assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_ID "'+b49a.build_id+'"').length,1,'the build ID is the identity\'s');
+assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "'+b49a.build_marker+'"').length,1,'the marker is the identity\'s');
+assert.equal((mainText.match(/#define\s+GOAT_BUILD_(?:ID|MARKER)\b/g)||[]).length,2,'one build ID and one marker');
+assert.equal(deps.main_sha256,b49a.sources['GOAT V1.49.mq5'],'the contract pins the identity\'s entrypoint');
 checks++;
 
 console.log('b49a_no_drift: '+checks+' checks passed (B47 '+B47_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');

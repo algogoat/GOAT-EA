@@ -19,7 +19,7 @@
 // file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
 void GoatDeployNotice(const string goat_notice_text);
 #define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
-#define   GOAT_BUILD_ID "V1.49-BETA17-47"
+#define   GOAT_BUILD_ID "V1.49-BETA17-49"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -34,7 +34,7 @@ void GoatDeployNotice(const string goat_notice_text);
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B47"
+#define   GOAT_BUILD_MARKER "B49a"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"

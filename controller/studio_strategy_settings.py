@@ -63,7 +63,10 @@ def numeric(value, definition, *, step=False):
 
 # B49a (F2, GOAT-EA#265): inputs appended to the v149 input header after B47's 114. A SET written before an input
 # existed omits it, and the EA then runs that input's declared default, which reproduces the earlier build (SET
-# compatibility: append-only inputs with legacy-reproducing defaults). Every other input stays required.
+# compatibility: append-only inputs with legacy-reproducing defaults). Every other input stays required. The SET's own
+# bytes and values are never rewritten: the controller writes MT5's tester profile from exactly the launch's
+# [TesterInputs] (studio_tester_profile), so an omitted appended input runs its build default, and the EA's Studio
+# accepts it in the readback only at that default (GOATStudioSettingCompare.mqh, GoatStudioFixedInternal).
 APPENDED_INPUTS = ('Ledger_Mode',)
 
 
@@ -87,6 +90,9 @@ def complete_appended_inputs(values, schema):
 
 def validate_strategy(values, schema):
     definitions = schema['inputs']  # Trusted adapter supplies schema, not command JSON.
+    # The checks see an omitted appended input at its default; the caller's own values are returned unchanged, so a
+    # stored job, its registry SET and every SET hash stay as they were (Claude-Mac GOAT-EA#265 P1).
+    original = values
     values = complete_appended_inputs(values, schema)
     if not isinstance(values, dict) or set(values) != set(definitions):
         missing = sorted(set(definitions)-set(values)) if isinstance(values, dict) else []
@@ -141,7 +147,7 @@ def validate_strategy(values, schema):
     check_enum_ladders(values, schema)   # ENUM_LADDER_NOT_NATIVE: a ladder the EA refuses at OnTesterInit
     from studio_ea_init_rules import check_ea_init   # imports numeric from here; bound at call time
     check_ea_init(values, schema)                    # EA_INIT_REFUSED: the EA's own OnInit refusals, every reachable value
-    return dict(values=dict(values), axes=axes, source_sha256=schema['source_sha256'],
+    return dict(values=dict(original), axes=axes, source_sha256=schema['source_sha256'],
                 dependency_validation='pending', execution_ready=False)
 
 

@@ -22,6 +22,16 @@ const MUTANTS=[
  ['the rebuild ignores joined exits','      if(!GoatLedgerPositionMine(joinPositions[j])) continue;\n      DashboardBusClosedPLTotal+=joinProfits[j];','      continue;\n      DashboardBusClosedPLTotal+=joinProfits[j];'],
  // Not a mutant: GoatLedgerCollectExit's entry filter only saves a lookup. An entry deal the magic filter skipped
  // defines a position that is not this chart's, so GoatLedgerPositionMine excludes it either way (equivalent).
+ // Claude-Mac GOAT-EA#265 round: fees, the owner cache, the re-init join.
+ ['the ledger ignores fees','    SequenceRealizedPL += HistoryDealGetDouble(deal_ticket,DEAL_FEE);','    ;'],
+ ['the daily P/L ignores a MAGIC1 deal\'s fee','       if(Ledger_Mode==Ledger_PositionJoin) PL_Closed+=HistoryDealGetDouble(ticket,DEAL_FEE);','       ;'],
+ ['a joined exit ignores its fee','             +HistoryDealGetDouble(deal,DEAL_FEE);','             ;'],
+ ['the rebuild ignores a MAGIC1 exit\'s fee','      if(Ledger_Mode==Ledger_PositionJoin) closed_pl+=HistoryDealGetDouble(ticket,DEAL_FEE);','      ;'],
+ ['the transaction path ignores the fee','    if(Ledger_Mode==Ledger_PositionJoin) closed_pl+=HistoryDealGetDouble(trans.deal,DEAL_FEE);','    ;'],
+ ['"not mine" is cached before the entry is seen','   if(!seen) return false;\n',''],
+ ['OnInit keeps the owner cache','     GoatLedgerOwnerReset(); // B49a (F2)','     ; // B49a (F2)'],
+ ['the owner reset clears nothing','   ArrayResize(g_GoatLedgerOwnerPosition,0);\n   ArrayResize(g_GoatLedgerOwnerMine,0);','   ;'],
+ ['a re-init into PositionJoin joins nothing','    if(Active && Ledger_Mode==Ledger_PositionJoin) for(int i=0; i<Level_Count; i++) if(TradeLevels[i].ticket>0) LedgerAddPosition((ulong)TradeLevels[i].ticket);','    ;'],
  ['Legacy closes carry MAGIC1','if(Ledger_Mode==Ledger_PositionJoin) tr.SetExpertMagicNumber(MAGIC1);','tr.SetExpertMagicNumber(MAGIC1);'],
 ];
 function runOn(mainText){

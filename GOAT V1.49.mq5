@@ -766,6 +766,7 @@ class SEQUENCE
     Retrace_Triggered=false;
     Level_Retrace=0.0;
     ResetSequenceRiskState();
+    if(Active && Ledger_Mode==Ledger_PositionJoin) for(int i=0; i<Level_Count; i++) if(TradeLevels[i].ticket>0) LedgerAddPosition((ulong)TradeLevels[i].ticket); // B49a (F2): a live re-init into PositionJoin joins the running sequence's positions (Codex GOAT-EA#265)
    }
 //----------------------
    void End_Sequence(string desc)
@@ -1539,6 +1540,7 @@ class SEQUENCE
     if(!LedgerBook(deal_ticket)) return;
     if(deal_entry==DEAL_ENTRY_IN) SequenceRealizedPL += HistoryDealGetDouble(deal_ticket,DEAL_COMMISSION);
     else                          SequenceRealizedPL += ClosedDealPL(deal_ticket);
+    SequenceRealizedPL += HistoryDealGetDouble(deal_ticket,DEAL_FEE);   // a fee-charging broker's per-deal fee (the export and GoatRankPF count it)
    }
 // B49a:end f2-ledger
 //---------------------- true sequence P/L = realized ledger + live open P/L
@@ -2750,14 +2752,18 @@ bool GoatLedgerPositionMine(const ulong position_id)
    for(int i=ArraySize(g_GoatLedgerOwnerPosition)-1; i>=0; i--)
       if(g_GoatLedgerOwnerPosition[i]==position_id) return g_GoatLedgerOwnerMine[i];
    if(!HistorySelectByPosition(position_id)) return false;   // unknown now: not cached, asked again next time
-   bool mine=false;
+   bool mine=false,seen=false;
    for(int i=0; i<HistoryDealsTotal(); i++)
    {
       ulong deal=HistoryDealGetTicket(i);
       if(deal==0 || HistoryDealGetInteger(deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
       mine=(HistoryDealGetInteger(deal,DEAL_MAGIC)==MAGIC1 && HistoryDealGetString(deal,DEAL_SYMBOL)==_Symbol);
+      seen=true;
       break;
    }
+   // Only an answer from the entry deal is kept: an entry not yet in the loaded history is asked again next time
+   // (caching "not mine" would leave that position's exits uncounted for good; Claude-Mac GOAT-EA#265 P2).
+   if(!seen) return false;
    int n=ArraySize(g_GoatLedgerOwnerPosition);
    if(n>=GOAT_LEDGER_OWNER_CACHE)
    {
@@ -2771,6 +2777,12 @@ bool GoatLedgerPositionMine(const ulong position_id)
    g_GoatLedgerOwnerMine[n]=mine;
    return mine;
   }
+// OnInit: the cached owners belong to the MAGIC1 they were asked for, and a live re-init may restore another one.
+void GoatLedgerOwnerReset()
+  {
+   ArrayResize(g_GoatLedgerOwnerPosition,0);
+   ArrayResize(g_GoatLedgerOwnerMine,0);
+  }
 // A selected deal that the magic filter skipped: keep it for the join when it is an exit on this symbol.
 void GoatLedgerCollectExit(const ulong deal,ulong &positions[],double &profits[],datetime &times[])
   {
@@ -2782,7 +2794,8 @@ void GoatLedgerCollectExit(const ulong deal,ulong &positions[],double &profits[]
    int n=ArraySize(positions);
    ArrayResize(positions,n+1); ArrayResize(profits,n+1); ArrayResize(times,n+1);
    positions[n]=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
-   profits[n]=HistoryDealGetDouble(deal,DEAL_PROFIT)+HistoryDealGetDouble(deal,DEAL_COMMISSION)+HistoryDealGetDouble(deal,DEAL_SWAP);
+   profits[n]=HistoryDealGetDouble(deal,DEAL_PROFIT)+HistoryDealGetDouble(deal,DEAL_COMMISSION)+HistoryDealGetDouble(deal,DEAL_SWAP)
+             +HistoryDealGetDouble(deal,DEAL_FEE);
    times[n]=(datetime)HistoryDealGetInteger(deal,DEAL_TIME);
   }
 // The transaction path: the one deal just added (OnTradeTransaction), an exit of this chart's position.
@@ -3080,6 +3093,7 @@ void DashboardBusRebuildClosedStats(void)
       double closed_pl=HistoryDealGetDouble(ticket,DEAL_PROFIT)
                       +HistoryDealGetDouble(ticket,DEAL_COMMISSION)
                       +HistoryDealGetDouble(ticket,DEAL_SWAP);
+      if(Ledger_Mode==Ledger_PositionJoin) closed_pl+=HistoryDealGetDouble(ticket,DEAL_FEE); // B49a (F2): fees count too
       datetime close_time=(datetime)HistoryDealGetInteger(ticket,DEAL_TIME);
 
       DashboardBusClosedPLTotal+=closed_pl;
@@ -4200,6 +4214,7 @@ int OnInit()
         DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(GoatPortfolioGVName("DashboardExposurePolicyMode")));
 
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
+     GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)
      if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
      DashboardBusRebuildClosedStats();
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
@@ -5729,6 +5744,7 @@ void GoatTradeTransactionBody(const MqlTradeTransaction &trans,
     double closed_pl=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)
                     +HistoryDealGetDouble(trans.deal,DEAL_COMMISSION)
                     +HistoryDealGetDouble(trans.deal,DEAL_SWAP);
+    if(Ledger_Mode==Ledger_PositionJoin) closed_pl+=HistoryDealGetDouble(trans.deal,DEAL_FEE); // B49a (F2): fees count too
     DashboardBusClosedPLTotal+=closed_pl;
     DashboardBusClosedTradesTotal++;
     if(deal_time>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=closed_pl;
@@ -6364,6 +6380,7 @@ void GoatTickBody()
        if(HistoryDealGetInteger(ticket,DEAL_MAGIC) != MAGIC1)        {if(Ledger_Mode==Ledger_PositionJoin) GoatLedgerCollectExit(ticket,joinPositions,joinProfits,joinTimes); continue;} // B49a (F2)
        //entry =HistoryDealGetInteger(ticket,DEAL_ENTRY);
        PL_Closed+=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_COMMISSION)+HistoryDealGetDouble(ticket,DEAL_SWAP);
+       if(Ledger_Mode==Ledger_PositionJoin) PL_Closed+=HistoryDealGetDouble(ticket,DEAL_FEE); // B49a (F2): fees count too
       }
      }
      for(int j=0;j<ArraySize(joinPositions);j++) if(GoatLedgerPositionMine(joinPositions[j])) PL_Closed+=joinProfits[j]; // B49a (F2): this chart's exits, joined by position

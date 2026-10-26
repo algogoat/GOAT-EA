@@ -44,7 +44,7 @@ const fn=(name,args,body)=>'function '+name+'('+args.join(',')+'){'+js(body)+'}\
 const M=1843920117,Y=907113355,SYM='EURUSD',DAY0=1792022400;   // this chart's magic, another chart's; 2026-10-15 00:00
 const K={DEAL_ENTRY_IN:0,DEAL_ENTRY_OUT:1,DEAL_ENTRY_INOUT:2,DEAL_ENTRY_OUT_BY:3,DEAL_TYPE_BUY:0,DEAL_TYPE_SELL:1,DEAL_TYPE_BALANCE:2,
  DEAL_MAGIC:'magic',DEAL_SYMBOL:'symbol',DEAL_ENTRY:'entry',DEAL_TYPE:'type',DEAL_POSITION_ID:'position',DEAL_TIME:'time',
- DEAL_PROFIT:'profit',DEAL_COMMISSION:'commission',DEAL_SWAP:'swap',DEAL_VOLUME:'volume',DEAL_REASON:'reason',DEAL_REASON_EXPERT:3,
+ DEAL_PROFIT:'profit',DEAL_COMMISSION:'commission',DEAL_SWAP:'swap',DEAL_FEE:'fee',DEAL_VOLUME:'volume',DEAL_REASON:'reason',DEAL_REASON_EXPERT:3,
  POSITION_IDENTIFIER:'identifier',OP_BUY:0,OP_SELL:1,Ledger_Legacy:0,Ledger_PositionJoin:1,TRADE_TRANSACTION_DEAL_ADD:6,
  MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3};
 function account(){
@@ -60,7 +60,7 @@ function account(){
   PositionSelectByTicket:t=>{api.__pos=positions.get(t);return !!api.__pos;},PositionGetInteger:k=>api.__pos[k],
  };
  let nextDeal=5001;
- const deal=(d)=>{const t=d.ticket??nextDeal++;deals.set(t,{ticket:t,symbol:SYM,type:0,commission:0,swap:0,profit:0,volume:0.1,reason:3,...d,ticket:t});return t;};
+ const deal=(d)=>{const t=d.ticket??nextDeal++;deals.set(t,{ticket:t,symbol:SYM,type:0,commission:0,swap:0,fee:0,profit:0,volume:0.1,reason:3,...d,ticket:t});return t;};
  const open=(ticket,{magic=M,type=0,time=DAY0+3600,commission=-3.5,symbol=SYM}={})=>{
   positions.set(ticket,{identifier:ticket});return deal({position:ticket,entry:0,type,magic,time,commission,symbol});};
  const close=(ticket,{magic=0,profit=0,commission=-1,swap=0,time=DAY0+7200,full=true,type=1,symbol=SYM}={})=>{
@@ -76,6 +76,8 @@ const SEQ_METHODS=[
  ['LedgerAddPosition',['position_ticket'],'   void LedgerAddPosition(const ulong position_ticket)'],
  ['LedgerBook',['deal_ticket'],'   bool LedgerBook(const ulong deal_ticket)'],
  ['AccumulateJoinedDealPL',['deal_ticket'],'   void AccumulateJoinedDealPL(const ulong deal_ticket)'],
+ ['Init',['OP','v'],'   void Init(int OP,bool v)'],
+ ['ResetSequenceRiskState',[],'   void ResetSequenceRiskState()'],
 ];
 const DEFINE=(text,name)=>Number((text.match(new RegExp('^#define\\s+'+name+'\\s+(\\d+)','m'))||[])[1]);
 const OWNER_CACHE=DEFINE(main,'GOAT_LEDGER_OWNER_CACHE');assert.equal(OWNER_CACHE,256);
@@ -85,7 +87,9 @@ function common(acct,mode){
 }
 // One SEQUENCE: its members and methods in their own context (tree or B47 source).
 function sequence(acct,mode,text=main){
- const c={...common(acct,mode),SequenceRealizedPL:0,LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,ended:[]};
+ const c={...common(acct,mode),SequenceRealizedPL:0,LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,ended:[],
+  Strat:'Trend',dir:0,Virtual:false,Desc:'',Retrace_Triggered:false,Level_Retrace:0,BiasRescueBEProtected:false,BiasRescuePositiveAdds:0,
+  BiasRescueBEPrice:0,BiasRescueSLPrice:0,Level_Count:0,TradeLevels:[]};
  c.End_Sequence=d=>{c.ended.push(d);c.Active=c.Traded=false;};
  vm.createContext(c);
  const methods=text===main?SEQ_METHODS:SEQ_METHODS.filter(([n])=>n==='ClosedDealPL'||n==='AccumulateSequenceDealPL');
@@ -112,7 +116,8 @@ function chart(acct,mode,text=main){
    +js(region(text,'     HistorySelect(DStartTime,TimeCurrent());','     PL_Today = PL_Total-DStartLocalLoss+PL_Closed;'))+'return PL_Closed;}\n';
  if(text===main) code+=fn('GoatLedgerPositionMine',['position_id'],bodyOf(text,'bool GoatLedgerPositionMine(const ulong position_id)'))
   +fn('GoatLedgerCollectExit',['deal','positions','profits','times'],bodyOf(text,'void GoatLedgerCollectExit(const ulong deal,ulong &positions[],double &profits[],datetime &times[])'))
-  +fn('GoatLedgerJoinedExit',['deal'],bodyOf(text,'bool GoatLedgerJoinedExit(const ulong deal)'));
+  +fn('GoatLedgerJoinedExit',['deal'],bodyOf(text,'bool GoatLedgerJoinedExit(const ulong deal)'))
+  +fn('GoatLedgerOwnerReset',[],bodyOf(text,'void GoatLedgerOwnerReset()'));
  vm.runInContext(code,g);
  // The level hook in SEQUENCE::Add_Level, after a real order: join its position, book its entry commission.
  const HOOK=text===main?(main.match(/^ {8}(if\(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0\) \{LedgerAddPosition\(\(ulong\)LastOrderTicket\); AccumulateSequenceDealPL\(\(ulong\)LastDealTicket\);\})/m)||[])[1]:null;
@@ -125,7 +130,7 @@ function chart(acct,mode,text=main){
 }
 const HOOK_LINE='        if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {LedgerAddPosition((ulong)LastOrderTicket); AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission';
 assert.ok(main.includes('        TradeLevels[Level_Count-1].ticket      = LastOrderTicket;\n'+HOOK_LINE+'\n'),'the hook follows the new level\'s ticket in Add_Level');
-assert.equal(main.split('LedgerAddPosition(').length-1,2,'LedgerAddPosition: defined once, called once (the Add_Level hook)');
+assert.equal(main.split('LedgerAddPosition(').length-1,3,'LedgerAddPosition: defined once, called by the Add_Level hook and the Init backfill');
 
 // A buy sequence of three levels; a CumPartial harvest closes part of level 1 at a loss with the close helper's magic.
 function harvest(mode,{exitMagic,text=main}={}){
@@ -227,6 +232,49 @@ function dailyFixture(mode,text=main){
 {assert.match(header,/enum ENUM_LEDGER_MODE\n  \{\n   Ledger_Legacy=0, +\/\/ Legacy \(magic only\)\n   Ledger_PositionJoin=1  \/\/ Position join\n  \};\nsinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;/);
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
  assert.equal(inputs.at(-1),'Ledger_Mode','the last header input');
+ ok();}
+
+// 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the
+//    daily P/L, the dashboard's closed P/L), as the export and GoatRankPF count it. Legacy (B47) never read it.
+{const FEE=-0.75;
+ const ledger=mode=>{const a=account(),x=chart(a,mode);const d=a.open(1001,{commission:-3.5});a.deals.get(d).fee=FEE;x.level(x.buy,1001,d);x.trans(d);
+  const out=a.close(1001,{magic:M,profit:-40,commission:-1});a.deals.get(out).fee=FEE;x.trans(out);return x.buy.SequenceRealizedPL;};
+ assert.equal(ledger(1),-3.5+FEE-41+FEE,'PositionJoin: entry and exit fees');
+ const daily=(mode,text=main)=>{const f=dailyFixture(mode,text);for(const d of f.a.deals.values())d.fee=FEE;return f.x.g.DailyClosedPL();};
+ assert.equal(daily(1),-3.5+12-1-31+3*FEE,'PositionJoin daily: the MAGIC1 deals and the joined exit, each with its fee');
+ assert.equal(daily(0),daily(0,mainB47),'Legacy daily: as B47, no fee');assert.equal(daily(0),-3.5+12-1);
+ const rebuild=mode=>{const f=dailyFixture(mode);for(const d of f.a.deals.values())d.fee=FEE;f.x.g.DashboardBusRebuildClosedStats();return f.x.g.DashboardBusClosedPLTotal;};
+ assert.equal(rebuild(1),11-31+2*FEE,'PositionJoin rebuild: both exits with their fee');assert.equal(rebuild(0),11,'Legacy rebuild: no fee');
+ const live=mode=>{const a=account(),x=chart(a,mode);const d=a.open(1001);x.level(x.buy,1001,d);x.trans(d);
+  const out=a.close(1001,{magic:M,profit:-9,commission:-1,time:DAY0+60});a.deals.get(out).fee=FEE;x.trans(out);return x.g.DashboardBusClosedPLTotal;};
+ assert.equal(live(1),-10+FEE);assert.equal(live(0),-10);
+ ok();}
+
+// 9. Claude-Mac GOAT-EA#265 P2-2/P2-3: an owner is cached only once its entry deal has been seen (an exit whose entry
+//    is not in the loaded history is asked again next time), and the cache is cleared at every OnInit (a live re-init
+//    may restore another MAGIC1).
+{const a=account(),x=chart(a,1);
+ a.close(7001,{magic:0,profit:-20,time:DAY0+60});                   // its entry is not in the loaded history yet
+ assert.equal(x.g.GoatLedgerPositionMine(7001),false);assert.ok(!x.g.g_GoatLedgerOwnerPosition.includes(7001),'not cached');
+ a.open(7001,{time:DAY0-60});                                         // the entry arrives
+ assert.equal(x.g.GoatLedgerPositionMine(7001),true,'asked again: this chart\'s');
+ assert.ok(x.g.g_GoatLedgerOwnerPosition.includes(7001));
+ x.g.GoatLedgerOwnerReset();assert.deepEqual([x.g.g_GoatLedgerOwnerPosition.length,x.g.g_GoatLedgerOwnerMine.length],[0,0]);
+ assert.ok(main.includes('                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);\n     GoatLedgerOwnerReset();'),
+  'OnInit clears it right after the sequences\' Init (MAGIC1 is settled above)');
+ ok();}
+
+// 10. Codex GOAT-EA#265: a live re-init into PositionJoin (an input change keeps EA globals) joins the running
+//     sequence's positions, so their later closes are booked; a fresh start joins nothing.
+{const a=account(),x=chart(a,1);
+ a.open(1001);a.open(1002);
+ const seq=x.buy;seq.Active=true;seq.Level_Count=2;seq.TradeLevels=[{ticket:1001},{ticket:1002}];
+ seq.Init(0,false);
+ assert.deepEqual(seq.LedgerPositions,[1001,1002],'the running sequence\'s positions join');
+ const out=a.close(1002,{magic:M,profit:-41,commission:0});x.trans(out);assert.equal(seq.SequenceRealizedPL,-41,'and a later close is booked');
+ const legacy=chart(account(),0).buy;legacy.Active=true;legacy.Level_Count=1;legacy.TradeLevels=[{ticket:1001}];legacy.Init(0,false);
+ assert.deepEqual(legacy.LedgerPositions,[],'Legacy keeps no join');
+ const fresh=chart(account(),1).buy;fresh.Init(0,false);assert.deepEqual(fresh.LedgerPositions,[]);
  ok();}
 
 console.log(JSON.stringify({passed,test:'ledger_join'}));

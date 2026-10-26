@@ -13,6 +13,9 @@ from studio_strategy_settings import (APPENDED_INPUTS, appended_default, complet
                                       validate_strategy)
 from studio_input_readback import explicit_paste_inputs, verify_input_readback
 import studio_tester_report as tester_report
+from campaign_ledger import sha
+from studio_native_request import ini_sections
+import test_goat_studio as goat_studio_tests   # its PortableControllerTests fixture (a module attribute, so not collected here)
 from test_studio_pinned_tester_inputs import compass_like_template
 
 ROOT = Path(__file__).resolve().parent
@@ -36,11 +39,15 @@ class AppendedInputTests(unittest.TestCase):
         # The same default the tester report pins for any omitted input (GOAT-EA#250).
         self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), '0')
 
-    def test_a_set_without_it_validates_and_carries_the_default(self):
+    def test_a_set_without_it_validates_and_keeps_its_own_values(self):
+        # Claude-Mac GOAT-EA#265 P1: the checks see the default, the caller gets its own values back, so a stored job,
+        # its registry SET bytes and every SET hash stay exactly as they were.
         checked = validate_strategy(dict(self.old), self.schema)
-        self.assertEqual(checked['values']['Ledger_Mode'], '0')
-        self.assertEqual(set(checked['values']), set(self.schema['inputs']))
+        self.assertEqual(checked['values'], self.old)
+        self.assertNotIn('Ledger_Mode', checked['values'])
         self.assertNotIn('Ledger_Mode', checked['axes'])
+        # The checks did see the default: a SET naming every input validates to the same axes.
+        self.assertEqual(validate_strategy(dict(self.full), self.schema)['axes'], checked['axes'])
 
     def test_a_set_may_choose_position_join_but_nothing_undeclared(self):
         self.assertEqual(validate_strategy(dict(self.old, Ledger_Mode='1'), self.schema)['values']['Ledger_Mode'], '1')
@@ -73,6 +80,36 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(verify_input_readback(dict(self.old), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
             verify_input_readback(dict(self.old), dict(self.full, Ledger_Mode='1'), self.schema)
+
+
+class AppendedInputPrepareTests(unittest.TestCase):
+    """Claude-Mac GOAT-EA#265 P1, reproduced with test_goat_studio's fixture: a SET without Ledger_Mode goes through
+    prepare (which stages it against the registry bytes), is reused, and its readback wants the default."""
+
+    def setUp(self):
+        self.fixture = goat_studio_tests.PortableControllerTests('test_prepare_exact_inputs_server_version_ninth_setting')
+        self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+
+    def bound(self):
+        c = self.fixture.bound()
+        real = json.loads((ROOT/'contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))['inputs']['Ledger_Mode']
+        c.schema['inputs']['Ledger_Mode'] = real
+        c.store.input_schema = c.schema; c.store.input_schema_hash = sha(c.schema)
+        return c
+
+    def test_a_set_without_it_is_prepared_staged_reused_and_read_back(self):
+        c = self.bound(); self.fixture.grant(c)
+        first = self.fixture.prepare(c)                              # prepare stages it (studio_native_stage) against the registry
+        self.assertEqual(self.fixture.prepare(c)['reused'], True)    # job reuse compares the stored values with the SET's own
+        stored = c.state()['queue'][0]['configuration']['strategy']['values']
+        self.assertEqual(stored, {'EA_Desc': 'Customer Template', 'Lots': '0.1||0.1||0.1||0.3||Y'}, 'the SET\'s own values, unchanged')
+        ini = ini_sections((Path(first['package'])/(first['manifest']['jobs'][0]['run_alias']+'.ini')).read_bytes())
+        self.assertNotIn('Ledger_Mode', ini['TesterInputs'], 'the SET bytes are not rewritten: the profile run takes the build default')
+        observed = dict(stored, Ledger_Mode='0')
+        self.assertEqual(verify_input_readback(dict(stored), observed, c.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
+            verify_input_readback(dict(stored), dict(stored, Ledger_Mode='1'), c.schema)
+
 
 
 if __name__ == '__main__':

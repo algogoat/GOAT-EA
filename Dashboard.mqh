@@ -160,7 +160,10 @@ public:
     int       m_risk_policy_breach_code;
     datetime  m_risk_policy_breach_time;
     datetime  m_risk_breach_last_send;      // B49b (F3 RISK-01): the last emergency close sent for the breach
-    bool      m_risk_breach_flat_logged;    // B49b (F3 RISK-01): the FLAT audit line is written once per breach
+    bool      m_risk_breach_follow_ended;   // B49b (F3 RISK-01): the breach's follow ended (FLAT or RESUMED), persisted
+    bool      m_risk_breach_unreachable_logged; // B49b (F3 RISK-01, #280): UNREACHABLE is audited once per breach
+    int       m_policy_unsynced_type;       // B49b (F3 RISK-01, #280): a currency/exposure command the breach superseded, persisted
+    bool      m_policy_resync_due;          // B49b (F3 RISK-01, #280): a Resume or re-arm was requested, so it is sent again
     double    m_risk_running_loss_limit,m_risk_daily_loss_limit,m_risk_daily_target_limit,m_risk_low_equity_stop,m_risk_equity_target;
      bool      m_currency_rules_editor_visible;
      bool      m_close_scope_editor_visible;
@@ -402,7 +405,8 @@ private:
    void AppendRiskPolicyAudit(const string stage,const string reason,const string detail);
    void EvaluateRiskPolicy(void);
    void FollowRiskBreachClose(void);   // B49b (F3 RISK-01)
-   int  LinkedOpenPositions(void);     // B49b (F3 RISK-01)
+   int  LinkedOpenPositions(const bool reachable); // B49b (F3 RISK-01)
+   void ResyncUnsyncedPolicy(void);    // B49b (F3 RISK-01, #280)
    void ReadChildCommandState(const int idx);
    void UpdatePortfolioCommandCompletion(void);
    void RefreshRowsViewportMetrics(void);
@@ -805,6 +809,7 @@ private:
    }
    string RiskPolicyButtonText(void) const
    {
+    if(m_policy_unsynced_type!=0) return (m_risk_policy_breached ? "Breach/Unsynced" : "Policy Unsynced"); // B49b (F3 RISK-01, #280)
     if(m_risk_policy_breached) return "Risk Breached";
     if(m_risk_policy_armed)    return "Risk Armed";
     return "Risk Limits";
@@ -957,7 +962,10 @@ CGOATDashboard::CGOATDashboard()
    m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
    m_risk_policy_breach_time=0;
    m_risk_breach_last_send=0;        // B49b (F3 RISK-01): a breach restored from saved state is followed at once
-   m_risk_breach_flat_logged=false;  // B49b (F3 RISK-01)
+   m_risk_breach_follow_ended=true;  // B49b (F3 RISK-01): nothing is followed until this build records a breach
+   m_risk_breach_unreachable_logged=false; // B49b (F3 RISK-01, #280)
+   m_policy_unsynced_type=0;           // B49b (F3 RISK-01, #280)
+   m_policy_resync_due=false;          // B49b (F3 RISK-01, #280)
    m_risk_running_loss_limit=0.0;
    m_risk_daily_loss_limit=0.0;
    m_risk_daily_target_limit=0.0;
@@ -1593,6 +1601,15 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::SendPortfolioPauseCommand(const bool pause)
 {
+   // B49b:begin resume-request
+   if(!pause && m_risk_policy_breached && !m_risk_breach_follow_ended) // B49b (F3 RISK-01, #280): the Resume REQUEST ends the follow, acked or not
+   {
+      m_risk_breach_follow_ended=true;
+      SaveRiskPolicyState();
+      AppendRiskPolicyAudit("RESUMED",RiskBreachText(m_risk_policy_breach_code),"Resume requested after the breach; the emergency close is no longer repeated");
+   }
+   if(!pause && m_policy_unsynced_type!=0) m_policy_resync_due=true; // B49b (F3 RISK-01, #280): resuming sends a superseded policy again
+   // B49b:end resume-request
    return SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_PAUSE,(pause ? 1 : 0),"PortfolioPause");
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2254,6 +2271,8 @@ void CGOATDashboard::LoadRiskPolicyState(void)
    if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"DailyTarget")))     m_risk_daily_target_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"DailyTarget"));
    if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"LowEquityStop")))   m_risk_low_equity_stop=GlobalVariableGet(GoatPortfolioGVName(prefix+"LowEquityStop"));
    if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"EquityTarget")))    m_risk_equity_target=GlobalVariableGet(GoatPortfolioGVName(prefix+"EquityTarget"));
+   m_risk_breach_follow_ended=(!GlobalVariableCheck(GoatPortfolioGVName(prefix+"FollowEnded")) || GlobalVariableGet(GoatPortfolioGVName(prefix+"FollowEnded"))>0.5); // B49b (F3 RISK-01): a breach an older build saved is never followed
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"Unsynced")))      m_policy_unsynced_type=(int)GlobalVariableGet(GoatPortfolioGVName(prefix+"Unsynced")); // B49b (#280)
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::SaveRiskPolicyState(void)
@@ -2268,6 +2287,8 @@ void CGOATDashboard::SaveRiskPolicyState(void)
    GlobalVariableSet(GoatPortfolioGVName(prefix+"DailyTarget"),m_risk_daily_target_limit);
    GlobalVariableSet(GoatPortfolioGVName(prefix+"LowEquityStop"),m_risk_low_equity_stop);
    GlobalVariableSet(GoatPortfolioGVName(prefix+"EquityTarget"),m_risk_equity_target);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"FollowEnded"),(m_risk_breach_follow_ended ? 1.0 : 0.0)); // B49b (F3 RISK-01)
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"Unsynced"),(double)m_policy_unsynced_type); // B49b (F3 RISK-01, #280)
    GlobalVariablesFlush();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2372,11 +2393,13 @@ bool CGOATDashboard::ArmRiskPolicyFromHeader(void)
    edt_EquityTargetLevel.Text(FormatIntegerText(m_risk_equity_target));
    SaveRiskPolicyState();
    AppendRiskPolicyAudit("ARM","Manual","Risk policy armed from dashboard header");
+   if(m_policy_unsynced_type!=0) m_policy_resync_due=true; // B49b (F3 RISK-01, #280): re-arming sends a superseded policy again
    return true;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::EvaluateRiskPolicy(void)
 {
+   ResyncUnsyncedPolicy(); // B49b (F3 RISK-01, #280): a policy the breach superseded, once Resume or re-arm is asked
    if(m_risk_policy_breached) {FollowRiskBreachClose(); return;} // B49b (F3 RISK-01): a breach is followed until flat
    if(!m_risk_policy_armed) return; // B49b (F3 RISK-01): a pending command no longer hides a breach; the close supersedes it
 
@@ -2399,6 +2422,9 @@ void CGOATDashboard::EvaluateRiskPolicy(void)
    string reason=RiskBreachText(breach_code);
    m_risk_policy_armed=false;
    m_risk_policy_breached=true;
+   m_risk_breach_follow_ended=false; // B49b (F3 RISK-01): this breach is followed (saved below)
+   m_risk_breach_unreachable_logged=false; // B49b (F3 RISK-01, #280)
+   if(m_portfolio_command_pending && (m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS || m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)) m_policy_unsynced_type=m_portfolio_command_type; // B49b (#280): saved below
    m_risk_policy_breach_code=breach_code;
    m_risk_policy_breach_time=TimeCurrent();
    m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;
@@ -2408,7 +2434,7 @@ void CGOATDashboard::EvaluateRiskPolicy(void)
    PrintFormat("Dashboard risk breach: %s. Equity=%.2f RunLoss=%.2f DayLoss=%.2f DayTarget=%.2f",
                reason,current_equity,Port_RunningLoss,Port_DailyLoss,Port_DailyTarget);
    if(m_portfolio_command_pending) AppendPortfolioCommandAudit("SUPERSEDED",0,0,0,"A risk breach close replaces the pending command"); // B49b (F3 RISK-01)
-   m_risk_breach_last_send=TimeCurrent(); m_risk_breach_flat_logged=false; // B49b (F3 RISK-01): the follow-up resends from here
+   m_risk_breach_last_send=TimeCurrent(); // B49b (F3 RISK-01): the follow-up resends from here
    bool command_sent=SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"RiskBreachClose",false);
    AppendRiskPolicyAudit(command_sent ? "ACTION" : "ACTION_FAILED",
                          reason,
@@ -2417,24 +2443,41 @@ void CGOATDashboard::EvaluateRiskPolicy(void)
 }
 // B49b:begin breach-follow
 // F3 RISK-01 (audit 06): the breach used to send ONE emergency close and then only label rows "No Ack" or "Close Failed":
-// no retry and no check that the account was flat. While breached, the dashboard now checks the linked child charts'
-// positions once the last command has completed and, while any is open, sends the emergency close again every 60 s
-// (children retry inside each command: DASH-04). Flat is audited once (FLAT). Re-arming is unchanged. Live only.
+// no retry and no check that the account was flat. The dashboard now follows the breach's own pause: once the last
+// command has completed and while any linked child chart still holds a position, it sends the emergency close again
+// every 60 s (children retry inside each command: DASH-04). The follow ENDS for good, persisted (FollowEnded), at FLAT
+// or at the first resume (RESUMED): Resume Portfolio does not clear the latched breach (only Arm/Disarm do), so a stale
+// breach must never flatten a portfolio that was resumed, or paused again by hand later. A breach saved by an older
+// build (no FollowEnded) is never followed. Re-arming is unchanged. Live only.
 void CGOATDashboard::FollowRiskBreachClose(void)
 {
-   if(m_portfolio_command_pending) return;
-   int open_positions=LinkedOpenPositions();
+   if(m_risk_breach_follow_ended || m_portfolio_command_pending) return;
    string reason=RiskBreachText(m_risk_policy_breach_code);
-   if(open_positions==0)
+   if(m_portfolio_run_state!=GOAT_PORTFOLIO_RUN_PAUSED)
    {
-      if(!m_risk_breach_flat_logged)
-      {
-         m_risk_breach_flat_logged=true;
-         AppendRiskPolicyAudit("FLAT",reason,"Every linked child chart is flat after the breach");
-      }
+      m_risk_breach_follow_ended=true;
+      SaveRiskPolicyState();
+      AppendRiskPolicyAudit("RESUMED",reason,"The portfolio was resumed after the breach; the emergency close is no longer repeated");
       return;
    }
-   m_risk_breach_flat_logged=false;
+   // #280 P2: only a row with a live chart can be sent the close (SendPortfolioCommand targets cid>0). Positions on a row
+   // whose chart is gone are reported once (UNREACHABLE) and never resent to, so an orphaned row cannot keep a command
+   // pending every minute; they still keep the breach open until they are gone.
+   int open_positions=LinkedOpenPositions(true);
+   int unreachable=LinkedOpenPositions(false);
+   if(open_positions==0 && unreachable==0)
+   {
+      m_risk_breach_follow_ended=true;
+      SaveRiskPolicyState();
+      AppendRiskPolicyAudit("FLAT",reason,"Every linked child chart is flat after the breach");
+      return;
+   }
+   if(unreachable>0 && !m_risk_breach_unreachable_logged)
+   {
+      m_risk_breach_unreachable_logged=true;
+      AppendRiskPolicyAudit("UNREACHABLE",reason,IntegerToString(unreachable)+" position(s) belong to linked rows whose chart is gone; GOAT cannot send them the close");
+   }
+   if(open_positions==0) return;
    if(m_risk_breach_last_send>0 && TimeCurrent()-m_risk_breach_last_send<60) return;
    m_risk_breach_last_send=TimeCurrent();
    bool command_sent=SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"RiskBreachClose",false);
@@ -2443,7 +2486,7 @@ void CGOATDashboard::FollowRiskBreachClose(void)
                          +(command_sent ? "sent again" : "not sent (no linked child chart)"));
    UpdateHeaderStateButtons();
 }
-int CGOATDashboard::LinkedOpenPositions(void)
+int CGOATDashboard::LinkedOpenPositions(const bool reachable)
 {
    int open_positions=0;
    for(int i=PositionsTotal()-1;i>=0;--i)
@@ -2452,9 +2495,35 @@ int CGOATDashboard::LinkedOpenPositions(void)
       long position_magic=PositionGetInteger(POSITION_MAGIC);
       string position_symbol=PositionGetString(POSITION_SYMBOL);
       for(int idx=0; idx<ArraySize(g_sets); ++idx)
-         if(g_sets[idx].magic>0 && g_sets[idx].magic==position_magic && g_sets[idx].sym==position_symbol) {open_positions++; break;}
+         if(g_sets[idx].magic>0 && g_sets[idx].magic==position_magic && g_sets[idx].sym==position_symbol)
+         {
+            if((g_sets[idx].cid>0)==reachable) open_positions++;
+            break;
+         }
    }
    return open_positions;
+}
+// #280 P2: a breach that supersedes a pending currency-rules or exposure-policy command leaves the children on the old
+// policy while the dashboard shows the new one. It is kept as unsynced (persisted; the risk button says so) and sent
+// again once a Resume or a re-arm is asked and nothing is pending. A superseded close or pause needs nothing.
+void CGOATDashboard::ResyncUnsyncedPolicy(void)
+{
+   if(!m_policy_resync_due || m_policy_unsynced_type==0 || m_portfolio_command_pending) return;
+   int targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      if(g_sets[idx].magic>0 && g_sets[idx].cid>0) targets++;
+   if(targets<=0) return;
+   bool quiet=m_agent_setup_quiet;
+   m_agent_setup_quiet=true;
+   bool sent=(m_policy_unsynced_type==GOAT_DASH_CMD_TRADE_PERMISSIONS ? SendCurrencyRulesCommand() : SendExposurePolicyCommand((int)m_exposure_policy_mode));
+   m_agent_setup_quiet=quiet;
+   if(!sent) return;
+   AppendRiskPolicyAudit("RESYNC",(m_policy_unsynced_type==GOAT_DASH_CMD_TRADE_PERMISSIONS ? "CurrencyRules" : "ExposurePolicy"),
+                         "The policy a risk breach superseded was sent again to linked child charts");
+   m_policy_unsynced_type=0;
+   m_policy_resync_due=false;
+   SaveRiskPolicyState();
+   UpdateHeaderStateButtons();
 }
 // B49b:end breach-follow
 //----------------------------------------------------------------------------------------------------------------------------------------------------

@@ -3580,7 +3580,7 @@ void DashboardBusAckCloseCommand(const long command_id,const int ack_status,cons
 // F3 DASH-04 (audit 06 Other issue 1): a dashboard close command used to be marked applied before the close ran, so the
 // one-second re-poll of its command GVs acknowledged APPLIED again after a failed close and nothing retried it. It is now
 // marked applied only once the close leaves nothing open, so the re-poll retries a failed close until the command
-// expires (30 s), at most every 5 s (6 tries per command, not 30). Live only: the dashboard bus never runs in the tester.
+// expires, at most every 5 s: 7 tries at 0, 5, ..., 30 s (it expires strictly after 30 s), not 31. Live only: the dashboard bus never runs in the tester.
 long     g_goat_dash_close_try_id=0;
 datetime g_goat_dash_close_try_at=0;
 bool GoatDashCloseRetryWait(const long command_id)
@@ -7566,7 +7566,7 @@ void GoatCloseFailureLog(const ulong ticket,const uint ret,const string desc)
    if(!g_goat_close_fail_alerted)
      {
       g_goat_close_fail_alerted=true;
-      Alert("GOAT: a close failed (ticket "+IntegerToString((long)ticket)+", "+IntegerToString((int)ret)+" "+desc+"); the EA retries every second and logs each failing ticket once a minute");
+      Alert("GOAT: a close failed (ticket "+IntegerToString((long)ticket)+", "+IntegerToString((int)ret)+" "+desc+"); the EA retries it (an ended sequence every second, a dashboard close every 5 s) and logs each failing ticket once a minute");
      }
    int slot=-1,spare=-1;
    for(int i=0;i<16 && slot<0;i++)

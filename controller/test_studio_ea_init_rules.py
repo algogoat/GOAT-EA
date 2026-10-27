@@ -6,7 +6,8 @@ import re
 import unittest
 
 from studio_ea_init_rules import (EA_INIT_CODE, EA_INIT_RULES, EA_INIT_SCHEMA_CODE, EA_SOURCE, MAX_COMBINATIONS,
-                                  NOT_PORTED, TESTER_INIT_CODE, TESTER_INIT_RULES, check_ea_init, check_tester_init)
+                                  NOT_PORTED, TESTER_INIT_CODE, TESTER_INIT_RULES, applicable_rules, check_ea_init,
+                                  check_tester_init)
 from studio_installation import contracts
 from studio_strategy_settings import validate_strategy
 from studio_template_tools import schema_default
@@ -74,14 +75,50 @@ class PortedRuleTests(RuleCase):
         'LP_AND_TP_BOTH_DISABLED': (dict(Lock_Profit_Size='0.5', TP_Pips='4.0'), dict(Lock_Profit_Size='0.5', TP_Pips='1.0')),
     }
 
+    # B50 (A0): rules on the inputs appended after Ledger_Mode, which only the V1.49 schema declares.
+    B50_CASES = {
+        'SINGLE_SL_ATR_NOT_POSITIVE': (dict(Engine_Mode='1', Single_SL_ATR='0.5', Mode_Bias_Exit='0'),
+                                       dict(Engine_Mode='1', Single_SL_ATR='0.0', Mode_Bias_Exit='0')),
+        'SINGLE_TP_NEGATIVE': (dict(Single_TP_ATR='0.0', Single_TP_R='2.0'), dict(Single_TP_R='-0.5')),
+        'SINGLE_TIME_STOP_BARS_NEGATIVE': (dict(Single_Time_Stop_Bars='0'), dict(Single_Time_Stop_Bars='-1')),
+        'ROLLOVER_BLOCK_NEGATIVE': (dict(Rollover_Block_Minutes='15'), dict(Rollover_Block_Minutes='-1')),
+        'SERVER_UTC_OFFSET_RANGE': (dict(Server_UTC_Offset='14'), dict(Server_UTC_Offset='-13')),
+        'SINGLE_WITH_SMART_RESCUE': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0'),
+                                     dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='1', Mode_Lots='2')),
+        'NY_SESSION_FORMAT': (dict(NY_Session='22:00-6:30'), dict(NY_Session='9:30-16:0')),
+    }
+
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
-        self.assertEqual(set(self.CASES), {rule['id'] for rule in EA_INIT_RULES})
+        self.assertEqual(set(self.CASES) | set(self.B50_CASES), {rule['id'] for rule in EA_INIT_RULES})
         for version, schema in SCHEMAS.items():
             for rule_id, (good, bad) in self.CASES.items():
                 with self.subTest(version=version, rule=rule_id):
                     self.schema = schema
                     self.passes(**good)
                     self.refused(rule_id, **bad)
+        for rule_id, (good, bad) in self.B50_CASES.items():
+            with self.subTest(rule=rule_id):
+                self.passes(**good)
+                self.refused(rule_id, **bad)
+        # V1.48 has no B50 input: its schema carries none of these rules, and nothing else changes.
+        self.assertFalse(set(self.B50_CASES) & {rule['id'] for rule in applicable_rules(SCHEMAS['1.48'])})
+        self.assertEqual({rule['id'] for rule in applicable_rules(SCHEMAS['1.48'])}, set(self.CASES))
+        # GOAT-EA#269 P3: a B50 schema that lost one of its inputs fails closed, as for any other lost input.
+        for lost in ('Engine_Mode', 'NY_Session', 'Server_UTC_Offset'):
+            with self.subTest(lost=lost):
+                damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs'][lost]
+                with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no ' + lost):
+                    applicable_rules(damaged)
+
+    def test_the_ny_session_mirrors_the_eas_parse(self):
+        # GOAT V1.49.mq5:4439-4450: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
+        for good in ('09:30-16:00', '9:30-16:00', '00:00-23:59', '22:00-06:30', '23:59-00:00'):
+            with self.subTest(good=good):
+                self.passes(NY_Session=good)
+        for bad in ('', '09:30', '09:30-16:00-17:00', '09-16', '24:00-16:00', '09:60-16:00', '09:30-16:0', '009:30-16:00',
+                    ' 9:30-16:00', '+9:30-16:00', '09:30-16:00 ', '9:3a-16:00', '09:30-09:30', '09:30:00-16:00'):
+            with self.subTest(bad=bad):
+                self.refused('NY_SESSION_FORMAT', NY_Session=bad)
 
     def test_schema_defaults_pass(self):
         for version, schema in SCHEMAS.items():
@@ -393,10 +430,11 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(listed), len(set(listed)), 'a line is listed twice')
         self.assertEqual(sorted(self.sites), sorted(listed),
                          'OnInit refusal/removal lines and the EA_INIT_RULES/TESTER_INIT_RULES/NOT_PORTED tables differ')
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (51, 8, 55))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 26)
+        # B50 (A0) added ten: seven input refusals (ported), the netting account and two indicator handles (not ported).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (61, 8, 65))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 33)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (22, 1, 32))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (29, 1, 35))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [3821, 3931, 3948, 4223])

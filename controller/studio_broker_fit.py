@@ -126,6 +126,8 @@ POINT_INPUTS = ('Grid_Size', 'Grid_Min', 'Grid_Max', 'Lock_Profit_Size', 'SL_Pip
 FIXED_MONEY_INPUTS = ('MaxLossLocal', 'MaxLossGlobal', 'MaxDailyLossLocal', 'MaxDailyProfitLocal', 'MinLevelEquity', 'MaxLevelEquity')
 TF_INPUTS = ('ATR_TF_', 'RSI_TF_', 'EMA_TF_', 'ADX_TF_', 'BB_TF_', 'MACD_TF_', 'RSI2_TF_')
 TF_H4 = 240
+TF_D1 = 1440                           # B50 (A0): appended to ENUM_MODE_TFs; its bars start at the server's midnight too
+SERVER_DAY_TFS = {TF_H4: 'H4', TF_D1: 'D1'}
 EDITABLE_INPUTS = frozenset(('Risk', 'Lots_Input') + POINT_INPUTS)
 # The broker server clock the house evidence was measured on, when the manifest does not say (reference.serverGmtOffset
 # or referenceAccount.serverGmtOffset). 'ny-close': 00:00 server = 17:00 New York, i.e. UTC+2, and UTC+3 while New
@@ -580,7 +582,9 @@ def _session_minutes(text):
 def offset_neutral(values, defaults, timeframe):
     """(True, []) when the member's trading cannot depend on the broker's UTC offset, else (False, reasons).
 
-    Neutral means: a chart of M1..H1 (H4/D1 bars start at the server's midnight); no indicator on H4 (any *_TF_ = TF_H4);
+    Neutral means: a chart of M1..H1 (H4/D1 bars start at the server's midnight); no indicator on H4 or D1 (any *_TF_ =
+    TF_H4 or TF_D1, and B50's single-trade time stop on either); the server clock (B50: no Clock_NewYork, no rollover
+    block, which read the New York clock through the broker's clock model);
     trading 24 hours on every weekday (Active_Time_Weekday = SESS_ALL, Active_Time_Friday = SESSION_ALL or
     SESSION_FRI, and the sessions spanning 00:00-24:00, the EA's own span rule); no end-of-day or Friday action; new
     sequences allowed on Friday; news off or display-only (event times); no daily loss/profit limit (server day)."""
@@ -590,8 +594,17 @@ def offset_neutral(values, defaults, timeframe):
     for name in TF_INPUTS:
         if not _readable(values, defaults, name):
             reasons.append(name + ' unreadable')        # could be H4: never assumed neutral
-        elif _number(values, defaults, name) == TF_H4:
-            reasons.append(name + '=H4')
+        elif _number(values, defaults, name) in SERVER_DAY_TFS:
+            reasons.append(name + '=' + SERVER_DAY_TFS[_number(values, defaults, name)])
+    # B50 (A0): inputs a V1.48 or B49a SET and schema do not have are their defaults (server clock, no time stop).
+    if _number(values, defaults, 'Single_Time_Stop_Bars') not in (None, 0) and _number(values, defaults, 'Engine_Mode') == 1:
+        stop_tf = _number(values, defaults, 'Single_Time_Stop_TF')
+        if stop_tf is None or stop_tf in SERVER_DAY_TFS:
+            reasons.append('Single_Time_Stop_TF=' + SERVER_DAY_TFS.get(stop_tf, 'unreadable'))
+    if _number(values, defaults, 'Clock_Mode') not in (None, 0):
+        reasons.append('Clock_Mode=Clock_NewYork')
+    if _number(values, defaults, 'Rollover_Block_Minutes') not in (None, 0):
+        reasons.append('Rollover_Block_Minutes')
     weekday, friday = _number(values, defaults, 'Active_Time_Weekday'), _number(values, defaults, 'Active_Time_Friday')
     sessions = [_session_minutes(first_field(_value(values, defaults, name) or ''))
                 for name in ('Active_Time_ASIA', 'Active_Time_EU', 'Active_Time_US')]

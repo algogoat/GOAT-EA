@@ -585,6 +585,22 @@ class ScalingTests(unittest.TestCase):
         raw = kestrel_with(**dict(NEUTRAL, RSI_TF_='H4'))
         self.assertIn('RSI_TF_ unreadable', bf.offset_neutral(bf.set_values(raw, SCHEMA), bf.schema_defaults(SCHEMA), 'M1')[1])
 
+    def test_d1_and_the_new_york_clock_are_never_offset_neutral(self):
+        # B50 (A0): TF_D1 (1440) joins ENUM_MODE_TFs; like H4 its bars start at the server's midnight. The New York clock
+        # and the rollover block read New York time through the broker's clock model, and so does a single's time stop
+        # on H4/D1 bars. A SET without the B50 inputs reads their defaults: unchanged.
+        values, defaults = bf.set_values(kestrel_with(**NEUTRAL), SCHEMA), bf.schema_defaults(SCHEMA)
+        self.assertEqual(bf.offset_neutral(values, defaults, 'M1'), (True, []))
+        self.assertEqual(bf.offset_neutral(dict(values, RSI_TF_='1440'), defaults, 'M1'), (False, ['RSI_TF_=D1']))
+        self.assertEqual(bf.offset_neutral(dict(values, EMA_TF_='240'), defaults, 'M1'), (False, ['EMA_TF_=H4']))
+        self.assertEqual(bf.offset_neutral(dict(values, Clock_Mode='1'), defaults, 'M1')[1], ['Clock_Mode=Clock_NewYork'])
+        self.assertEqual(bf.offset_neutral(dict(values, Rollover_Block_Minutes='15'), defaults, 'M1')[1], ['Rollover_Block_Minutes'])
+        single = dict(values, Engine_Mode='1', Single_SL_ATR='1.0', Single_Time_Stop_Bars='3')
+        self.assertEqual(bf.offset_neutral(dict(single, Single_Time_Stop_TF='1440'), defaults, 'M1')[1], ['Single_Time_Stop_TF=D1'])
+        self.assertEqual(bf.offset_neutral(dict(single, Single_Time_Stop_TF='60'), defaults, 'M1'), (True, []))
+        self.assertEqual(bf.offset_neutral(dict(single, Single_Time_Stop_TF='240', Engine_Mode='0'), defaults, 'M1'), (True, []),
+                         'the grid engine never runs the time stop')
+
     def test_a_broker_worth_more_per_point_never_rounds_the_start_lot_up(self):
         # Codex P1 on 8975f1b: reference start lot 0.01 (VOLUME_MIN) and a broker whose value per point is 1.25x the
         # reference's: the scaled risk asks for 0.008 lots, which the EA would round up to 0.01 (+25%). The actual ratio

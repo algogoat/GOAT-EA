@@ -109,6 +109,9 @@ enum ENUM_MODE_TFs
    TF_M15 = 15,         // M15
    TF_H1  = 60,         // H1
    TF_H4  = 240,        // H4
+// B50:begin d1-enum
+   TF_D1  = 1440,       // D1
+// B50:end d1-enum
   };
 //----------
 ENUM_TIMEFRAMES TF2TF(ENUM_MODE_TFs TF)
@@ -121,6 +124,7 @@ ENUM_TIMEFRAMES TF2TF(ENUM_MODE_TFs TF)
     case TF_M15:  return PERIOD_M15;
     case TF_H1:   return PERIOD_H1;
     case TF_H4:   return PERIOD_H4;
+    case TF_D1:   return PERIOD_D1; // B50 (A0): D1 for every *_TF_ ladder and the single-trade time stop
     default:      return PERIOD_CURRENT;
    }
   }
@@ -583,6 +587,22 @@ FileWrite(FileSET_handle,"Trades_Max="+(string)Trades_Max);//=1500
 FileWrite(FileSET_handle,"Minutes_Max="+(string)Minutes_Max);//=1000
 FileWrite(FileSET_handle,"Trade_December="+(string)Trade_December);//=false
 if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode); // B49a (F2, Codex GOAT-EA#267 P1): a PositionJoin SET records its ledger; a Legacy SET stays B47's bytes (an omitted Ledger_Mode reads as Legacy)
+// B50:begin b50-writeset
+// B50 (A0): each B50 input is written only when it differs from its default, so a default SET stays B49a's bytes and an
+// omitted B50 input reads as its default everywhere (controller APPENDED_INPUTS, the child audit, the Studio readback).
+if(Engine_Mode!=Engine_Grid)              FileWrite(FileSET_handle,"Engine_Mode="+(string)(int)Engine_Mode);
+if(Single_SL_ATR!=0.0)                    FileWrite(FileSET_handle,"Single_SL_ATR="+(string)Single_SL_ATR);
+if(Single_TP_ATR!=0.0)                    FileWrite(FileSET_handle,"Single_TP_ATR="+(string)Single_TP_ATR);
+if(Single_TP_R!=0.0)                      FileWrite(FileSET_handle,"Single_TP_R="+(string)Single_TP_R);
+if(Single_Exit_Opposite)                  FileWrite(FileSET_handle,"Single_Exit_Opposite="+(string)Single_Exit_Opposite);
+if(Single_Time_Stop_Bars!=0)              FileWrite(FileSET_handle,"Single_Time_Stop_Bars="+(string)Single_Time_Stop_Bars);
+if(Single_Time_Stop_TF!=TF_Cur)           FileWrite(FileSET_handle,"Single_Time_Stop_TF="+(string)(int)Single_Time_Stop_TF);
+if(Clock_Mode!=Clock_Server)              FileWrite(FileSET_handle,"Clock_Mode="+(string)(int)Clock_Mode);
+if(Server_Clock_Model!=ServerClock_NYClose) FileWrite(FileSET_handle,"Server_Clock_Model="+(string)(int)Server_Clock_Model);
+if(Server_UTC_Offset!=2)                  FileWrite(FileSET_handle,"Server_UTC_Offset="+(string)Server_UTC_Offset);
+if(NY_Session!="09:30-16:00")              FileWrite(FileSET_handle,"NY_Session="+NY_Session);
+if(Rollover_Block_Minutes!=0)             FileWrite(FileSET_handle,"Rollover_Block_Minutes="+(string)Rollover_Block_Minutes);
+// B50:end b50-writeset
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -782,6 +802,46 @@ enum ENUM_LEDGER_MODE
   };
 sinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;       // Ledger: exits join by position
 // B49a:end f2-input
+// B50:begin b50-inputs
+// B50 (B50-alpha; docs/b50/B50_ALPHA_DESIGN.md section 2): the single-trade engine and the New York session clock,
+// appended after Ledger_Mode. Every default reproduces B49a (the grid engine, the server clock, no rollover block), and
+// WriteSet writes each input only when it differs from its default.
+enum ENUM_ENGINE_MODE
+  {
+   Engine_Grid=0,         // Grid (sequences)
+   Engine_Single=1        // Single trade
+  };
+enum ENUM_CLOCK_MODE
+  {
+   Clock_Server=0,        // Server clock
+   Clock_NewYork=1        // New York clock
+  };
+enum ENUM_SERVER_CLOCK_MODEL
+  {
+   ServerClock_NYClose=0, // NY close (server = New York + 7 h)
+   ServerClock_Fixed=1,   // Fixed UTC offset
+   ServerClock_EUDST=2    // UTC offset + EU daylight saving
+  };
+input    group                   "====SINGLE / CLOCK (B50)====";
+sinput   ENUM_ENGINE_MODE        Engine_Mode                   =                   Engine_Grid;       // Engine
+input    double                  Single_SL_ATR                 =                           0.0;       // Single: stop in ATR multiples (>0 when Single)
+input    double                  Single_TP_ATR                 =                           0.0;       // Single: TP in ATR multiples (0 = off)
+input    double                  Single_TP_R                   =                           0.0;       // Single: TP in R (wins over the ATR TP when >0)
+input    bool                    Single_Exit_Opposite          =                         false;       // Single: exit on the opposite signal
+input    int                     Single_Time_Stop_Bars         =                             0;       // Single: time stop after N bars (0 = off)
+input    ENUM_MODE_TFs           Single_Time_Stop_TF           =                        TF_Cur;       // Single: time stop bar timeframe
+sinput   ENUM_CLOCK_MODE         Clock_Mode                    =                  Clock_Server;       // Session clock
+sinput   ENUM_SERVER_CLOCK_MODEL Server_Clock_Model            =           ServerClock_NYClose;       // Broker server clock model
+sinput   int                     Server_UTC_Offset             =                             2;       // Server winter UTC offset (Fixed, EU DST)
+input    string                  NY_Session                    =                 "09:30-16:00";       // New York session (start>end crosses midnight)
+input    int                     Rollover_Block_Minutes        =                             0;       // No new entries within N min of 17:00 New York
+// B50 globals. g_GoatSingleArmed[OP_BUY/OP_SELL]: that direction may open its next single (cleared on an open, re-armed
+// when its combined signal reads false). g_GoatEntryBlocked: no new entry, grid or single (the rollover window, a live
+// clock mismatch). g_GoatNYStartMin/EndMin: NY_Session in minutes after New York midnight (OnInit).
+bool     g_GoatSingleArmed[2]={true,true};
+bool     g_GoatEntryBlocked=false;
+int      g_GoatNYStartMin=0,g_GoatNYEndMin=0;
+// B50:end b50-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label

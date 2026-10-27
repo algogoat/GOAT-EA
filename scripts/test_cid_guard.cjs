@@ -243,7 +243,7 @@ const M=1843920117,O=907113355,Y=1210448821;   // this chart's magic, an orphane
  const BRANCH=region(main,'    if(Seq_Buy.Active)\n    {\n     if(buyMlpsExit)','//--------\n    if(Seq_Sell.Active)');
  for(const banned of ['DashboardEntryAllowed','GoatCidGuard'])assert.ok(!BRANCH.includes(banned),'the add branch never reads '+banned);
  const adds=[];
- Object.assign(t.c,{buyMlpsExit:false,LastBuyTradeSignal:false,Mode_Lots_Prog:0,Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Partial_Profit_Factor:0,
+ Object.assign(t.c,{Engine_Mode:0,Engine_Single:1,buyMlpsExit:false,LastBuyTradeSignal:false,Mode_Lots_Prog:0,Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Partial_Profit_Factor:0,
   Peak_Smart_Release_PC:0,ask:1.0850,bid:1.0848,GRID_VALID:3,GetSize:()=>0.0020,RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,
   Sequence_Pause_News:false,Sequence_Pause_Bias_B:false,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,DashboardPortfolioPaused:false,
   Seq_Buy:{Active:true,Traded:true,Level_Last:1.0900,Level_Count:2,Size_Grid:0.0020,Level_Retrace:0,BiasRescueActive:false,

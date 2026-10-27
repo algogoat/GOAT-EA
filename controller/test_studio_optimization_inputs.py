@@ -1,9 +1,13 @@
 import json,tempfile,unittest
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from studio_optimization_inputs import explicit_optimization_inputs
+from studio_optimization_inputs import explicit_optimization_inputs, verify_explicit_inputs
 from studio_input_schema import discover
 from verify_native_reports import verify_pair,SS,OFFICE
+
+B50_EXPLICIT=('Single_SL_ATR=0.0||0.0||0||0.0||N\r\nSingle_TP_ATR=0.0||0.0||0||0.0||N\r\nSingle_TP_R=0.0||0.0||0||0.0||N\r\n'
+ 'Single_Exit_Opposite=false||false||0||false||N\r\nSingle_Time_Stop_Bars=0||0||0||0||N\r\nSingle_Time_Stop_TF=0||0||0||0||N\r\n'
+ 'Rollover_Block_Minutes=0||0||0||0||N\r\n')
 
 class OptimizationInputsTests(unittest.TestCase):
  def setUp(self):
@@ -27,7 +31,27 @@ class OptimizationInputsTests(unittest.TestCase):
   self.assertIn('RSI_Period=9\r\n',second);self.assertEqual(explicit_optimization_inputs(rendered,self.schema),rendered)
  def test_strings_metadata_sinput_and_existing_tuples_unchanged(self):
   source='; architecture\r\nEA_Desc=text||Y\r\nMode_Operation=9\r\nDownload_StartDate=2024.12.26\r\nRSI_Period=9||0||1||20||N\r\nGrid_Size=-4||-5||1||-3||Y\r\n'
-  self.assertEqual(explicit_optimization_inputs(source,self.schema),source)
+  self.assertEqual(explicit_optimization_inputs(source,self.schema),source)   # partial text: nothing appended (B50)
+ def test_a_b49a_pool_set_gets_the_b50_axes_explicitly_at_their_defaults(self):
+  # B50 (A0, GOAT-EA#269 P1): a real pool SET written before B50 (the r8 USDCHF member). Its native inputs gain one
+  # fixed line per B50 axis, the same lines the EA writes (scripts/test_optimization_axis_isolation.cjs), so no stale
+  # flag of the terminal's tester profile becomes an axis; the SET's own axes keep their tuples.
+  from studio_strategy_settings import read_values
+  path=self.repo/'controller/fixtures/oosc/r8/deploy/R1696f82a0d700d5c7279/USDCHF/GOAT V1.49 USDCHF,M1_Trds=198_Prf=1990_DD=415_PF=3.82_SR=8.73_ARF=0.295.set'
+  text=path.read_bytes().decode('utf-16')
+  self.assertNotIn('Single_SL_ATR',text)
+  native=explicit_optimization_inputs(text,self.schema)
+  self.assertTrue(native.endswith(B50_EXPLICIT))
+  self.assertEqual(explicit_optimization_inputs(native,self.schema),native,'idempotent')
+  values=read_values(native.encode('utf-16'))
+  axes={k for k,v in read_values(path.read_bytes()).items() if k in self.schema['inputs'] and v.endswith('||Y')}
+  self.assertEqual(verify_explicit_inputs(values,self.schema,axes),values)
+  for name in ('Single_SL_ATR','Single_Time_Stop_TF','Rollover_Block_Minutes'):
+   self.assertTrue(values[name].endswith('||N'))
+  # A SET that carries a B50 axis keeps its own tuple, with no second line.
+  own=text.replace('\r\nEA_Desc=','\r\nSingle_SL_ATR=1.0||0.5||0.5||2.0||Y\r\nEA_Desc=',1)
+  rendered=explicit_optimization_inputs(own,self.schema)
+  self.assertEqual(rendered.count('\nSingle_SL_ATR='),1);self.assertIn('Single_SL_ATR=1.0||0.5||0.5||2.0||Y',rendered)
  def report(self,path,forward,extra=None):
   root=ET.Element('{'+SS+'}Workbook');props=ET.SubElement(root,'{'+OFFICE+'}DocumentProperties');ET.SubElement(props,'{'+OFFICE+'}Title').text='fixture'
   table=ET.SubElement(ET.SubElement(root,'{'+SS+'}Worksheet'),'{'+SS+'}Table')

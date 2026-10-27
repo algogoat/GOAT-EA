@@ -23,6 +23,20 @@ def explicit_optimization_inputs(text, schema):
             if definition and definition['optimizable'] and definition['type']!='string' and '||' not in value:
                 body=key+'='+value+'||'+value+'||0||'+value+'||N'
         lines.append(body+ending)
+    # B50 (A0, GOAT-EA#269 P1): a SET written before an appended input omits it, and MT5 would keep that input's flag
+    # and range from the saved tester profile. In a complete SET (every other optimizable input present: only such a
+    # SET validates), each appended axis it omits is written at its declared default, fixed, as the EA's
+    # GoatStudioExplicitOptimizationInputs writes it for the native config (OnTesterInit accepts it).
+    from studio_strategy_settings import APPENDED_INPUTS, appended_default
+    present = {line.split('=', 1)[0].strip() for line in lines if '=' in line and not line.lstrip().startswith(';')}
+    axes = {name for name, definition in schema['inputs'].items() if definition['optimizable'] and definition['type'] != 'string'}
+    for name in (APPENDED_INPUTS if axes - set(APPENDED_INPUTS) <= present else ()):
+        definition = schema['inputs'].get(name)
+        if definition and definition['optimizable'] and definition['type'] != 'string' and name not in present:
+            if lines and not lines[-1].endswith('\n'):
+                lines[-1] += '\r\n'
+            value = appended_default(definition)
+            lines.append(name+'='+value+'||'+value+'||0||'+value+'||N\r\n')
     return ''.join(lines)
 
 

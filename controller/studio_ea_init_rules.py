@@ -30,7 +30,7 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 import re
 
-from studio_strategy_settings import numeric
+from studio_strategy_settings import B50_INPUTS, numeric
 
 EA_SOURCE = 'GOAT V1.49.mq5'
 EA_INIT_CODE = 'EA_INIT_REFUSED'
@@ -247,6 +247,28 @@ def _tester_control_tower_bias(v):
                 and protocol == v.choice('Bias_Protocol', 'BiasProtocol_ControlTowerV2DemoRaw')))
 
 
+def _bad_ny_session(text):
+    """B50 (A0), GOAT V1.49.mq5:4439-4450: NY_Session is HH:MM-HH:MM, hours 0-23 written with one or two digits,
+    minutes 0-59 with two (the EA round-trips each part through StringToInteger/IntegerToString), start != end."""
+    if _mql_split_count(text, '-') != 2:
+        return True
+    minutes = []
+    for half in text.split('-'):
+        if _mql_split_count(half, ':') != 2:
+            return True
+        hours, mins = half.split(':')
+        if not re.fullmatch(r'[0-9]{1,2}', hours) or not re.fullmatch(r'[0-9]{2}', mins):
+            return True
+        if int(hours) > 23 or int(mins) > 59:
+            return True
+        minutes.append(int(hours) * 60 + int(mins))
+    return minutes[0] == minutes[1]
+
+
+def _single(v):
+    return v['Engine_Mode'] == v.choice('Engine_Mode', 'Engine_Single')
+
+
 SESSION_INPUTS = ('Active_Time_ASIA', 'Active_Time_EU', 'Active_Time_US')
 RRR_CHAIN = ('Mode_RRR', 'RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size')
 
@@ -339,6 +361,37 @@ EA_INIT_RULES = (
           {'Mode_RRR': ['RRR_Disabled', 'RRR_SL_TP', 'RRR_SL_LP']},
           'after the RRR block and the |x|<1 -> 0 normalisation of lines 4378-4379: LP_Size_==0 && TP_Pips_==0',
           'Initialization Failed: Both LP and TP cannot be zero/disabled.', _lp_tp_both_disabled),
+    # B50 (A0): the single-trade engine and the New York clock (GOAT V1.49.mq5:4429-4467). A schema without these
+    # appended inputs belongs to a build without the rules (applicable_rules).
+    _rule('SINGLE_SL_ATR_NOT_POSITIVE', [4433], 'Engine_Mode==Engine_Single && Single_SL_ATR<=0.0',
+          ['Engine_Mode', 'Single_SL_ATR'], {'Engine_Mode': ['Engine_Single']},
+          'Engine_Mode==Engine_Single && Single_SL_ATR<=0.0',
+          'Initialization Failed: the single-trade engine needs Single_SL_ATR > 0.',
+          lambda v: _single(v) and v['Single_SL_ATR'] <= 0.0),
+    _rule('SINGLE_TP_NEGATIVE', [4434], 'Single_TP_ATR<0.0 || Single_TP_R<0.0', ['Single_TP_ATR', 'Single_TP_R'], {},
+          'Single_TP_ATR<0.0 || Single_TP_R<0.0',
+          'Initialization Failed: Single_TP_ATR and Single_TP_R cannot be negative.',
+          lambda v: v['Single_TP_ATR'] < 0.0 or v['Single_TP_R'] < 0.0),
+    _rule('SINGLE_TIME_STOP_BARS_NEGATIVE', [4435], 'Single_Time_Stop_Bars<0', ['Single_Time_Stop_Bars'], {},
+          'Single_Time_Stop_Bars<0', 'Initialization Failed: Single_Time_Stop_Bars cannot be negative.',
+          lambda v: v['Single_Time_Stop_Bars'] < 0),
+    _rule('ROLLOVER_BLOCK_NEGATIVE', [4436], 'Rollover_Block_Minutes<0', ['Rollover_Block_Minutes'], {},
+          'Rollover_Block_Minutes<0', 'Initialization Failed: Rollover_Block_Minutes cannot be negative.',
+          lambda v: v['Rollover_Block_Minutes'] < 0),
+    _rule('SERVER_UTC_OFFSET_RANGE', [4437], 'Server_UTC_Offset<-12 || Server_UTC_Offset>14', ['Server_UTC_Offset'], {},
+          'Server_UTC_Offset<-12 || Server_UTC_Offset>14',
+          'Initialization Failed: Server_UTC_Offset must be between -12 and 14.',
+          lambda v: v['Server_UTC_Offset'] < -12 or v['Server_UTC_Offset'] > 14),
+    _rule('SINGLE_WITH_SMART_RESCUE', [4438], 'Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue',
+          ['Engine_Mode', 'Mode_Bias_Exit'], {'Engine_Mode': ['Engine_Single'], 'Mode_Bias_Exit': ['BiasExit_SmartRescue']},
+          'Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue (Claude-Mac ruling 4)',
+          'Initialization Failed: Smart Rescue cannot run with the single-trade engine (it would move the single\'s stop '
+          'to rescue levels).',
+          lambda v: _single(v) and v['Mode_Bias_Exit'] == v.choice('Mode_Bias_Exit', 'BiasExit_SmartRescue')),
+    _rule('NY_SESSION_FORMAT', [4450], 'NY_Session must be HH:MM-HH:MM', ['NY_Session'], {},
+          'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
+          'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
+          lambda v: _bad_ny_session(v['NY_Session'])),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -396,11 +449,18 @@ NOT_PORTED = (
     dict(lines=(4302,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
     dict(lines=(4420,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
     dict(lines=(4428,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4499,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    # B50 (A0): the single-trade engine's account and indicator refusals.
+    dict(lines=(4453,), anchor='ACCOUNT_MARGIN_MODE_RETAIL_HEDGING', condition='Engine_Single on a netting account',
+         reason='account margin mode'),
+    dict(lines=(4457,), anchor='iATR failed (single-trade engine)', condition='Engine_Single: iATR handle invalid',
+         reason='symbol/indicator runtime'),
+    dict(lines=(4465,), anchor='iMA-on-ATR failed (single-trade engine)', condition='Engine_Single: iMA-on-ATR handle invalid',
+         reason='symbol/indicator runtime'),
+    dict(lines=(4538,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4500,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4508,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4513,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4539,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4547,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4552,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 
@@ -483,6 +543,10 @@ def applicable_rules(schema, table=EA_INIT_RULES):
     rules = []
     for rule in table:
         missing = [name for name in rule['inputs'] if name not in inputs]
+        # B50 (A0): a schema that declares none of B50's inputs is a build without them, so without their rules (V1.48,
+        # B49a). One that declares some but lost one a rule reads fails closed below, like any other lost input.
+        if missing and all(name in B50_INPUTS for name in missing) and not any(name in inputs for name in B50_INPUTS):
+            continue
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
                   for label in wanted if label not in (inputs[name].get('enum_choices') or {})]
         if not missing and not labels:

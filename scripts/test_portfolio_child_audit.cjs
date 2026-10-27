@@ -60,6 +60,21 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),true,'PositionJoin SET and child');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=0\n'+tail,expert),false,'PositionJoin SET, child at Legacy');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+tail,expert),false,'PositionJoin SET, a B47 child without the input');passed++;}
+// B50 (A0): a B50 child template carries the twelve B50 inputs, which WriteSet writes only when they differ from their
+// defaults. A SET without them maps only to a child holding every default; a SET that carries one is compared exactly.
+{const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'
+  +'Single_Time_Stop_TF=0\nClock_Mode=0\nServer_Clock_Model=0\nServer_UTC_Offset=2\nNY_Session=09:30-16:00\nRollover_Block_Minutes=0\n';
+ const child=head+inputs+declared+'BlindExport=false\nLedger_Mode=0\n';
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b50+tail,expert),true,'B49a SET, B50 child at the defaults');passed++;
+ for(const [from,to] of [['Engine_Mode=0','Engine_Mode=1'],['Single_SL_ATR=0.0','Single_SL_ATR=1.5'],['Single_Exit_Opposite=false','Single_Exit_Opposite=true'],
+  ['Single_Time_Stop_TF=0','Single_Time_Stop_TF=1440'],['Clock_Mode=0','Clock_Mode=1'],['Server_UTC_Offset=2','Server_UTC_Offset=3'],
+  ['NY_Session=09:30-16:00','NY_Session=08:00-17:00'],['Rollover_Block_Minutes=0','Rollover_Block_Minutes=15']]){
+  assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b50.replace(from,to)+tail,expert),false,'B49a SET, child at '+to);passed++;
+ }
+ const single=original+'Engine_Mode=1\nSingle_SL_ATR=1.5\n';
+ assert.equal(api.GoatChildAuditMaps(single,0,50,2,child+b50.replace('Engine_Mode=0','Engine_Mode=1').replace('Single_SL_ATR=0.0','Single_SL_ATR=1.50')+tail,expert),true,'Single SET and child');passed++;
+ assert.equal(api.GoatChildAuditMaps(single,0,50,2,child+b50+tail,expert),false,'Single SET, grid child');passed++;
+ assert.equal(api.GoatChildAuditMaps(single,0,50,2,child+tail,expert),false,'Single SET, a B49a child without the inputs');passed++;}
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.

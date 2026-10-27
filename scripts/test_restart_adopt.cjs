@@ -414,7 +414,8 @@ function firstTick(text,buy,sell,{ready=false}={}){
   Sequence_Pause_Bias_B:false,Sequence_Pause_Bias_S:false,DashboardPortfolioPaused:false,DashboardTradeAllowed:()=>true,
   Mode_Lots_Prog:0,Lots_Prog_CumPartial:5,Lots_Prog_PeakSmart:6,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
   RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,OP_BUY:0,OP_SELL:1,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,Trades_Skipped_Bias_S:0,
-  LastBuyTradeSignal:true,LastSellTradeSignal:true,bid:1.2000,ask:1.0000});
+  LastBuyTradeSignal:true,LastSellTradeSignal:true,bid:1.2000,ask:1.0000,
+  Engine_Mode:0,Engine_Single:1});   // B50 (A0): the grid engine (B50's default); a single never reaches the grid check
  for(const s of [buy,sell]) if(s.Add_Level===undefined) s.Add_Level=p=>{k.adds.push([s.dir,p]);return true;};
  vm.runInContext('function Tick(){'+js(text.slice(a,b))+'}',k);
  return k;

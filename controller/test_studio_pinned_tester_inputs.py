@@ -117,7 +117,13 @@ class RealSchemaPinningTests(unittest.TestCase):
     def test_pinned_values_keep_every_trading_value_and_validate(self):
         rendered = explicit_optimization_inputs(self.template, self.schema)
         source, pinned = read_values(self.template.encode('utf-16')), read_values(rendered.encode('utf-16'))
-        self.assertEqual(set(source), set(pinned))
+        # B50 (A0, GOAT-EA#269 P1): the complete template omits the B50 axes, which are pinned at their defaults, fixed.
+        b50 = {'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite', 'Single_Time_Stop_Bars', 'Single_Time_Stop_TF',
+               'Rollover_Block_Minutes'}
+        self.assertEqual(set(pinned), set(source) | b50)
+        self.assertFalse(b50 & set(source))
+        for name in b50:
+            self.assertTrue(pinned[name].endswith('||N'), name)
         for name in source:
             if self.schema['inputs'][name]['type'] == 'string':
                 self.assertEqual(pinned[name], source[name])

@@ -43,6 +43,12 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    if(identity=="[TesterInputs]|Sequence_Export_Start" || identity=="[TesterInputs]|Sequence_Export_End") return value=="0";
    if(identity=="[TesterInputs]|Sequence_Export_Model") return value=="4";
    if(identity=="[TesterInputs]|Ledger_Mode") return value=="0"; // B49a (F2): a SET from before the appended input runs it at its Legacy default, never PositionJoin
+   // B50:begin b50-fixed
+   // B50 (A0): a SET from before the B50 inputs runs each at its default (the grid engine, the server clock), as B49a; any
+   // other value, or an active optimization axis, is refused. The optimizable ones may read back as a dormant N tuple.
+   if(StringSubstr(identity,0,15)=="[TesterInputs]|" && GoatStudioAppendedDefault(StringSubstr(identity,15))!="")
+      return GoatStudioSettingValueEqual(GoatStudioAppendedDefault(StringSubstr(identity,15)),value,GoatStudioSettingType(StringSubstr(identity,15)));
+   // B50:end b50-fixed
    return false;
   }
 

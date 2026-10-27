@@ -29,8 +29,10 @@ class AppendedInputTests(unittest.TestCase):
         self.old = {k: v for k, v in self.full.items() if k not in APPENDED_INPUTS}   # a B47-era SET
 
     def test_the_appended_inputs_are_ledger_mode_last_in_the_header_defaulting_to_legacy(self):
-        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',))
-        self.assertEqual(list(self.schema['inputs'])[-1], 'Ledger_Mode')
+        self.assertEqual(APPENDED_INPUTS[0], 'Ledger_Mode')
+        # B50 (A0): the appended inputs are the header's last ones, in order, after B47's 114.
+        self.assertEqual(list(self.schema['inputs'])[-len(APPENDED_INPUTS):], list(APPENDED_INPUTS))
+        self.assertEqual(len(self.schema['inputs']), 114 + len(APPENDED_INPUTS))
         definition = self.schema['inputs']['Ledger_Mode']
         self.assertEqual((definition['type'], definition['declaration'], definition['default_expression']),
                          ('ENUM_LEDGER_MODE', 'sinput', 'Ledger_Legacy'))
@@ -38,6 +40,43 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(appended_default(definition), '0')
         # The same default the tester report pins for any omitted input (GOAT-EA#250).
         self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), '0')
+
+    def test_the_b50_inputs_follow_ledger_mode_and_default_to_b49a(self):
+        # B50 (A0, docs/b50/B50_ALPHA_DESIGN.md section 2): twelve inputs after Ledger_Mode; every default reproduces
+        # B49a, and each is the default the tester report pins for an omitted input.
+        expected = {'Engine_Mode': ('ENUM_ENGINE_MODE', 'sinput', '0'), 'Single_SL_ATR': ('double', 'input', '0.0'),
+                    'Single_TP_ATR': ('double', 'input', '0.0'), 'Single_TP_R': ('double', 'input', '0.0'),
+                    'Single_Exit_Opposite': ('bool', 'input', 'false'), 'Single_Time_Stop_Bars': ('int', 'input', '0'),
+                    'Single_Time_Stop_TF': ('ENUM_MODE_TFs', 'input', '0'), 'Clock_Mode': ('ENUM_CLOCK_MODE', 'sinput', '0'),
+                    'Server_Clock_Model': ('ENUM_SERVER_CLOCK_MODEL', 'sinput', '0'),
+                    'Server_UTC_Offset': ('int', 'sinput', '2'), 'NY_Session': ('string', 'input', '09:30-16:00'),
+                    'Rollover_Block_Minutes': ('int', 'input', '0')}
+        self.assertEqual(APPENDED_INPUTS[1:], tuple(expected))
+        for name, (kind, declaration, default) in expected.items():
+            definition = self.schema['inputs'][name]
+            self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
+                             (kind, declaration, default), name)
+            self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), default, name)
+        self.assertEqual(self.schema['inputs']['Engine_Mode']['enum_choices'], {'Engine_Grid': 0, 'Engine_Single': 1})
+        self.assertEqual(self.schema['inputs']['Clock_Mode']['enum_choices'], {'Clock_Server': 0, 'Clock_NewYork': 1})
+        self.assertEqual(self.schema['inputs']['Server_Clock_Model']['enum_choices'],
+                         {'ServerClock_NYClose': 0, 'ServerClock_Fixed': 1, 'ServerClock_EUDST': 2})
+        self.assertEqual(self.schema['inputs']['Single_Time_Stop_TF']['enum_choices']['TF_D1'], 1440)
+        # The optimization axes: the input (not sinput), non-string ones.
+        self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']},
+                         {'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite', 'Single_Time_Stop_Bars',
+                          'Single_Time_Stop_TF', 'Rollover_Block_Minutes'})
+
+    def test_a_b49a_set_may_choose_the_single_engine_and_its_axes(self):
+        # The fixture runs Smart Rescue, which the single engine refuses (Claude-Mac ruling 4): hard close instead.
+        single = dict(self.old, Engine_Mode='1', Single_SL_ATR='1.5||1.0||0.5||3.0||Y', Single_TP_R='2.0', Mode_Bias_Exit='0')
+        with self.assertRaisesRegex(ValueError, 'SINGLE_WITH_SMART_RESCUE'):
+            validate_strategy(dict(single, Mode_Bias_Exit='1'), self.schema)
+        self.assertEqual(validate_strategy(single, self.schema)['values'], single)
+        with self.assertRaisesRegex(ValueError, 'Engine_Mode: Input not exposed for optimization'):
+            validate_strategy(dict(single, Engine_Mode='0||0||1||1||Y'), self.schema)
+        with self.assertRaisesRegex(ValueError, 'Clock_Mode: Undeclared enum value'):
+            validate_strategy(dict(self.old, Clock_Mode='2'), self.schema)
 
     def test_a_set_without_it_validates_and_keeps_its_own_values(self):
         # Claude-Mac GOAT-EA#265 P1: the checks see the default, the caller gets its own values back, so a stored job,
@@ -68,7 +107,7 @@ class AppendedInputTests(unittest.TestCase):
         self.assertNotIn('Ledger_Mode', self.old)
         self.assertEqual(complete_appended_inputs(dict(self.old, Ledger_Mode='1'), self.schema)['Ledger_Mode'], '1')
         # A schema without the input (the V1.48 contract) adds nothing.
-        v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k != 'Ledger_Mode'})
+        v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in APPENDED_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, v148), self.old)
 
     def test_the_paste_sets_the_default_instead_of_inheriting_the_last_run(self):
@@ -76,10 +115,13 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(pasted['Ledger_Mode'], '0||0||0||0||N')
 
     def test_the_readback_wants_the_default_and_catches_a_position_join_run(self):
-        observed = dict(self.full, Ledger_Mode='0')
+        observed = complete_appended_inputs(dict(self.full), self.schema)   # MT5 reports every input (B50's at their defaults)
+        self.assertEqual(observed['Ledger_Mode'], '0')
         self.assertEqual(verify_input_readback(dict(self.old), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Engine_Mode'):
+            verify_input_readback(dict(self.old), dict(observed, Engine_Mode='1'), self.schema)   # B50: a Single run for a B49a SET
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
-            verify_input_readback(dict(self.old), dict(self.full, Ledger_Mode='1'), self.schema)
+            verify_input_readback(dict(self.old), dict(observed, Ledger_Mode='1'), self.schema)
 
 
 class AppendedInputPrepareTests(unittest.TestCase):

@@ -14,12 +14,15 @@
 //   B47 in exactly CHANGED, and the build ID and marker are its own. The build ID line is the one unmarked change
 //   (IDENTITY_LINES): its value "V1.49-BETA17-49" is the build's name, so it cannot carry the marker inside the string.
 // Replaces test_b47_no_drift.cjs (B47's guard against B46), which pinned the tree to B47 by design.
+// B50 (A0): B49a's tree is merged (65fde12, GOAT-EA#267) and B50 builds on it, so this guard now proves B49a's own
+// tree, read from that commit, and that the working tree descends from it. scripts/test_b50_no_drift.cjs proves the
+// working tree against B49a, so the chain B47 -> B49a -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B49a change is marked, listed and reviewable. A marked line
 // or a marked block can still change behaviour. Neutrality with the new inputs at their defaults is proven only by
 // the tester parity on Banker (flags off, B49a against B47 byte-identical on the 48 templates and sampled exports).
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
-const ROOT=path.join(__dirname,'..'),B47_SOURCE='ccb0a07';
+const ROOT=path.join(__dirname,'..'),B47_SOURCE='ccb0a07',B49A_SOURCE='65fde12';
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
 const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingCompare.mqh','GOATPortfolioChildAudit.mqh'];   // F2: the Studio's input type allowlist and readback; the child audit's Ledger_Mode default (Codex #267)
 const ADDED=[];
@@ -43,11 +46,14 @@ const REMOVED={
 const NEW_INPUTS=['Ledger_Mode'];   // F2
 // The assembly's build ID line (exact text in GOAT V1.49.mq5); the marker line carries "B49a" in its value.
 const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-49"'];
-const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
 // .mq5/.mqh check out as CRLF (.gitattributes), so a blob hashes as the tree would.
 const checkedOut=(name,data)=>/\.mq[5h]$/.test(name)?Buffer.from(data.toString('utf8').replace(/\r\n/g,'\n').replace(/\n/g,'\r\n'),'utf8'):data;
+// B50 (A0): B49a's files as its commit checks them out (the working tree is a B50 descendant).
+const read=f=>checkedOut(f,git(['show',B49A_SOURCE+':'+f]));
+const existsAtB49a=f=>{try{git(['cat-file','-e',B49A_SOURCE+':'+f]);return true;}catch{return false;}};
+git(['merge-base','--is-ancestor',B49A_SOURCE,'HEAD']);   // throws unless the working tree descends from B49a
 const b47=JSON.parse(read('candidate-builds/beta17-B47/identity.json'));
 let checks=0;
 
@@ -64,7 +70,7 @@ function closure(){
  while(todo.length){
   const f=todo.pop();if(seen.has(f))continue;seen.add(f);
   const text=read(f).toString('utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');
-  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(fs.existsSync(path.join(ROOT,inc)))todo.push(inc);}
+  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(existsAtB49a(inc))todo.push(inc);}
  }
  return [...seen].sort();
 }
@@ -91,7 +97,7 @@ function markedBlocks(lines){
 for(const f of CHANGED){
  const lines=read(f).toString('utf8').replace(/^﻿/,'').split(/\r\n/);
  const inBlock=markedBlocks(lines);
- const diff=git(['diff','--no-color','--no-ext-diff','-U0',B47_SOURCE,'--',f]).toString('utf8').split('\n');
+ const diff=git(['diff','--no-color','--no-ext-diff','-U0',B47_SOURCE,B49A_SOURCE,'--',f]).toString('utf8').split('\n');
  let newLine=0,hunk=null;const hunks=[],removedLines=[];
  for(const line of diff){
   const h=line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
@@ -141,4 +147,4 @@ assert.equal((mainText.match(/#define\s+GOAT_BUILD_(?:ID|MARKER)\b/g)||[]).lengt
 assert.equal(deps.main_sha256,b49a.sources['GOAT V1.49.mq5'],'the contract pins the identity\'s entrypoint');
 checks++;
 
-console.log('b49a_no_drift: '+checks+' checks passed (B47 '+B47_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');
+console.log('b49a_no_drift: '+checks+' checks passed (B47 '+B47_SOURCE+' -> B49a '+B49A_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');

@@ -57,6 +57,18 @@ assert.ok(!/Ledger_Mode/.test(w));
 compare(w,a+'\nLedger_Mode=0\n',true);
 compare(w,a+'\nLedger_Mode=1\n',false,'Ledger_Mode');
 compare(w,a+'\nLedger_Mode=0||0||1||1||Y\n',false,'Ledger_Mode');
+// B50 (A0): the twelve B50 inputs, appended after Ledger_Mode, are absent from a SET written before them. MT5 reports each
+// at its build default (an optimizable one as a dormant N tuple), which is accepted; any other value or an active axis
+// (a single-trade run, the New York clock the SET never asked for) is refused.
+const b50Defaults='\nEngine_Mode=0\nSingle_SL_ATR=0.0||0.0||0.000000||0.0||N\nSingle_TP_ATR=0.0\nSingle_TP_R=0\nSingle_Exit_Opposite=false||false||0||true||N'
+ +'\nSingle_Time_Stop_Bars=0||0||1||10||N\nSingle_Time_Stop_TF=0\nClock_Mode=0\nServer_Clock_Model=0\nServer_UTC_Offset=2\nNY_Session=09:30-16:00\nRollover_Block_Minutes=0\n';
+assert.ok(!/Engine_Mode|NY_Session/.test(w));
+compare(w,a+'\nLedger_Mode=0'+b50Defaults,true);
+for(const [from,to,key] of [['Engine_Mode=0','Engine_Mode=1','Engine_Mode'],['Single_SL_ATR=0.0||0.0||0.000000||0.0||N','Single_SL_ATR=1.5','Single_SL_ATR'],
+ ['Single_SL_ATR=0.0||0.0||0.000000||0.0||N','Single_SL_ATR=0.0||0.5||0.5||2.0||Y','Single_SL_ATR'],['Single_Exit_Opposite=false||false||0||true||N','Single_Exit_Opposite=true','Single_Exit_Opposite'],
+ ['Single_Time_Stop_TF=0','Single_Time_Stop_TF=1440','Single_Time_Stop_TF'],['Clock_Mode=0','Clock_Mode=1','Clock_Mode'],['Server_Clock_Model=0','Server_Clock_Model=2','Server_Clock_Model'],
+ ['Server_UTC_Offset=2','Server_UTC_Offset=3','Server_UTC_Offset'],['NY_Session=09:30-16:00','NY_Session=08:00-17:00','NY_Session'],['Rollover_Block_Minutes=0','Rollover_Block_Minutes=15','Rollover_Block_Minutes']])
+ compare(w,a+'\nLedger_Mode=0'+b50Defaults.replace(from,to),false,key);
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

@@ -4426,6 +4426,45 @@ int OnInit()
                                        default:   mt=MODE_SMA; break;}
                                     ATR_MA_handle  = iMA    (Symbol(),ATR_TF,ATR_Period,0,mt,ATR_handle);}
                                     if(ATR_MA_handle == INVALID_HANDLE) {Print("iMA-on-ATR failed. err=",GetLastError()," ATR_handle=",ATR_handle); return(INIT_FAILED);}
+// B50:begin b50-init
+   // B50 (A0): the single-trade engine and the New York clock refuse an incoherent SET (each rule is ported to the
+   // controller's EA_INIT_RULES), parse NY_Session once, and read ATR in Single mode whatever the grid's size mode.
+   g_GoatSingleArmed[0]=true; g_GoatSingleArmed[1]=true; g_GoatEntryBlocked=false; // a live re-init keeps EA globals
+   if(Engine_Mode==Engine_Single && Single_SL_ATR<=0.0)     {Alert("Initialization Failed: the single-trade engine needs Single_SL_ATR > 0."); return INIT_PARAMETERS_INCORRECT;}
+   if(Single_TP_ATR<0.0 || Single_TP_R<0.0)                 {Alert("Initialization Failed: Single_TP_ATR and Single_TP_R cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
+   if(Single_Time_Stop_Bars<0)                              {Alert("Initialization Failed: Single_Time_Stop_Bars cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
+   if(Rollover_Block_Minutes<0)                             {Alert("Initialization Failed: Rollover_Block_Minutes cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
+   if(Server_UTC_Offset<-12 || Server_UTC_Offset>14)        {Alert("Initialization Failed: Server_UTC_Offset must be between -12 and 14."); return INIT_PARAMETERS_INCORRECT;}
+   if(Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue) {Alert("Initialization Failed: Smart Rescue cannot run with the single-trade engine (it would move the single's stop to rescue levels)."); return INIT_PARAMETERS_INCORRECT;}
+   {
+    // NY_Session is HH:MM-HH:MM (hours 0-23, two-digit minutes); start>end crosses midnight; start==end is refused.
+    string b50_parts[],b50_hm[]; int b50_minutes[2]={-1,-1};
+    if(StringSplit(NY_Session,'-',b50_parts)==2)
+       for(int b50_i=0;b50_i<2;b50_i++)
+          if(StringSplit(b50_parts[b50_i],':',b50_hm)==2 && StringLen(b50_hm[0])>=1 && StringLen(b50_hm[0])<=2 && StringLen(b50_hm[1])==2)
+            {
+             long b50_h=StringToInteger(b50_hm[0]),b50_m=StringToInteger(b50_hm[1]);
+             if(IntegerToString(b50_h,StringLen(b50_hm[0]),'0')==b50_hm[0] && IntegerToString(b50_m,2,'0')==b50_hm[1]
+                && b50_h>=0 && b50_h<=23 && b50_m>=0 && b50_m<=59) b50_minutes[b50_i]=(int)(b50_h*60+b50_m);
+            }
+    if(b50_minutes[0]<0 || b50_minutes[1]<0 || b50_minutes[0]==b50_minutes[1]) {Alert("Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times."); return INIT_PARAMETERS_INCORRECT;}
+    g_GoatNYStartMin=b50_minutes[0]; g_GoatNYEndMin=b50_minutes[1];
+   }
+   if(Engine_Mode==Engine_Single && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;}
+   if(Engine_Mode==Engine_Single && !(Grid_Size<0||LP_Size_<0||SL_Pips_<0||TP_Pips_<0||TSL_Size_<0||Grid_Min_<0||Grid_Max_<0)) // the grid's ATR gate above did not create the handles
+     {
+      ATR_handle = iATR(Symbol(),ATR_TF,1);
+      if(ATR_handle == INVALID_HANDLE) {Print("iATR failed (single-trade engine). err=",GetLastError()); return(INIT_FAILED);}
+      ENUM_MA_METHOD b50_mt=MODE_SMA;
+      switch(ATR_Method){
+         case  SMA: b50_mt=MODE_SMA; break;
+         case  EMA: b50_mt=MODE_EMA; break;
+         case  LWMA:b50_mt=MODE_LWMA;break;
+         default:   b50_mt=MODE_SMA; break;}
+      ATR_MA_handle = iMA(Symbol(),ATR_TF,ATR_Period,0,b50_mt,ATR_handle);
+      if(ATR_MA_handle == INVALID_HANDLE) {Print("iMA-on-ATR failed (single-trade engine). err=",GetLastError()," ATR_handle=",ATR_handle); return(INIT_FAILED);}
+     }
+// B50:end b50-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
                                   //EMA2_handle    = iMA    (Symbol(),EMA_TF,EMA2_Period,0,EMA_Method,EMA_Price);
@@ -6591,6 +6630,11 @@ void GoatTickBody()
     else if(stm_cur.day_of_week==5)                         k=4;
     else                                                    k=4;  // Sat-Sun same as Friday
 
+// B50:begin b50-server-session
+    // B50 (A0): the server session table sets Active, InActive and Sequence_Pause_Close only under the server clock;
+    // under Clock_NewYork GoatNYClockApply sets them from the New York session (A2), below.
+    if(Clock_Mode!=Clock_NewYork)
+    {
     if((stm_cur.hour>Hour_Start[k]||(stm_cur.hour==Hour_Start[k]&&stm_cur.min>=Minute_Start[k])) &&
        (stm_cur.hour<Hour_End[k]  ||(stm_cur.hour==Hour_End[k]  &&stm_cur.min<Minute_End[k])))
     {
@@ -6598,6 +6642,8 @@ void GoatTickBody()
      if(InActive) {Sequence_Pause_Close=false;}
     }
     else {Active=false; InActive=true; SetEdit(PanelDialog.m_edit_Info_2,"INACTIVE",clrRed,Font_Size);}//clr_Text=clrRed;}
+    }
+// B50:end b50-server-session
     if(GoatCidGuardRefuses()) SetEdit(PanelDialog.m_edit_Info_2,"REFUSED: "+g_GoatCidGuardReason,clrRed,Font_Size); // B46: CID refusal on the panel
 
     if(!Trade_Friday && (stm_cur.day_of_week==5 || stm_cur.day_of_week==5))      Sequence_New_Friday=false;
@@ -6605,6 +6651,7 @@ void GoatTickBody()
 
     if(!Trade_December && FastSpeed_Flag && stm_cur.mon==12)                     Sequence_New_Dec=false;
     else                                                                         Sequence_New_Dec=true;
+    GoatNYClockApply(k); // B50 (A0): the New York clock (A2: GOAT_NYClock.mqh); with Clock_Server and no rollover block it changes nothing
 //-------
     int Trades=0,Buys=0,Sells=0;
     double OpenLots=0.0,PL_Total=0.0,PL_Buy=0.0,PL_Sell=0.0,PL_Closed=0.0,PL_Today=0.0;
@@ -6733,14 +6780,14 @@ void GoatTickBody()
      Alert("Daily Target Reached : Trading Stopped");
     }*/
     // End of Day/session
-    if(InActive && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)
+    if(Clock_Mode!=Clock_NewYork && InActive && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) B50 (A0): the NY clock runs its own day end (GoatNYClockApply)
     {
      if(Action_Dayend==Action_Close) StopOut_Flag = true;
      if(Action_Dayend==Action_Pause) Sequence_Pause_Close = true;
      //ObjectSetText("06","Exit Reason: Inactive time",Font_Size,"NULL",clrMagenta);
     }
     // End of day/session on friday
-    if(InActive && stm_cur.day_of_week==5 && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)
+    if(Clock_Mode!=Clock_NewYork && InActive && stm_cur.day_of_week==5 && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) B50 (A0): the NY clock runs its own Friday close (GoatNYClockApply)
     {
      if(Action_Friday==Action_Close) StopOut_Flag = true;
      if(Action_Friday==Action_Pause) Sequence_Pause_Close = true;
@@ -6887,6 +6934,7 @@ void GoatTickBody()
 
      if(EMA_MustCheck||ADX_MustCheck||BB_MustCheck||MACD_MustCheck||RSI2_MustCheck) {UpdateCurrentSignals(Shift_Sig); checked=true;}
     }
+    GoatSingleSignalExits(checked); // B50 (A0): the single's opposite-signal exit, on the signal cadence, in or out of session (A3)
 
     if(Active)
     {
@@ -6901,7 +6949,7 @@ void GoatTickBody()
 
      if(!checked) UpdateCurrentSignals(Shift_Sig);
 
-      if(!DashboardPortfolioPaused&&Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec&&(DashboardTradeAllowBuy||DashboardTradeAllowSell)) SignalEntryTrigger();//Buys,Sells);
+      if(!DashboardPortfolioPaused&&Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec&&(DashboardTradeAllowBuy||DashboardTradeAllowSell)&&!g_GoatEntryBlocked) SignalEntryTrigger();//Buys,Sells); B50 (A0): no new entry while the clock blocks it (rollover, live clock mismatch)
      //SignalExitTrigger();
      //OrderUpdate();
      //File_update=true;
@@ -6915,6 +6963,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    static bool LastBuyTradeSignal=false,LastSellTradeSignal=false;
 
+   GoatSingleTimeStop(); // B50 (A0): the single's time stop, on each new bar of Single_Time_Stop_TF (A3)
    bool buyMlpsExit=false,sellMlpsExit=false;
    if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
    if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
@@ -6934,6 +6983,7 @@ void GoatTickBody()
       if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && bid >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
          Seq_Buy.HandlePeakSmartRetrace(bid);
 
+      if(Engine_Mode==Engine_Single) LastBuyTradeSignal = false; else // B50 (A0): a single never adds a grid level
       if(Seq_Buy.Adopted) LastBuyTradeSignal = false; else // B49a (F1-lite): an adopted basket's adds are frozen, so no grid check and no GetSize (OnInit's own tick runs before the ATR indicator is ready; Claude-Mac GOAT-EA#266)
       if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
       {
@@ -6970,6 +7020,7 @@ void GoatTickBody()
       if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && ask <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
          Seq_Sell.HandlePeakSmartRetrace(ask);
 
+      if(Engine_Mode==Engine_Single) LastSellTradeSignal = false; else // B50 (A0): a single never adds a grid level
       if(Seq_Sell.Adopted) LastSellTradeSignal = false; else // B49a (F1-lite): an adopted basket's adds are frozen, so no grid check and no GetSize (Claude-Mac GOAT-EA#266)
       if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
       {
@@ -7331,6 +7382,16 @@ void SignalEntryTrigger()//int Buys,int Sells)
    else LastSellSignal=false;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B50:begin b50-single-open
+// B50 (A1 fills the body; docs/b50/B50_ALPHA_DESIGN.md section 1): open the one position of a single in s, a real
+// one-level sequence, at price (ask for a buy, bid for a sell). Called from SignalEntryTrigger's Single branches in place
+// of Add_Level. Returns true when the position opened. The stub opens nothing.
+bool GoatSingleOpen(SEQUENCE &s,double price)
+  {
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// B50:end b50-single-open
 void CloseAllPositions(int OP,int magic=0)
   {
    CTrade m_trade;
@@ -7924,6 +7985,26 @@ double GetSize(int type,int level_count=0,double grid_size=0)
    return 0;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B50:begin b50-exits
+// B50 (A3 fills the bodies; docs/b50/B50_ALPHA_DESIGN.md section 3). The stubs never close anything.
+// GoatSignalAll(op): the combined entry signal for direction op, the same six terms as SignalEntryTrigger's.
+bool GoatSignalAll(const int op)
+  {
+   return false;
+  }
+// GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence; it refreshes the signals
+// first when checked is false, and then sets it.
+void GoatSingleSignalExits(bool &checked)
+  {
+   if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) return;
+  }
+// GoatSingleTimeStop(): closes a single after Single_Time_Stop_Bars bars of Single_Time_Stop_TF.
+void GoatSingleTimeStop()
+  {
+   if(Engine_Mode!=Engine_Single || Single_Time_Stop_Bars<=0) return;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// B50:end b50-exits
 void PrintTradeStatus(int k,int buys,int sells,double PL_Buy,double PL_Sell)
   {
      if(Seq_Buy_Virtual.Active)
@@ -8716,6 +8797,10 @@ string ExtractFunctionKeysFromInputString(const string inputString, string &name
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B50:begin b50-include
+// B50 (A0): the New York clock (A2 owns the file), included before the Alert redirection ends like every other include.
+#include "GOAT_NYClock.mqh"
+// B50:end b50-include
 // B44 item 9 (goatai#2350): the end of the Alert redirection that starts after the input header include.
 #undef Alert
 // Deploy mode: a live chart of a deployed portfolio, where a modal Alert window would block a graceful close of the

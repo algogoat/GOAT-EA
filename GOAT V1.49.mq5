@@ -713,6 +713,14 @@ int DashboardBusCountCloseScopePositions(const int scope)
    }
    return count;
   }
+// B49a:begin f1-lite-defines
+// F1-lite's restart record flushes the realized P/L and level count from the timer at most this often (ms).
+#define GOAT_SQ_FLUSH_MS 5000
+// GetSize's answer for an ATR-mode size while ATR_Buf is still empty (CopyBuffer failed: the indicator is not ready,
+// as on OnInit's own first tick after a restart). Never a usable distance: a grid compare against it never adds, and a
+// start whose frozen sizes would hold it is refused (SEQUENCE::SizesUnavailable). Claude-Mac GOAT-EA#266.
+#define GOAT_ATR_UNAVAILABLE EMPTY_VALUE
+// B49a:end f1-lite-defines
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
@@ -1559,12 +1567,8 @@ class SEQUENCE
 // per UTC day the timer re-sets every field (MT5 drops a GlobalVariable nothing accesses for 4 weeks). Every write is
 // flushed to gvariables.dat (a hard kill or VPS reboot keeps it). The sequence's end deletes the record. A failed
 // write freezes adds (manage-only) until a write succeeds. Records live in the terminal's own folder: a migrated
-// terminal has none, so its baskets adopt unmatched (broker SL/TP untouched).
-#define GOAT_SQ_FLUSH_MS 5000
-// GetSize's answer for an ATR-mode size while ATR_Buf is still empty (CopyBuffer failed: the indicator is not ready,
-// as on OnInit's own first tick after a restart). Never a usable distance: a grid compare against it never adds, and a
-// start whose frozen sizes would hold it is refused (SizesUnavailable). Claude-Mac GOAT-EA#266.
-#define GOAT_ATR_UNAVAILABLE EMPTY_VALUE
+// terminal has none, so its baskets adopt unmatched (broker SL/TP untouched). GOAT_SQ_FLUSH_MS and GOAT_ATR_UNAVAILABLE
+// are defined above class SEQUENCE (the controller's function-unit parser refuses a directive inside a class body).
    // A start (or a virtual sequence's add) whose sizes are unknown because ATR_Buf is still empty is refused; the
    // unknown sizes go back to the sentinel, so the next attempt recomputes them. GetSize logs the cause once.
    bool SizesUnavailable()

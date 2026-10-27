@@ -7106,7 +7106,7 @@ void UpdateRSI(int shift)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void UpdateCurrentSignals(int shift)
   {
-   if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) // B50 (A3): a single with the opposite exit keeps its signals current in optimization (FastSpeed_Flag), or that exit would fire only in visual runs
+   if(Engine_Mode!=Engine_Single) // B50 (A3): a single keeps its signals current in optimization (FastSpeed_Flag), or its opposite exit and its re-arm would run only in visual runs
    if(FastSpeed_Flag && (!Buy_EN||Seq_Buy.Traded) && (!Sell_EN||Seq_Sell.Traded) ) return;
  //if(FastSpeed_Flag && (!Buy_EN||Seq_Buy.Active) && (!Sell_EN||Seq_Sell.Active) ) return;
 //-------------------------------------------------------------------------

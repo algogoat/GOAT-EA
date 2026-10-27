@@ -9,7 +9,9 @@ const MAIN=fs.readFileSync(path.join(ROOT,'GOAT V1.49.mq5'),'utf8').replace(/^ï»
 const ENTRY='datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);\n      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);';
 const MUTANTS=[
  // The design's four (section 4, A3).
- ['the FastSpeed bypass (main:7058) is removed','   if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) // B50 (A3): a single with the opposite exit keeps its signals current in optimization (FastSpeed_Flag), or that exit would fire only in visual runs\n',''],
+ ['the FastSpeed bypass (main:7058) is removed','   if(Engine_Mode!=Engine_Single) // B50 (A3): a single keeps its signals current in optimization (FastSpeed_Flag), or its opposite exit and its re-arm would run only in visual runs\n',''],
+ ['the bypass needs the opposite exit again (|| !Single_Exit_Opposite)','   if(Engine_Mode!=Engine_Single) // B50 (A3)','   if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) // B50 (A3)'],
+ ['the bypass reaches the grid engine','   if(Engine_Mode!=Engine_Single) // B50 (A3)','   if(false) // B50 (A3)'],
  ['Reverse_Seq is ignored','   bool b50_rev=Reverse_Seq;','   bool b50_rev=false;'],
  ['the time stop closes on -1','      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Buy.CloseSequencePositions("Single Exit: time stop");','      if(b50_bars<0 || b50_bars>=Single_Time_Stop_Bars) Seq_Buy.CloseSequencePositions("Single Exit: time stop");'],
  ['the time stop counts from TimeCurrent() (no entry time)',ENTRY,'datetime b50_entry=TimeCurrent();\n      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);',2],

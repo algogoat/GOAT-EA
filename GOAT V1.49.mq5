@@ -2346,6 +2346,18 @@ class SEQUENCE
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
      if(Virtual && Level_Count==Delay_Trade && ((dir==OP_BUY&&!Seq_Buy.Active) || (dir==OP_SELL&&!Seq_Sell.Active)))
      {
+// B50:begin b50-virtual-block
+      // B50 (A0, GOAT-EA#273 P2): while the clock blocks new entries (the rollover window, a live clock mismatch) a virtual
+      // sequence never becomes a real first entry; it waits, as SignalEntryTrigger does. A real sequence still adds.
+      static bool b50_virtual_block_logged=false;
+      if(g_GoatEntryBlocked)
+        {
+         if(!b50_virtual_block_logged) Print(Desc+": real start refused, new entries are blocked by the clock (B50)");
+         b50_virtual_block_logged=true;
+         return false;
+        }
+      b50_virtual_block_logged=false;
+// B50:end b50-virtual-block
       bool ret=false;
       if     (dir==OP_BUY &&MustCheck_Buy && DashboardEntryAllowed(OP_BUY))    ret=Seq_Buy.Add_Level(ask);
       else if(dir==OP_SELL&&MustCheck_Sell&& DashboardEntryAllowed(OP_SELL))   ret=Seq_Sell.Add_Level(bid);
@@ -4435,6 +4447,7 @@ int OnInit()
    if(Single_Time_Stop_Bars<0)                              {Alert("Initialization Failed: Single_Time_Stop_Bars cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
    if(Rollover_Block_Minutes<0)                             {Alert("Initialization Failed: Rollover_Block_Minutes cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
    if(Server_UTC_Offset<-12 || Server_UTC_Offset>14)        {Alert("Initialization Failed: Server_UTC_Offset must be between -12 and 14."); return INIT_PARAMETERS_INCORRECT;}
+   if(Clock_Mode==Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: the New York clock with a fixed or EU DST server model needs a test start on or after 2007.03.11 (the US DST rules it applies)."); return INIT_PARAMETERS_INCORRECT;} // GOAT-EA#273 P3
    if(Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue) {Alert("Initialization Failed: Smart Rescue cannot run with the single-trade engine (it would move the single's stop to rescue levels)."); return INIT_PARAMETERS_INCORRECT;}
    {
     // NY_Session is HH:MM-HH:MM (hours 0-23, two-digit minutes); start>end crosses midnight; start==end is refused.

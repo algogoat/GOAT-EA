@@ -111,7 +111,7 @@ class PortedRuleTests(RuleCase):
                     applicable_rules(damaged)
 
     def test_the_ny_session_mirrors_the_eas_parse(self):
-        # GOAT V1.49.mq5:4439-4450: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
+        # GOAT V1.49.mq5:4452-4463: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
         for good in ('09:30-16:00', '9:30-16:00', '00:00-23:59', '22:00-06:30', '23:59-00:00'):
             with self.subTest(good=good):
                 self.passes(NY_Session=good)
@@ -128,14 +128,14 @@ class PortedRuleTests(RuleCase):
     def test_smart_rescue_with_fixed_lots_is_refused_with_the_ea_alert(self):
         message = self.refused('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', Mode_Bias_Exit='1', Mode_Lots='0', Risk='500.0')
         self.assertEqual(message, EA_INIT_CODE + ': the EA refuses this SET at initialization. Rule '
-                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4332) fails for '
+                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4344) fails for '
                          'Mode_Bias_Exit=1 (BiasExit_SmartRescue), Mode_Lots=0 (FixedLots). EA alert: '
                          '"Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0."')
         self.passes(Mode_Bias_Exit='1', Mode_Lots='2', Risk='500.0')
         self.passes(Mode_Bias_Exit='0', Mode_Lots='0')
 
     def test_rrr_derivations_feed_the_lp_tp_rule_as_in_the_ea(self):
-        # SL/LP mode derives LP = SL*RRR = 0.5, which line 4378 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
+        # SL/LP mode derives LP = SL*RRR = 0.5, which line 4390 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
         self.refused('LP_AND_TP_BOTH_DISABLED', Mode_RRR='2', RRR='0.05', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         self.passes(Mode_RRR='2', RRR='2.0', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         # SL/TP mode derives TP = SL*RRR when TP is zero.
@@ -195,7 +195,7 @@ class OptimizationRangeTests(RuleCase):
 
     def test_too_many_combinations_is_refused_with_a_clear_message(self):
         message = self.refused_unchecked(Grid_Size='10.0||1.0||1.0||' + str(MAX_COMBINATIONS + 1) + '.0||Y')
-        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:4375) cannot be checked: the optimization ranges of Grid_Size '
+        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:4387) cannot be checked: the optimization ranges of Grid_Size '
                       'give more than 10,000 combinations', message)
         message = self.refused_unchecked(Lock_Profit_Size='10.0||1.0||1.0||200.0||Y', TP_Pips='2.0||1.0||1.0||100.0||Y')
         self.assertIn('LP_AND_TP_BOTH_DISABLED', message)
@@ -238,7 +238,7 @@ class DataDownloadTests(RuleCase):
         for value, label in (('1', 'Download_News'), ('2', 'Download_Bias'), ('3', 'Download_NewsBias')):
             with self.subTest(label=label):
                 message = self.refused('DATA_DOWNLOAD_MODE_REMOVES_EA', Mode_Download=value)
-                self.assertIn('(GOAT V1.49.mq5:3931,3948) fails for Mode_Download=%s (%s)' % (value, label), message)
+                self.assertIn('(GOAT V1.49.mq5:3943,3960) fails for Mode_Download=%s (%s)' % (value, label), message)
                 self.assertIn('EA alert: "News History download is not allowed in this mode / Bias History download is '
                               'not allowed in this mode"', message)
                 self.assertIn('use Download_Disabled', message)
@@ -249,13 +249,13 @@ AI_ON = dict(Mode_Bias='2', Bias_Protocol='2')           # the header defaults: 
 
 
 class TesterInitRuleTests(RuleCase):
-    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:3833, refused in the tester only."""
+    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:3845, refused in the tester only."""
     def refused_in_tester(self, **changes):
         with self.assertRaises(ValueError) as caught:
             check_tester_init(self.values(**changes), self.schema)
         message = str(caught.exception)
         self.assertTrue(message.startswith(TESTER_INIT_CODE + ': '), message)
-        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:3833)', message)
+        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:3845)', message)
         self.assertIn('EA alert: "Live Control Tower bias is unavailable in tester, optimization, and forward contexts. '
                       'Select BiasProtocol_LegacyRecorded or disable AI bias."', message)
         return message
@@ -270,6 +270,24 @@ class TesterInitRuleTests(RuleCase):
         self.schema = SCHEMAS['1.49']
         self.assertIn('fails for Mode_Bias=2 (Bias_Opens), Bias_Protocol=2 (BiasProtocol_ControlTowerV2DemoRaw)',
                       self.refused_in_tester(**AI_ON))
+
+    def test_the_new_york_clock_before_2007_is_refused_in_a_test_starting_then(self):
+        # B50 (A0, GOAT-EA#273 P3): Clock_NewYork with a Fixed or EU DST server model applies the US DST rules of 2007 on.
+        ny = dict(Mode_Bias='1', Clock_Mode='1')
+        for model in ('1', '2'):
+            with self.subTest(model=model):
+                with self.assertRaises(ValueError) as caught:
+                    check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema, from_date='2007.03.10')
+                self.assertIn('Rule NY_CLOCK_TEST_BEFORE_2007 (GOAT V1.49.mq5:4450)', str(caught.exception))
+                check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema, from_date='2007.03.11')
+                check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema)   # no FromDate: not checked
+        check_tester_init(self.values(Server_Clock_Model='0', **ny), self.schema, from_date='2005.01.03')   # NYClose
+        check_tester_init(self.values(Mode_Bias='1', Server_Clock_Model='1'), self.schema, from_date='2005.01.03')   # server clock
+        with self.assertRaises(ValueError):   # a Clock_Mode ladder reaching the NY clock
+            check_tester_init(self.values(Server_Clock_Model='2', Mode_Bias='1', Clock_Mode='0||0||1||1||Y'), self.schema, from_date='2006.06.01')
+        with self.assertRaisesRegex(ValueError, 'unreadable tester FromDate'):
+            check_tester_init(self.values(**ny), self.schema, from_date='2007-03-11')
+        check_tester_init(self.values(Mode_Bias='1'), SCHEMAS['1.48'], from_date='2005.01.03')   # V1.48: no B50 rule
 
     def test_ai_off_or_legacy_recorded_passes_in_the_tester(self):
         for protocol in ('0', '1', '2'):
@@ -430,14 +448,15 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(listed), len(set(listed)), 'a line is listed twice')
         self.assertEqual(sorted(self.sites), sorted(listed),
                          'OnInit refusal/removal lines and the EA_INIT_RULES/TESTER_INIT_RULES/NOT_PORTED tables differ')
-        # B50 (A0) added ten: seven input refusals (ported), the netting account and two indicator handles (not ported).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (61, 8, 65))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 33)
+        # B50 (A0) added eleven: seven input refusals (ported), the pre-2007 test start of the New York clock (a tester
+        # rule, GOAT-EA#273 P3), the netting account and two indicator handles (not ported).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (62, 8, 66))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 34)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (29, 1, 35))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (29, 2, 35))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
-        self.assertEqual(sorted(self.removals - set(self.returns)), [3821, 3931, 3948, 4223])
+        self.assertEqual(sorted(self.removals - set(self.returns)), [3833, 3943, 3960, 4235])
 
     def test_each_listed_line_still_carries_its_condition_text(self):
         for kind, name, lines, anchor in self.entries():

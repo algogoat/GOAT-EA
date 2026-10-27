@@ -247,7 +247,7 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     from studio_ea_init_rules import check_tester_init
     for index, (member, (source, _, _)) in enumerate(zip(raw_members, retained), 1):
         check_tester_init(member['strategy']['values'], controller.schema,
-                          where='batch member %d (%s): ' % (index, source))
+                          where='batch member %d (%s): ' % (index, source), from_date=member['tester'].get('FromDate'))
     if scope is not None and snapshot['queue']:
         from studio_research_retry import predecessor
         # Read-only preflight before staging; store rechecks under its gate/CAS.

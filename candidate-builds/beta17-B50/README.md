@@ -40,7 +40,17 @@ Every changed line is marked `B50` (`scripts/test_b50_no_drift.cjs`). See **Buil
 **Build**
 
 - `GOAT_BUILD_ID` is `V1.49-BETA17-50`, marker `B50`. The build ID line is the guard's one unmarked change (`IDENTITY_LINES`).
-- **Compile pending.** `identity.json` binds the sources, and `binary` is `null` until the compile commit.
+- **Compiled once** from `81e216ea` (label `b50-candidate-20261027T081212Z`): **0 errors, 0 warnings**
+  (`Result: 0 errors, 0 warnings, 32654 ms elapsed`).
+  - **Compiler:** MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`), a `/portable` copy hash-equal to B47's and B49a's compiler, Idle priority. Exit code 1 with a clean `Result:` line, as in B40–B49a.
+  - **Include root:** B47's compile root, copied hash-equal file by file.
+  - **Stage:** the 42-source closure and 3 resources, copied from the clean head outside every terminal folder, then moved aside.
+- `GOAT V1.49.ex5`: sha256 **`8364a37121b01d7ce2f59668c2d1f7300c693ab2c9d49a3a89b6d7568544a795`**, 2,536,774 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `a77a3aac…`, pinned in `controller/contracts/v149/dependencies.json`. Input header
+  `37f27f3d…` (B49a's 115 inputs plus the 12 B50 inputs, and `TF_D1`).
+- `externals.json`: no problems; `consumed_sha256` (`ced68559…`) equals B49a's; bound to the receipt (`886bba5a…`).
+- `controller/studio_installed_build.py` pins this binary as `V1.49-BETA17-50`.
+- MetaEditor output is not byte-reproducible across stages, so this is the only binary to use.
 
 **Gate (goatai#2587):**
 1. Banker tester parity, Sun 11-01 06:00–10:00Z: B50 with `Engine_Mode=Grid` (the default) against B49a `220a8725`, on 50 seeded exports. The no-drift guard proves that every change is visible; it does not prove neutrality.

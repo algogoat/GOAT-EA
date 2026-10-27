@@ -232,6 +232,22 @@ function randomCase(){
  {const cfg=randomCase();cfg.modes=all;const a=run(mainB49a,cfg),b=run(main,cfg);assert.equal(b.c.copies,a.c.copies,'B49a\'s copy count');}
  ok();}
 
+{// Claude-Mac 6439600461: EMA_Count=1 (a listed input value). The trend loop compares pairs, so one EMA's buffer is never
+ // read: B49a signals by mode over an empty, failed or short first copy, and B49b must do the same, with nothing logged.
+ for(const ema of [0,1,2,3,4,5]){
+  for(const f of [{n:-1},{n:0},{n:1,values:[1.1]}]){
+   const cfg=randomCase();cfg.modes={...cfg.modes,EMA_Mode:ema,EMA_Count:1};cfg.feed[H.EMA[0]+':0']=f;
+   const a=run(mainB49a,cfg),b=run(main,cfg);
+   assert.equal(a.crash,false);assert.equal(b.crash,false);
+   assert.deepEqual(b.out,a.out,'EMA_Count=1 mode '+ema+' '+JSON.stringify(f));
+   assert.equal(b.c.logs.filter(l=>/EMA buffer not ready/.test(l)).length,0,'nothing logged');
+  }
+ }
+ // Two EMAs still need a value each (B49a reads both).
+ {const cfg=randomCase();cfg.modes={...cfg.modes,EMA_Mode:1,EMA_Count:2};cfg.feed[H.EMA[1]+':0']={n:-1};
+  assert.equal(run(mainB49a,cfg).crash,true);const b=run(main,cfg);assert.deepEqual([b.crash,b.out.EMA],[false,OP.OP_NULL]);}
+ ok();}
+
 // ---- 4. Every enabled signal indicator's handle is checked at OnInit (SIG-01) ----
 {const INIT=bodyOf(main,'int OnInit()');
  const block=INIT.slice(INIT.indexOf('// B49b:begin signal-handles'),INIT.indexOf('// B49b:end signal-handles'));

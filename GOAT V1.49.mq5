@@ -3527,7 +3527,7 @@ int DashboardBusCloseOwnPositions(int &close_errors)
      if(m_position.Magic()!=MAGIC1 && MAGIC1!=0)                       continue;
 
      if(!m_trade.PositionClose(m_position.Ticket()))
-        close_errors++;
+        {close_errors++; GoatCloseFailureLog(m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 DASH-04): logged, throttled
      else
         closed_positions++;
    }
@@ -3554,7 +3554,7 @@ int DashboardBusCloseScopePositions(const int scope,int &close_errors)
       if(position.Magic()!=MAGIC1 && MAGIC1!=0)               continue;
 
       if(!m_trade.PositionClose(position.Ticket()))
-         close_errors++;
+         {close_errors++; GoatCloseFailureLog(position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 DASH-04): logged, throttled
       else
          closed_positions++;
    }
@@ -3576,6 +3576,21 @@ void DashboardBusAckCloseCommand(const long command_id,const int ack_status,cons
    DashboardBusAckCommand(command_id,ack_status);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin dash-close-retry
+// F3 DASH-04 (audit 06 Other issue 1): a dashboard close command used to be marked applied before the close ran, so the
+// one-second re-poll of its command GVs acknowledged APPLIED again after a failed close and nothing retried it. It is now
+// marked applied only once the close leaves nothing open, so the re-poll retries a failed close until the command
+// expires, at most every 5 s: 7 tries at 0, 5, ..., 30 s (it expires strictly after 30 s), not 31. Live only: the dashboard bus never runs in the tester.
+long     g_goat_dash_close_try_id=0;
+datetime g_goat_dash_close_try_at=0;
+bool GoatDashCloseRetryWait(const long command_id)
+  {
+   if(command_id==g_goat_dash_close_try_id && TimeCurrent()-g_goat_dash_close_try_at<5) return true;
+   g_goat_dash_close_try_id=command_id;
+   g_goat_dash_close_try_at=TimeCurrent();
+   return false;
+  }
+// B49b:end dash-close-retry
 void DashboardBusApplyCommand(const long command_id,const int command_type,const int command_value,const datetime expires_at)
   {
    if(command_id<=0) return;
@@ -3604,8 +3619,9 @@ void DashboardBusApplyCommand(const long command_id,const int command_type,const
 
    if(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
    {
+      if(GoatDashCloseRetryWait(command_id)) return; // B49b (F3 DASH-04): a failed close is retried, at most every 5 s
       DashboardPortfolioPaused=true;
-      DashboardPortfolioCommandIdApplied=command_id;
+      // B49b (F3 DASH-04): applied only once the close left nothing open (below), so a failed close is retried
       GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),1.0);
 
@@ -3613,6 +3629,7 @@ void DashboardBusApplyCommand(const long command_id,const int command_type,const
       int closed_positions=DashboardBusCloseOwnPositions(close_errors);
       int remaining=FindNumberOfPositions(OP_BUYSELL,MAGIC1);
       int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
+      if(ack_status==GOAT_DASH_ACK_APPLIED) DashboardPortfolioCommandIdApplied=command_id; // B49b (F3 DASH-04): flat, so done
       DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
       DashboardBusSendStatus(remaining==0 ? "Paused" : "Close Failed");
       return;
@@ -3620,6 +3637,7 @@ void DashboardBusApplyCommand(const long command_id,const int command_type,const
 
    if(command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
    {
+      if(GoatDashCloseRetryWait(command_id)) return; // B49b (F3 DASH-04): a failed close is retried, at most every 5 s
       int close_scope=GoatCloseCommandScope(command_value);
       int trade_mask=GoatCloseCommandTradeMask(command_value);
       DashboardTradeAllowBuy=((trade_mask&GOAT_DASH_TRADE_ALLOW_BUY)!=0);
@@ -3631,13 +3649,14 @@ void DashboardBusApplyCommand(const long command_id,const int command_type,const
          GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),1.0);
       }
 
-      DashboardPortfolioCommandIdApplied=command_id;
+      // B49b (F3 DASH-04): applied only once the close left nothing open in the scope (below), so a failed close is retried
       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
 
       int close_errors=0;
       int closed_positions=DashboardBusCloseScopePositions(close_scope,close_errors);
       int remaining=DashboardBusCountCloseScopePositions(close_scope);
       int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
+      if(ack_status==GOAT_DASH_ACK_APPLIED) DashboardPortfolioCommandIdApplied=command_id; // B49b (F3 DASH-04): flat in scope, so done
       DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
 
       string policy_status="Active";
@@ -7172,7 +7191,10 @@ bool GoatSignalReady(const int id,const string name,const bool ready,int &sig)
   }
 bool GoatEmaBuffersReady(const int shift)
   {
-   for(int i=0;i<EMA_Count;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,1,EMAs[i].Buf)) return false;
+   // Claude-Mac 6439600461: the trend loop only compares pairs (i!=j), so with one EMA no buffer is read and B49a never
+   // indexes it; it then signals by mode. Each EMA is still copied, as in B49a, but one EMA needs no value.
+   int need=(EMA_Count>=2 ? 1 : 0);
+   for(int i=0;i<EMA_Count;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,need,EMAs[i].Buf)) return false;
    return true;
   }
 // B49b:end signal-ready
@@ -7547,7 +7569,7 @@ void GoatCloseFailureLog(const ulong ticket,const uint ret,const string desc)
    if(!g_goat_close_fail_alerted)
      {
       g_goat_close_fail_alerted=true;
-      Alert("GOAT: a close failed (ticket "+IntegerToString((long)ticket)+", "+IntegerToString((int)ret)+" "+desc+"); the EA retries every second and logs each failing ticket once a minute");
+      Alert("GOAT: a close failed (ticket "+IntegerToString((long)ticket)+", "+IntegerToString((int)ret)+" "+desc+"); the EA retries it (an ended sequence every second, a dashboard close every 5 s) and logs each failing ticket once a minute");
      }
    int slot=-1,spare=-1;
    for(int i=0;i<16 && slot<0;i++)

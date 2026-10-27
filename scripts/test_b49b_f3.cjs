@@ -102,7 +102,7 @@ function closeLog({tester=false}={}){
 }
 {const c=closeLog();
  c.GoatCloseFailureLog(1001,10018,'Market closed');
- assert.deepEqual(c.alerts,['GOAT: a close failed (ticket 1001, 10018 Market closed); the EA retries every second and logs each failing ticket once a minute']);
+ assert.deepEqual(c.alerts,['GOAT: a close failed (ticket 1001, 10018 Market closed); the EA retries it (an ended sequence every second, a dashboard close every 5 s) and logs each failing ticket once a minute']);
  assert.deepEqual(c.lines,['Close failed: ticket=1001 ret=10018 (Market closed), 1 attempt(s) since the last line']);
  for(let i=0;i<59;i++){c.now++;c.GoatCloseFailureLog(1001,10018,'Market closed');}
  assert.equal(c.lines.length,1,'quiet for the rest of the minute');

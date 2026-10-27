@@ -7153,10 +7153,9 @@ void GoatTickBody()
 // then reuses those values, so does B49b). Not ready: the signal is NEUTRAL (OP_NULL, no entry on it) until the next
 // evaluation, logged once per indicator. Every B49a run that did not crash takes the same branch as before.
 bool g_goat_signal_short_logged[6];   // 0 RSI, 1 EMA, 2 ADX, 3 BB, 4 MACD, 5 RSI2
-bool GoatSignalBufferReady(const int handle,const int buffer,const int shift,const int count,const int need,const double &buf[])
+bool GoatSignalBufferReady(const int handle,const int buffer,const int shift,const int count,const int need,double &buf[]) // B49b (F7, Codex GOAT-EA#270 P2): copies into the buffer it judges
   {
-   double probe[];
-   int copied=CopyBuffer(handle,buffer,shift,count,probe);
+   int copied=CopyBuffer(handle,buffer,shift,count,buf); // B49b (F7, Codex GOAT-EA#270 P2): the one copy the evaluation reads
    return copied>=need || (copied<0 && ArraySize(buf)>=need);
   }
 bool GoatSignalReady(const int id,const string name,const bool ready,int &sig)
@@ -7181,7 +7180,7 @@ void UpdateRSI(int shift)
   {
    if((RSI_Mode!=RSI_Disabled) && GoatSignalReady(0,"RSI",GoatSignalBufferReady(RSI_handle,0,shift+0,2,(RSI_Mode==RSI_OverBS) ? 1 : 2,RSI_Buf),RSI_Sig)) // B49b (F7 SIG-02)
    {
-    CopyBuffer(RSI_handle,0,shift+0,2,RSI_Buf);
+    // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check (RSI_Buf)
 
     if(RSI_Mode==RSI_OverBS)
     {
@@ -7231,7 +7230,7 @@ void UpdateCurrentSignals(int shift)
 
     int EMA_trend=OP_NULL;
     bool voidBuy=false,voidSell=false;
-    for(int i=0;i<EMA_Count;i++)   CopyBuffer(EMA_handles[i],0,shift-0,1,EMAs[i].Buf);
+    // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check (every EMAs[i].Buf)
     for(int i=0;i<EMA_Count;i++)
     {
      for(int j=0;j<EMA_Count;j++)
@@ -7272,9 +7271,9 @@ void UpdateCurrentSignals(int shift)
     if(ADX_Sample.CheckTF(ADX_TF) && GoatSignalReady(2,"ADX",GoatSignalBufferReady(ADX_handle,MAIN_LINE,shift+0,1,1,ADX_Main_Buf) // B49b (F7 SIG-02)
        && GoatSignalBufferReady(ADX_handle,PLUSDI_LINE,shift+0,1,1,ADX_PLS_Buf) && GoatSignalBufferReady(ADX_handle,MINUSDI_LINE,shift+0,1,1,ADX_MNS_Buf),ADX_Sig)) { // B49b (F7 SIG-02)
 
-    CopyBuffer(ADX_handle,MAIN_LINE   ,shift+0,1,ADX_Main_Buf); ADX_Main_Buf[0] = NormalizeDouble(ADX_Main_Buf[0],_Digits);
-    CopyBuffer(ADX_handle,PLUSDI_LINE ,shift+0,1,ADX_PLS_Buf);  ADX_PLS_Buf[0]  = NormalizeDouble(ADX_PLS_Buf[0],_Digits);
-    CopyBuffer(ADX_handle,MINUSDI_LINE,shift+0,1,ADX_MNS_Buf);  ADX_MNS_Buf[0]  = NormalizeDouble(ADX_MNS_Buf[0],_Digits);
+    ADX_Main_Buf[0] = NormalizeDouble(ADX_Main_Buf[0],_Digits); // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check
+    ADX_PLS_Buf[0]  = NormalizeDouble(ADX_PLS_Buf[0],_Digits); // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check
+    ADX_MNS_Buf[0]  = NormalizeDouble(ADX_MNS_Buf[0],_Digits); // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check
     int ADX_trend=OP_NULL;
     if     (ADX_Main_Buf[0]>=ADX_Level&&ADX_PLS_Buf[0]>ADX_MNS_Buf[0])     {ADX_trend=OP_BUY;   SetEdit(PanelDialog.m_edit_Ind3_1,"ADX Trend",clr_Text,Font_Size,clr_Buy,clr_Buy);
                                                                                                 SetEdit(PanelDialog.m_edit_Ind3_2,"BUY"      ,clr_Text,Font_Size,clr_Buy,clr_Buy);}
@@ -7303,9 +7302,9 @@ void UpdateCurrentSignals(int shift)
     if(BB_Sample.CheckTF(BB_TF) && GoatSignalReady(3,"BB",GoatSignalBufferReady(BB_handle,BASE_LINE,shift,2,1,BB_Mi_Buf) // B49b (F7 SIG-02)
        && GoatSignalBufferReady(BB_handle,UPPER_BAND,shift,2,1,BB_Hi_Buf) && GoatSignalBufferReady(BB_handle,LOWER_BAND,shift,2,1,BB_Lo_Buf),BB_Sig)) { // B49b (F7 SIG-02)
 
-    CopyBuffer(BB_handle,BASE_LINE ,shift,2,BB_Mi_Buf);  BB_Mi_Buf[0] = NormalizeDouble(BB_Mi_Buf[0],_Digits);
-    CopyBuffer(BB_handle,UPPER_BAND,shift,2,BB_Hi_Buf);  BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits);
-    CopyBuffer(BB_handle,LOWER_BAND,shift,2,BB_Lo_Buf);  BB_Lo_Buf[0] = NormalizeDouble(BB_Lo_Buf[0],_Digits);
+    BB_Mi_Buf[0] = NormalizeDouble(BB_Mi_Buf[0],_Digits); // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check
+    BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits); // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check
+    BB_Lo_Buf[0] = NormalizeDouble(BB_Lo_Buf[0],_Digits); // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check
     //     if(CurrBar>BB_Hi_Buf[0])      {ObjectSetText("10","Price above Bollinger Channel" ,Font_Size,"NULL",clr_Text);}
     //else if(CurrBar<BB_Lo_Buf[0])      {ObjectSetText("10","Price below Bollinger Channel" ,Font_Size,"NULL",clr_Text);}
     //else                               {ObjectSetText("10","Price within Bollinger Channel",Font_Size,"NULL",clr_Text);}
@@ -7340,7 +7339,7 @@ void UpdateCurrentSignals(int shift)
   //CopyBuffer(MACD_handle,SIGNAL_LINE ,shift+0,1,MACD_Sig_Buf);  MACD_Sig_Buf[0]  = NormalizeDouble(MACD_Sig_Buf[0],_Digits);
   //CopyBuffer(MACD_handle,3           ,shift+0,1,MACD_Main_Buf);//MACD_Main_Buf[0] = NormalizeDouble(MACD_Main_Buf[0],_Digits);
   //CopyBuffer(MACD_handle,3           ,shift+0,1,MACD_Sig_Buf); //MACD_Sig_Buf[0]  = NormalizeDouble(MACD_Sig_Buf[0],_Digits);
-    CopyBuffer(MACD_handle,1           ,shift+0,1,MACD_Clr_Buf);
+    // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check (MACD_Clr_Buf)
 
     int MACD_trend=OP_NULL;
 
@@ -7373,7 +7372,7 @@ void UpdateCurrentSignals(int shift)
     static INTERVAL RSI2_Sample;
     if(RSI2_Sample.CheckTF(RSI2_TF) && GoatSignalReady(5,"RSI2",GoatSignalBufferReady(RSI2_handle,0,shift+0,2,(RSI2_Mode==RSI_OverBS) ? 1 : 2,RSI2_Buf),RSI2_Sig)) { // B49b (F7 SIG-02)
 
-    CopyBuffer(RSI2_handle,0,shift+0,2,RSI2_Buf);
+    // B49b (F7, Codex GOAT-EA#270 P2): copied once, by the readiness check (RSI2_Buf)
 
     if(RSI2_Mode==RSI_OverBS)
     {
@@ -7538,6 +7537,10 @@ ulong    g_goat_close_fail_ticket[16];
 datetime g_goat_close_fail_time[16];
 int      g_goat_close_fail_count[16];
 bool     g_goat_close_fail_alerted=false;
+// Codex GOAT-EA#276 P2: a slot is reused only once its ticket's minute has passed, so evicting it never logs early; while
+// all 16 hold a ticket inside its minute, any other ticket's failures share one overflow line, also once a minute.
+datetime g_goat_close_fail_overflow_time=0;
+int      g_goat_close_fail_overflow_count=0;
 void GoatCloseFailureLog(const ulong ticket,const uint ret,const string desc)
   {
    if(MQLInfoInteger(MQL_TESTER)) return;
@@ -7546,13 +7549,22 @@ void GoatCloseFailureLog(const ulong ticket,const uint ret,const string desc)
       g_goat_close_fail_alerted=true;
       Alert("GOAT: a close failed (ticket "+IntegerToString((long)ticket)+", "+IntegerToString((int)ret)+" "+desc+"); the EA retries every second and logs each failing ticket once a minute");
      }
-   int slot=-1,oldest=0;
+   int slot=-1,spare=-1;
    for(int i=0;i<16 && slot<0;i++)
      {
       if(g_goat_close_fail_ticket[i]==ticket) slot=i;
-      else if(g_goat_close_fail_time[i]<g_goat_close_fail_time[oldest]) oldest=i;
+      else if(spare<0 && (g_goat_close_fail_ticket[i]==0 || TimeCurrent()-g_goat_close_fail_time[i]>=60)) spare=i;
      }
-   if(slot<0) {slot=oldest; g_goat_close_fail_ticket[slot]=ticket; g_goat_close_fail_time[slot]=0; g_goat_close_fail_count[slot]=0;}
+   if(slot<0 && spare<0)
+     {
+      g_goat_close_fail_overflow_count++;
+      if(g_goat_close_fail_overflow_time!=0 && TimeCurrent()-g_goat_close_fail_overflow_time<60) return;
+      PrintFormat("Close failed: %d attempt(s) on positions beyond the 16 logged each minute, latest ticket=%I64u ret=%u (%s)",
+                  g_goat_close_fail_overflow_count,ticket,ret,desc);
+      g_goat_close_fail_overflow_time=TimeCurrent(); g_goat_close_fail_overflow_count=0;
+      return;
+     }
+   if(slot<0) {slot=spare; g_goat_close_fail_ticket[slot]=ticket; g_goat_close_fail_time[slot]=0; g_goat_close_fail_count[slot]=0;}
    g_goat_close_fail_count[slot]++;
    if(g_goat_close_fail_time[slot]!=0 && TimeCurrent()-g_goat_close_fail_time[slot]<60) return;
    PrintFormat("Close failed: ticket=%I64u ret=%u (%s), %d attempt(s) since the last line",ticket,ret,desc,g_goat_close_fail_count[slot]);

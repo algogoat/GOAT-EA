@@ -92,7 +92,8 @@ function sequence({fix=1,virtual=false,active=true,traded=true,positions=2,refus
 //    ticket per minute with the attempts since its last line; never in the tester.
 function closeLog({tester=false}={}){
  const c={MQL_TESTER:1,tester,now:5000,lines:[],alerts:[],g_goat_close_fail_ticket:new Array(16).fill(0),g_goat_close_fail_time:new Array(16).fill(0),
-  g_goat_close_fail_count:new Array(16).fill(0),g_goat_close_fail_alerted:false,IntegerToString:v=>String(v)};
+  g_goat_close_fail_count:new Array(16).fill(0),g_goat_close_fail_alerted:false,IntegerToString:v=>String(v),
+  g_goat_close_fail_overflow_time:0,g_goat_close_fail_overflow_count:0};
  c.MQLInfoInteger=k=>(k===1&&c.tester)?1:0;c.TimeCurrent=()=>c.now;c.Alert=s=>c.alerts.push(s);
  c.PrintFormat=(f,...a)=>{let i=0;c.lines.push(f.replace(/%(I64u|u|d|s)/g,()=>String(a[i++])));};
  vm.createContext(c);
@@ -109,9 +110,23 @@ function closeLog({tester=false}={}){
  assert.equal(c.lines.length,2);assert.match(c.lines[1],/, 60 attempt\(s\) since the last line$/,'the attempts in between are counted');
  // Another ticket is logged on its own clock; the Alert is once per run.
  c.GoatCloseFailureLog(1002,10018,'Market closed');assert.equal(c.lines.length,3);assert.equal(c.alerts.length,1);
- // More failing tickets than slots: the oldest slot is reused, nothing breaks.
+ // More failing tickets than slots: nothing breaks.
  for(let t=2000;t<2030;t++){c.now++;c.GoatCloseFailureLog(t,10018,'x');}
  assert.equal(c.alerts.length,1);
+ // Codex GOAT-EA#276 P2: 20 tickets failing every second for 120 s. Evicting a slot used to reset its clock, so every
+ // retry logged (1,815 lines). Now each tracked ticket logs at most once a minute and the rest share one overflow line a
+ // minute: at most (16+1) lines per started minute, here 3 minutes.
+ {const d=closeLog();
+  for(let s=0;s<120;s++){d.now++;for(let t=3000;t<3020;t++)d.GoatCloseFailureLog(t,10018,'Trade disabled');}
+  assert.ok(d.lines.length<=(16+1)*3,'bounded: '+d.lines.length+' lines');
+  const overflow=d.lines.filter(l=>/beyond the 16 logged each minute/.test(l));
+  assert.ok(overflow.length>=1&&overflow.length<=3,'one overflow line a minute: '+overflow.length);
+  for(let t=3000;t<3020;t++){const own=d.lines.filter(l=>l.startsWith('Close failed: ticket='+t+' '));assert.ok(own.length<=3,'ticket '+t+': at most once a minute ('+own.length+')');}
+  assert.match(overflow[0],/^Close failed: \d+ attempt\(s\) on positions beyond the 16 logged each minute, latest ticket=30\d\d ret=10018 \(Trade disabled\)$/);
+  // Once a tracked ticket's minute has passed, its slot is reused (the ticket closed or still failing), never earlier.
+  const e=closeLog();for(let t=1;t<=16;t++)e.GoatCloseFailureLog(t,1,'x');e.now+=30;e.GoatCloseFailureLog(99,1,'x');
+  assert.equal(e.lines.filter(l=>/^Close failed: ticket=99 /.test(l)).length,0,'no slot free inside the minute: ticket 99 goes to the overflow line');
+  e.now+=30;e.GoatCloseFailureLog(99,1,'x');assert.equal(e.lines.filter(l=>/^Close failed: ticket=99 /.test(l)).length,1,'after the minute it takes a slot');}
  // The tester never logs.
  const quiet=closeLog({tester:true});quiet.GoatCloseFailureLog(1,2,'x');assert.deepEqual([quiet.alerts,quiet.lines],[[],[]]);
  ok();}

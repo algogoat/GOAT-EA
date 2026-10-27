@@ -32,6 +32,8 @@ const MUTANTS=[
  ['the close log alerts every time','   if(!g_goat_close_fail_alerted)\n','   if(true)\n',F3],
  ['the close log is not throttled (GOAT-EA#276 P2)','   if(g_goat_close_fail_time[slot]!=0 && TimeCurrent()-g_goat_close_fail_time[slot]<60) return;\n','',F3],
  ['the close log never resets its count','   g_goat_close_fail_time[slot]=TimeCurrent(); g_goat_close_fail_count[slot]=0;','   g_goat_close_fail_time[slot]=TimeCurrent();',F3],
+ ['a slot is reused inside its minute (Codex GOAT-EA#276 P2)','(g_goat_close_fail_ticket[i]==0 || TimeCurrent()-g_goat_close_fail_time[i]>=60)','(true)',F3],
+ ['the overflow line is not throttled (Codex GOAT-EA#276 P2)','      if(g_goat_close_fail_overflow_time!=0 && TimeCurrent()-g_goat_close_fail_overflow_time<60) return;\n','',F3],
  ['a failed modify stays silent','{TPmodifyErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("TP/SL modify failed:','{TPmodifyErrors++; if(false) PrintFormat("TP/SL modify failed:',F3],
  // The monotonic SL (restart_adopt section 16).
  ['a trailed SL can be loosened','       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);','       ;',ADOPT],

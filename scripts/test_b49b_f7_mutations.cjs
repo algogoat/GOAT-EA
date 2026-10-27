@@ -36,6 +36,7 @@ const MUTANTS=[
  ['a stale buffer is not reused','   return copied>=need || (copied<0 && ArraySize(buf)>=need);','   return copied>=need;'],
  ['a partial copy counts as ready','   return copied>=need || (copied<0 && ArraySize(buf)>=need);','   return copied>0 || (copied<0 && ArraySize(buf)>=need);'],
  ['a stale short buffer counts as ready','   return copied>=need || (copied<0 && ArraySize(buf)>=need);','   return copied>=need || copied<0;'],
+ ['the check copies into a probe the evaluation never reads (Codex GOAT-EA#270 P2)','   int copied=CopyBuffer(handle,buffer,shift,count,buf);','   double probe[]; int copied=CopyBuffer(handle,buffer,shift,count,probe);'],
  ['one EMA of the ladder is not probed','   for(int i=0;i<EMA_Count;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,1,EMAs[i].Buf)) return false;','   for(int i=0;i<EMA_Count-1;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,1,EMAs[i].Buf)) return false;'],
  ['the unready log repeats','   if(!g_goat_signal_short_logged[id])\n','   if(true)\n'],
  ['the unready log is never re-armed','   if(ready) {g_goat_signal_short_logged[id]=false; return true;}','   if(ready) return true;'],

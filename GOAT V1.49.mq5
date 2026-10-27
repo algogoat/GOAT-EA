@@ -7888,8 +7888,8 @@ bool ExpirationCheck(const string symbol,MqlTradeRequest &m_request,MqlTradeResu
 // B49b:begin step-volume
 // B49b (F7 EX-05/R9): the order volume on the broker's own grid. B49a rounds it to multiples of VOLUME_MIN (with min 0.10
 // and step 0.01, 0.15 becomes 0.20, above the risk-solved size) and never clamps it to VOLUME_MAX (a delayed-lot sum can
-// exceed it: a 10014 refusal). Under Fix_MoneyVolume: rounded to VOLUME_STEP, then clamped to VOLUME_MIN..VOLUME_MAX,
-// sign kept. A size below VOLUME_MIN never reaches here as an order (OpenPosition's zero-lot branch).
+// exceed it: a 10014 refusal). Under Fix_MoneyVolume: rounded DOWN to VOLUME_STEP (a risk-solved lot never rounds up past
+// its risk; Claude-Mac GOAT-EA#270), then clamped to VOLUME_MIN..VOLUME_MAX, sign kept. A size below VOLUME_MIN never reaches here as an order (OpenPosition's zero-lot branch).
 double GoatStepNormalizedLots(double size)
   {
    double vmin=SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_MIN),vmax=SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_MAX);
@@ -7897,7 +7897,7 @@ double GoatStepNormalizedLots(double size)
    if(!(step>0.0)) step=vmin;
    if(!(step>0.0)) return size;
    double sign=(size<0.0) ? -1.0 : 1.0;
-   double v=MathRound(MathAbs(size)/step)*step;
+   double v=MathFloor(MathAbs(size)/step+1e-9)*step;   // floor; the 1e-9 keeps 0.13/0.01=12.999... at 13 steps
    if(vmin>0.0 && v<vmin) v=(MathAbs(size)>=vmin) ? vmin : 0.0;   // never raises a size that was below the minimum
    if(vmax>0.0 && v>vmax) v=vmax;
    return sign*NormalizeDouble(v,8);

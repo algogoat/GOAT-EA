@@ -81,24 +81,27 @@ function money(text,sym,fix){
 // ---- 2. The order volume (EX-05/R9) ----
 function lots(text,size,{vmin,step,vmax},fix){
  const c={Fix_MoneyVolume:fix,GoatFix_On:1,GoatFix_Off:0,Symbol:()=>'X',SYMBOL_VOLUME_MIN:'min',SYMBOL_VOLUME_MAX:'max',SYMBOL_VOLUME_STEP:'step',
-  SymbolInfoDouble:(s,k)=>({min:vmin,max:vmax,step})[k],MathRound,MathAbs:Math.abs,NormalizeDouble};
+  SymbolInfoDouble:(s,k)=>({min:vmin,max:vmax,step})[k],MathRound,MathFloor:Math.floor,MathAbs:Math.abs,NormalizeDouble};
  vm.createContext(c);
  const step_fn=text.includes('double GoatStepNormalizedLots(double size)')?fn('GoatStepNormalizedLots',['size'],bodyOf(text,'double GoatStepNormalizedLots(double size)')):'';
  vm.runInContext(step_fn+fn('GetNormalizedLots',['size'],bodyOf(text,'double GetNormalizedLots(double size)')),c);
  return c.GetNormalizedLots(size);
 }
 {const FX={vmin:0.01,step:0.01,vmax:100},CFD={vmin:0.1,step:0.01,vmax:50};
- const cases=[[FX,0.15],[FX,0.153],[FX,0.004],[FX,250],[CFD,0.15],[CFD,0.13],[CFD,0.17],[CFD,60],[CFD,-0.15],[CFD,0.05],[CFD,49.996]];
+ const cases=[[FX,0.15],[FX,0.153],[FX,0.155],[FX,0.004],[FX,250],[CFD,0.15],[CFD,0.155],[CFD,0.13],[CFD,0.17],[CFD,60],[CFD,-0.15],[CFD,0.05],[CFD,49.996]];
  for(const [sym,size] of cases) assert.equal(lots(main,size,sym,0),lots(mainB49a,size,sym,0),'Off is B49a\'s volume for '+size);
  const on=(sym,size)=>lots(main,size,sym,1);
  assert.equal(on(FX,0.153),0.15);assert.equal(on(CFD,0.15),0.15,'min 0.10, step 0.01: 0.15 stays 0.15');
  assert.notEqual(lots(mainB49a,0.15,CFD,0),0.15,'B49a rounds it to a multiple of the minimum');
- assert.equal(on(CFD,0.13),0.13);assert.equal(on(CFD,0.17),0.17);
+ // Claude-Mac GOAT-EA#270: a risk-solved lot never rounds UP past its risk; it floors to the step.
+ assert.equal(on(FX,0.155),0.15,'0.155 floors to 0.15 (rounding would send 0.16)');assert.equal(on(CFD,0.155),0.15);
+ assert.equal(on(CFD,0.13),0.13,'0.13/0.01 is 12.999... in binary: still 13 steps');assert.equal(on(CFD,0.17),0.17);
+ assert.equal(on(FX,0.29),0.29);assert.equal(on(FX,0.57),0.57);assert.equal(on(FX,1.13),1.13);   // more values a bare floor would lose a step on
  assert.equal(on(CFD,60),50,'clamped to VOLUME_MAX');assert.equal(lots(mainB49a,60,CFD,0),60,'B49a sends 60 (a 10014 refusal)');
- assert.equal(on(FX,250),100);assert.equal(on(CFD,49.996),50);
- assert.equal(on(CFD,-0.15),-0.15,'sign kept');
+ assert.equal(on(FX,250),100);assert.equal(on(CFD,49.996),49.99,'floored, never rounded up');
+ assert.equal(on(CFD,-0.155),-0.15,'sign kept, the size floors toward zero');
  assert.equal(on(CFD,0.05),0,'a size below the minimum is never raised to it');assert.equal(on(FX,0.004),0);
- assert.equal(on({vmin:0.1,step:0,vmax:50},0.27),0.3,'no step: the minimum is the step');
+ assert.equal(on({vmin:0.1,step:0,vmax:50},0.27),0.2,'no step: the minimum is the step');
  ok();}
 
 // ---- 3. Indicator buffers (SIG-02) ----

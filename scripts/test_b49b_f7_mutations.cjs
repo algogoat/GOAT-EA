@@ -18,7 +18,8 @@ const MUTANTS=[
  ['the step volume runs with the flag off','   if(Fix_MoneyVolume==GoatFix_On) return GoatStepNormalizedLots(size);','   return GoatStepNormalizedLots(size);'],
  ['the volume is not clamped to the maximum','   if(vmax>0.0 && v>vmax) v=vmax;\n','\n'],
  ['a size below the minimum is raised to it','   if(vmin>0.0 && v<vmin) v=(MathAbs(size)>=vmin) ? vmin : 0.0;','   if(vmin>0.0 && v<vmin) v=vmin;'],
- ['the volume is floored, not rounded','   double v=MathRound(MathAbs(size)/step)*step;','   double v=MathFloor(MathAbs(size)/step)*step;'],
+ ['the volume is rounded, not floored (Claude-Mac GOAT-EA#270)','   double v=MathFloor(MathAbs(size)/step+1e-9)*step;','   double v=MathRound(MathAbs(size)/step)*step;'],
+ ['the floor loses a step to binary error','   double v=MathFloor(MathAbs(size)/step+1e-9)*step;','   double v=MathFloor(MathAbs(size)/step)*step;'],
  ['no step: the size is sent as it is','   if(!(step>0.0)) step=vmin;\n','\n'],
  ['the sign is lost','   return sign*NormalizeDouble(v,8);','   return NormalizeDouble(v,8);'],
  // SIG-02: each indicator's gate, the need, the stale rule, the log.

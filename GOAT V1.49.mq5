@@ -713,6 +713,14 @@ int DashboardBusCountCloseScopePositions(const int scope)
    }
    return count;
   }
+// B49a:begin f1-lite-defines
+// F1-lite's restart record flushes the realized P/L and level count from the timer at most this often (ms).
+#define GOAT_SQ_FLUSH_MS 5000
+// GetSize's answer for an ATR-mode size while ATR_Buf is still empty (CopyBuffer failed: the indicator is not ready,
+// as on OnInit's own first tick after a restart). Never a usable distance: a grid compare against it never adds, and a
+// start whose frozen sizes would hold it is refused (SEQUENCE::SizesUnavailable). Claude-Mac GOAT-EA#266.
+#define GOAT_ATR_UNAVAILABLE EMPTY_VALUE
+// B49a:end f1-lite-defines
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
@@ -743,6 +751,8 @@ class SEQUENCE
    double      StartLots,PeakLots,PeakCumLots,ScaleFactor,LotsRaw[],LotsNorm[],LotsCum[],Distances[];
    double      SequenceRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
    ulong       LedgerPositions[],LedgerDeals[]; // B49a (F2): this sequence's position ids, and the deals already booked
+   bool        Adopted,AdoptMatched,AdoptSizes,PersistFailed,ManageOnlyLogged; // B49a (F1-lite): restart adoption, manage-only
+   long        PersistStartMsc; double PersistedRealized; int PersistedLevels; uint PersistFlushedMs; ulong PersistFirstTicket; datetime PersistTouchedDay; // B49a (F1-lite): the restart record
    //double      FirstTradeEquity;
 
    SEQUENCE()
@@ -756,6 +766,7 @@ class SEQUENCE
     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
     SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
+    PersistReset(); // B49a (F1-lite)
     //FirstTradeEquity=0.0;
    }
 //----------------------
@@ -812,6 +823,7 @@ class SEQUENCE
       Sequences_PL++;
      }
      GoatTraceEnd(TraceSequenceID,desc);
+     PersistEnd(); PersistReset(); // B49a (F1-lite): the restart record ends with the sequence; manage-only ends
      TraceSequenceID=0;
      if(!Virtual) GoatDirectionGuardEnd(dir);
      GuardRealStarted=false;
@@ -1543,6 +1555,246 @@ class SEQUENCE
     SequenceRealizedPL += HistoryDealGetDouble(deal_ticket,DEAL_FEE);   // a fee-charging broker's per-deal fee (the export and GoatRankPF count it)
    }
 // B49a:end f2-ledger
+// B49a:begin f1-lite
+//---------------------- B49a (F1-lite; roadmap F1/D8, WEEKEND-1031 goatai#2587 6427772701 / 6428370704): restart adoption.
+// Through B47 OnInit re-created empty sequences, so after a restart an open basket kept only its broker TP/SL: MLPS
+// never fired again, and a new sequence could start beside it. Live charts only (never the tester, a batch or the
+// dashboard); no input.
+// The restart record, per magic + symbol + direction (terminal GlobalVariables <Key>_SQ_<magic>_<symbol>_<B|S>_<field>):
+// the first level's ticket (TK) and the five sizes frozen at start (G, L, TP, SL, TS), written once; the level count
+// (N), written with each real level; the realized P/L (R), on change, flushed from the timer at most every
+// GOAT_SQ_FLUSH_MS; the first position's open time in ms (T), written last, so a record without T is incomplete. Once
+// per UTC day the timer re-sets every field (MT5 drops a GlobalVariable nothing accesses for 4 weeks). Every write is
+// flushed to gvariables.dat (a hard kill or VPS reboot keeps it). The sequence's end deletes the record. A failed
+// write freezes adds (manage-only) until a write succeeds. Records live in the terminal's own folder: a migrated
+// terminal has none, so its baskets adopt unmatched (broker SL/TP untouched). GOAT_SQ_FLUSH_MS and GOAT_ATR_UNAVAILABLE
+// are defined above class SEQUENCE (the controller's function-unit parser refuses a directive inside a class body).
+   // A start (or a virtual sequence's add) whose sizes are unknown because ATR_Buf is still empty is refused; the
+   // unknown sizes go back to the sentinel, so the next attempt recomputes them. GetSize logs the cause once.
+   bool SizesUnavailable()
+   {
+    if(Size_Grid!=GOAT_ATR_UNAVAILABLE && Size_Lock!=GOAT_ATR_UNAVAILABLE && Size_TP!=GOAT_ATR_UNAVAILABLE
+       && Size_SL!=GOAT_ATR_UNAVAILABLE && Size_TSL!=GOAT_ATR_UNAVAILABLE) return false;
+    if(Size_Grid==GOAT_ATR_UNAVAILABLE) Size_Grid=1234.5;
+    if(Size_Lock==GOAT_ATR_UNAVAILABLE) Size_Lock=1234.5;
+    if(Size_TP  ==GOAT_ATR_UNAVAILABLE) Size_TP  =1234.5;
+    if(Size_SL  ==GOAT_ATR_UNAVAILABLE) Size_SL  =1234.5;
+    if(Size_TSL ==GOAT_ATR_UNAVAILABLE) Size_TSL =1234.5;
+    return true;
+   }
+   void PersistReset()
+   {
+    Adopted=AdoptMatched=AdoptSizes=PersistFailed=ManageOnlyLogged=false;
+    PersistStartMsc=0; PersistedRealized=0.0; PersistedLevels=0; PersistFlushedMs=0; PersistFirstTicket=0; PersistTouchedDay=0;
+   }
+   bool PersistLive()
+   {
+    if(Virtual || MAGIC1<=0) return false;
+    if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+    return(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash);
+   }
+   string PersistKey(const string field)
+   {
+    return Key+"_SQ_"+IntegerToString(MAGIC1)+"_"+_Symbol+"_"+(dir==OP_BUY ? "B" : "S")+"_"+field;
+   }
+   bool PersistWrite(const string field,const double value)
+   {
+    if(GlobalVariableSet(PersistKey(field),value)>0) return true;
+    if(!PersistFailed)
+       Alert(Desc+": GOAT restart record not written ("+PersistKey(field)+", error "+IntegerToString(GetLastError())
+             +"). Adds are frozen until a write succeeds; closes, stops and MLPS continue.");
+    PersistFailed=true;
+    return false;
+   }
+   // The whole record from memory, T last (a record without T is incomplete), then flushed to gvariables.dat.
+   bool PersistWriteAll(const long start_msc)
+   {
+    if(!(PersistWrite("TK",(double)PersistFirstTicket) && PersistWrite("G",Size_Grid) && PersistWrite("L",Size_Lock)
+         && PersistWrite("TP",Size_TP) && PersistWrite("SL",Size_SL) && PersistWrite("TS",Size_TSL)
+         && PersistWrite("N",(double)Level_Count) && PersistWrite("R",SequenceRealizedPL) && PersistWrite("T",(double)start_msc))) return false;
+    GlobalVariablesFlush();
+    PersistedRealized=SequenceRealizedPL; PersistedLevels=Level_Count;
+    PersistTouchedDay=TimeGMT()-TimeGMT()%86400;
+    if(PersistFailed) {PersistFailed=false; Print(Desc,": GOAT restart record written",(Adopted ? " (still manage-only)." : "; adds resume."));}
+    return true;
+   }
+   // The first real level starts the record (retried from the timer while it fails). Any earlier record goes first,
+   // so a write that fails midway leaves no mix of two records (Claude-Mac GOAT-EA#266 P2-3).
+   void PersistStart(const ulong first_ticket)
+   {
+    if(!PersistLive() || PersistStartMsc>0 || first_ticket==0) return;
+    PersistFirstTicket=first_ticket;
+    long start_msc=(PositionSelectByTicket(first_ticket) ? PositionGetInteger(POSITION_TIME_MSC) : (long)TimeCurrent()*1000);
+    PersistEnd();
+    if(PersistWriteAll(start_msc)) PersistStartMsc=start_msc;
+   }
+   // Each later real level updates the record's level count at once (adds are rare; the match rule bounds by it).
+   // A failed write leaves PersistedLevels behind, so the timer retries it (Codex GOAT-EA#266).
+   void PersistLevels()
+   {
+    if(!PersistLive() || PersistStartMsc==0) return;
+    if(PersistWrite("N",(double)Level_Count)) {PersistedLevels=Level_Count; GlobalVariablesFlush();}
+   }
+   // From the timer, at most every GOAT_SQ_FLUSH_MS (force: at once, OnDeinit): the realized P/L and level count when
+   // they changed; the whole record from memory once per UTC day (every field's 4-week GlobalVariable expiry starts
+   // again) and after a failed write. Adds unfreeze only once everything pending is written.
+   void PersistFlush(const bool force=false)
+   {
+    if(!PersistLive() || !Active || !Traded) return;
+    if(!force && GetTickCount()-PersistFlushedMs<GOAT_SQ_FLUSH_MS) return;
+    if(PersistStartMsc==0) {if(PersistFirstTicket>0) {PersistFlushedMs=GetTickCount(); PersistStart(PersistFirstTicket);} return;}
+    bool touch=(TimeGMT()-TimeGMT()%86400!=PersistTouchedDay);
+    if(!touch && !PersistFailed && SequenceRealizedPL==PersistedRealized && Level_Count==PersistedLevels) return;
+    PersistFlushedMs=GetTickCount();
+    if(touch || PersistFailed) {PersistWriteAll(PersistStartMsc); return;}
+    if(!PersistWrite("R",SequenceRealizedPL) || !PersistWrite("N",(double)Level_Count)) return;
+    GlobalVariablesFlush();
+    PersistedRealized=SequenceRealizedPL; PersistedLevels=Level_Count;
+   }
+   void PersistEnd()
+   {
+    if(!PersistLive()) return;
+    string fields[]={"T","TK","G","L","TP","SL","TS","N","R"};
+    for(int i=0; i<ArraySize(fields); i++) GlobalVariableDel(PersistKey(fields[i]));
+    GlobalVariablesFlush();
+   }
+   // Adds stay frozen while the basket is adopted (manage-only) or its record cannot be written; logged once.
+   bool ManageOnlyFrozen(const int level)
+   {
+    if(!Adopted && !PersistFailed) {ManageOnlyLogged=false; return false;}
+    if(!ManageOnlyLogged)
+    {
+       ManageOnlyLogged=true;
+       Print("GOAT restart: add_frozen=",(Adopted ? "manage_only" : "record_unwritten")," side=",(dir==OP_BUY ? "BUY" : "SELL"),
+             " magic=",IntegerToString(MAGIC1)," symbol=",_Symbol," level=",IntegerToString(level)," closes_stops_mlps=continue");
+    }
+    return true;
+   }
+   bool PersistRead(const string field,double &value)
+   {
+    return GlobalVariableGet(PersistKey(field),value);
+   }
+   // Under Ledger_PositionJoin a matched basket's realized P/L is recounted from history: every deal of the positions
+   // this basket opened (MAGIC1, this symbol and side, at or after the record's start), so closes made while the EA was
+   // down, or after its last flush, count too (Claude-Mac GOAT-EA#266 P2-2). Two passes over one selection; the
+   // record's R when history cannot be selected. Every deal counted is booked, so it is never counted twice.
+   double RealizedFromHistory(const long start_msc,const double fallback)
+   {
+    if(!HistorySelect((datetime)(start_msc/1000)-1,TimeCurrent()+86400)) return fallback;
+    ulong positions[];
+    double realized=0.0;
+    int total=HistoryDealsTotal();
+    for(int i=0; i<total; i++)
+    {
+     ulong deal=HistoryDealGetTicket(i);
+     if(deal==0 || HistoryDealGetInteger(deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
+     if(HistoryDealGetInteger(deal,DEAL_MAGIC)!=MAGIC1 || HistoryDealGetString(deal,DEAL_SYMBOL)!=_Symbol) continue;
+     if(HistoryDealGetInteger(deal,DEAL_TYPE)!=(dir==OP_BUY ? DEAL_TYPE_BUY : DEAL_TYPE_SELL)) continue;
+     if(HistoryDealGetInteger(deal,DEAL_TIME_MSC)<start_msc) continue;
+     int n=ArraySize(positions);
+     ArrayResize(positions,n+1);
+     positions[n]=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+     realized+=HistoryDealGetDouble(deal,DEAL_COMMISSION)+HistoryDealGetDouble(deal,DEAL_FEE);
+     LedgerBook(deal);
+    }
+    for(int i=0; i<total; i++)
+    {
+     ulong deal=HistoryDealGetTicket(i);
+     if(deal==0) continue;
+     long entry=HistoryDealGetInteger(deal,DEAL_ENTRY);
+     if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY) continue;
+     long type=HistoryDealGetInteger(deal,DEAL_TYPE);
+     if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL) continue;
+     ulong position=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+     bool mine=false;
+     for(int j=ArraySize(positions)-1; j>=0 && !mine; j--) if(positions[j]==position) mine=true;
+     if(!mine) continue;
+     realized+=ClosedDealPL(deal)+HistoryDealGetDouble(deal,DEAL_FEE);
+     LedgerBook(deal);
+    }
+    return realized;
+   }
+   // OnInit: an open basket (MAGIC1, this symbol, this direction) with no running sequence is rebuilt from its live
+   // positions and managed, never added to. Its record is trusted only when it matches (magic + symbol + direction by
+   // its key, and ticket: the record's first ticket is still live, or every live position opened at or after its start
+// and their count is within its level count).
+   bool AdoptOpenPositions()
+   {
+    if(!PersistLive() || Active) return false;
+    ulong tickets[]; long opened[];
+    for(int i=PositionsTotal()-1; i>=0; i--)
+    {
+     ulong tk=PositionGetTicket(i);
+     if(tk==0 || PositionGetInteger(POSITION_MAGIC)!=MAGIC1 || PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+     long type=PositionGetInteger(POSITION_TYPE);
+     if((dir==OP_BUY && type!=POSITION_TYPE_BUY) || (dir==OP_SELL && type!=POSITION_TYPE_SELL)) continue;
+     long msc=PositionGetInteger(POSITION_TIME_MSC);
+     int n=ArraySize(tickets),at=n;
+     while(at>0 && (opened[at-1]>msc || (opened[at-1]==msc && tickets[at-1]>tk))) at--;
+     ArrayResize(tickets,n+1); ArrayResize(opened,n+1);
+     for(int j=n; j>at; j--) {tickets[j]=tickets[j-1]; opened[j]=opened[j-1];}
+     tickets[at]=tk; opened[at]=msc;
+    }
+    int count=ArraySize(tickets);
+    if(count==0) return false;
+    double rec_t=0.0,rec_tk=0.0,rec_r=0.0;
+    double size[5];
+    bool record=PersistRead("T",rec_t) && PersistRead("TK",rec_tk) && PersistRead("R",rec_r) && rec_t>0.0;
+    bool matched=false;
+    if(record)
+    {
+     // Every live position opened at or after the record's start AND no more of them than its levels (Claude-Mac
+     // 6428447507: a later, unrelated basket on the same key cannot match a stale record).
+     double rec_n=0.0;
+     matched=(opened[0]>=(long)rec_t && PersistRead("N",rec_n) && count<=(int)rec_n);
+     for(int i=0; i<count && !matched; i++) if(tickets[i]==(ulong)rec_tk) matched=true;
+    }
+    bool sizes=matched && PersistRead("G",size[0]) && PersistRead("L",size[1]) && PersistRead("TP",size[2])
+                       && PersistRead("SL",size[3]) && PersistRead("TS",size[4]);
+    for(int i=0; i<5 && sizes; i++) if(size[i]==1234.5 || !MathIsValidNumber(size[i])) sizes=false;
+    Level_Count=Trades_Count=ArrayResize(TradeLevels,count,Max_Seq_Levels);
+    for(int i=0; i<count; i++)
+    {
+     if(!PositionSelectByTicket(tickets[i])) continue;
+     TradeLevels[i].ticket      = (long)tickets[i];
+     TradeLevels[i].price_level = PositionGetDouble(POSITION_PRICE_OPEN);
+     TradeLevels[i].price_trade = PositionGetDouble(POSITION_PRICE_OPEN);
+     TradeLevels[i].lots        = PositionGetDouble(POSITION_VOLUME);
+     TradeLevels[i].sl          = PositionGetDouble(POSITION_SL);
+     TradeLevels[i].tp          = PositionGetDouble(POSITION_TP);
+     if(Ledger_Mode==Ledger_PositionJoin) LedgerAddPosition(tickets[i]);
+    }
+    Level_Last=TradeLevels[count-1].price_level;
+    Level_SL=TradeLevels[count-1].sl;
+    // The trailing level starts at the tightest broker SL (trailing only ever tightens from there), and the transaction
+    // path's position count starts at the basket's, so a broker close that empties this side ends the sequence
+    // (Claude-Mac GOAT-EA#266 P1-b, P2-1).
+    Level_TSL=0.0;
+    for(int i=0; i<count; i++) Level_TSL=TighterBiasStop(Level_TSL,TradeLevels[i].sl);
+    if(dir==OP_BUY) LastTradeCountBuy=count; else LastTradeCountSell=count;
+    Active=Traded=true;
+    Adopted=true; AdoptMatched=matched; AdoptSizes=sizes;
+    if(matched)
+    {
+     SequenceRealizedPL=(Ledger_Mode==Ledger_PositionJoin ? RealizedFromHistory((long)rec_t,rec_r) : rec_r);
+     PersistStartMsc=(long)rec_t; PersistFirstTicket=(ulong)rec_tk; PersistedRealized=rec_r; PersistedLevels=-1;
+     if(sizes) {Size_Grid=size[0]; Size_Lock=size[1]; Size_TP=size[2]; Size_SL=size[3]; Size_TSL=size[4];}
+    }
+    else
+    {
+     SequenceRealizedPL=0.0;
+     PersistStart(tickets[0]);           // deletes the record that is not this basket's first; sizes unknown: written as the sentinel, so a later restart keeps the stops
+    }
+    if(sizes) UpdateLockTPSL(Trades_Count);
+    // Alert is a one-argument macro here (GoatDeployNotice): one string.
+    string adopted=Desc+": GOAT restart adopted "+IntegerToString(count)+" open position(s) of magic "+IntegerToString(MAGIC1)
+          +" as manage-only (adds frozen). "+(matched ? "Record matched: MLPS sees realized "+DoubleToString(SequenceRealizedPL,2)+" + open P/L"
+          : "No matching record: MLPS sees open P/L only")+". "+(sizes ? "Lock/TP/SL and trailing resume from the frozen sizes."
+          : "The EA leaves this basket's broker SL/TP untouched.");
+    Alert(adopted);
+    return true;
+   }
+// B49a:end f1-lite
 //---------------------- true sequence P/L = realized ledger + live open P/L
    double CurrentSequencePL()
    {
@@ -2083,6 +2335,7 @@ class SEQUENCE
     if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
   //if(!IsLicensed())        {Alert("Trial Expired"); return false;}
     if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: cid_duplicate freezes adds (grid and rescue) of a real sequence
+    if(!Virtual && ManageOnlyFrozen(Level_Count+1)) return false; // B49a (F1-lite): an adopted basket, or a failed restart record, freezes adds
     if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)
     {
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
@@ -2100,6 +2353,7 @@ class SEQUENCE
      if(Size_TP  ==1234.5) Size_TP   = GetSize(OP_TP);
      if(Size_SL  ==1234.5) Size_SL   = GetSize(OP_SL);
      if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);
+     if(SizesUnavailable()) return false; // B49a (F1-lite): no start on an ATR size GetSize could not read (Claude-Mac GOAT-EA#266)
      if(EnforceSequenceMLPS("add level")) return false;
 
      bool   hadPriorLevel = (Level_Count>0);
@@ -2214,6 +2468,7 @@ class SEQUENCE
         TradeLevels[Level_Count-1].tp          = LastTP;
         TradeLevels[Level_Count-1].ticket      = LastOrderTicket;
         if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {LedgerAddPosition((ulong)LastOrderTicket); AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission
+        if(LastOrderTicket>0) {if(PersistStartMsc==0) PersistStart((ulong)LastOrderTicket); else PersistLevels();} // B49a (F1-lite): the first real level starts the restart record, each later one updates its level count
         if(BiasRescueActive && Lots_Order>0.0) BiasRescuePositiveAdds++;
         if(Mode_Lots_Prog==Lots_Prog_PeakSmart && hadPriorLevel) {Level_Retrace=prevLevel; Retrace_Triggered=false;}
         if(Mode_Lots_Prog==Lots_Prog_CumPartial && hadPriorLevel && !Retrace_Triggered) Level_Retrace = prevLevel;
@@ -2265,6 +2520,7 @@ class SEQUENCE
 //----------------------
    void UpdateLockTPSL(int count=0)
    {
+    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP
     Level_Lock=Level_TP=Level_Entry=LotsTotal=0.0;
     double Lock_Factor=1;
     if(count>0 && Lock_Profit_Flexibility<1.0)
@@ -2376,6 +2632,7 @@ class SEQUENCE
       if(PositionSelectByTicket(TradeLevels[i].ticket))
       {
        double Level_SL_ = BiasRescueActive ? TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL) : Level_SL;
+       if(Adopted) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49a (F1-lite): an adopted basket's stop is never loosened (a trailed or rescued SL stays)
        if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
        {
         if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;
@@ -2404,6 +2661,7 @@ class SEQUENCE
 //----------------------
    void TrailingStoploss()
    {
+    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     CTrade Trade;
     if(Ledger_Mode==Ledger_PositionJoin) Trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
@@ -4215,6 +4473,7 @@ int OnInit()
 
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)
+     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions(); // B49a (F1-lite): a restart adopts its open baskets, manage-only (live charts only)
      if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
      DashboardBusRebuildClosedStats();
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
@@ -4270,6 +4529,7 @@ void OnDeinit(const int reason)
   {
    GoatTraceClose(reason);
    GoatDirectionGuardDeinit();
+   Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true); // B49a (F1-lite): the restart record is current when the chart stops
    if(g_GoatStudioReadOnlyMonitor)
    {GOATDeviceActivationWithdrawCode();TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
@@ -5596,6 +5856,7 @@ void GoatTimerBody(void)
     return;
    }
    GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
+   Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush(); // B49a (F1-lite): the restart record's realized P/L (at most every GOAT_SQ_FLUSH_MS)
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)
@@ -6668,6 +6929,7 @@ void GoatTickBody()
       if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && bid >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
          Seq_Buy.HandlePeakSmartRetrace(bid);
 
+      if(Seq_Buy.Adopted) LastBuyTradeSignal = false; else // B49a (F1-lite): an adopted basket's adds are frozen, so no grid check and no GetSize (OnInit's own tick runs before the ATR indicator is ready; Claude-Mac GOAT-EA#266)
       if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
       {
        if(Sequence_Pause_News)
@@ -6703,6 +6965,7 @@ void GoatTickBody()
       if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && ask <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
          Seq_Sell.HandlePeakSmartRetrace(ask);
 
+      if(Seq_Sell.Adopted) LastSellTradeSignal = false; else // B49a (F1-lite): an adopted basket's adds are frozen, so no grid check and no GetSize (Claude-Mac GOAT-EA#266)
       if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
       {
        if(Sequence_Pause_News)
@@ -7538,12 +7801,42 @@ double GetNormalizedLots(double size)
 //   return Lots_Order;
 //  }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49a:begin atr-ready
+// B49a (F1-lite; Claude-Mac GOAT-EA#266): GetSize never indexes an empty ATR_Buf. An adopted basket is active from
+// OnInit, and OnInit's own first tick can reach GetSize before the ATR indicator is ready (CopyBuffer fails, the buffer
+// stays empty). The sizes that read ATR_Buf[0] answer GOAT_ATR_UNAVAILABLE instead, logged once until it fills: a grid
+// compare against it never adds, and a start refuses (SEQUENCE::SizesUnavailable). B47 indexed the empty array here
+// (array out of range: MT5 removes the EA), so a B47 run that did not crash never reaches this branch.
+bool g_goat_atr_unavailable_logged=false;
+bool GoatSizeNeedsAtr(const int type)
+  {
+   if(type==GRID)       return !(Grid_Size>0);
+   if(type==GRID_MIN)   return !(Grid_Min_>0);
+   if(type==GRID_MAX)   return !(Grid_Max_>0);
+   if(type==GRID_VALID) return (Grid_Exponent<=0.0) ? GoatSizeNeedsAtr(GRID) : (GoatSizeNeedsAtr(GRID_MIN) || GoatSizeNeedsAtr(GRID_MAX));
+   if(type==LOCK)       return LP_Size_<0;
+   if(type==OP_TP)      return TP_Pips_<0;
+   if(type==OP_SL)      return SL_Pips_<0;
+   if(type==TSL)        return TSL_Size_<0;
+   return false;
+  }
+double GoatAtrUnavailable(const int type)
+  {
+   if(!g_goat_atr_unavailable_logged)
+     {
+      g_goat_atr_unavailable_logged=true;
+      Print("GOAT sizes: atr_unavailable type=",IntegerToString(type)," symbol=",_Symbol," err=",IntegerToString(GetLastError()),
+            " (the ATR indicator is not ready: no add and no start on an ATR size until it is; closes, stops and MLPS continue)");
+     }
+   return GOAT_ATR_UNAVAILABLE;
+  }
+// B49a:end atr-ready
 double GetSize(int type,int level_count=0,double grid_size=0)
   {
    if(Grid_Size<0||LP_Size_<0||SL_Pips_<0||TP_Pips_<0||TSL_Size_<0||Grid_Min_<0||Grid_Max_<0)
    {
     static double LastATRBid,LastATRAsk;
-    if((bid!=LastATRBid || ask!=LastATRAsk) && !Seq_Buy.Active && !Seq_Sell.Active)// && !Seq_Buy_Virtual.Active && !Seq_Sell_Virtual.Active)
+    if(((bid!=LastATRBid || ask!=LastATRAsk) && !Seq_Buy.Active && !Seq_Sell.Active) || ArraySize(ATR_Buf)==0) // B49a (F1-lite): an adopted basket is active from OnInit, before any refresh filled ATR_Buf (Claude-Mac GOAT-EA#266 P1-a)
     {/*
       int bc = BarsCalculated(ATR_MA_handle);
       bool need_fix = (bc<=0 || !MathIsValidNumber(ATR_Buf[0]) || ATR_Buf[0]==0.0);
@@ -7562,12 +7855,13 @@ double GetSize(int type,int level_count=0,double grid_size=0)
          }
          else {ATR_Buf[0] = tmp[0];}
       }*/
-     CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10.0),1);
+     CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); if(ArraySize(ATR_Buf)>0) ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10.0),1); // B49a (F1-lite): never index an empty ATR_Buf
      if(!FastSpeed_Flag) SetEdit(PanelDialog.m_edit_Det6_2,DoubleToString(ATR_Pips,1));
-     CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10),1);
+     CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); if(ArraySize(ATR_Buf)>0) ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10),1); // B49a (F1-lite): never index an empty ATR_Buf
      LastATRBid=bid; LastATRAsk=ask;
     }
    }
+   if(ArraySize(ATR_Buf)==0) {if(GoatSizeNeedsAtr(type)) return GoatAtrUnavailable(type);} else g_goat_atr_unavailable_logged=false; // B49a (F1-lite): Claude-Mac GOAT-EA#266
    if(type==GRID)
    {
     if(Grid_Size>0)        return  Grid_Size*10*Point();//*(MathPow(Grid_Exponent,StepCount-1));

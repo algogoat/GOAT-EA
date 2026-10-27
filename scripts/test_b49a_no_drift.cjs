@@ -29,6 +29,9 @@ const REMOVED={
   'if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MAGIC1)       continue;',                                           // F2: dashboard rebuild
   'if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;',                                              // F2: transaction path
   'if(HistoryDealGetInteger(ticket,DEAL_MAGIC) != MAGIC1)        continue;',                                        // F2: daily P/L
+  'if((bid!=LastATRBid || ask!=LastATRAsk) && !Seq_Buy.Active && !Seq_Sell.Active)// && !Seq_Buy_Virtual.Active && !Seq_Sell_Virtual.Active)', // F1-lite: GetSize refills an empty ATR_Buf
+  'CopyBuffer(ATR_MA_handle,0,1,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10.0),1);',            // F1-lite: never index an empty ATR_Buf
+  'CopyBuffer(ATR_MA_handle,0,0,1,ATR_Buf); ATR_Pips = NormalizeDouble(ATR_Buf[0]/(_Point*10),1);',              // F1-lite: never index an empty ATR_Buf
  ],
  'GOAT_Inputs_Definitions.mqh':[
   'int      LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket,LastTradeCountBuy=0,LastTradeCountSell=0;', // tickets

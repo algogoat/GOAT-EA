@@ -11,11 +11,22 @@ string GoatStudioSettingType(const string key)
    if(key=="Dashboard_Resume_Saved" || key=="Studio_ReadOnlyMonitor") return "bool";
    if(key=="Studio_MonitorRunPath") return "string";
    if(key=="Ledger_Mode") return "int"; // B49a (F2): the appended ENUM_LEDGER_MODE sinput (never an optimization axis)
+   // B50:begin b50-types
+   // B50 (A0): the inputs appended after Ledger_Mode. The enum inputs are int; Engine_Mode, Clock_Mode, Server_Clock_Model
+   // and Server_UTC_Offset are sinputs and NY_Session is a string, so none of those is ever an optimization axis.
+   if(StringFind("|Engine_Mode|Single_Time_Stop_Bars|Single_Time_Stop_TF|Clock_Mode|Server_Clock_Model|Server_UTC_Offset|Rollover_Block_Minutes|","|"+key+"|")>=0) return "int";
+   if(StringFind("|Single_SL_ATR|Single_TP_ATR|Single_TP_R|","|"+key+"|")>=0) return "double";
+   if(key=="Single_Exit_Opposite") return "bool";
+   if(key=="NY_Session") return "string";
+   // B50:end b50-types
    return "";
   }
 string GoatStudioOptimizationNames()
   {
-   return "|Trailing_Sample_Period|Allow_Opposite_Seq|Reverse_Seq|Mode_Trade|Grid_Size|Grid_Min|Grid_Max|Grid_Exponent|Grid_Factor|Lock_Profit_Size|Lock_Profit_Flexibility|TP_Pips|SL_Pips|RRR|Mode_RRR|TSL_Size|Mode_Trail|Delay_Trade|Delay_Trade_Live|Delay_Lots_Add|Max_Seq_Trades|CloseAtMaxLevels|ATR_TF_|ATR_Period|ATR_Method|Lots_Input|Lots_Max|Lots_Max_Cum|Lots_Exponent|Lots_Factor|Mode_Lots_Prog|Peak_Lots_Pos_PC|Partial_Profit_Factor|Peak_Smart_Release_PC|Peak_Smart_Max_Close_PC|MaxDailyLossLocal|MaxDailyProfitLocal|RSI_Mode|RSI_TF_|RSI_Period|RSI_Price|RSI_Level|EMA_Mode|EMA_TF_|EMA_Method|EMA_Price|EMA_Count|EMA_Period|EMA_Exponent|EMA_MustCheck|ADX_Mode|ADX_TF_|ADX_Period|ADX_Level|ADX_MustCheck|BB_Mode|BB_TF_|BB_Period|BB_Deviation|BB_MustCheck|MACD_Mode|MACD_Mode_Trend|MACD_TF_|MACD_Fast|MACD_Slow|MACD_Signal|MACD_Deviations|MACD_Price|MACD_MustCheck|RSI2_Mode|RSI2_TF_|RSI2_Period|RSI2_Price|RSI2_Level|RSI2_MustCheck|Active_Time_Weekday|Active_Time_Friday|Action_Dayend|Action_Friday|Trade_Friday|Bias_Protocol|Mode_Bias|Mode_Bias_Trades|Mode_Bias_Exit|Bias_Exit_Max_Exposure_Adds|Bias_threshold|Mode_News|News_threshold|News_beforeMinutes|News_afterMinutes|";
+   // B50:begin b50-axes
+   return "|Trailing_Sample_Period|Allow_Opposite_Seq|Reverse_Seq|Mode_Trade|Grid_Size|Grid_Min|Grid_Max|Grid_Exponent|Grid_Factor|Lock_Profit_Size|Lock_Profit_Flexibility|TP_Pips|SL_Pips|RRR|Mode_RRR|TSL_Size|Mode_Trail|Delay_Trade|Delay_Trade_Live|Delay_Lots_Add|Max_Seq_Trades|CloseAtMaxLevels|ATR_TF_|ATR_Period|ATR_Method|Lots_Input|Lots_Max|Lots_Max_Cum|Lots_Exponent|Lots_Factor|Mode_Lots_Prog|Peak_Lots_Pos_PC|Partial_Profit_Factor|Peak_Smart_Release_PC|Peak_Smart_Max_Close_PC|MaxDailyLossLocal|MaxDailyProfitLocal|RSI_Mode|RSI_TF_|RSI_Period|RSI_Price|RSI_Level|EMA_Mode|EMA_TF_|EMA_Method|EMA_Price|EMA_Count|EMA_Period|EMA_Exponent|EMA_MustCheck|ADX_Mode|ADX_TF_|ADX_Period|ADX_Level|ADX_MustCheck|BB_Mode|BB_TF_|BB_Period|BB_Deviation|BB_MustCheck|MACD_Mode|MACD_Mode_Trend|MACD_TF_|MACD_Fast|MACD_Slow|MACD_Signal|MACD_Deviations|MACD_Price|MACD_MustCheck|RSI2_Mode|RSI2_TF_|RSI2_Period|RSI2_Price|RSI2_Level|RSI2_MustCheck|Active_Time_Weekday|Active_Time_Friday|Action_Dayend|Action_Friday|Trade_Friday|Bias_Protocol|Mode_Bias|Mode_Bias_Trades|Mode_Bias_Exit|Bias_Exit_Max_Exposure_Adds|Bias_threshold|Mode_News|News_threshold|News_beforeMinutes|News_afterMinutes|"
+          +"Single_SL_ATR|Single_TP_ATR|Single_TP_R|Single_Exit_Opposite|Single_Time_Stop_Bars|Single_Time_Stop_TF|Rollover_Block_Minutes|"; // B50 (A0): the B50 optimization axes (NY_Session is a string, never one)
+   // B50:end b50-axes
   }
 bool GoatStudioSettingOptimizable(const string key)
   {

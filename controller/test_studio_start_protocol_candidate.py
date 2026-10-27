@@ -41,8 +41,15 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b49a_changed = json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", guard, re.M)[1].replace("'", '"') + ']')
         self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b47['sources'].get(name)), sorted(b49a_changed))
         self.assertEqual(sorted(identity['sources']), sorted(b47['sources']), 'same compile closure as B47')
+        # B50 in progress (claude-mac/b50-alpha): the tree is B49a plus marked B50 lines in the files
+        # scripts/test_b50_no_drift.cjs lists, and every other B49a source is byte-identical (proven there, against
+        # B49a's commit). The B50 assembly binds the tree to its own compiled identity.
+        b50_guard = (ROOT / 'scripts/test_b50_no_drift.cjs').read_text(encoding='utf-8')
+        b50_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b50_guard, re.M)[1].replace("'", '"') + ']'))
+        self.assertTrue({'GOAT V1.49.mq5', 'GOAT_Inputs_Definitions.mqh'} <= b50_changed)
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b50_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
         # B47 is B46 plus Claude-Mac's B46 review items (goatai#2350): live-chart CID mappings, claim heartbeat expiry,
         # the cid_duplicate add freeze, an unreadable claim refuses, no claim under login 0. Only the entrypoint differs.
         self.assertEqual(sorted(b47['consolidates']), ['B47.1', 'B47.2', 'B47.3', 'B47.4', 'B47.5'])

@@ -206,6 +206,21 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(!GoatChildAuditAdd(names,values,"Ledger_Mode","0")) return false;found=true;}
    }
    // B49a:end f2-audit
+   // B50:begin b50-audit
+   // B50 (A0): the inputs appended after Ledger_Mode are declared from B50, and WriteSet writes each one only when it
+   // differs from its default. A child that carries one while the SET does not must hold that default; a SET that
+   // carries it is compared as above.
+   string b50_names[12]={"Engine_Mode","Single_SL_ATR","Single_TP_ATR","Single_TP_R","Single_Exit_Opposite","Single_Time_Stop_Bars",
+                         "Single_Time_Stop_TF","Clock_Mode","Server_Clock_Model","Server_UTC_Offset","NY_Session","Rollover_Block_Minutes"};
+   string b50_values[12]={"0","0.0","0.0","0.0","false","0","0","0","0","2","09:30-16:00","0"};
+   for(int n=0;n<12;n++)
+   {
+      bool found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]==b50_names[n]) found=true;
+      for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]==b50_names[n])
+      {if(!GoatChildAuditAdd(names,values,b50_names[n],b50_values[n])) return false;found=true;}
+   }
+   // B50:end b50-audit
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

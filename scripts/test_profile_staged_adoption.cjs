@@ -350,7 +350,7 @@ function run(src=readSources()){
    const w=world({runPath:''});w.signal();assert.deepEqual(w.opened,['buy','sell'],'a normal child opens exactly as before');ok();}
   // Management of an existing sequence never passes through the gate: adds proceed for a staged child with no marker.
   {const w=world({runPath:NONCE});const s=w.c.Seq_Buy;s.Active=true;s.Traded=true;
-   Object.assign(w.c,{buyMlpsExit:false,LastBuyTradeSignal:false,Mode_Lots_Prog:0,Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
+   Object.assign(w.c,{Engine_Mode:0,Engine_Single:1,buyMlpsExit:false,LastBuyTradeSignal:false,Mode_Lots_Prog:0,Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
     GetSize:()=>0.001,GRID_VALID:1,Sequence_Pause_News:false,Sequence_Pause_Bias_B:false,DashboardPortfolioPaused:false,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,ask:1.09});
    vm.runInContext('(function(){'+js(manage)+'})()',w.c);
    assert.deepEqual(w.opened,['buy'],'an existing sequence keeps adding levels');assert.deepEqual(w.gateCalls,[],'management never consults the gate');ok();}

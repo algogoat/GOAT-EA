@@ -67,14 +67,23 @@ def numeric(value, definition, *, step=False):
 # bytes and values are never rewritten: the controller writes MT5's tester profile from exactly the launch's
 # [TesterInputs] (studio_tester_profile), so an omitted appended input runs its build default, and the EA's Studio
 # accepts it in the readback only at that default (GOATStudioSettingCompare.mqh, GoatStudioFixedInternal).
-APPENDED_INPUTS = ('Ledger_Mode',)
+# B50 (A0, docs/b50/B50_ALPHA_DESIGN.md section 2) appends twelve more after Ledger_Mode: the single-trade engine and the
+# New York clock. Their defaults (Engine_Grid, Clock_Server, no single-trade setting, no rollover block) reproduce B49a.
+APPENDED_INPUTS = ('Ledger_Mode',
+                   'Engine_Mode', 'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite',
+                   'Single_Time_Stop_Bars', 'Single_Time_Stop_TF', 'Clock_Mode', 'Server_Clock_Model', 'Server_UTC_Offset',
+                   'NY_Session', 'Rollover_Block_Minutes')
 
 
 def appended_default(definition):
-    """The declared default of an appended input as a SET value; an enum label resolves to its declared number."""
+    """The declared default of an appended input as a SET value; an enum label resolves to its declared number and a
+    string literal to its text (B50: NY_Session)."""
     expression = definition['default_expression']
     enum = definition.get('enum_choices')
-    return str(enum[expression]) if enum is not None and expression in enum else expression
+    if enum is not None and expression in enum:
+        return str(enum[expression])
+    literal = re.fullmatch(r'"([^"\\\r\n\x00]*)"', expression) if definition['type'] == 'string' else None
+    return literal[1] if literal else expression
 
 
 def complete_appended_inputs(values, schema):

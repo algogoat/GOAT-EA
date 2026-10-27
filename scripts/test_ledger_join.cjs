@@ -231,7 +231,10 @@ function dailyFixture(mode,text=main){
 // 7. The input: appended last to the header, default Legacy.
 {assert.match(header,/enum ENUM_LEDGER_MODE\n  \{\n   Ledger_Legacy=0, +\/\/ Legacy \(magic only\)\n   Ledger_PositionJoin=1  \/\/ Position join\n  \};\nsinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;/);
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
- assert.equal(inputs.at(-1),'Ledger_Mode','the last header input');
+ assert.equal(inputs.indexOf('Ledger_Mode'),114,'appended after B47\'s 114 header inputs');
+ // B50 (A0) appends its twelve after it (scripts/test_b50_no_drift.cjs pins them).
+ assert.deepEqual(inputs.slice(115),['Engine_Mode','Single_SL_ATR','Single_TP_ATR','Single_TP_R','Single_Exit_Opposite','Single_Time_Stop_Bars',
+  'Single_Time_Stop_TF','Clock_Mode','Server_Clock_Model','Server_UTC_Offset','NY_Session','Rollover_Block_Minutes'],'then B50\'s');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the
@@ -282,7 +285,8 @@ function dailyFixture(mode,text=main){
 //     SET is B47's bytes exactly (an omitted Ledger_Mode reads as Legacy: the controller's APPENDED_INPUTS, the child
 //     audit's Legacy default). WriteSet's last lines run here, with the same tail cut from B47's header as the control.
 {const writeSet=bodyOf(header,'void WriteSet(string desc)');
- const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'));
+ // B50 (A0) writes its own lines after this one; they are tested in scripts/test_b50_no_drift.cjs (the WriteSet golden).
+ const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.includes('// B50:begin b50-writeset')?text.indexOf('// B50:begin b50-writeset'):text.indexOf('FileClose(FileSET_handle);'));
  const run=(text,mode)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
   FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
  assert.deepEqual(run(writeSet,0),['Trade_December=true'],'Legacy: no Ledger_Mode line, as B47');

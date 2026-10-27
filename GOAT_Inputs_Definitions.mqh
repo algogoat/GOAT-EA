@@ -582,6 +582,7 @@ FileWrite(FileSET_handle,"Trades_min_inp="+(string)Trades_min_inp);//=250
 FileWrite(FileSET_handle,"Trades_Max="+(string)Trades_Max);//=1500
 FileWrite(FileSET_handle,"Minutes_Max="+(string)Minutes_Max);//=1000
 FileWrite(FileSET_handle,"Trade_December="+(string)Trade_December);//=false
+if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode); // B49a (F2, Codex GOAT-EA#267 P1): a PositionJoin SET records its ledger; a Legacy SET stays B47's bytes (an omitted Ledger_Mode reads as Legacy)
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -768,6 +769,19 @@ sinput   int                     Trades_min_inp                =                
 sinput   int                     Trades_Max                    =                          1500;       // Max Trades Opened
 sinput   int                     Minutes_Max                   =                          1000;       // Max Avg Trade duration (Minutes)
 sinput   bool                    Trade_December                =                          true;       // Trade December ?
+// B49a:begin f2-input
+// B49a (F2; roadmap D1/D6/D15, WEEKEND-1031 goatai#2587 6427654059): how the sequence ledger (MLPS, BE, Smart Peak),
+// the daily P/L (MaxDaily*) and the dashboard's closed P/L attribute exits. Legacy keeps B47: only deals carrying
+// MAGIC1 count, and the EA's own closes carry magic 0, so they are missed. PositionJoin: an exit joins its sequence by
+// DEAL_POSITION_ID, booked once per deal, entry commission included, and the EA's closes carry MAGIC1. Appended last;
+// the default reproduces B47.
+enum ENUM_LEDGER_MODE
+  {
+   Ledger_Legacy=0,       // Legacy (magic only)
+   Ledger_PositionJoin=1  // Position join
+  };
+sinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;       // Ledger: exits join by position
+// B49a:end f2-input
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label
@@ -878,7 +892,8 @@ double   bid,ask;
 long     Hour_Start[7],Hour_End[7],Minute_Start[7],Minute_End[7];
 datetime tm_cur,LastTradeTime,LastStopoutTime,DStartTime;
 uint     LastRetCode,Shift_Sig;
-int      LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket,LastTradeCountBuy=0,LastTradeCountSell=0;
+long     LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket; // B49a: 64-bit; an int wraps negative above INT_MAX (scripts/test_ticket_width.cjs)
+int      LastTradeCountBuy=0,LastTradeCountSell=0; // B49a: split from the ticket line, unchanged
 double   LastOpen,LastSL,LastTP;
 double   Grid_Min_,Grid_Max_,LP_Size_,TP_Pips_,SL_Pips_,TSL_Size_;//,Lots_Max_;
 

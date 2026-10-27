@@ -51,6 +51,12 @@ for(const [old,value,key] of [
  ['Deposit=100000','Deposit=NaN','Deposit'], ['Risk=500.0','Risk=500.00000000000000001','Risk'],
 ]) {assert.ok(a.includes(old));compare(w,a.replace(old,value),false,key);}
 compare(w,a+'\nUnlistedInput=0\n',false,'UnlistedInput');
+// B49a (F2): Ledger_Mode, appended after B47, is absent from a SET written before it. MT5 then reports it at the
+// build default, which is accepted; any other value (PositionJoin the SET never asked for) is refused.
+assert.ok(!/Ledger_Mode/.test(w));
+compare(w,a+'\nLedger_Mode=0\n',true);
+compare(w,a+'\nLedger_Mode=1\n',false,'Ledger_Mode');
+compare(w,a+'\nLedger_Mode=0||0||1||1||Y\n',false,'Ledger_Mode');
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

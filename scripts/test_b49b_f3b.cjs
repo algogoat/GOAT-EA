@@ -92,7 +92,7 @@ for(const type of [CMD.GOAT_DASH_CMD_PORTFOLIO_CLOSE,CMD.GOAT_DASH_CMD_CLOSE_SCO
 ok();
 
 // ---- 2. The dashboard: a risk breach ----
-const BREACH={GOAT_DASH_CMD_TRADE_PERMISSIONS:4,GOAT_DASH_CMD_EXPOSURE_POLICY:5,GOAT_DASH_CMD_PORTFOLIO_PAUSE:1,GOAT_RISK_BREACH_NONE:0,GOAT_RISK_BREACH_LOW_EQUITY:1,GOAT_RISK_BREACH_RUNNING_LOSS:2,GOAT_RISK_BREACH_DAILY_LOSS:3,GOAT_RISK_BREACH_EQUITY_TARGET:4,GOAT_RISK_BREACH_DAILY_TARGET:5};
+const BREACH={GOAT_DASH_CMD_CLOSE_SCOPE:3,GOAT_DASH_CMD_TRADE_PERMISSIONS:4,GOAT_DASH_CMD_EXPOSURE_POLICY:5,GOAT_DASH_CMD_PORTFOLIO_PAUSE:1,GOAT_RISK_BREACH_NONE:0,GOAT_RISK_BREACH_LOW_EQUITY:1,GOAT_RISK_BREACH_RUNNING_LOSS:2,GOAT_RISK_BREACH_DAILY_LOSS:3,GOAT_RISK_BREACH_EQUITY_TARGET:4,GOAT_RISK_BREACH_DAILY_TARGET:5};
 // Linked child charts (magic and symbol) and the account's positions; SendPortfolioCommand reaches every linked chart.
 function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,'GBPUSD']],runningLoss=600}={}){
  const c={...BREACH,GOAT_DASH_CMD_PORTFOLIO_CLOSE:2,GOAT_PORTFOLIO_RUN_PAUSED:2,now:5000,audits:[],cmdAudits:[],sends:[],
@@ -213,9 +213,9 @@ function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,
  ok();}
 {// #280 item 3: a breach that supersedes a pending currency-rules or exposure command keeps it unsynced (shown on the
  // risk button, persisted) and sends it again, quietly, once a Resume or re-arm is asked and nothing is pending.
- for(const [type,kind] of [[4,'currency'],[5,'exposure']]){
+ for(const [type,kind,unsynced] of [[4,'currency',4],[5,'exposure',5],[3,'currency',4]]){   // a superseded scoped close paused a currency: resent as currency rules (Codex #280 4388200990)
   const b=dashboard(dash,{pending:true});b.m_portfolio_command_type=type;b.EvaluateRiskPolicy();
-  assert.deepEqual([b.m_policy_unsynced_type,b.RiskPolicyButtonText()],[type,'Breach/Unsynced']);
+  assert.deepEqual([b.m_policy_unsynced_type,b.RiskPolicyButtonText()],[unsynced,'Breach/Unsynced']);
   b.m_portfolio_command_pending=false;for(let s=0;s<120;s++){b.now++;b.EvaluateRiskPolicy();b.m_portfolio_command_pending=false;}
   assert.deepEqual(b.resyncs,[],kind+': not before a Resume or re-arm');
   b.SendPortfolioPauseCommand(false);b.EvaluateRiskPolicy();assert.deepEqual(b.resyncs,[],kind+': not while the Resume is pending');
@@ -224,7 +224,7 @@ function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,
   assert.deepEqual([b.m_policy_unsynced_type,b.m_policy_resync_due,b.audits.at(-1)],[0,false,'RESYNC']);
   b.m_portfolio_command_pending=false;b.now++;b.EvaluateRiskPolicy();assert.equal(b.resyncs.length,1,kind+': once');
  }
- // A superseded close or pause needs nothing; no superseded command, nothing unsynced.
+ // A superseded portfolio close or pause needs nothing (the breach's own close and pause cover them).
  for(const type of [1,2]){const b=dashboard(dash,{pending:true});b.m_portfolio_command_type=type;b.EvaluateRiskPolicy();assert.equal(b.m_policy_unsynced_type,0);}
  // Re-arming asks for the resend too (ArmRiskPolicyFromHeader is a dialog; its line is checked in place).
  assert.match(bodyOf(dash,'bool CGOATDashboard::ArmRiskPolicyFromHeader(void)'),/if\(m_policy_unsynced_type!=0\) m_policy_resync_due=true;/);

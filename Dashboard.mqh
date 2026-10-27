@@ -2424,7 +2424,8 @@ void CGOATDashboard::EvaluateRiskPolicy(void)
    m_risk_policy_breached=true;
    m_risk_breach_follow_ended=false; // B49b (F3 RISK-01): this breach is followed (saved below)
    m_risk_breach_unreachable_logged=false; // B49b (F3 RISK-01, #280)
-   if(m_portfolio_command_pending && (m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS || m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)) m_policy_unsynced_type=m_portfolio_command_type; // B49b (#280): saved below
+   if(m_portfolio_command_pending && (m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS || m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)) // B49b (#280): saved below
+      m_policy_unsynced_type=(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE ? GOAT_DASH_CMD_TRADE_PERMISSIONS : m_portfolio_command_type); // B49b (Codex #280 4388200990): a superseded scoped close's currency pause is resent as currency rules, the close never replayed
    m_risk_policy_breach_code=breach_code;
    m_risk_policy_breach_time=TimeCurrent();
    m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;

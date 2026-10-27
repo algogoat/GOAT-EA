@@ -1,6 +1,7 @@
 // Mutation check for B50's exits (B50-alpha A3, docs/b50/B50_ALPHA_DESIGN.md section 4, the A3 row): every A3 line
 // is load-bearing. Each mutant edits GOAT V1.49.mq5 in memory; test_b50_exits.cjs, run on the mutated entrypoint
-// (GOAT_EA_MAIN), must then fail. Anchors sit on A3's own lines (the b50-exits block and the bypass line).
+// (GOAT_EA_MAIN), must then fail. Anchors sit on A3's own lines (the b50-exits block and the bypass line), and, with A1
+// in the tree, on A1's re-arm, which the re-arm/reopen check exercises.
 'use strict';
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),TEST=path.join(__dirname,'test_b50_exits.cjs');
@@ -29,6 +30,10 @@ const MUTANTS=[
  ['the time stop is off by one bar','      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Buy','      else if(b50_bars>Single_Time_Stop_Bars) Seq_Buy'],
  ['the time stop reads the chart timeframe','   ENUM_TIMEFRAMES b50_tf=TF2TF(Single_Time_Stop_TF);','   ENUM_TIMEFRAMES b50_tf=PERIOD_CURRENT;'],
  ['the time stop is off','   if(!b50_TimeStop_Sample.CheckTF(b50_tf)) return;','   return;'],
+ // A1's re-arm (SignalEntryTrigger), through the re-arm/reopen check: removed, the single never reopens; run on every
+ // tick instead of on a false read, it reopens with no false read (the control).
+ ['A1\'s re-arm is removed (buy)','   if(!LastBuySignal) g_GoatSingleArmed[OP_BUY]=true;','   if(false) g_GoatSingleArmed[OP_BUY]=true;'],
+ ['A1\'s re-arm ignores the false read (buy)','   if(!LastBuySignal) g_GoatSingleArmed[OP_BUY]=true;','   g_GoatSingleArmed[OP_BUY]=true;'],
 ];
 function runOn(mainText){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-b50-exits-'));

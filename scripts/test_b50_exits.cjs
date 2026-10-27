@@ -9,8 +9,9 @@
 // - the time stop counts bars of Single_Time_Stop_TF from the position's POSITION_TIME (mid-bar entries, H1 and D1),
 //   survives a restart, and never closes on an unknown bar count (iBarShift -1), logging it once per position;
 // - flags off (the grid engine, or the single without the opposite exit) the optimization return is B49a's.
-// The entry path differs before and after A1 (Add_Level in A0's base, GoatSingleOpen after A1): every assertion here
-// is about the first position and its exit, never the re-entry that follows.
+// The entry path is A1's (GoatSingleOpen, one position per signal episode, re-armed by a false read): the assertions
+// are about the first position and its exit, except the re-arm/reopen check, which proves that A1's re-arm runs under
+// FastSpeed (the bypass) and that the reopen comes from it (with no false read there is no reopen).
 'use strict';
 const assert=require('node:assert/strict');
 const H=require('./b50_tick_harness.cjs');
@@ -113,6 +114,14 @@ const flipInputs={Single_Exit_Opposite:true};
  // Re-arm and reopen: the buy signal goes false and comes back while the single is open (03:05-03:35 sell), the time
  // stop closes it at 05:00, and the still-true buy signal reopens it on the next signal check. Without the bypass a
  // FastSpeed single never sees the false read (A1: never re-armed, no reopen), while a visual run reopens.
+ // The control: the same single with a buy signal that never reads false is not reopened after its time stop (one
+ // position per signal episode, A1), so the reopen below is the re-arm's and not the entry check's alone.
+ for(const fastSpeed of [true,false]){
+  const W=world({Single_Time_Stop_Bars:3,Single_Time_Stop_TF:'TF_H1'},[[2*H1+35*60,'buy']],{fastSpeed});
+  W.run(flat(H1,5*H1+30*60));
+  assert.equal(ended(W,TS).length,1,'control, FastSpeed '+fastSpeed+': the time stop closed the single');
+  assert.equal(opens(W).length,1,'control, FastSpeed '+fastSpeed+': no false read, no re-arm, no reopen');
+ }
  const phases=[[2*H1+35*60,'buy'],[3*H1+5*60,'sell'],[3*H1+35*60,'buy']],traces={};
  for(const fastSpeed of [true,false]){
   const W=world({Single_Time_Stop_Bars:3,Single_Time_Stop_TF:'TF_H1'},phases,{fastSpeed});

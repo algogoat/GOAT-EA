@@ -196,6 +196,16 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]==declared_names[n])
       {if(!GoatChildAuditAdd(names,values,declared_names[n],declared_values[n])) return false;found=true;}
    }
+   // B49a:begin f2-audit
+   // B49a (F2; Codex GOAT-EA#267): Ledger_Mode is declared from B49a and written by WriteSet only when it is not Legacy.
+   // A child that carries it while the SET does not must hold Legacy (0); a SET that carries it is compared as above.
+   {
+      bool found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]=="Ledger_Mode") found=true;
+      for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]=="Ledger_Mode")
+      {if(!GoatChildAuditAdd(names,values,"Ledger_Mode","0")) return false;found=true;}
+   }
+   // B49a:end f2-audit
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

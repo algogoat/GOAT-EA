@@ -277,4 +277,22 @@ function dailyFixture(mode,text=main){
  const fresh=chart(account(),1).buy;fresh.Init(0,false);assert.deepEqual(fresh.LedgerPositions,[]);
  ok();}
 
+// 11. Codex GOAT-EA#267 P1: the canonical SET writer (WriteSet: OnTester's export and the trace's effective-inputs.set)
+//     records a PositionJoin run's ledger, so the exported SET reloads with the accounting that produced it. A Legacy
+//     SET is B47's bytes exactly (an omitted Ledger_Mode reads as Legacy: the controller's APPENDED_INPUTS, the child
+//     audit's Legacy default). WriteSet's last lines run here, with the same tail cut from B47's header as the control.
+{const writeSet=bodyOf(header,'void WriteSet(string desc)');
+ const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'));
+ const run=(text,mode)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
+  FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
+ assert.deepEqual(run(writeSet,0),['Trade_December=true'],'Legacy: no Ledger_Mode line, as B47');
+ assert.deepEqual(run(writeSet,1),['Trade_December=true','Ledger_Mode=1'],'PositionJoin: recorded');
+ const headerB47=clean(execFileSync('git',['show',B47_SOURCE+':GOAT_Inputs_Definitions.mqh'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
+ assert.deepEqual(run(bodyOf(headerB47,'void WriteSet(string desc)'),1),['Trade_December=true'],'B47 never wrote it');
+ // Load-bearing: without the Legacy gate a Legacy SET gains a line (B47 parity broken); without the line nothing is recorded.
+ const line=writeSet.split('\n').find(l=>l.includes('"Ledger_Mode="'));assert.ok(line&&/^if\(Ledger_Mode!=Ledger_Legacy\) /.test(line),line);
+ assert.deepEqual(run(writeSet.replace('if(Ledger_Mode!=Ledger_Legacy) ',''),0),['Trade_December=true','Ledger_Mode=0'],'mutant: ungated');
+ assert.equal(writeSet.indexOf(line)<writeSet.indexOf('FileClose(FileSET_handle);'),true,'written before the file closes');
+ ok();}
+
 console.log(JSON.stringify({passed,test:'ledger_join'}));

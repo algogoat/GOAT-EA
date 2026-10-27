@@ -51,6 +51,15 @@ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'BlindE
 assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'BlindExport=true\n'+tail,expert),false);passed++;
 assert.equal(api.GoatChildAuditMaps(original+'BlindExport=true\n',0,50,2,head+inputs+declared+'BlindExport=false\n'+tail,expert),false);passed++;
 assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,head+inputs+declared+tail,expert),false);passed++;
+// B49a (F2; Codex GOAT-EA#267): a B49a child template carries Ledger_Mode, which WriteSet writes only when it is not
+// Legacy. A Legacy SET (no Ledger_Mode) maps to a child holding 0, never to one holding PositionJoin; a PositionJoin
+// SET carries Ledger_Mode=1 and is compared exactly.
+{const ledger=head+inputs+declared+'BlindExport=false\n';
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,ledger+'Ledger_Mode=0\n'+tail,expert),true,'Legacy SET, B49a child at Legacy');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),false,'Legacy SET, child at PositionJoin');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),true,'PositionJoin SET and child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=0\n'+tail,expert),false,'PositionJoin SET, child at Legacy');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+tail,expert),false,'PositionJoin SET, a B47 child without the input');passed++;}
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.

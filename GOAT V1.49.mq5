@@ -1562,7 +1562,8 @@ class SEQUENCE
 // dashboard); no input.
 // The restart record, per magic + symbol + direction (terminal GlobalVariables <Key>_SQ_<magic>_<symbol>_<B|S>_<field>):
 // the first level's ticket (TK) and the five sizes frozen at start (G, L, TP, SL, TS), written once; the level count
-// (N), written with each real level; the realized P/L (R), on change, flushed from the timer at most every
+// (N) and the trade count (C: the progression, closed levels included, that the lock flexibility reads), written with
+// each real level; the realized P/L (R), on change, flushed from the timer at most every
 // GOAT_SQ_FLUSH_MS; the first position's open time in ms (T), written last, so a record without T is incomplete. Once
 // per UTC day the timer re-sets every field (MT5 drops a GlobalVariable nothing accesses for 4 weeks). Every write is
 // flushed to gvariables.dat (a hard kill or VPS reboot keeps it). The sequence's end deletes the record. A failed
@@ -1611,7 +1612,7 @@ class SEQUENCE
    {
     if(!(PersistWrite("TK",(double)PersistFirstTicket) && PersistWrite("G",Size_Grid) && PersistWrite("L",Size_Lock)
          && PersistWrite("TP",Size_TP) && PersistWrite("SL",Size_SL) && PersistWrite("TS",Size_TSL)
-         && PersistWrite("N",(double)Level_Count) && PersistWrite("R",SequenceRealizedPL) && PersistWrite("T",(double)start_msc))) return false;
+         && PersistWrite("N",(double)Level_Count) && PersistWrite("C",(double)Trades_Count) && PersistWrite("R",SequenceRealizedPL) && PersistWrite("T",(double)start_msc))) return false;
     GlobalVariablesFlush();
     PersistedRealized=SequenceRealizedPL; PersistedLevels=Level_Count;
     PersistTouchedDay=TimeGMT()-TimeGMT()%86400;
@@ -1633,7 +1634,7 @@ class SEQUENCE
    void PersistLevels()
    {
     if(!PersistLive() || PersistStartMsc==0) return;
-    if(PersistWrite("N",(double)Level_Count)) {PersistedLevels=Level_Count; GlobalVariablesFlush();}
+    if(PersistWrite("N",(double)Level_Count) && PersistWrite("C",(double)Trades_Count)) {PersistedLevels=Level_Count; GlobalVariablesFlush();}
    }
    // From the timer, at most every GOAT_SQ_FLUSH_MS (force: at once, OnDeinit): the realized P/L and level count when
    // they changed; the whole record from memory once per UTC day (every field's 4-week GlobalVariable expiry starts
@@ -1647,14 +1648,14 @@ class SEQUENCE
     if(!touch && !PersistFailed && SequenceRealizedPL==PersistedRealized && Level_Count==PersistedLevels) return;
     PersistFlushedMs=GetTickCount();
     if(touch || PersistFailed) {PersistWriteAll(PersistStartMsc); return;}
-    if(!PersistWrite("R",SequenceRealizedPL) || !PersistWrite("N",(double)Level_Count)) return;
+    if(!PersistWrite("R",SequenceRealizedPL) || !PersistWrite("N",(double)Level_Count) || !PersistWrite("C",(double)Trades_Count)) return;
     GlobalVariablesFlush();
     PersistedRealized=SequenceRealizedPL; PersistedLevels=Level_Count;
    }
    void PersistEnd()
    {
     if(!PersistLive()) return;
-    string fields[]={"T","TK","G","L","TP","SL","TS","N","R"};
+    string fields[]={"T","TK","G","L","TP","SL","TS","N","C","R"};
     for(int i=0; i<ArraySize(fields); i++) GlobalVariableDel(PersistKey(fields[i]));
     GlobalVariablesFlush();
    }
@@ -1779,6 +1780,10 @@ class SEQUENCE
      SequenceRealizedPL=(Ledger_Mode==Ledger_PositionJoin ? RealizedFromHistory((long)rec_t,rec_r) : rec_r);
      PersistStartMsc=(long)rec_t; PersistFirstTicket=(ulong)rec_tk; PersistedRealized=rec_r; PersistedLevels=-1;
      if(sizes) {Size_Grid=size[0]; Size_Lock=size[1]; Size_TP=size[2]; Size_SL=size[3]; Size_TSL=size[4];}
+     // The progression count (closed levels included) drives the lock flexibility; the live positions may be fewer
+     // (Codex GOAT-EA#267 P2). A record without C, or with fewer than the live count, keeps the live count.
+     double rec_c=0.0;
+     if(PersistRead("C",rec_c) && (int)rec_c>=count) Trades_Count=(int)rec_c;
     }
     else
     {

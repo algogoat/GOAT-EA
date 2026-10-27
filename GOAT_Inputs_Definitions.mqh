@@ -582,6 +582,7 @@ FileWrite(FileSET_handle,"Trades_min_inp="+(string)Trades_min_inp);//=250
 FileWrite(FileSET_handle,"Trades_Max="+(string)Trades_Max);//=1500
 FileWrite(FileSET_handle,"Minutes_Max="+(string)Minutes_Max);//=1000
 FileWrite(FileSET_handle,"Trade_December="+(string)Trade_December);//=false
+if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode); // B49a (F2, Codex GOAT-EA#267 P1): a PositionJoin SET records its ledger; a Legacy SET stays B47's bytes (an omitted Ledger_Mode reads as Legacy)
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 ﻿{
-  "main_sha256": "24ecf44884811ba8eac958e508a99bb0ac55e0ff4fd31758c8d35eb97184b7ef",
-  "header_sha256": "5f5794bb675d64d69d8ffd5f3b50ca3cd238a4bf48e357aa56a229fdd2e3be34",
+  "main_sha256": "789dad89add6ecc50561aae88525af772c293dc95ccdc61a186af437f4106948",
+  "header_sha256": "38b3270e8bfca6e037097ff9b716ada2d9d62a665057c92346393af455953909",
   "rules": [
     {
       "input": "RSI_TF_",

@@ -130,9 +130,9 @@ const key=(field,dir='B',magic=M)=>'GOAT_SQ_'+magic+'_'+SYM+'_'+dir+'_'+field;
 // A sequence's first real level, as Add_Level leaves it (sizes frozen, Level_Count 1, the hook's PersistStart), and
 // each later real level (the hook's PersistLevels).
 function startSequence(s,t,ticket,sizes=[0.0012,0.0008,0,0.0030,0.0004]){
- [s.Size_Grid,s.Size_Lock,s.Size_TP,s.Size_SL,s.Size_TSL]=sizes;s.Active=s.Traded=true;s.Level_Count=1;s.PersistStart(ticket);
+ [s.Size_Grid,s.Size_Lock,s.Size_TP,s.Size_SL,s.Size_TSL]=sizes;s.Active=s.Traded=true;s.Level_Count=s.Trades_Count=1;s.PersistStart(ticket);
 }
-const addLevel=s=>{s.Level_Count++;s.PersistLevels();};
+const addLevel=s=>{s.Level_Count++;s.Trades_Count++;s.PersistLevels();};
 
 // 1. The record: written at the first level (T last, any earlier record deleted first), its level count with each
 //    later level, the realized P/L and level count at most every 5 s, the whole record from memory once per UTC day,
@@ -140,27 +140,27 @@ const addLevel=s=>{s.Level_Count++;s.PersistLevels();};
 {const t=terminal({positions:[pos(1001,{msc:T0})]}),s=sequence(t);
  t.gv.set(key('T'),T0-999);   // a stale record from an older sequence on the same key
  startSequence(s,t,1001);
- assert.deepEqual(t.writes,['TK','G','L','TP','SL','TS','N','R','T'].map(f=>key(f)),'the start record, T written last');
+ assert.deepEqual(t.writes,['TK','G','L','TP','SL','TS','N','C','R','T'].map(f=>key(f)),'the start record, T written last');
  assert.equal(t.gv.get(key('T')),T0,'the stale record went first');assert.equal(t.gv.get(key('TK')),1001);assert.equal(t.gv.get(key('TS')),0.0004);
  assert.equal(t.gv.get(key('N')),1);assert.equal(t.flushes,2,'the deletion and the record, each flushed to gvariables.dat');
- addLevel(s);addLevel(s);assert.equal(t.gv.get(key('N')),3,'each later level updates the level count');assert.equal(t.flushes,4);
+ addLevel(s);addLevel(s);assert.equal(t.gv.get(key('N')),3,'each later level updates the level count');assert.equal(t.gv.get(key('C')),3,'and the trade count');assert.equal(t.flushes,4);
  t.writes.length=0;s.SequenceRealizedPL=-12.5;
  s.PersistFlush();assert.deepEqual(t.writes,[],'within 5 s of the last write nothing is written');
  for(let i=0;i<10;i++){s.SequenceRealizedPL-=1;t.now+=400;s.PersistFlush();}
- assert.deepEqual(t.writes,[key('R'),key('N')],'ten changes inside 5 s: one write');assert.equal(t.flushes,5);
- t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.writes.length,2,'unchanged: no write');
+ assert.deepEqual(t.writes,[key('R'),key('N'),key('C')],'ten changes inside 5 s: one write');assert.equal(t.flushes,5);
+ t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.writes.length,3,'unchanged: no write');
  s.SequenceRealizedPL-=1;t.now+=FLUSH_MS;s.PersistFlush();assert.equal(t.flushes,6);    // a write, now
  // The next UTC day: the whole record from memory (every field's 4-week expiry), inside the same rate bound.
  t.writes.length=0;t.gmt+=86400;s.PersistFlush();assert.deepEqual(t.writes,[],'within 5 s of that write: not yet');
  t.gv.set(key('N'),1);   // a stale field (a lost write): the daily rewrite repairs it from memory (Claude-Mac P3)
  t.now+=FLUSH_MS;s.PersistFlush();
- assert.deepEqual(t.writes,['TK','G','L','TP','SL','TS','N','R','T'].map(f=>key(f)),'the whole record once that day');
+ assert.deepEqual(t.writes,['TK','G','L','TP','SL','TS','N','C','R','T'].map(f=>key(f)),'the whole record once that day');
  assert.equal(t.gv.get(key('N')),3,'from memory');assert.equal(t.gv.get(key('T')),T0);assert.equal(t.flushes,7);
  t.writes.length=0;t.now+=FLUSH_MS;s.PersistFlush();assert.deepEqual(t.writes,[],'not again that day');
  // A level the Add_Level hook does not see (the CumPartial unwind branch appends a virtual level row) reaches N at the
  // next flush, with the realized P/L unchanged.
- s.Level_Count++;t.writes.length=0;t.now+=FLUSH_MS;s.PersistFlush();
- assert.deepEqual(t.writes,[key('R'),key('N')]);assert.equal(t.gv.get(key('N')),4);
+ s.Level_Count++;s.Trades_Count++;t.writes.length=0;t.now+=FLUSH_MS;s.PersistFlush();
+ assert.deepEqual(t.writes,[key('R'),key('N'),key('C')]);assert.equal(t.gv.get(key('N')),4);assert.equal(t.gv.get(key('C')),4);
  s.SequenceRealizedPL=-30;s.PersistFlush(true);assert.equal(t.gv.get(key('R')),-30,'OnDeinit forces the flush');
  s.PersistEnd();assert.equal(t.gv.size,0,'the end deletes the record');assert.equal(t.flushes,10,'and flushes the deletion');
  ok();}
@@ -225,7 +225,7 @@ const ENTRY=(1.1*0.05+1.0985*0.2+1.0970*0.3)/0.55, COMPUTED=Number((ENTRY-0.0030
  // The next restart matches that record, but its sizes stay unknown: the stops stay untouched.
  const s2=sequence(t);s2.AdoptOpenPositions();s2.UpdateLockTPSL(3);assert.deepEqual([s2.AdoptMatched,s2.AdoptSizes,t.modifies.length],[true,false,0]);
  // No record at all, or an incomplete one (no T, the field written last): the same as unmatched.
- for(const drop of [['T','TK','G','L','TP','SL','TS','N','R'],['T']]){
+ for(const drop of [['T','TK','G','L','TP','SL','TS','N','C','R'],['T']]){
   const u=midBasket();for(const fl of drop)u.gv.delete(key(fl));const x=sequence(u);x.AdoptOpenPositions();
   assert.deepEqual([x.Adopted,x.AdoptMatched,x.SequenceRealizedPL],[true,false,0],'dropped '+drop.join(','));
  }
@@ -392,7 +392,7 @@ function getSize(text,{active=true,ready=true,context=null}={}){
 // 11. Claude-Mac GOAT-EA#266 P2-3: a start that fails midway never leaves a mix of two records (the older one is
 //     deleted first), so a later restart reads it as incomplete.
 {const t=terminal({positions:[pos(1001,{msc:T0})]});
- for(const f of ['T','TK','G','L','TP','SL','TS','N','R'])t.gv.set(key(f),f==='T'?T0-5000:f==='TK'?777:1);
+ for(const f of ['T','TK','G','L','TP','SL','TS','N','C','R'])t.gv.set(key(f),f==='T'?T0-5000:f==='TK'?777:1);
  t.failWrites.add('SL');const s=sequence(t);startSequence(s,t,1001);
  assert.equal(t.gv.has(key('T')),false,'the older record\'s T is gone');assert.equal(t.gv.get(key('TK')),1001,'the new fields so far');
  assert.equal(t.gv.has(key('N')),false,'nothing after the failed field');
@@ -445,6 +445,28 @@ function firstTick(text,buy,sell,{ready=false}={}){
  assert.equal(f.SizesUnavailable(),false,'known sizes start');
  const ADD=bodyOf(main,'   bool Add_Level(double Level_New)');
  assert.ok(ADD.includes('     if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);\n     if(SizesUnavailable()) return false; // B49a (F1-lite)'),'refused right after the sizes are read, before any order');
+ ok();}
+
+// 13. Codex GOAT-EA#267 P2: the record keeps the trade count (C, the progression the lock flexibility reads; closed
+//     levels are never subtracted from it), and a matched basket resumes with it, not with its survivor count. With
+//     Lock_Profit_Flexibility < 1 the lock factor then equals the one the basket had before the restart.
+{const factor=c=>1-(1-0.5)*Math.pow(c/10,2);
+ const t=midBasket();assert.equal(t.gv.get(key('C')),3,'three levels traded');
+ t.positions=t.positions.filter(p=>p.ticket!==1001);   // level 1 closed before the restart: two survivors
+ const s=sequence(t);s.Lock_Profit_Flexibility=0.5;s.AdoptOpenPositions();
+ assert.deepEqual([s.AdoptMatched,s.Level_Count,s.Trades_Count],[true,2,3],'the progression count is restored');
+ const entry=(1.0985*0.2+1.0970*0.3)/0.5;
+ assert.equal(s.Level_Lock,Number((entry+0.0008*factor(3)).toFixed(5)),'the lock uses the 3-level factor');
+ assert.notEqual(Number((entry+0.0008*factor(3)).toFixed(5)),Number((entry+0.0008*factor(2)).toFixed(5)),'and the survivor count would differ');
+ // A record without C (or one below the live count) keeps the live count; an unmatched basket uses the live count.
+ const n=midBasket();n.gv.delete(key('C'));n.positions=n.positions.filter(p=>p.ticket!==1001);
+ const ns=sequence(n);ns.AdoptOpenPositions();assert.equal(ns.Trades_Count,2);
+ const low=midBasket();low.gv.set(key('C'),1);const ls=sequence(low);ls.AdoptOpenPositions();assert.equal(ls.Trades_Count,3,'never below the live count');
+ const u=midBasket();u.positions=u.positions.filter(p=>p.ticket!==1001);u.gv.set(key('TK'),999);u.gv.set(key('N'),1);
+ const us=sequence(u);us.AdoptOpenPositions();
+ assert.deepEqual([us.AdoptMatched,us.Trades_Count],[false,2],'unmatched: the live count (its record\'s C=3 is not this basket\'s)');
+ // The end deletes C with the rest.
+ ls.PersistEnd();assert.equal(low.gv.has(key('C')),false);
  ok();}
 
 console.log(JSON.stringify({passed,test:'restart_adopt'}));

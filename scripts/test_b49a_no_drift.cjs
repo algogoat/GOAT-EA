@@ -19,7 +19,7 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B47_SOURCE='ccb0a07';
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
-const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingCompare.mqh'];   // F2: the Studio's input type allowlist and readback
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingCompare.mqh','GOATPortfolioChildAudit.mqh'];   // F2: the Studio's input type allowlist and readback; the child audit's Ledger_Mode default (Codex #267)
 const ADDED=[];
 // Every B47 line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={

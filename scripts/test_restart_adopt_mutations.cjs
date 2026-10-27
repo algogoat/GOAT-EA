@@ -40,6 +40,13 @@ const MUTANTS=[
  ['a start on an unread ATR size goes ahead','     if(SizesUnavailable()) return false; // B49a','     // B49a'],
  ['a refused start keeps the sentinel size','    if(Size_Grid==GOAT_ATR_UNAVAILABLE) Size_Grid=1234.5;\n',''],
  ['known sizes are refused too','       && Size_SL!=GOAT_ATR_UNAVAILABLE && Size_TSL!=GOAT_ATR_UNAVAILABLE) return false;','       && Size_SL!=GOAT_ATR_UNAVAILABLE && Size_TSL!=GOAT_ATR_UNAVAILABLE) return true;'],
+ // Codex GOAT-EA#267 P2: the trade count (C).
+ ['the start record has no C','&& PersistWrite("C",(double)Trades_Count) && PersistWrite("R",SequenceRealizedPL)','&& PersistWrite("R",SequenceRealizedPL)'],
+ ['a later level does not update C','    if(PersistWrite("N",(double)Level_Count) && PersistWrite("C",(double)Trades_Count)) {PersistedLevels','    if(PersistWrite("N",(double)Level_Count)) {PersistedLevels'],
+ ['the flush does not update C',' || !PersistWrite("C",(double)Trades_Count)) return;',') return;'],
+ ['the end keeps C','{"T","TK","G","L","TP","SL","TS","N","C","R"}','{"T","TK","G","L","TP","SL","TS","N","R"}'],
+ ['adoption keeps the survivor count','     if(PersistRead("C",rec_c) && (int)rec_c>=count) Trades_Count=(int)rec_c;','     ;'],
+ ['C may lower the count below the live positions','     if(PersistRead("C",rec_c) && (int)rec_c>=count) Trades_Count=(int)rec_c;','     if(PersistRead("C",rec_c)) Trades_Count=(int)rec_c;'],
  // Not a mutant: GoatSizeNeedsAtr's GRID_VALID rule is defence in depth. Without it GRID_VALID reads GRID_MIN and
  // GRID_MAX through GetSize, which answer the sentinel themselves, so the result is the sentinel or a pips clamp.
  // Manage-only.

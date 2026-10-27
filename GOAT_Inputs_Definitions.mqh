@@ -583,6 +583,7 @@ FileWrite(FileSET_handle,"Trades_Max="+(string)Trades_Max);//=1500
 FileWrite(FileSET_handle,"Minutes_Max="+(string)Minutes_Max);//=1000
 FileWrite(FileSET_handle,"Trade_December="+(string)Trade_December);//=false
 if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode); // B49a (F2, Codex GOAT-EA#267 P1): a PositionJoin SET records its ledger; a Legacy SET stays B47's bytes (an omitted Ledger_Mode reads as Legacy)
+if(Fix_MoneyVolume!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_MoneyVolume="+(string)(int)Fix_MoneyVolume); // B49b (F7): as Ledger_Mode, a SET records the fix only when it is on; Off stays B49a's bytes
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -782,6 +783,18 @@ enum ENUM_LEDGER_MODE
   };
 sinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;       // Ledger: exits join by position
 // B49a:end f2-input
+// B49b:begin fix-inputs
+// B49b (goatai#2587 6433828681, Claude-Mac 6433854745 ruling 1): one flag per correctness fix that can change tester
+// trades, so each gets its own A/B. Off reproduces B49a. Appended after B50-alpha's inputs (ruling 6).
+enum ENUM_GOAT_FIX
+  {
+   GoatFix_Off=0,         // Off (B49a behaviour)
+   GoatFix_On=1           // On
+  };
+// F7 (EX-04, EX-05/R9): money per price unit on every PriceValuePerPointPerLot fallback, and the order volume rounded
+// to VOLUME_STEP and clamped to VOLUME_MIN..VOLUME_MAX (B49a rounds it to multiples of VOLUME_MIN, unclamped).
+sinput   ENUM_GOAT_FIX           Fix_MoneyVolume               =                   GoatFix_Off;       // Fix: money and volume units
+// B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label

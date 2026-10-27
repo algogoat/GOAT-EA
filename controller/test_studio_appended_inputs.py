@@ -30,15 +30,20 @@ class AppendedInputTests(unittest.TestCase):
         self.old = {k: v for k, v in self.full.items() if k not in APPENDED_INPUTS}   # a B47-era SET
 
     def test_the_appended_inputs_are_ledger_mode_last_in_the_header_defaulting_to_legacy(self):
-        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',))
-        self.assertEqual(list(self.schema['inputs'])[-1], 'Ledger_Mode')
+        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode', 'Fix_MoneyVolume'))
+        self.assertEqual(list(self.schema['inputs'])[-len(APPENDED_INPUTS):], list(APPENDED_INPUTS), 'appended last, in order')
         definition = self.schema['inputs']['Ledger_Mode']
         self.assertEqual((definition['type'], definition['declaration'], definition['default_expression']),
                          ('ENUM_LEDGER_MODE', 'sinput', 'Ledger_Legacy'))
         self.assertEqual(definition['enum_choices'], {'Ledger_Legacy': 0, 'Ledger_PositionJoin': 1})
-        self.assertEqual(appended_default(definition), '0')
-        # The same default the tester report pins for any omitted input (GOAT-EA#250).
-        self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), '0')
+        # B49b (F7): a per-fix flag, Off = B49a.
+        fix = self.schema['inputs']['Fix_MoneyVolume']
+        self.assertEqual((fix['type'], fix['declaration'], fix['default_expression']), ('ENUM_GOAT_FIX', 'sinput', 'GoatFix_Off'))
+        self.assertEqual(fix['enum_choices'], {'GoatFix_Off': 0, 'GoatFix_On': 1})
+        for name in APPENDED_INPUTS:
+            self.assertEqual(appended_default(self.schema['inputs'][name]), '0', name)
+            # The same default the tester report pins for any omitted input (GOAT-EA#250).
+            self.assertEqual(tester_report._schema_default(self.schema['inputs'][name], self.schema.get('defines')), '0', name)
 
     def test_a_set_without_it_validates_and_keeps_its_own_values(self):
         # Claude-Mac GOAT-EA#265 P1: the checks see the default, the caller gets its own values back, so a stored job,
@@ -51,11 +56,12 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(validate_strategy(dict(self.full), self.schema)['axes'], checked['axes'])
 
     def test_a_set_may_choose_position_join_but_nothing_undeclared(self):
-        self.assertEqual(validate_strategy(dict(self.old, Ledger_Mode='1'), self.schema)['values']['Ledger_Mode'], '1')
-        with self.assertRaisesRegex(ValueError, 'Ledger_Mode: Undeclared enum value'):
-            validate_strategy(dict(self.old, Ledger_Mode='2'), self.schema)
-        with self.assertRaisesRegex(ValueError, 'Ledger_Mode: Input not exposed for optimization'):
-            validate_strategy(dict(self.old, Ledger_Mode='0||0||1||1||Y'), self.schema)
+        for name in APPENDED_INPUTS:
+            self.assertEqual(validate_strategy(dict(self.old, **{name: '1'}), self.schema)['values'][name], '1')
+            with self.assertRaisesRegex(ValueError, name+': Undeclared enum value'):
+                validate_strategy(dict(self.old, **{name: '2'}), self.schema)
+            with self.assertRaisesRegex(ValueError, name+': Input not exposed for optimization'):
+                validate_strategy(dict(self.old, **{name: '0||0||1||1||Y'}), self.schema)
 
     def test_every_other_input_stays_required_and_unknown_inputs_stay_refused(self):
         missing = {k: v for k, v in self.old.items() if k != 'Mode_News'}
@@ -68,19 +74,25 @@ class AppendedInputTests(unittest.TestCase):
         self.assertIsNot(complete_appended_inputs(self.old, self.schema), self.old)
         self.assertNotIn('Ledger_Mode', self.old)
         self.assertEqual(complete_appended_inputs(dict(self.old, Ledger_Mode='1'), self.schema)['Ledger_Mode'], '1')
-        # A schema without the input (the V1.48 contract) adds nothing.
-        v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k != 'Ledger_Mode'})
+        self.assertEqual(complete_appended_inputs(dict(self.old, Fix_MoneyVolume='1'), self.schema)['Fix_MoneyVolume'], '1')
+        # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no fix flag) adds only Ledger_Mode.
+        v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in APPENDED_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, v148), self.old)
+        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k != 'Fix_MoneyVolume'})
+        self.assertEqual(complete_appended_inputs(self.old, b49a), dict(self.old, Ledger_Mode='0'))
 
     def test_the_paste_sets_the_default_instead_of_inheriting_the_last_run(self):
         pasted = explicit_paste_inputs(dict(self.old), self.schema)
-        self.assertEqual(pasted['Ledger_Mode'], '0||0||0||0||N')
+        for name in APPENDED_INPUTS:
+            self.assertEqual(pasted[name], '0||0||0||0||N', name)
 
     def test_the_readback_wants_the_default_and_catches_a_position_join_run(self):
-        observed = dict(self.full, Ledger_Mode='0')
+        defaults = {name: '0' for name in APPENDED_INPUTS}
+        observed = dict(self.full, **defaults)
         self.assertEqual(verify_input_readback(dict(self.old), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
-        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
-            verify_input_readback(dict(self.old), dict(self.full, Ledger_Mode='1'), self.schema)
+        for name in APPENDED_INPUTS:
+            with self.assertRaisesRegex(ValueError, 'Fixed input value changed: '+name):
+                verify_input_readback(dict(self.old), dict(observed, **{name: '1'}), self.schema)
 
 
 class AppendedInputPrepareTests(unittest.TestCase):
@@ -132,14 +144,17 @@ class LedgerModeRoundTripTests(unittest.TestCase):
         # The writer: B49a's WriteSet records a non-Legacy ledger with this exact line, after Trade_December.
         writer = (ROOT.parent/'GOAT_Inputs_Definitions.mqh').read_text(encoding='utf-8-sig')
         self.assertIn('if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode);', writer)
+        # B49b (F7): each fix flag is written the same way, only when on.
+        self.assertIn('if(Fix_MoneyVolume!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_MoneyVolume="+(string)(int)Fix_MoneyVolume);', writer)
 
     @staticmethod
     def raw(values):
         return ('\r\n'.join(n+'='+v for n, v in values.items())+'\r\n').encode('utf-16')   # FILE_CSV, no FILE_ANSI: UTF-16
 
-    def export_of(self, source, *, ledger_line):
+    def export_of(self, source, *, ledger_line, fix_line=False):
         """What WriteSet writes for one optimization pass of `source`: every input at the pass's value (an axis at its
-        first value), the alias and the standard mode, and the ledger line when the run was PositionJoin."""
+        first value), the alias and the standard mode, the ledger line when the run was PositionJoin, and the fix
+        line when Fix_MoneyVolume was on."""
         exported = {}
         for name, value in source.items():
             if name in APPENDED_INPUTS:
@@ -148,6 +163,8 @@ class LedgerModeRoundTripTests(unittest.TestCase):
         exported.update(EA_Desc=self.ALIAS, Mode_Operation=str(self.STANDARD_MODE))
         if ledger_line:
             exported['Ledger_Mode'] = str(self.schema['inputs']['Ledger_Mode']['enum_choices']['Ledger_PositionJoin'])
+        if fix_line:
+            exported['Fix_MoneyVolume'] = str(self.schema['inputs']['Fix_MoneyVolume']['enum_choices']['GoatFix_On'])
         return exported
 
     def check(self, source, exported):
@@ -166,10 +183,27 @@ class LedgerModeRoundTripTests(unittest.TestCase):
         reloaded = read_values(self.raw(exported))
         self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Ledger_Mode'], '1')
         self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Ledger_Mode'], '1||0||0||0||N')
-        observed = dict(reloaded, Ledger_Mode='1')
+        observed = dict(reloaded, Ledger_Mode='1', Fix_MoneyVolume='0')   # MT5 reports every input
         self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
-            verify_input_readback(dict(reloaded), dict(reloaded, Ledger_Mode='0'), self.schema)
+            verify_input_readback(dict(reloaded), dict(observed, Ledger_Mode='0'), self.schema)
+
+    def test_a_fix_on_export_round_trips_as_fix_on_and_a_lost_line_is_refused(self):
+        # B49b (F7): Fix_MoneyVolume follows Ledger_Mode's rule through the same check, reload, paste and readback.
+        source = dict(self.legacy_source, Fix_MoneyVolume='1')
+        exported = self.export_of(source, ledger_line=False, fix_line=True)
+        self.assertEqual(self.check(source, exported)['status'], 'SET_INPUTS_MATCH_PAIRED_PASSES')
+        reloaded = read_values(self.raw(exported))
+        self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Fix_MoneyVolume'], '1')
+        self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Fix_MoneyVolume'], '1||0||0||0||N')
+        observed = dict(reloaded, Ledger_Mode='0', Fix_MoneyVolume='1')
+        self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Fix_MoneyVolume'):
+            verify_input_readback(dict(reloaded), dict(observed, Fix_MoneyVolume='0'), self.schema)
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Fix_MoneyVolume'):
+            self.check(source, self.export_of(source, ledger_line=False, fix_line=False))
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Fix_MoneyVolume'):
+            self.check(self.legacy_source, self.export_of(self.legacy_source, ledger_line=False, fix_line=True))
 
     def test_an_export_that_lost_the_line_is_refused_not_read_as_legacy(self):
         source = dict(self.legacy_source, Ledger_Mode='1')

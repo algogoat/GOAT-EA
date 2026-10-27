@@ -964,6 +964,7 @@ class SEQUENCE
          if(v > 0.0 && MathIsValidNumber(v)) return v;
       }
       // If TickSize is invalid/missing but TickValue exists, use it as-is
+      if(Fix_MoneyVolume==GoatFix_On && (!MathIsValidNumber(ts) || ts <= 0.0) && MathIsValidNumber(tv) && tv > 0.0) return tv/point; // B49b (F7 EX-04): money per price unit, the tick taken as one point (B49a returns money per tick)
       if((!MathIsValidNumber(ts) || ts <= 0.0) && MathIsValidNumber(tv) && tv > 0.0) return tv;
       // --- FOREX-only manual calc (no cross lookups)
       long calc = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_CALC_MODE);
@@ -981,8 +982,10 @@ class SEQUENCE
          if(contract > 0.0)
          {
             // Account == quote (e.g., USD acct & EURUSD) → $1 per 0.00001 move with 100k lot (typical)
+            if(Fix_MoneyVolume==GoatFix_On && acc == quote && quote != "") return contract; // B49b (F7 EX-04): per price unit (B49a: per point)
             if(acc == quote && quote != "") return contract * point;
             // Account == base (e.g., USD acct & USDJPY) → divide by price
+            if(Fix_MoneyVolume==GoatFix_On && acc == base && base != "" && px > 0.0) return contract / px; // B49b (F7 EX-04): per price unit (B49a: per point)
             if(acc == base && base != "" && px > 0.0) return (contract * point) / px;
 
             // Cross-currency account fallback (e.g., USD acct & AUDJPY) -> convert quote currency to account currency
@@ -1005,6 +1008,7 @@ class SEQUENCE
                         " px=",DoubleToString(convPx,_Digits),
                         " perPointPerLot=",DoubleToString(cross,6));
                }
+               if(Fix_MoneyVolume==GoatFix_On) return cross/point; // B49b (F7 EX-04): the conversion is linear, so per price unit (B49a: per point)
                return cross;
             }
          }
@@ -1020,6 +1024,7 @@ class SEQUENCE
                " tickValue=",DoubleToString(tv,6),
                " tickSize=",DoubleToString(ts,6));
       }
+      if(Fix_MoneyVolume==GoatFix_On) return 1.0/point; // B49b (F7 EX-04): 1.0 per point is 1/point per price unit
       return 1.0;
    }
 //---------------------- build a formatted lots/cum-lots/cum-loss string
@@ -4482,6 +4487,16 @@ int OnInit()
    if(MACD_Mode!= Trade_Disabled) //MACD_handle    = iMACD  (Symbol(),MACD_TF,          MACD_Fast,MACD_Slow,MACD_Signal,MACD_Price);
                                     MACD_handle    = iCustom(Symbol(),MACD_TF,MACD_Path,MACD_Fast,MACD_Slow,MACD_Signal,0,MACD_Price,100,MACD_Deviations,MACD_Mode_Trend);
    if(RSI2_Mode!= RSI_Disabled)     RSI2_handle    = iRSI   (Symbol(),RSI2_TF,RSI2_Period,RSI2_Price);
+// B49b:begin signal-handles
+// B49b (F7 SIG-01): every enabled signal indicator's handle is checked, as ATR's already is. B49a went on with an invalid
+// handle: CopyBuffer then fails, the empty buffer is indexed, and MT5 removes the EA (with positions possibly open).
+   if(RSI_Mode != RSI_Disabled && RSI_handle == INVALID_HANDLE) {Print("iRSI failed. err=",GetLastError()); return(INIT_FAILED);}
+   if(EMA_Mode != Trade_Disabled) for(int i=0;i<EMA_Count;i++) if(EMA_handles[i] == INVALID_HANDLE) {Print("iMA (EMA ",i+1,") failed. err=",GetLastError()); return(INIT_FAILED);}
+   if(ADX_Mode != Trade_Disabled && ADX_handle == INVALID_HANDLE) {Print("iADX failed. err=",GetLastError()); return(INIT_FAILED);}
+   if(BB_Mode  != BB_Disabled && BB_handle == INVALID_HANDLE) {Print("iBands failed. err=",GetLastError()); return(INIT_FAILED);}
+   if(MACD_Mode!= Trade_Disabled && MACD_handle == INVALID_HANDLE) {Print("iCustom MACD failed. err=",GetLastError()," path=",MACD_Path); return(INIT_FAILED);}
+   if(RSI2_Mode!= RSI_Disabled && RSI2_handle == INVALID_HANDLE) {Print("iRSI (RSI2) failed. err=",GetLastError()); return(INIT_FAILED);}
+// B49b:end signal-handles
 //-------------------------------------------------------------------------
    RSI_Sig=EMA_Sig=ADX_Sig=BB_Sig=MACD_Sig=RSI2_Sig=OP_NULL;
 //-------------------------------------------------------------------------
@@ -7061,9 +7076,41 @@ void GoatTickBody()
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin signal-ready
+// B49b (F7 SIG-02): no CopyBuffer return was checked. A copy that fails while the buffer holds fewer values than the
+// indicator then reads (an empty one before its first successful copy, or a partial copy near the start of history) is
+// indexed out of range and MT5 removes the EA. Each indicator's evaluation is now gated on a probe copy with the real
+// call's arguments: ready when it yields every value read, or when it fails over a buffer that already holds them (B49a
+// then reuses those values, so does B49b). Not ready: the signal is NEUTRAL (OP_NULL, no entry on it) until the next
+// evaluation, logged once per indicator. Every B49a run that did not crash takes the same branch as before.
+bool g_goat_signal_short_logged[6];   // 0 RSI, 1 EMA, 2 ADX, 3 BB, 4 MACD, 5 RSI2
+bool GoatSignalBufferReady(const int handle,const int buffer,const int shift,const int count,const int need,const double &buf[])
+  {
+   double probe[];
+   int copied=CopyBuffer(handle,buffer,shift,count,probe);
+   return copied>=need || (copied<0 && ArraySize(buf)>=need);
+  }
+bool GoatSignalReady(const int id,const string name,const bool ready,int &sig)
+  {
+   if(ready) {g_goat_signal_short_logged[id]=false; return true;}
+   sig=OP_NULL;
+   if(!g_goat_signal_short_logged[id])
+     {
+      g_goat_signal_short_logged[id]=true;
+      Print("GOAT signals: ",name," buffer not ready err=",IntegerToString(GetLastError())," symbol=",_Symbol,
+            " (signal NEUTRAL, no entry on it until the indicator reads)");
+     }
+   return false;
+  }
+bool GoatEmaBuffersReady(const int shift)
+  {
+   for(int i=0;i<EMA_Count;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,1,EMAs[i].Buf)) return false;
+   return true;
+  }
+// B49b:end signal-ready
 void UpdateRSI(int shift)
   {
-   if((RSI_Mode!=RSI_Disabled))
+   if((RSI_Mode!=RSI_Disabled) && GoatSignalReady(0,"RSI",GoatSignalBufferReady(RSI_handle,0,shift+0,2,(RSI_Mode==RSI_OverBS) ? 1 : 2,RSI_Buf),RSI_Sig)) // B49b (F7 SIG-02)
    {
     CopyBuffer(RSI_handle,0,shift+0,2,RSI_Buf);
 
@@ -7111,7 +7158,7 @@ void UpdateCurrentSignals(int shift)
    if(EMA_Mode != Trade_Disabled)
    {
     static INTERVAL EMA_Sample;
-    if(EMA_Sample.CheckTF(EMA_TF)) {
+    if(EMA_Sample.CheckTF(EMA_TF) && GoatSignalReady(1,"EMA",GoatEmaBuffersReady(shift),EMA_Sig)) { // B49b (F7 SIG-02)
 
     int EMA_trend=OP_NULL;
     bool voidBuy=false,voidSell=false;
@@ -7153,7 +7200,8 @@ void UpdateCurrentSignals(int shift)
    if(ADX_Mode != Trade_Disabled)
    {
     static INTERVAL ADX_Sample;
-    if(ADX_Sample.CheckTF(ADX_TF)) {
+    if(ADX_Sample.CheckTF(ADX_TF) && GoatSignalReady(2,"ADX",GoatSignalBufferReady(ADX_handle,MAIN_LINE,shift+0,1,1,ADX_Main_Buf) // B49b (F7 SIG-02)
+       && GoatSignalBufferReady(ADX_handle,PLUSDI_LINE,shift+0,1,1,ADX_PLS_Buf) && GoatSignalBufferReady(ADX_handle,MINUSDI_LINE,shift+0,1,1,ADX_MNS_Buf),ADX_Sig)) { // B49b (F7 SIG-02)
 
     CopyBuffer(ADX_handle,MAIN_LINE   ,shift+0,1,ADX_Main_Buf); ADX_Main_Buf[0] = NormalizeDouble(ADX_Main_Buf[0],_Digits);
     CopyBuffer(ADX_handle,PLUSDI_LINE ,shift+0,1,ADX_PLS_Buf);  ADX_PLS_Buf[0]  = NormalizeDouble(ADX_PLS_Buf[0],_Digits);
@@ -7183,7 +7231,8 @@ void UpdateCurrentSignals(int shift)
    if(BB_Mode != BB_Disabled)
    {
     static INTERVAL BB_Sample;
-    if(BB_Sample.CheckTF(BB_TF)) {
+    if(BB_Sample.CheckTF(BB_TF) && GoatSignalReady(3,"BB",GoatSignalBufferReady(BB_handle,BASE_LINE,shift,2,1,BB_Mi_Buf) // B49b (F7 SIG-02)
+       && GoatSignalBufferReady(BB_handle,UPPER_BAND,shift,2,1,BB_Hi_Buf) && GoatSignalBufferReady(BB_handle,LOWER_BAND,shift,2,1,BB_Lo_Buf),BB_Sig)) { // B49b (F7 SIG-02)
 
     CopyBuffer(BB_handle,BASE_LINE ,shift,2,BB_Mi_Buf);  BB_Mi_Buf[0] = NormalizeDouble(BB_Mi_Buf[0],_Digits);
     CopyBuffer(BB_handle,UPPER_BAND,shift,2,BB_Hi_Buf);  BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits);
@@ -7217,7 +7266,7 @@ void UpdateCurrentSignals(int shift)
    if(MACD_Mode != Trade_Disabled)
    {
     static INTERVAL MACD_Sample;
-    if(MACD_Sample.CheckTF(MACD_TF)) {
+    if(MACD_Sample.CheckTF(MACD_TF) && GoatSignalReady(4,"MACD",GoatSignalBufferReady(MACD_handle,1,shift+0,1,1,MACD_Clr_Buf),MACD_Sig)) { // B49b (F7 SIG-02)
   //CopyBuffer(MACD_handle,MAIN_LINE   ,shift+0,1,MACD_Main_Buf); MACD_Main_Buf[0] = NormalizeDouble(MACD_Main_Buf[0],_Digits);
   //CopyBuffer(MACD_handle,SIGNAL_LINE ,shift+0,1,MACD_Sig_Buf);  MACD_Sig_Buf[0]  = NormalizeDouble(MACD_Sig_Buf[0],_Digits);
   //CopyBuffer(MACD_handle,3           ,shift+0,1,MACD_Main_Buf);//MACD_Main_Buf[0] = NormalizeDouble(MACD_Main_Buf[0],_Digits);
@@ -7253,7 +7302,7 @@ void UpdateCurrentSignals(int shift)
    if(RSI2_Mode != RSI_Disabled)
    {
     static INTERVAL RSI2_Sample;
-    if(RSI2_Sample.CheckTF(RSI2_TF)) {
+    if(RSI2_Sample.CheckTF(RSI2_TF) && GoatSignalReady(5,"RSI2",GoatSignalBufferReady(RSI2_handle,0,shift+0,2,(RSI2_Mode==RSI_OverBS) ? 1 : 2,RSI2_Buf),RSI2_Sig)) { // B49b (F7 SIG-02)
 
     CopyBuffer(RSI2_handle,0,shift+0,2,RSI2_Buf);
 
@@ -7836,8 +7885,27 @@ bool ExpirationCheck(const string symbol,MqlTradeRequest &m_request,MqlTradeResu
    return(false);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin step-volume
+// B49b (F7 EX-05/R9): the order volume on the broker's own grid. B49a rounds it to multiples of VOLUME_MIN (with min 0.10
+// and step 0.01, 0.15 becomes 0.20, above the risk-solved size) and never clamps it to VOLUME_MAX (a delayed-lot sum can
+// exceed it: a 10014 refusal). Under Fix_MoneyVolume: rounded to VOLUME_STEP, then clamped to VOLUME_MIN..VOLUME_MAX,
+// sign kept. A size below VOLUME_MIN never reaches here as an order (OpenPosition's zero-lot branch).
+double GoatStepNormalizedLots(double size)
+  {
+   double vmin=SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_MIN),vmax=SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_MAX);
+   double step=SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_STEP);
+   if(!(step>0.0)) step=vmin;
+   if(!(step>0.0)) return size;
+   double sign=(size<0.0) ? -1.0 : 1.0;
+   double v=MathRound(MathAbs(size)/step)*step;
+   if(vmin>0.0 && v<vmin) v=(MathAbs(size)>=vmin) ? vmin : 0.0;   // never raises a size that was below the minimum
+   if(vmax>0.0 && v>vmax) v=vmax;
+   return sign*NormalizeDouble(v,8);
+  }
+// B49b:end step-volume
 double GetNormalizedLots(double size)
   {
+   if(Fix_MoneyVolume==GoatFix_On) return GoatStepNormalizedLots(size); // B49b (F7 EX-05/R9)
    size /= SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_MIN);
    size = MathRound(size);
    return size*SymbolInfoDouble(Symbol(),SYMBOL_VOLUME_MIN);

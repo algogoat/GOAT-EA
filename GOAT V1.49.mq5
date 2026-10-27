@@ -2346,6 +2346,18 @@ class SEQUENCE
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
      if(Virtual && Level_Count==Delay_Trade && ((dir==OP_BUY&&!Seq_Buy.Active) || (dir==OP_SELL&&!Seq_Sell.Active)))
      {
+// B50:begin b50-virtual-block
+      // B50 (A0, GOAT-EA#273 P2): while the clock blocks new entries (the rollover window, a live clock mismatch) a virtual
+      // sequence never becomes a real first entry; it waits, as SignalEntryTrigger does. A real sequence still adds.
+      static bool b50_virtual_block_logged=false;
+      if(g_GoatEntryBlocked)
+        {
+         if(!b50_virtual_block_logged) Print(Desc+": real start refused, new entries are blocked by the clock (B50)");
+         b50_virtual_block_logged=true;
+         return false;
+        }
+      b50_virtual_block_logged=false;
+// B50:end b50-virtual-block
       bool ret=false;
       if     (dir==OP_BUY &&MustCheck_Buy && DashboardEntryAllowed(OP_BUY))    ret=Seq_Buy.Add_Level(ask);
       else if(dir==OP_SELL&&MustCheck_Sell&& DashboardEntryAllowed(OP_SELL))   ret=Seq_Sell.Add_Level(bid);
@@ -4435,6 +4447,7 @@ int OnInit()
    if(Single_Time_Stop_Bars<0)                              {Alert("Initialization Failed: Single_Time_Stop_Bars cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
    if(Rollover_Block_Minutes<0)                             {Alert("Initialization Failed: Rollover_Block_Minutes cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
    if(Server_UTC_Offset<-12 || Server_UTC_Offset>14)        {Alert("Initialization Failed: Server_UTC_Offset must be between -12 and 14."); return INIT_PARAMETERS_INCORRECT;}
+   if(Clock_Mode==Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: the New York clock with a fixed or EU DST server model needs a test start on or after 2007.03.11 (the US DST rules it applies)."); return INIT_PARAMETERS_INCORRECT;} // GOAT-EA#273 P3
    if(Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue) {Alert("Initialization Failed: Smart Rescue cannot run with the single-trade engine (it would move the single's stop to rescue levels)."); return INIT_PARAMETERS_INCORRECT;}
    {
     // NY_Session is HH:MM-HH:MM (hours 0-23, two-digit minutes); start>end crosses midnight; start==end is refused.
@@ -7106,6 +7119,7 @@ void UpdateRSI(int shift)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void UpdateCurrentSignals(int shift)
   {
+   if(Engine_Mode!=Engine_Single) // B50 (A3): a single keeps its signals current in optimization (FastSpeed_Flag), or its opposite exit and its re-arm would run only in visual runs
    if(FastSpeed_Flag && (!Buy_EN||Seq_Buy.Traded) && (!Sell_EN||Seq_Sell.Traded) ) return;
  //if(FastSpeed_Flag && (!Buy_EN||Seq_Buy.Active) && (!Sell_EN||Seq_Sell.Active) ) return;
 //-------------------------------------------------------------------------
@@ -7326,12 +7340,14 @@ void SignalEntryTrigger()//int Buys,int Sells)
       //virtual or real sequences not open, correct direction, no open trades in the same direction from other charts
        if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
       {
+       if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_BUY] && (Allow_Opposite_Seq || !Seq_Buy.Traded) && GoatSingleOpen(Seq_Sell,bid)) g_GoatSingleArmed[OP_BUY]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per buy-signal episode
        if(MathAbs(Delay_Trade)>0)                      Seq_Sell_Virtual.Add_Level(bid);
        else if(Allow_Opposite_Seq || !Seq_Buy.Traded)  Seq_Sell.Add_Level(bid);
       }
      }
       else if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
      {
+      if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_BUY] && (Allow_Opposite_Seq || !Seq_Sell.Traded) && GoatSingleOpen(Seq_Buy,ask)) g_GoatSingleArmed[OP_BUY]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per buy-signal episode
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
      }
@@ -7345,6 +7361,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     LastBuySignal=true; // whether skipped of not the signal was present
    }
    else LastBuySignal=false;
+   if(!LastBuySignal) g_GoatSingleArmed[OP_BUY]=true; // B50 (A1): the combined buy signal reads false, so the next buy-signal episode may open a single
 //-------------------------------------------------------------------------
    if(//!Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short)
          ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_SELL)
@@ -7361,12 +7378,14 @@ void SignalEntryTrigger()//int Buys,int Sells)
      {
        if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
       {
+       if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_SELL] && (Allow_Opposite_Seq || !Seq_Sell.Traded) && GoatSingleOpen(Seq_Buy,ask)) g_GoatSingleArmed[OP_SELL]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per sell-signal episode
        if(MathAbs(Delay_Trade)>0)                      Seq_Buy_Virtual.Add_Level(ask);
        else if(Allow_Opposite_Seq || !Seq_Sell.Traded) Seq_Buy.Add_Level(ask);
       }
      }
       else if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
      {
+      if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_SELL] && (Allow_Opposite_Seq || !Seq_Buy.Traded) && GoatSingleOpen(Seq_Sell,bid)) g_GoatSingleArmed[OP_SELL]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per sell-signal episode
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
      }
@@ -7380,17 +7399,138 @@ void SignalEntryTrigger()//int Buys,int Sells)
     LastSellSignal=true; // whether skipped of not the signal was present
    }
    else LastSellSignal=false;
+   if(!LastSellSignal) g_GoatSingleArmed[OP_SELL]=true; // B50 (A1): the combined sell signal reads false, so the next sell-signal episode may open a single
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:begin b50-single-open
-// B50 (A1 fills the body; docs/b50/B50_ALPHA_DESIGN.md section 1): open the one position of a single in s, a real
-// one-level sequence, at price (ask for a buy, bid for a sell). Called from SignalEntryTrigger's Single branches in place
-// of Add_Level. Returns true when the position opened. The stub opens nothing.
+// B50 (A1; docs/b50/B50_ALPHA_DESIGN.md section 1): open the one position of a single in s, a real one-level sequence,
+// at price (ask for a buy, bid for a sell). Called from SignalEntryTrigger's Single branches in place of Add_Level
+// (Add_Level cannot send a first order while Delay_Trade_Live>=1). It follows Add_Level in order: the expiry check,
+// the CID freeze and manage-only, then the real-order branch (tracing, OpenPosition, the direction guard; Active=Traded,
+// Sequences, the level; the ledger join and the entry commission, the restart record, UpdateLockTPSL). Returns true
+// when it opened.
+// Sizes at start: Size_SL = Single_SL_ATR x the closed bar's ATR (shift 1 of ATR_MA_handle, read into a local buffer:
+// ATR_Buf and GetSize's state never change); Size_TP = Single_TP_R x Size_SL, else Single_TP_ATR x ATR, else 0; the
+// lock, trailing and grid sizes are 0 (UpdateLockTPSL parks the lock at 999999 or 0, so nothing trails).
+// Lots: RiskperSeq floors Risk / (Size_SL x tick value / tick size) to the volume step, caps it at the volume
+// maximum and refuses below the volume minimum (never rounded up past the risk); FixedLots and ScaledLots as Add_Level.
+// Refused, and logged once per side until the reason changes or a single opens: no ATR, a stop inside the stops level
+// plus the spread, a TP inside the stops level, no tick value or size, lots below the volume minimum, a failed order.
+void GoatSingleRefusal(const int side,const int code,const string desc,const string why)
+  {
+   static int b50_logged[2];
+   if(code==0) {b50_logged[side]=0; return;}
+   if(b50_logged[side]==code) return;
+   b50_logged[side]=code;
+   Print(desc,": Single refused (",why,")");
+  }
 bool GoatSingleOpen(SEQUENCE &s,double price)
   {
-   return false;
+   int b50_side=(s.dir==OP_SELL ? 1 : 0);
+   if(s.Virtual || s.Active || s.Traded) return false;            // only an idle real sequence: never a grid add, never a virtual leg
+   if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove(); return false;} // as Add_Level
+   if(GoatCidGuardAddFrozen(s.dir,s.Level_Count+1)) return false; // B47: cid_duplicate freezes a real sequence's adds (as Add_Level)
+   if(s.ManageOnlyFrozen(s.Level_Count+1)) return false;          // B49a (F1-lite): an unwritten restart record freezes adds (as Add_Level)
+   //---- sizes, from the closed bar's ATR
+   double b50_atr_buf[];
+   if(CopyBuffer(ATR_MA_handle,0,1,1,b50_atr_buf)<1) {GoatSingleRefusal(b50_side,1,s.Desc,"no ATR on the closed bar"); return false;}
+   double b50_atr=b50_atr_buf[0];
+   if(!MathIsValidNumber(b50_atr) || b50_atr<=0.0 || b50_atr>=EMPTY_VALUE) {GoatSingleRefusal(b50_side,1,s.Desc,"no ATR on the closed bar"); return false;}
+   double b50_size_sl=Single_SL_ATR*b50_atr;
+   double b50_size_tp=0.0;
+   if(Single_TP_R>0.0)        b50_size_tp=Single_TP_R*b50_size_sl; // the TP in R wins over the ATR TP
+   else if(Single_TP_ATR>0.0) b50_size_tp=Single_TP_ATR*b50_atr;
+   double b50_min_stop=((double)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL)+(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD))*_Point;
+   if(b50_size_sl<=b50_min_stop)
+     {
+      GoatSingleRefusal(b50_side,2,s.Desc,"stop "+DoubleToString(b50_size_sl,_Digits)+" inside the stops level plus the spread "+DoubleToString(b50_min_stop,_Digits));
+      return false;
+     }
+   // A buy's TP (ask + Size_TP) must clear bid + the stops level, a sell's likewise: Size_TP + the spread above the stops level.
+   if(b50_size_tp>0.0 && b50_size_tp+(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD)*_Point<=(double)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL)*_Point)
+     {
+      GoatSingleRefusal(b50_side,6,s.Desc,"take profit "+DoubleToString(b50_size_tp,_Digits)+" inside the stops level");
+      return false;
+     }
+   //---- lots
+   double b50_vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double b50_vmax=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+   double b50_vstep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   double b50_lots=0.0;
+   if(Mode_Lots==RiskperSeq)
+     {
+      // Money per 1.0 price unit per lot from the tick alone (GOAT-EA#272 P1): PriceValuePerPointPerLot's fallbacks answer
+      // per tick or per point (EX-04), which sizes ~1/point too large, so at the volume maximum. No tick value or size: refused.
+      double b50_tv=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+      double b50_ts=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+      double b50_value=((MathIsValidNumber(b50_tv) && MathIsValidNumber(b50_ts) && b50_tv>0.0 && b50_ts>0.0) ? b50_tv/b50_ts : 0.0);
+      if(!MathIsValidNumber(b50_value) || !(b50_value>0.0) || !(b50_vstep>0.0) || !(b50_vmax>0.0))
+        {
+         GoatSingleRefusal(b50_side,3,s.Desc,"no tick value or tick size (value "+DoubleToString(b50_tv,8)+", size "+DoubleToString(b50_ts,8)+") or no volume step");
+         return false;
+        }
+      double b50_risk_lots=Risk/(b50_size_sl*b50_value);
+      b50_lots=MathMin(MathFloor(b50_risk_lots/b50_vstep+1e-9)*b50_vstep,b50_vmax);
+      // OpenPosition sends multiples of the volume minimum (GetNormalizedLots): never one rounded up past the risk, and
+      // never one rounded down from what the single records (GOAT-EA#272 P3).
+      if(b50_vmin>0.0 && MathAbs(GetNormalizedLots(b50_lots)-b50_lots)>b50_vstep*1e-6) b50_lots=MathFloor(b50_lots/b50_vmin+1e-9)*b50_vmin;
+      b50_lots=NormalizeDouble(b50_lots,8);
+      if(b50_lots<=0.0 || b50_lots<b50_vmin)
+        {
+         GoatSingleRefusal(b50_side,4,s.Desc,"risk "+DoubleToString(Risk,2)+" buys "+DoubleToString(b50_risk_lots,4)+" lots at a stop of "
+                           +DoubleToString(b50_size_sl,_Digits)+", below the volume minimum "+DoubleToString(b50_vmin,2));
+         return false;
+        }
+     }
+   else
+     {
+      if(Mode_Lots==ScaledLots) b50_lots=Lots*AccountInfoDouble(ACCOUNT_EQUITY)/1000;
+      else                      b50_lots=Lots;
+      b50_lots=s.NormalizedLots(b50_lots);
+      if(b50_lots<=0.0 || b50_lots<b50_vmin) {GoatSingleRefusal(b50_side,4,s.Desc,"lots below the volume minimum "+DoubleToString(b50_vmin,2)); return false;}
+     }
+   s.StartLots=b50_lots;
+   s.Size_SL=b50_size_sl; s.Size_TP=b50_size_tp; s.Size_Lock=0.0; s.Size_TSL=0.0; s.Size_Grid=0.0;
+   //---- the order (Add_Level's real-order branch)
+   string b50_desc=s.Desc+" Lvl "+IntegerToString(s.Level_Count+1,2,'0');
+   bool   b50_previously_traded=s.GuardRealStarted;
+   GoatTraceEnsureSequence(s.TraceSequenceID,s.dir,s.Virtual);
+   g_trace_current_sequence=s.TraceSequenceID;
+   LastRetCode=0;
+   bool b50_opened=(OpenPosition(s.dir,MAGIC1,b50_lots,0.0,s.Size_SL,s.Size_TP,b50_desc,s.GuardRealStarted)>0);
+   g_trace_current_sequence=0;
+   if(g_direction_guard_send_attempted) GoatDirectionGuardResult(s.dir,(uint)LastRetCode,b50_opened,b50_previously_traded);
+   if(g_direction_guard_denied || !b50_opened)
+     {
+      // A denied or failed candidate did not start a single: it keeps none of its sizes.
+      s.Size_Grid=s.Size_Lock=s.Size_TP=s.Size_SL=s.Size_TSL=1234.5;
+      s.StartLots=0.0;
+      if(!g_direction_guard_denied) // once per return code while it repeats (a spread cap or a stop-out returns 0 on every check)
+         GoatSingleRefusal(b50_side,1000+(int)LastRetCode,b50_desc,"order failed at "+DoubleToString(price,_Digits)+", lots "+DoubleToString(b50_lots,2)
+                           +", return code "+IntegerToString((int)LastRetCode)+" "+GetRetcodeID((int)LastRetCode));
+      return false;
+     }
+   s.GuardRealStarted=true;
+   Print(s.Desc+" Sequence Started @ "+DoubleToString(price,_Digits));
+   Sequences++;
+   s.Active=s.Traded=true; s.Trades_Count++;
+   GoatTraceActivate(s.TraceSequenceID);
+   s.Level_Count=ArrayResize(s.TradeLevels,s.Level_Count+1,Max_Seq_Levels);
+   s.TradeLevels[s.Level_Count-1].price_level = s.Level_Last = price;
+   s.TradeLevels[s.Level_Count-1].price_trade = LastOpen;
+   s.TradeLevels[s.Level_Count-1].lots        = Lots_Order;
+   s.TradeLevels[s.Level_Count-1].sl          = s.Level_SL = LastSL;
+   s.TradeLevels[s.Level_Count-1].tp          = LastTP;
+   s.TradeLevels[s.Level_Count-1].ticket      = LastOrderTicket;
+   if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {s.LedgerAddPosition((ulong)LastOrderTicket); s.AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission
+   if(LastOrderTicket>0) {if(s.PersistStartMsc==0) s.PersistStart((ulong)LastOrderTicket); else s.PersistLevels();} // B49a (F1-lite): the restart record
+   s.UpdateLockTPSL(s.Trades_Count);
+   HLineCreate(0,b50_desc,0,price,(s.dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DOT,1,true,false,false,0);
+   Print(b50_desc,": Price=",DoubleToString(price,_Digits)," Lots=",DoubleToString(Lots_Order,2)," SL=",DoubleToString(s.Size_SL,_Digits),
+         " TP=",DoubleToString(s.Size_TP,_Digits)," Single Filled");
+   GoatSingleRefusal(b50_side,0,"","");
+   return true;
   }
-//----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:end b50-single-open
 void CloseAllPositions(int OP,int magic=0)
   {
@@ -7986,22 +8126,102 @@ double GetSize(int type,int level_count=0,double grid_size=0)
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:begin b50-exits
-// B50 (A3 fills the bodies; docs/b50/B50_ALPHA_DESIGN.md section 3). The stubs never close anything.
-// GoatSignalAll(op): the combined entry signal for direction op, the same six terms as SignalEntryTrigger's.
+// B50 (A3; docs/b50/B50_ALPHA_DESIGN.md section 3): the single's two exits. Each closes through the sequence's own
+// CloseSequencePositions, so the ledger, the restart record and the trace end as they do for every other exit.
+// GoatSignalAll(op): the combined entry signal for direction op, the same six terms as SignalEntryTrigger's, copied
+// verbatim (scripts/test_b50_exits.cjs asserts the text matches the entry conditions, so the two cannot drift).
 bool GoatSignalAll(const int op)
   {
+   if(op==OP_BUY)
+      return(  ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_BUY)
+            && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_BUY|| EMA_Sig==OP_BUYSELL)
+            && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_BUY|| ADX_Sig==OP_BUYSELL)
+            && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_BUY||  BB_Sig==OP_BUYSELL)
+            && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
+            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL));
+   if(op==OP_SELL)
+      return(  ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_SELL)
+            && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_SELL|| EMA_Sig==OP_BUYSELL)
+            && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_SELL|| ADX_Sig==OP_BUYSELL)
+            && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_SELL||  BB_Sig==OP_BUYSELL)
+            && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
+            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL));
    return false;
   }
-// GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence; it refreshes the signals
-// first when checked is false, and then sets it.
+// GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence, before the entry check, in
+// or out of session (ruling 5); it refreshes the signals first when checked is false, and then sets it. A single exits
+// when the signal that opens the other side reads true AND its own signal reads false, so a range mode, where both read
+// true, never exits. Under Reverse_Seq a buy opens on the sell signal, so the two are swapped.
 void GoatSingleSignalExits(bool &checked)
   {
    if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) return;
+   if(!Seq_Buy.Traded && !Seq_Sell.Traded) return; // no single open: nothing to exit, and no extra signal refresh
+   if(!checked)
+     {
+      if(Sequence_Pause_Close || Sequence_Pause_News) UpdateRSI(Shift_Sig); // paused, the tick skipped the RSI refresh
+      UpdateCurrentSignals(Shift_Sig);
+      checked=true;
+     }
+   bool b50_rev=Reverse_Seq;
+   bool b50_long =(b50_rev ? GoatSignalAll(OP_SELL) : GoatSignalAll(OP_BUY));  // the signal that opens a buy
+   bool b50_short=(b50_rev ? GoatSignalAll(OP_BUY)  : GoatSignalAll(OP_SELL)); // the signal that opens a sell
+   if(Seq_Buy.Traded  && b50_short && !b50_long)  Seq_Buy.CloseSequencePositions("Single Exit: opposite signal");
+   if(Seq_Sell.Traded && b50_long  && !b50_short) Seq_Sell.CloseSequencePositions("Single Exit: opposite signal");
   }
-// GoatSingleTimeStop(): closes a single after Single_Time_Stop_Bars bars of Single_Time_Stop_TF.
+// GoatSingleTimeStop(): on each new bar of Single_Time_Stop_TF, a single whose entry bar is Single_Time_Stop_Bars or
+// more bars back is due. The entry time is the position's own POSITION_TIME (TradeLevels[0].ticket), so the count
+// survives a restart. A due single is closed on every tick until it is (a failed close is retried at once, not a bar
+// later). An unknown bar count (iBarShift -1, cold history) never closes: the single keeps its stop, the EA logs it
+// once, and the count is retried every tick until it is known. Both marks end with the position.
 void GoatSingleTimeStop()
   {
    if(Engine_Mode!=Engine_Single || Single_Time_Stop_Bars<=0) return;
+   static INTERVAL b50_TimeStop_Sample;
+   static long b50_due_buy=0,b50_due_sell=0;         // the ticket whose time stop is due (closed every tick until it is)
+   static long b50_unknown_buy=0,b50_unknown_sell=0; // the ticket whose bar count is unknown (retried every tick)
+   ENUM_TIMEFRAMES b50_tf=TF2TF(Single_Time_Stop_TF);
+   bool b50_newbar=b50_TimeStop_Sample.CheckTF(b50_tf);
+   if(!b50_newbar && b50_due_buy==0 && b50_due_sell==0 && b50_unknown_buy==0 && b50_unknown_sell==0) return;
+   long b50_tk_buy=0;
+   if(Seq_Buy.Traded && ArraySize(Seq_Buy.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Buy.TradeLevels[0].ticket)) b50_tk_buy=Seq_Buy.TradeLevels[0].ticket;
+   if(b50_due_buy!=b50_tk_buy)     b50_due_buy=0;     // the position ended (or another one runs): its marks end with it
+   if(b50_unknown_buy!=b50_tk_buy) b50_unknown_buy=0;
+   if(b50_tk_buy!=0 && b50_due_buy==0 && (b50_newbar || b50_unknown_buy==b50_tk_buy))
+     {
+      datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);
+      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);
+      if(b50_bars<0)
+        {
+         if(b50_unknown_buy!=b50_tk_buy) Print(Seq_Buy.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop, and the count is retried every tick.");
+         b50_unknown_buy=b50_tk_buy;
+        }
+      else
+        {
+         b50_unknown_buy=0;
+         if(b50_bars>=Single_Time_Stop_Bars) b50_due_buy=b50_tk_buy;
+        }
+     }
+   if(b50_tk_buy!=0 && b50_due_buy==b50_tk_buy) Seq_Buy.CloseSequencePositions("Single Exit: time stop");
+   long b50_tk_sell=0;
+   if(Seq_Sell.Traded && ArraySize(Seq_Sell.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Sell.TradeLevels[0].ticket)) b50_tk_sell=Seq_Sell.TradeLevels[0].ticket;
+   if(b50_due_sell!=b50_tk_sell)     b50_due_sell=0;     // the position ended (or another one runs): its marks end with it
+   if(b50_unknown_sell!=b50_tk_sell) b50_unknown_sell=0;
+   if(b50_tk_sell!=0 && b50_due_sell==0 && (b50_newbar || b50_unknown_sell==b50_tk_sell))
+     {
+      datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);
+      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);
+      if(b50_bars<0)
+        {
+         if(b50_unknown_sell!=b50_tk_sell) Print(Seq_Sell.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop, and the count is retried every tick.");
+         b50_unknown_sell=b50_tk_sell;
+        }
+      else
+        {
+         b50_unknown_sell=0;
+         if(b50_bars>=Single_Time_Stop_Bars) b50_due_sell=b50_tk_sell;
+        }
+     }
+   if(b50_tk_sell!=0 && b50_due_sell==b50_tk_sell) Seq_Sell.CloseSequencePositions("Single Exit: time stop");
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:end b50-exits

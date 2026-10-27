@@ -308,6 +308,7 @@ function run(src=readSources()){
     OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,EMA_Mode:0,Trade_Disabled:0,EMA_Sig:-1,ADX_Mode:0,ADX_Sig:-1,BB_Mode:0,BB_Disabled:0,BB_Sig:-1,
     MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
     Mode_Trade:0,Long_and_Short:0,Long:1,Short:2,Delay_Trade:0,Allow_Opposite_Seq:true,MathAbs:Math.abs,ask:1.2,bid:1.19,
+    Engine_Mode:0,Engine_Single:1,g_GoatSingleArmed:[true,true],   // B50 (A1): the grid engine (the single's branches: test_b50_single.cjs)
     Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
     // B44 item 4: the AI gate log is Print-only (test_ai_gate_log.cjs); here it only has to exist.
     GoatGateActiveMask:()=>0,GoatGateLog:()=>{},
@@ -337,7 +338,11 @@ function run(src=readSources()){
    w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));w.signal();assert.deepEqual(w.opened,['vbuy','vsell']);ok();}
   for(const marked of [false,true]){
    const w=world({runPath:NONCE});if(marked) w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));
-   const run=vm.runInContext('(function(Virtual,Level_Count,Delay_Trade,dir,MustCheck_Buy,MustCheck_Sell,End_Sequence){'+js(promote)+'\nreturn "no-promotion";})',w.c);
+   // B50 (A0, GOAT-EA#273 P2): the promotion also waits while the clock blocks new entries (g_GoatEntryBlocked).
+   const logs=[];Object.assign(w.c,{g_GoatEntryBlocked:false,Desc:'GOAT Virtual Buy',Print:s=>logs.push(s)});
+   const run=vm.runInContext('(function(Virtual,Level_Count,Delay_Trade,dir,MustCheck_Buy,MustCheck_Sell,End_Sequence){'+js(promote).replace(/\bstatic /g,'')+'\nreturn "no-promotion";})',w.c);
+   w.c.g_GoatEntryBlocked=true;assert.equal(run(true,2,2,0,true,true,()=>{}),false);assert.deepEqual(w.opened,[],'no promotion while blocked');
+   assert.equal(logs.length,1);w.c.g_GoatEntryBlocked=false;
    assert.equal(run(true,2,2,0,true,true,()=>{}),false);assert.deepEqual(w.opened,marked?['buy']:[],'virtual-to-real promotion '+(marked?'after':'before')+' the marker');ok();
   }
   // Children without a deploy= nonce: DashboardEntryAllowed answers exactly as B41's, and never reads a GlobalVariable.

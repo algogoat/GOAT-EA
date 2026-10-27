@@ -52,3 +52,45 @@ Primary references: [Runtime error codes](https://www.mql5.com/en/docs/constants
 [ObjectFind queue semantics](https://www.mql5.com/en/docs/objects/objectfind),
 [ChartApplyTemplate asynchronous request semantics](https://www.mql5.com/en/docs/chart_operations/chartapplytemplate),
 [ChartSetSymbolPeriod refresh semantics](https://www.mql5.com/en/docs/chart_operations/chartsetsymbolperiod).
+
+## Open question: the dashboard's own template applies (do not re-add)
+
+From October 2026 (beta.25, build `V1.49-BETA17-43`) children are no longer attached
+with `ChartApplyTemplate`. The controller writes them into the staged deploy profile,
+and MT5 loads them at start-up. The dashboard only adopts the children it finds
+(goatai#1885 6033175337, approved in 6033450916). The template path described above
+(`ApplyTemplate`, `BuildTemplate`, the copied template and the agent's `deploy_next`)
+is deleted, not kept dormant: `deploy_next` now gets the refusal
+`rejected_deploy_next_retired`, and the dashboard's Activate and Deploy All buttons show
+"Use Next in the app to deploy; dashboard deploy returns in the next update".
+
+The reason is recorded here so the old path is not re-added. On T3 (V1.49 builds
+B41.1 to B41.3, October 6-7, 2026), every `ChartApplyTemplate` that the GOAT
+dashboard program issued for a child returned success, and MT5 never performed it:
+the child chart stayed bare. Every other caller tested in the same terminal loaded
+the same GOAT template in 3 ms to 1.9 s. That included scripts, a diagnostic EA,
+a template-loaded EA, and a diagnostic EA running next to a live dashboard
+(`attach-mechanism-experiment\phase4`, goatai#1885 6033149769). So a running
+dashboard does not block templates. Only applies issued by the dashboard program
+itself fail. V1.48-R1 applied children from the dashboard successfully on
+September 23, 2026, with a different child ex5.
+
+**The cause is unknown.** The untested candidates are the dashboard applying a template whose
+expert is its own (large, protected) ex5, and the exact production template name.
+Until a native experiment explains it, do not add any path where the dashboard
+applies a template to a chart (agent deploy, human Deploy All or Activate, or a
+diagnostic). Children reach charts only through a profile that MT5 loads.
+
+Evidence, all read-only and on the Claude-PC build share (`G:\GOAT-Build-Artifacts\claude-pc-ops\`):
+
+- `attach-mechanism-experiment\`: the caller matrix (phases 2 to 4, `arm-summary.csv`,
+  journal excerpts and `SHA256SUMS.csv`). `results\saved-native-E1.tpl` is MT5's save of
+  a script-applied BuildTemplate `.tpl` on T3.
+- `b41-3-t3-proof\`: the B41.3 deploy-load on T3 that ended in `child_attach_failed`
+  (`03-deploy-load.out.json`) and its deploy-stop.
+- On T3 itself, `MQL5\Profiles\Charts\GOAT-Deploy-56a46a8a85a446b9.stopped-20261006T235344Z\chart02.chr`
+  is a B41 child chart (its `id=` is that deployment's TSV cid) that MT5 saved with no
+  expert: MT5's own record of the failure.
+- algogoat/GOAT-EA#186 (B41.1 to B41.3: asynchronous agent attach, pending-chart
+  refresh, attach diagnostics) is superseded by beta.25 and closed without merging.
+  Only its settingsMatch exemptions (CA41, `4f3f2f9`) were ported.

@@ -1,12 +1,20 @@
 ﻿#include "MTTester.mqh"
+#ifdef GOAT_TESTER_SEMANTIC_V149
+#include "GOATStudioExportDates.mqh"
+#endif
 #ifdef GOAT_SEQUENCE_EXPORT_V148
 #include "GOAT_SequenceHostIO.mqh"
 #endif
 #include "XmlProcessor.mqh"
 
 #import "shell32.dll"
-int ShellExecuteW(int hWnd, string lpOperation, string lpFile, string lpParameters, string lpDirectory, int nShowCmd);
+long ShellExecuteW(long hWnd, string lpOperation, string lpFile, string lpParameters, string lpDirectory, int nShowCmd);
 #import
+#ifdef GOAT_CONFIG_REPORT_START_V149
+#import "kernel32.dll"
+uint GetSystemDirectoryW(ushort &buffer[],uint size);
+#import
+#endif
 // Import the Windows API function to get the current process ID
 //#import "kernel32.dll"
 ////int GetCurrentProcessId();
@@ -18,7 +26,7 @@ string PowerShellSingleQuoted(string text)
    return text;
   }
 //+------------------------------------------------------------------+
-void AddCommand(string configPath,string guardPath="",string launchId="")
+bool AddCommand(string configPath,string guardPath="",string launchId="")
   {
    //if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) MessageBox()
    string terminal_path = TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe";
@@ -71,7 +79,20 @@ void AddCommand(string configPath,string guardPath="",string launchId="")
    // Parameters to run PowerShell in no-profile, bypass execution policy
    string parameters = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + psCommand + "\"";
    // Launch PowerShell
+#ifdef GOAT_CONFIG_REPORT_START_V149
+   // A hidden PowerShell console can flash before it hides itself. Headless
+   // conhost never creates that viewport; resolve both executables explicitly.
+   ushort system_buffer[]; ArrayResize(system_buffer,32768);
+   uint system_length=GetSystemDirectoryW(system_buffer,(uint)ArraySize(system_buffer));
+   if(system_length==0 || system_length>=(uint)ArraySize(system_buffer)) return false;
+   string system_dir=ShortArrayToString(system_buffer,0,(int)system_length);
+   string launcher=system_dir+"\\conhost.exe";
+   string shell=system_dir+"\\WindowsPowerShell\\v1.0\\powershell.exe";
+   return ShellExecuteW(0,"open",launcher,"--headless \""+shell+"\" "+parameters,"",0)>32;
+#else
    ShellExecuteW(0, "open", "powershell.exe", parameters, "", 0);
+   return true;
+#endif
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 struct SettingsStrings
@@ -83,6 +104,9 @@ struct SettingsStrings
 SettingsStrings strT;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #define GOAT_BATCH_CANCELLED_GV             "GOAT_BatchCancelled"
+#ifdef GOAT_CANCEL_ORIGIN_V149
+#include "GOATBatchCancelOrigin.mqh"
+#endif
 #define GOAT_BATCH_RESTART_PENDING_GV       "GOAT_BatchRestartPending"
 #define GOAT_BATCH_RESTART_REQUESTED_AT_GV  "GOAT_BatchRestartRequestedAt"
 #define GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV "GOAT_BatchRestartStopAttempts"
@@ -371,6 +395,11 @@ bool VerifyTesterSettings(const bool reportMode,const int MAX_ATTEMPTS = 5)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CompareCanonicalIni(const string iniA,const string iniB)
   {
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   string date_error;
+   if(!GoatStudioExportDatesEqual(iniB,iniA,date_error))
+     {LogOrPrint(false,date_error,strT._K,strT._N,strT._S);return false;}
+#endif
    // --- Parse iniA into a map "Section|Key" -> "Value"
    string mapAKeys[], mapAValues[];
    int countA = 0;
@@ -448,6 +477,11 @@ bool CompareCanonicalIni(const string iniA,const string iniB)
      {
       string aKey = mapAKeys[i];
       string aVal = mapAValues[i];
+#ifdef GOAT_TESTER_SEMANTIC_V149
+      // These two dates were checked above by exact datetime value, including
+      // presence and duplicates. Do not compare their native display spelling.
+      if(aKey=="[TesterInputs]|Sequence_Export_Start" || aKey=="[TesterInputs]|Sequence_Export_End") continue;
+#endif
       // find same key in B
       int indexB=-1;
       for(int j=0; j<countB; j++)

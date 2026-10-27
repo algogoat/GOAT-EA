@@ -1,7 +1,8 @@
 // Execute production MQL retry/wait/identity functions with deterministic native stubs.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync(path.join(__dirname,'../GOATLicenseInitRetry.mqh'),'utf8');
-const main=fs.readFileSync(path.join(__dirname,'../GOAT V1.47.mq5'),'utf8');
+// B44 item 7 (goatai#2350): VerifyLicense in V1.49 uses the same bounded retry; both mains are pinned.
+const MAINS=['GOAT V1.47.mq5','GOAT V1.49.mq5'].map(f=>[f,fs.readFileSync(path.join(__dirname,'..',f),'utf8')]);
 let code=source.replace(/\b(?:bool|int) (GOAT\w+)\(([\s\S]*?)\)\r?\n  \{/g,(_,name,args)=>
  `function ${name}(${args.split(',').map(x=>x.trim().replace(/\[\]/g,'').match(/\w+$/)[0]).join(',')}) {`)
  .replace(/\(uint\)\(ChartID\(\)>>32\)/g,'u32(Math.floor(ChartID()/4294967296))')
@@ -59,7 +60,8 @@ for(const headers of ['Retry-After: 120','Retry-After: Tue, 22 Sep 2026 01:00:00
  test('unsupported or excessive delay stops '+headers.slice(0,30),()=>assert.equal(run({responses:[{status:429,headers}]}).requests,1));
 test('jitter separates adjacent chart ids',()=>assert.ok(new Set(Array.from({length:33},(_,i)=>run({chart:53904251912009+i}).clock)).size>25));
 test('no secret logging',()=>{const r=run({responses:[{status:503,headers:'SECRET-HEADER'},{status:200}]});assert.ok(!JSON.stringify(r.logs).includes('SECRET'));assert.ok(!JSON.stringify(r.logs).includes('opaque'));});
-test('main integration preserves existing parser',()=>{assert.ok(main.includes('GOATLicenseAuthenticatedRequest(AccNum,AccServer,init,URL,post_data,result,result_headers,native_error)'));assert.ok(main.includes('if(response_text=="no")'));assert.ok(main.includes('return 403;'));assert.ok(main.includes('LicenseKey<0 || LicenseKey>=500'));assert.ok(!main.includes('"License check HTTP response "+(string)res+": "+CharArrayToString'));});
+for(const [file,main] of MAINS){
+test(file+': main integration preserves existing parser',()=>{assert.ok(main.includes('GOATLicenseAuthenticatedRequest(AccNum,AccServer,init,URL,post_data,result,result_headers,native_error)'));assert.ok(main.includes('if(response_text=="no")'));assert.ok(main.includes('return 403;'));assert.ok(main.includes('LicenseKey<0 || LicenseKey>=500'));assert.ok(!main.includes('"License check HTTP response "+(string)res+": "+CharArrayToString'));});
 const parser=main.slice(main.indexOf('   if(res == 200)'),main.indexOf('//+------------------------------------------------------------------+\r\nbool IsVersionExpired'))
  .replace(/\(string\)(\w+)/g,'String($1)');
 function parse(status,body) {
@@ -67,10 +69,11 @@ function parse(status,body) {
  StringFind:(s,q)=>s.indexOf(q),TimeCurrent:()=>123,Print:()=>{},ShowPrompt:()=>{},URL_Web:'test.invalid'};
  vm.createContext(ctx);return vm.runInContext('(function(){'+parser+')()',ctx);
 }
-test('production parser accepts only bound license success',()=>assert.equal(parse(200,'9271 - yes'),1505));
-test('production parser rejects revoked account body',()=>assert.equal(parse(200,'no'),403));
-test('production parser rejects wrong account',()=>assert.equal(parse(200,'999 - yes'),200));
-test('production parser rejects malformed success',()=>assert.equal(parse(200,'unexpected'),200));
-test('production parser preserves denied401',()=>assert.equal(parse(401,'no'),401));
-test('production parser preserves denied403',()=>assert.equal(parse(403,'no'),403));
+test(file+': production parser accepts only bound license success',()=>assert.equal(parse(200,'9271 - yes'),1505));
+test(file+': production parser rejects revoked account body',()=>assert.equal(parse(200,'no'),403));
+test(file+': production parser rejects wrong account',()=>assert.equal(parse(200,'999 - yes'),200));
+test(file+': production parser rejects malformed success',()=>assert.equal(parse(200,'unexpected'),200));
+test(file+': production parser preserves denied401',()=>assert.equal(parse(401,'no'),401));
+test(file+': production parser preserves denied403',()=>assert.equal(parse(403,'no'),403));
+}
 console.log(JSON.stringify({passed,productionFunctions:true,nativeExecution:false}));

@@ -19,6 +19,14 @@ double g_trace_initial_balance=0.0;
 string g_trace_path="",g_trace_error="";
 bool g_trace_dirty=false;
 int g_trace_history_count=0;
+// B44 item 6 (goatai#2350): past 1,000,000 rows the minute marks (marks and account rows of the "minute" frame) go
+// to every 5 minutes instead of stopping the capture at 2,000,000 rows. Deals and every event frame (a deal's marks
+// and account rows) are still written in full. The change is recorded as marks_downsampled with
+// marks_interval_changed_at (server msc) in completion.csv and the manifest's sampling block.
+#define GOAT_TRACE_MARKS_DOWNSAMPLE_ROWS 1000000
+#define GOAT_TRACE_MARKS_COARSE_SECONDS  300
+int  g_trace_marks_seconds=60;
+long g_trace_marks_changed_at=0;
 ulong g_trace_pending_ends[];
 long g_trace_pending_end_times[];
 string g_trace_pending_end_reasons[];
@@ -41,7 +49,7 @@ void GoatTraceWritten(const uint bytes)
   {
    g_trace_rows++;g_trace_bytes+=bytes;
    if(bytes==0) GoatTraceFail("write failed");
-   if(g_trace_rows>2000000) {GoatTraceFail("2000000 row resource limit exceeded");g_trace_enabled=false;}
+   // B44: no row-count stop (marks go coarser past GOAT_TRACE_MARKS_DOWNSAMPLE_ROWS instead); the byte bound stays.
    if(g_trace_bytes>536870912) {GoatTraceFail("512 MiB capture resource limit exceeded");g_trace_enabled=false;}
   }
 
@@ -271,6 +279,12 @@ void GoatTraceTimer()
    if(now%60!=0 || now==g_trace_last_frame) return;
    g_trace_last_frame=now;
    if(g_trace_dirty) GoatTraceBoundary();
+   if(g_trace_marks_seconds==60 && g_trace_rows>GOAT_TRACE_MARKS_DOWNSAMPLE_ROWS)
+     {
+      g_trace_marks_seconds=GOAT_TRACE_MARKS_COARSE_SECONDS; g_trace_marks_changed_at=GoatTraceClock();
+      Print("GOAT TRACE marks_downsampled: minute marks every ",GOAT_TRACE_MARKS_COARSE_SECONDS," s from server msc ",g_trace_marks_changed_at," (",g_trace_rows," rows)");
+     }
+   if(now%g_trace_marks_seconds!=0) {GoatTraceFlush();return;}
    GoatTraceMarks("minute");GoatTraceFlush();
   }
 
@@ -420,6 +434,8 @@ bool GoatTraceCompletion(const int reason)
    GOAT_SEQ_FOOTER("final_positions",PositionsTotal())
    GOAT_SEQ_FOOTER("final_orders",OrdersTotal())
    GOAT_SEQ_FOOTER("rows",g_trace_rows)
+   GOAT_SEQ_FOOTER("marks_status",(g_trace_marks_changed_at>0 ? "marks_downsampled" : "full"))
+   GOAT_SEQ_FOOTER("marks_interval_changed_at",g_trace_marks_changed_at)
    GOAT_SEQ_FOOTER("native_final_balance",AccountInfoDouble(ACCOUNT_BALANCE))
    GOAT_SEQ_FOOTER("native_final_equity",AccountInfoDouble(ACCOUNT_EQUITY))
    GOAT_SEQ_FOOTER("error",g_trace_error)
@@ -465,7 +481,9 @@ void GoatTracePublish()
       ",\"timeBasis\":{\"kind\":\"broker-server\",\"server\":"+GoatSeqJson(AccountInfoString(ACCOUNT_SERVER))+
       ",\"encoding\":\"wall-clock-as-unix-ms\"},\"requestedPeriod\":{\"startServerMsc\":"+(string)((long)Sequence_Export_Start*1000)+
       ",\"endServerMsc\":"+(string)((long)Sequence_Export_End*1000)+"},\"observedPeriod\":{\"startServerMsc\":"+(string)g_trace_first_time+
-      ",\"endServerMsc\":"+(string)g_trace_last_time+"},\"sampling\":{\"intervalMilliseconds\":60000,\"drawdown\":\"sampled\",\"policy\":\"minute-and-event\"},"+
+      ",\"endServerMsc\":"+(string)g_trace_last_time+"},\"sampling\":{\"intervalMilliseconds\":60000,\"drawdown\":\"sampled\",\"policy\":\"minute-and-event\""+
+      (g_trace_marks_changed_at>0 ? ",\"status\":\"marks_downsampled\",\"marksIntervalChangedAt\":"+(string)g_trace_marks_changed_at+
+       ",\"intervalMillisecondsAfterChange\":"+(string)(GOAT_TRACE_MARKS_COARSE_SECONDS*1000) : "")+"},"+
       "\"exports\":{\"csv\":"+(csv==""?"null":csv)+",\"set\":"+(set==""?"null":set)+"},\"sourceInputs\":"+(source==""?"null":source)+
       ",\"effectiveSet\":"+(effective==""?"null":effective)+",\"effectiveInputs\":"+(actual==""?"null":actual)+
       ",\"rawFiles\":["+raw+"],\"reportReceipt\":"+(receipt==""?"null":receipt)+"}";

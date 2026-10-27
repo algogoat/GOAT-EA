@@ -1,4 +1,8 @@
-"""Read-only inventory of the shared native pointer and referenced queue."""
+"""Read-only inventory of this terminal's native pointer and referenced queue.
+
+V1.49 batch state is per terminal/account (studio_terminal_isolation); V1.48
+keeps the shared pre-isolation folder.
+"""
 import argparse
 from collections import Counter
 import configparser
@@ -9,9 +13,12 @@ from pathlib import Path, PureWindowsPath
 import re
 
 
-def inventory(common, server, version='1.48'):
+def inventory(common, server, version='1.48', *, login=None, data_root=None):
+    from studio_terminal_isolation import isolated, state_base
     if not re.fullmatch(r'[A-Za-z0-9_. -]+',server):raise ValueError('Invalid server name')
-    common=Path(common).resolve();base=common/'GOAT'/('GOAT V'+version+'-'+server)
+    if isolated(version) and (login is None or data_root is None):
+        raise ValueError('V'+version+' batch state is per terminal/account; login and terminal data folder are required')
+    common=Path(common).resolve();base=state_base(common,version,server,login,data_root)
     result=dict(observed_at=datetime.now(timezone.utc).isoformat(),launch_permitted=False,
         controls={},queue=None,limitations=['Queue status is not process liveness','Terminal batch flags must be inspected separately'])
     for name in ('active_optimization_run.ini','active_optimization_config.ini',
@@ -48,4 +55,6 @@ def inventory(common, server, version='1.48'):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--common',required=True);parser.add_argument('--server',required=True)
-    args=parser.parse_args();print(json.dumps(inventory(args.common,args.server),indent=2))
+    parser.add_argument('--version',default='1.48');parser.add_argument('--login');parser.add_argument('--data-root')
+    args=parser.parse_args()
+    print(json.dumps(inventory(args.common,args.server,args.version,login=args.login,data_root=args.data_root),indent=2))

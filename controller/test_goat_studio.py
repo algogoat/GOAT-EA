@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from campaign_ledger import sha
 from goat_studio import Controller
+from studio_bridge import StudioBridge
 from studio_installation import VERSION,load_installation,contracts
 from studio_process_check import classify_processes
 from studio_settings import validate_export,serialize_export
@@ -49,6 +50,49 @@ class PortableControllerTests(unittest.TestCase):
         config=self.root/'settings.json';config.write_text(json.dumps(dict(tester=self.tester,export=self.exports)))
         return c.prepare('beta-job',source,config)
 
+    def test_human_archive_keeps_full_receipt_under_default_windows_path_limit(self):
+        c=self.bound()
+        filler='x'*max(1,168-len(str(self.root))-1)
+        long_root=self.root/filler
+        bridge=StudioBridge(long_root,c.store,c.terminal,c.run)
+        request_id='ui-'+'a'*32
+        state=c.state()
+        request=dict(schema_version=1,request_id=request_id,terminal_id=c.terminal,
+                     run_id=c.run,expected_revision=state['revision'],
+                     generation=state['generation'],command='control.grant_agent',payload={})
+        raw=(json.dumps(request)+'\n').encode()
+        inbox=long_root/'human/inbox';inbox.mkdir(parents=True,exist_ok=True)
+        (inbox/(request_id+'.json')).write_bytes(raw)
+        self.assertEqual(bridge.pump()[0]['ok'],True)
+        saved=list((long_root/'human/archive').glob(request_id+'.*.json'))
+        self.assertEqual(len(saved),1)
+        self.assertEqual(saved[0].read_bytes(),raw)
+        self.assertLess(len(str(saved[0])),260)
+        fingerprint=hashlib.sha256(raw).hexdigest()
+        self.assertGreater(len(str(long_root/'human/archive'/(request_id+'.'+fingerprint+'.json'))),260)
+        receipt=json.loads((long_root/'human/outbox'/(request_id+'.json')).read_text())
+        self.assertEqual(receipt['request_sha256'],fingerprint)
+
+    def test_human_archive_name_collision_preserves_original_request(self):
+        c=self.bound()
+        request_id='ui-'+'b'*32
+        state=c.state()
+        request=dict(schema_version=1,request_id=request_id,terminal_id=c.terminal,
+                     run_id=c.run,expected_revision=state['revision'],
+                     generation=state['generation'],command='control.grant_agent',payload={})
+        raw=(json.dumps(request)+'\n').encode()
+        inbox=c.bridge.root/'human/inbox';inbox.mkdir(parents=True,exist_ok=True)
+        (inbox/(request_id+'.json')).write_bytes(raw)
+        fingerprint=hashlib.sha256(raw).hexdigest()
+        archive=c.bridge.root/'human/archive'/(request_id+'.'+fingerprint[:24]+'.json')
+        archive.parent.mkdir(parents=True,exist_ok=True)
+        archive.write_bytes(b'foreign archive bytes')
+        with self.assertRaisesRegex(ValueError,'archive name collision'):
+            c.bridge.pump()
+        self.assertEqual(archive.read_bytes(),b'foreign archive bytes')
+        self.assertEqual((c.bridge.root/'human/processing'/(request_id+'.json')).read_bytes(),raw)
+        self.assertTrue((c.bridge.root/'human/outbox'/(request_id+'.json')).is_file())
+
     def test_receipt_paths_and_exact_binary(self):
         self.assertEqual(load_installation(self.path)['terminal_data_root'],str(self.data))
         (self.data/'MQL5/Experts/GOAT-EA/GOAT V1.48.ex5').write_bytes(b'stale')
@@ -88,6 +132,73 @@ class PortableControllerTests(unittest.TestCase):
         slot.write_text(json.dumps(dict(status='released',batch_id='seed-fixture')))
         c.submit('queue.reserve',payload,'native-reserve-after-seed')
         self.assertEqual(c.job('beta-job')['status'],'reserved')
+
+    def test_seed_owner_light_read_gives_the_shipped_answer(self):
+        # goatai#2587 6396050245 (Banker, 2026-10-25): SeedRunner._owner parsed the whole queue row twice per pass (148 MB),
+        # so no catch-up member started. The light read (control + any_job_status) must answer exactly as the shipped
+        # read did, on every fixture Claude-Mac named (6396069706): busy, not busy, authority mismatch, empty row.
+        import json
+        from types import SimpleNamespace
+        from studio_seed import BUSY,SeedRunner
+        def shipped(c,generation=None):                     # studio_seed._owner as shipped in f5e0ddc, verbatim
+            state=c.state()
+            if state['owner']!='agent' or (generation is not None and state['generation']!=generation):raise ValueError('Human Studio grant is missing or changed; no further seed effects')
+            queues=[state['queue']]
+            if hasattr(c,'store'):
+                queues=[json.loads(row[0]) for row in c.store.db.execute('SELECT jobs FROM studio_queues')]
+            if any(j['status'] in BUSY for jobs in queues for j in jobs):raise ValueError('Unresolved native batch must finish before seed workflow')
+            return state
+        def answer(read,*args):
+            try:state=read(*args)
+            except ValueError as error:return 'refused',str(error)
+            return 'ok',{k:state[k] for k in ('terminal_id','run_id','revision','generation','owner')}
+        c=self.bound();runner=SeedRunner(c,process=SimpleNamespace(inspect=lambda:None),clock=lambda:0,sleep=lambda s:None)
+        def same(label,expected_kind):
+            current=c.store.db.execute('SELECT generation FROM studio_state').fetchone()[0]   # not through authority()
+            for generation in (None,current,current+1):
+                with patch.object(c,'state',side_effect=AssertionError('the light read never builds the full snapshot')):
+                    light=answer(runner._owner,generation)
+                self.assertEqual(light,answer(shipped,c,generation),label+', generation '+str(generation))
+            self.assertEqual(answer(shipped,c)[0],expected_kind,label)
+        same('human owner, no queue row','refused')
+        self.grant(c)
+        self.assertIsNone(c.store.db.execute('SELECT jobs FROM studio_queues').fetchone(),'fixture: no queue row yet')
+        same('empty: no queue row','ok')
+        c.store.db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)',('other-binding','[]'))
+        same('empty: a row holding []','ok')
+        self.prepare(c);same('not busy: pending job','ok')
+        job=c.job('beta-job')
+        c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256='a'*64),'owner-light-reserve')
+        same('busy: reserved job','refused')
+        self.assertEqual(answer(runner._owner)[1],'Unresolved native batch must finish before seed workflow')
+        # Other statuses on a second queue row, each alone: the light read agrees with the shipped one.
+        def other_row(jobs):
+            c.store.db.execute('DELETE FROM studio_queues WHERE binding=?',('other-binding',))
+            c.store.db.execute('INSERT INTO studio_queues(binding,jobs) VALUES(?,?)',('other-binding',json.dumps(jobs)))
+        reserved=c.job('beta-job');c.store.db.execute("UPDATE studio_queues SET jobs=? WHERE binding!='other-binding'",
+                                                      (json.dumps([dict(reserved,status='pending')]),))
+        for status,kind in (('running','refused'),('verifying','refused'),('launching','ok'),('completed','ok')):
+            other_row([dict(job_id='x',status=status)]);same('status '+status,kind)
+        # Fails closed (Claude-Mac 6396446948 fold 2): a job with no status or a non-string status reads as busy. The
+        # shipped read raised (KeyError / TypeError) or, for a number, let it through; the light read always refuses.
+        for label,job in (('no status',dict(job_id='x')),('number status',dict(job_id='x',status=7)),
+                          ('list status',dict(job_id='x',status=['running'])),('null status',dict(job_id='x',status=None))):
+            other_row([job])
+            self.assertTrue(c.store.any_job_status(BUSY),label)
+            self.assertEqual(answer(runner._owner),('refused','Unresolved native batch must finish before seed workflow'),label)
+        other_row([])
+        # The binding's authority row is native human control (immutable); a typed research continuation appearing
+        # beside it is a mismatch studio_research_authority.authority refuses.
+        (c.root/'research-authority.json').write_text('{}')
+        same('authority mismatch','refused')
+        self.assertEqual(answer(runner._owner)[1],'Native authority cannot downgrade a typed continuation')
+        # Mutant: a control() that skips authority() answers differently on the mismatch fixture, so this test kills it.
+        from studio_command_store import StudioStore
+        def no_authority(store,terminal_id,run_id):
+            row=store.db.execute('SELECT revision,generation,owner FROM studio_state').fetchone()
+            return dict(terminal_id=terminal_id,run_id=run_id,revision=row['revision'],generation=row['generation'],owner=row['owner'])
+        with patch.object(StudioStore,'control',no_authority):
+            self.assertNotEqual(answer(runner._owner),answer(shipped,c),'the authority-skipping mutant is caught')
 
     def test_prepare_exact_inputs_server_version_ninth_setting(self):
         c=self.bound();self.grant(c);result=self.prepare(c)
@@ -136,12 +247,17 @@ class PortableControllerTests(unittest.TestCase):
         for rule in policy['rules']:
             self.assertIn(rule['input'],schema['inputs']);self.assertIn(rule['controller'],schema['inputs'])
 
-    def activated_fixture(self):
+    def activated_fixture(self,*,large_manifest=False):
         """Exact real package/store/ownership files; MT5 itself is not started."""
         from studio_launch_intent import record_intent
         from native_control_transaction import begin,NAMES
         c=self.bound();self.grant(c);result=self.prepare(c)
         package=Path(result['package']);manifest=result['manifest'];job=c.job('beta-job')
+        if large_manifest:
+            # Valid JSON formatting makes the frozen package exceed the small
+            # installation-receipt bound without inventing manifest fields.
+            path=package/'manifest.json'
+            path.write_bytes(b' ' * 2_000_001 + path.read_bytes())
         c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()),'beta-job-reserve')
         state=c.state();intent=record_intent(c.store,c.terminal,c.run,'beta-job',package,actor='agent',revision=state['revision'],generation=state['generation'])
         native=self.common/manifest['native_run_relative'].replace('\\','/');shutil.copytree(package,native)
@@ -187,6 +303,22 @@ class PortableControllerTests(unittest.TestCase):
         self.assertFalse((base/'agent-native-control-owner.json').exists())
         self.assertEqual(c.job('beta-job')['status'],'cancelled')
         self.assertEqual(finish(c,'beta-job')['reused'],True)
+
+    def test_finish_cancelled_large_batch_manifest_keeps_small_receipt_bound(self):
+        from studio_finish import finish
+        from studio_installation import read_json
+        c,native,base,evidence=self.activated_fixture(large_manifest=True)
+        package=Path(c.job('beta-job')['launch_intent']['package'])
+        with self.assertRaisesRegex(ValueError,'JSON exceeds 2 MB'):
+            read_json(package/'manifest.json')
+        queue=native/'queue.GOAT'
+        queue.write_bytes(queue.read_bytes().decode('utf-16').replace(';Pending_',';Cancelled_').encode('utf-16'))
+        with patch.object(c,'runtime',return_value=({},{})):
+            result=finish(c,'beta-job')
+        self.assertEqual(result['status'],'cancelled')
+        self.assertFalse((base/'agent-native-control-owner.json').exists())
+        self.assertEqual(c.job('beta-job')['status'],'cancelled')
+        self.assertTrue(Path(result['result_path']).is_file())
 
     def test_finish_unknown_state_preserves_ownership(self):
         from studio_finish import finish

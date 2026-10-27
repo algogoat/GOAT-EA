@@ -1,0 +1,180 @@
+{
+ "calls": {
+  "closes": [
+   [
+    "deploy-eeeeeeeeeeeeeeeeeeeeeeee",
+    [
+     [
+      "build_id",
+      "V1.48-TEST-BUILD-01"
+     ]
+    ]
+   ]
+  ],
+  "popen": [
+   "terminal64",
+   "\\config:<root>\\customer state\\demo-deployments\\eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.ini"
+  ],
+  "requests": [
+   [
+    "status",
+    20
+   ],
+   [
+    "link_children",
+    20
+   ],
+   [
+    "link_children",
+    20
+   ],
+   [
+    "link_children",
+    20
+   ],
+   [
+    "apply_policy",
+    60
+   ],
+   [
+    "status",
+    20
+   ],
+   [
+    "audit",
+    20
+   ]
+  ],
+  "sleeps": [
+   2,
+   2
+  ]
+ },
+ "journal": {
+  "attempt": 1,
+  "command_id": 1,
+  "deployment_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "instruction": "Turn on Algo Trading in MT5 to start trading (demo)",
+  "link_result": "children_linked",
+  "linked_rows": [
+   {
+    "chartId": 1000,
+    "index": 0,
+    "magic": 5000
+   },
+   {
+    "chartId": 1001,
+    "index": 1,
+    "magic": 5001
+   }
+  ],
+  "members": [
+   {
+    "fileName": "GOAT V1.48 EURUSD,M1_Trds0.set",
+    "index": 0,
+    "sha256": "a68fc21b79446d66cce66da376e819c4a2e9a8cf18b422eda9c29b80890438f9",
+    "symbol": "EURUSD"
+   },
+   {
+    "fileName": "GOAT V1.48 GBPUSD,M1_Trds1.set",
+    "index": 1,
+    "sha256": "49a2302ecf71c1f9d34695f5e81e7bba32879c6bd551925b748704e7a89dff7b",
+    "symbol": "GBPUSD"
+   }
+  ],
+  "phase": "ready",
+  "pid": 77,
+  "plan_sha256": "654a3e1e634ec2f1a30879f09b4ee505d49de38c46f3fa1b7c71aaed8b4671d9",
+  "positions_closed": false,
+  "profile_format": "profile-staged-v1",
+  "startup_sha256": "23a667f378190b4407475d75b044de546bae9e356501394b94a4cfe07ea2264d",
+  "trading_changed": false
+ },
+ "journal_keys": [
+  "account",
+  "attempt",
+  "build_id",
+  "command_id",
+  "created_utc",
+  "deployment_id",
+  "instruction",
+  "launch_telemetry",
+  "link_result",
+  "linked_rows",
+  "members",
+  "phase",
+  "pid",
+  "plan_sha256",
+  "portfolio",
+  "positions_closed",
+  "previous_profile",
+  "previous_terminal",
+  "profile_format",
+  "readback",
+  "registration_sha256",
+  "schema_version",
+  "startup_config",
+  "startup_sha256",
+  "trading_changed",
+  "updated_utc"
+ ],
+ "previous_profile_keys": [
+  "captured_utc",
+  "name",
+  "reason"
+ ],
+ "previous_terminal_keys": [
+  "close_attempt_id",
+  "close_method",
+  "close_phase",
+  "close_requested_utc",
+  "created_utc",
+  "exit_after_utc",
+  "inventories",
+  "last_seen_present_utc",
+  "observed_gone_utc",
+  "pid",
+  "present_at_stage"
+ ],
+ "profile": {
+  "chart01.chr": "7c6b7b1d1bdc1b97b63c8154c0d02566eafbfd4abc33df012a8a2d76edd5d089",
+  "chart02.chr": "3c5a4077cd14a0da145887113108c1cece86989b0a9ceb260f1efb6f39cea2d6",
+  "chart03.chr": "18d25a0543272c775b5be2735435cc9b7c120e325fc029a6e632660b79b9a435"
+ },
+ "readback": {
+  "algo_trading": false,
+  "demo": true,
+  "login": "123456",
+  "orders": 0,
+  "positions": 0,
+  "rows": [
+   {
+    "chartId": 1000,
+    "index": 0,
+    "magic": 5000,
+    "settingsMatch": true,
+    "sha256": "a68fc21b79446d66cce66da376e819c4a2e9a8cf18b422eda9c29b80890438f9",
+    "symbol": "EURUSD"
+   },
+   {
+    "chartId": 1001,
+    "index": 1,
+    "magic": 5001,
+    "settingsMatch": true,
+    "sha256": "49a2302ecf71c1f9d34695f5e81e7bba32879c6bd551925b748704e7a89dff7b",
+    "symbol": "GBPUSD"
+   }
+  ],
+  "server": "Customer-Demo",
+  "trading_allowed": false
+ },
+ "staged": {
+  "<root>\\common\\GOAT\\Deployments\\eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\\GOAT V1.48 EURUSD,M1_Trds0.set": "a68fc21b79446d66cce66da376e819c4a2e9a8cf18b422eda9c29b80890438f9",
+  "<root>\\common\\GOAT\\Deployments\\eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\\GOAT V1.48 GBPUSD,M1_Trds1.set": "49a2302ecf71c1f9d34695f5e81e7bba32879c6bd551925b748704e7a89dff7b",
+  "<root>\\common\\GOAT\\Deployments\\namespaces\\customer data.json": "text:40973f5de035f8354b70a42d4a0c8cb1c6a008b6de63d68e9e18e36b8536389e",
+  "<root>\\common\\GOAT\\dashboard_state_customer data.tsv": "text:7080605e5b8943187b8d94cf5f55287d44cd0ea19993e99ecd370135f34c3d63",
+  "<root>\\customer data\\MQL5\\Profiles\\Charts\\GOAT-Deploy-eeeeeeeeeeeeeeee\\chart01.chr": "7c6b7b1d1bdc1b97b63c8154c0d02566eafbfd4abc33df012a8a2d76edd5d089",
+  "<root>\\customer data\\MQL5\\Profiles\\Charts\\GOAT-Deploy-eeeeeeeeeeeeeeee\\chart02.chr": "3c5a4077cd14a0da145887113108c1cece86989b0a9ceb260f1efb6f39cea2d6",
+  "<root>\\customer data\\MQL5\\Profiles\\Charts\\GOAT-Deploy-eeeeeeeeeeeeeeee\\chart03.chr": "18d25a0543272c775b5be2735435cc9b7c120e325fc029a6e632660b79b9a435"
+ }
+}

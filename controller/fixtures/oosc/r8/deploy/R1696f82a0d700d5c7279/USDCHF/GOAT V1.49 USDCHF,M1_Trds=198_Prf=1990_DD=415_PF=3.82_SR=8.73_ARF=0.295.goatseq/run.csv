@@ -1,0 +1,24 @@
+key,value
+schema,goat-native-sequence-capture-v1
+time_basis,broker-server-time; NOT UTC
+run_id,export-1790713914-428940723-0
+strategy_id,export-1790713914-428940723-0
+build_id,V1.49-EXPORT-BACK-BOUNDARY-28
+program_path,C:\Users\goat\AppData\Roaming\MetaQuotes\Tester\B192A4598DA3528A412E93A85A2C2F64\Agent-127.0.0.1-3024\MQL5\Experts\GOAT-EA\GOAT V1.49.ex5
+server,Darwinex-Demo
+account,1000001
+currency,USD
+model,4
+leverage,100
+effective_inputs_sha256,74474aaca822e0a4e51f7689a9f6be3668666d20f82f0c62d731103b488e3df7
+symbol,USDCHF
+magic,7456
+exposure_filter,0
+margin_mode,2
+expected_start_server_msc,1735171200000
+expected_end_server_msc,1790294400000
+observed_start_server_msc,1735171200000
+initial_balance,100000.0
+initial_positions,0
+initial_orders,0
+source_set_sha256_claim,fbe28497f376f159041744dac94c2a744b7e366c27d0a8447b3588184dabf8ef

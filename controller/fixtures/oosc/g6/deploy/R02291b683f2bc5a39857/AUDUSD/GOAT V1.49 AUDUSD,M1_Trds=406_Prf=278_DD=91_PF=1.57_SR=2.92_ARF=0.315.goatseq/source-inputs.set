@@ -1,0 +1,7 @@
+Grid_Size=-2.25
+Lock_Profit_Size=-3.00
+Lock_Profit_Flexibility=0.4
+RSI_Period=5
+RSI_Level=60
+EMA_Period=8
+BB_Deviation=1.4

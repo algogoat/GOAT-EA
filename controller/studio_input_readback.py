@@ -5,7 +5,7 @@ inputs may acquire dormant N tuples; strings never undergo tuple parsing.
 """
 from datetime import datetime, timezone
 import re
-from studio_strategy_settings import numeric, validate_strategy
+from studio_strategy_settings import complete_appended_inputs, numeric, validate_strategy
 
 
 def explicit_paste_inputs(values, schema):
@@ -15,6 +15,8 @@ Only affects the native transport representation, never the source SET.
 Disabled range placeholders are deliberately inert; active tuples and literal
 strings remain exactly as supplied. Requires the trusted complete schema.
 """
+    # An appended input the SET omits is pasted at its default, never inherited from MT5's previous run (B49a).
+    values = complete_appended_inputs(values, schema)
     validate_strategy(values, schema)
     result = dict(values)
     for name, value in values.items():
@@ -24,6 +26,7 @@ strings remain exactly as supplied. Requires the trusted complete schema.
 
 
 def verify_input_readback(wanted, observed, schema):
+    wanted = complete_appended_inputs(wanted, schema)   # an omitted appended input is wanted at its default (B49a)
     checked = validate_strategy(wanted, schema)
     if set(observed) != set(wanted):
         raise ValueError('Readback input names differ')

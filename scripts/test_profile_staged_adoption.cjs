@@ -361,7 +361,8 @@ function run(src=readSources()){
    assert.deepEqual(w.opened,['buy'],'an existing sequence keeps adding levels');assert.deepEqual(w.gateCalls,[],'management never consults the gate');ok();}
   // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger and the promotion.
   {const callers=src.main.split('\n').filter(l=>/DashboardEntryAllowed\(/.test(l)&&!/^bool DashboardEntryAllowed/.test(l)).map(l=>l.trim().slice(0,40));
-   assert.equal(callers.length,src.main.includes('string GoatFirstOrderGateReason(')?7:6); // B49b (F5): the first-order recheck is the 7th, an entry path tooassert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
+   assert.equal(callers.length,src.main.includes('string GoatFirstOrderGateReason(')?7:6); // B49b (F5): the first-order recheck is the 7th, an entry path too
+    assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
    for(const unit of ['void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('GoatStagedChildMayOpen'),unit);
    ok();}
   // Dashboard side: the marker is written only after the child's ack of the dispatched exposure policy.

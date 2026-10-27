@@ -69,6 +69,21 @@ const MUTANTS=[
  ['a failed write does not freeze','    PersistFailed=true;\n    return false;','    return false;'],
  ['the end keeps the record','     PersistEnd(); PersistReset(); // B49a (F1-lite)','     PersistReset(); // B49a (F1-lite)'],
  ['OnInit does not adopt','     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();','     ;'],
+ // B49b PR-0: P-B49b-start-nonfinite-distances.
+ ['a RiskperSeq start on an unusable distance goes ahead','      if(Mode_Lots==RiskperSeq && StartDistancesUnavailable()) return false; // B49b','      // B49b'],
+ ['only non-finite distances are refused (the sentinel passes)','     if(!MathIsValidNumber(Distances[i]) || Distances[i]>=GOAT_ATR_UNAVAILABLE) unavailable=true;','     if(!MathIsValidNumber(Distances[i])) unavailable=true;'],
+ ['a NaN distance passes','     if(!MathIsValidNumber(Distances[i]) || Distances[i]>=GOAT_ATR_UNAVAILABLE) unavailable=true;','     if(Distances[i]>=GOAT_ATR_UNAVAILABLE) unavailable=true;'],
+ ['a refused start keeps its sizing','    if(!Active && !Traded)\n    {\n     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;','    if(false)\n    {\n     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;'],
+ ['an active sequence loses its sizing','    if(!Active && !Traded)\n    {\n     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;','    if(true)\n    {\n     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;'],
+ ['the refusal logs every time','    if(!g_goat_start_distances_logged[side])\n','    if(true)\n'],
+ ['the refusal log is never re-armed','    if(!unavailable) {g_goat_start_distances_logged[side]=false; return false;}','    if(!unavailable) return false;'],
+ ['both sides share one log flag','    int side=(dir==OP_SELL) ? 1 : 0;','    int side=0;'],
+ // B49b PR-0: P-B49b-adopt-rescue-tp.
+ ['an adopted basket\'s TP can be loosened','       if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_);','       ;'],
+ ['a buy keeps the farther TP','    if(dir==OP_BUY)  return MathMin(first_tp,second_tp);','    if(dir==OP_BUY)  return MathMax(first_tp,second_tp);'],
+ ['a sell keeps the farther TP','    if(dir==OP_SELL) return MathMax(first_tp,second_tp);','    if(dir==OP_SELL) return MathMin(first_tp,second_tp);'],
+ ['a missing broker TP wins','    if(first_tp<=0.0)  return second_tp;','    if(first_tp<=0.0)  return first_tp;'],
+ ['no TP from the sizes deletes the broker TP','    if(second_tp<=0.0) return first_tp;','    if(second_tp<=0.0) return second_tp;'],
 ];
 function runOn(mainText){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-adopt-'));

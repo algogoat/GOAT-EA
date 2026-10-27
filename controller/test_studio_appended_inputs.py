@@ -12,6 +12,7 @@ import unittest
 from studio_strategy_settings import (APPENDED_INPUTS, appended_default, complete_appended_inputs, read_values,
                                       validate_strategy)
 from studio_input_readback import explicit_paste_inputs, verify_input_readback
+from studio_export_inputs import verify_export_inputs
 import studio_tester_report as tester_report
 from campaign_ledger import sha
 from studio_native_request import ini_sections
@@ -110,6 +111,81 @@ class AppendedInputPrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
             verify_input_readback(dict(stored), dict(stored, Ledger_Mode='1'), c.schema)
 
+
+class LedgerModeRoundTripTests(unittest.TestCase):
+    """Claude-Mac GOAT-EA#267 P2 (B49b PR-0): a PositionJoin research run's export survives the whole round trip:
+    the EA's WriteSet line, the controller's export check (studio_export_scan's verify_export_inputs), a reload of the
+    exported SET, its paste into the next run and that run's input readback, all as PositionJoin. A writer that drops
+    the line (B47's, or the ungated B49a mutant's opposite) is caught by the export check instead of silently becoming
+    Legacy, and a Legacy run's export stays B47's bytes."""
+
+    ALIAS = 'GOAT EURUSD roundtrip'
+    STANDARD_MODE = 9   # what studio_export_scan passes
+
+    def setUp(self):
+        self.schema = json.loads((ROOT/'contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))
+        self.template = compass_like_template(self.schema)
+        source = read_values(('\r\n'.join(self.template.splitlines())+'\r\n').encode('utf-16'))
+        self.legacy_source = {k: v for k, v in source.items() if k not in APPENDED_INPUTS}
+        self.axes = sorted(validate_strategy(dict(self.legacy_source), self.schema)['axes'])
+        self.assertTrue(self.axes)
+        # The writer: B49a's WriteSet records a non-Legacy ledger with this exact line, after Trade_December.
+        writer = (ROOT.parent/'GOAT_Inputs_Definitions.mqh').read_text(encoding='utf-8-sig')
+        self.assertIn('if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode);', writer)
+
+    @staticmethod
+    def raw(values):
+        return ('\r\n'.join(n+'='+v for n, v in values.items())+'\r\n').encode('utf-16')   # FILE_CSV, no FILE_ANSI: UTF-16
+
+    def export_of(self, source, *, ledger_line):
+        """What WriteSet writes for one optimization pass of `source`: every input at the pass's value (an axis at its
+        first value), the alias and the standard mode, and the ledger line when the run was PositionJoin."""
+        exported = {}
+        for name, value in source.items():
+            if name in APPENDED_INPUTS:
+                continue
+            exported[name] = value if self.schema['inputs'][name]['type'] == 'string' else value.split('||')[0]
+        exported.update(EA_Desc=self.ALIAS, Mode_Operation=str(self.STANDARD_MODE))
+        if ledger_line:
+            exported['Ledger_Mode'] = str(self.schema['inputs']['Ledger_Mode']['enum_choices']['Ledger_PositionJoin'])
+        return exported
+
+    def check(self, source, exported):
+        row = {name: exported[name] for name in self.axes}
+        return verify_export_inputs(self.raw(source), self.raw(exported), self.schema, {'7': row}, {'7': dict(row)},
+                                    alias=self.ALIAS, standard_mode=self.STANDARD_MODE)
+
+    def test_a_position_join_export_passes_the_check_and_reloads_as_position_join(self):
+        source = dict(self.legacy_source, Ledger_Mode='1')
+        exported = self.export_of(source, ledger_line=True)
+        self.assertEqual(exported['Ledger_Mode'], '1')
+        identity = self.check(source, exported)
+        self.assertEqual(identity['status'], 'SET_INPUTS_MATCH_PAIRED_PASSES')
+        self.assertEqual(identity['matching_pass_ids'], ['7'])
+        # The reload: the exported SET is the next run's source.
+        reloaded = read_values(self.raw(exported))
+        self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Ledger_Mode'], '1')
+        self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Ledger_Mode'], '1||0||0||0||N')
+        observed = dict(reloaded, Ledger_Mode='1')
+        self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
+            verify_input_readback(dict(reloaded), dict(reloaded, Ledger_Mode='0'), self.schema)
+
+    def test_an_export_that_lost_the_line_is_refused_not_read_as_legacy(self):
+        source = dict(self.legacy_source, Ledger_Mode='1')
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Ledger_Mode'):
+            self.check(source, self.export_of(source, ledger_line=False))
+
+    def test_a_legacy_run_round_trips_without_the_line(self):
+        exported = self.export_of(self.legacy_source, ledger_line=False)
+        self.assertNotIn('Ledger_Mode', exported)
+        self.assertEqual(self.check(self.legacy_source, exported)['status'], 'SET_INPUTS_MATCH_PAIRED_PASSES')
+        reloaded = read_values(self.raw(exported))
+        self.assertNotIn('Ledger_Mode', validate_strategy(dict(reloaded), self.schema)['values'])
+        self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Ledger_Mode'], '0||0||0||0||N')
+        # A Legacy source whose export claims PositionJoin is refused too (the writer's gate, from the other side).
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Ledger_Mode'):
+            self.check(self.legacy_source, self.export_of(self.legacy_source, ledger_line=True))
 
 
 if __name__ == '__main__':

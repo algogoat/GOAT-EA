@@ -721,6 +721,11 @@ int DashboardBusCountCloseScopePositions(const int scope)
 // start whose frozen sizes would hold it is refused (SEQUENCE::SizesUnavailable). Claude-Mac GOAT-EA#266.
 #define GOAT_ATR_UNAVAILABLE EMPTY_VALUE
 // B49a:end f1-lite-defines
+// B49b:begin start-distances-flags
+// P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266 6430221100): one log line per side (0 buy, 1 sell) while a
+// RiskperSeq start is refused for an unusable grid distance (SEQUENCE::StartDistancesUnavailable), re-armed once usable.
+bool g_goat_start_distances_logged[2];
+// B49b:end start-distances-flags
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
@@ -1921,6 +1926,18 @@ class SEQUENCE
     if(dir==OP_SELL) return MathMin(first_sl,second_sl);
     return second_sl;
    }
+// B49b:begin adopt-tp
+// P-B49b-adopt-rescue-tp (Claude-Mac GOAT-EA#266 6429693333): the nearer of two take-profits (0 = none). An adopted
+// basket keeps a bias-rescue break-even TP set before the restart instead of going back to the normal TP.
+   double TighterTakeProfit(const double first_tp,const double second_tp)
+   {
+    if(first_tp<=0.0)  return second_tp;
+    if(second_tp<=0.0) return first_tp;
+    if(dir==OP_BUY)  return MathMin(first_tp,second_tp);
+    if(dir==OP_SELL) return MathMax(first_tp,second_tp);
+    return second_tp;
+   }
+// B49b:end adopt-tp
    double EffectiveBiasRescueSL(const double normal_sl)
    {
     double sl=TighterBiasStop(normal_sl,BiasRescueSLPrice);
@@ -2314,6 +2331,34 @@ class SEQUENCE
      Distances[i] = Distances[i-1] + d;                   // cumulative adverse travel
     }
    }
+// B49b:begin start-distances
+// P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266 6430221100): the RiskperSeq solver reads Distances[]. With a
+// pips Grid_Size but an ATR Grid_Min_/Grid_Max_, GetSize(GRID_VALID) answers GOAT_ATR_UNAVAILABLE (EMPTY_VALUE) while
+// ATR_Buf is empty, so a distance is the sentinel or infinite and the solver settles on the minimum volume. That start is
+// refused (logged once per side until the distances are usable) and keeps no sizing, like a denied candidate. B47
+// indexed the empty ATR_Buf in that state (MT5 removed the EA), so a B47 run that completed never reaches the refusal.
+   bool StartDistancesUnavailable()
+   {
+    int side=(dir==OP_SELL) ? 1 : 0;
+    bool unavailable=false;
+    for(int i=1; i<ArraySize(Distances) && !unavailable; i++)
+     if(!MathIsValidNumber(Distances[i]) || Distances[i]>=GOAT_ATR_UNAVAILABLE) unavailable=true;
+    if(!unavailable) {g_goat_start_distances_logged[side]=false; return false;}
+    if(!g_goat_start_distances_logged[side])
+    {
+     g_goat_start_distances_logged[side]=true;
+     Print("GOAT sizes: start_refused reason=grid_distance_unavailable side=",(dir==OP_BUY ? "BUY" : "SELL")," symbol=",_Symbol,
+           " (RiskperSeq needs every grid distance and the ATR indicator is not ready: no order; the next start solves again)");
+    }
+    if(!Active && !Traded)
+    {
+     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
+     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
+     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
+    }
+    return true;
+   }
+// B49b:end start-distances
 //---------------------- compute loss path and max loss (uses LotsCum & Distances)
    double FindCumLoss()
    {
@@ -2372,6 +2417,7 @@ class SEQUENCE
       else if(Mode_Lots==ScaledLots)     Lots_Calc = StartLots = Lots*AccountInfoDouble(ACCOUNT_EQUITY)/1000;
     //else if(Mode_Lots==PercentageRisk) {return (Risk*0.01*AccountInfoDouble(ACCOUNT_EQUITY))/((Size_SL/_Point)*SymbolInfoDouble(Symbol(),SYMBOL_TRADE_TICK_VALUE));}
       else if(Mode_Lots==RiskperSeq)     Lots_Calc = StartLots = SolveStartLotsByRisk(Risk);
+      if(Mode_Lots==RiskperSeq && StartDistancesUnavailable()) return false; // B49b: P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266)
 
       BuildRawLots(StartLots); ScaleRawLots(); BuildNormalizedLots(); BuildCumulativeLots(LotsNorm);
      }
@@ -2638,6 +2684,7 @@ class SEQUENCE
       {
        double Level_SL_ = BiasRescueActive ? TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL) : Level_SL;
        if(Adopted) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49a (F1-lite): an adopted basket's stop is never loosened (a trailed or rescued SL stays)
+       if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_); // B49b: P-B49b-adopt-rescue-tp, nor its TP (a rescue break-even TP stays)
        if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
        {
         if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;

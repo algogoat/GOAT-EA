@@ -6630,6 +6630,11 @@ void GoatTickBody()
     else if(stm_cur.day_of_week==5)                         k=4;
     else                                                    k=4;  // Sat-Sun same as Friday
 
+// B50:begin b50-server-session
+    // B50 (A0): the server session table sets Active, InActive and Sequence_Pause_Close only under the server clock;
+    // under Clock_NewYork GoatNYClockApply sets them from the New York session (A2), below.
+    if(Clock_Mode!=Clock_NewYork)
+    {
     if((stm_cur.hour>Hour_Start[k]||(stm_cur.hour==Hour_Start[k]&&stm_cur.min>=Minute_Start[k])) &&
        (stm_cur.hour<Hour_End[k]  ||(stm_cur.hour==Hour_End[k]  &&stm_cur.min<Minute_End[k])))
     {
@@ -6637,6 +6642,8 @@ void GoatTickBody()
      if(InActive) {Sequence_Pause_Close=false;}
     }
     else {Active=false; InActive=true; SetEdit(PanelDialog.m_edit_Info_2,"INACTIVE",clrRed,Font_Size);}//clr_Text=clrRed;}
+    }
+// B50:end b50-server-session
     if(GoatCidGuardRefuses()) SetEdit(PanelDialog.m_edit_Info_2,"REFUSED: "+g_GoatCidGuardReason,clrRed,Font_Size); // B46: CID refusal on the panel
 
     if(!Trade_Friday && (stm_cur.day_of_week==5 || stm_cur.day_of_week==5))      Sequence_New_Friday=false;

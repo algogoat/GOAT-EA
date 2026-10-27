@@ -67,6 +67,17 @@ const FIXTURES={
  day_friday_close:{start:MON+3*DAY+20*H1,inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Action_Dayend:'Action_Close',Action_Friday:'Action_Close',Mode_Restart:'Restart_1'},indicator:atr,
   path:path(MON+3*DAY,[[20*H1,1.1000],[22*H1+40*60,1.0970],[DAY+2*H1,1.0990],[DAY+6*H1,1.0950],[DAY+13*H1,1.0960]]),
   expect:(t,w)=>has(t,'OrderSend',4)&&has(t,'PositionClose',4)&&w.logs.filter(l=>/Day\/Weekend Close/.test(l)).length>=2},
+ // GOAT-EA#269 P2: the day-end and Friday actions differ, so neither line masks the other. Day end Pause, Friday Close:
+ // no add from Thursday 22:30 until Friday's session opens at 01:30 (the pause holds past midnight), then the Friday
+ // close at 11:00.
+ dayend_pause_friday_close:{start:MON+3*DAY+20*H1,inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Action_Dayend:'Action_Pause',Action_Friday:'Action_Close'},indicator:atr,
+  path:path(MON+3*DAY,[[20*H1,1.1000],[22*H1+20*60,1.0975],[DAY+1*H1+20*60,1.0915],[DAY+6*H1,1.0905],[DAY+13*H1,1.0910]]),
+  expect:(t,w)=>{const paused=t.filter(x=>x.op==='OrderSend'&&x.time>MON+3*DAY+22*H1+35*60&&x.time<MON+4*DAY+H1+30*60);
+   return has(t,'OrderSend',4)&&paused.length===0&&has(t,'PositionClose',2)&&logged(w,/Day\/Weekend Close/);}},
+ // Day end Close, Friday Pause: Thursday's close at 22:30, a restart after an hour, Friday's session end at 11:00.
+ dayend_close_friday_pause:{start:MON+3*DAY+20*H1,inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Action_Dayend:'Action_Close',Action_Friday:'Action_Pause',Mode_Restart:'Restart_1'},indicator:atr,
+  path:path(MON+3*DAY,[[20*H1,1.1000],[22*H1+40*60,1.0970],[DAY+2*H1,1.0990],[DAY+6*H1,1.0950],[DAY+13*H1,1.0930]]),
+  expect:(t,w)=>has(t,'OrderSend',4)&&w.logs.filter(l=>/Day\/Weekend Close/.test(l)).length>=2},
  // News_Close: a news window closes everything and pauses.
  news_close:{inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Mode_News:'News_Close'},indicator:atr,
   news:t=>(t-MON)>=6*H1&&(t-MON)<7*H1,
@@ -118,18 +129,27 @@ for(const [name,fx0] of [...Object.entries(FIXTURES),['adopted_basket',adoptedFi
 
 // The harness is load-bearing: a B50 region that drops the grid engine (every add skipped, as if Engine_Single were the
 // default) or blocks every entry is caught by the same comparison.
-{const main=H.readSource(undefined,H.MAIN);
+// GOAT-EA#269 P2: the clock lines, the server-session guard and the stub A2 fills are covered too (the day-end/Friday
+// fixtures above).
+const killed=[];
+{const main=H.readSource(undefined,H.MAIN),clock=H.readSource(undefined,'GOAT_NYClock.mqh');
+ const swap=(text,from,to)=>{assert.equal(text.split(from).length,2,'the mutant site is unique: '+from);return text.replace(from,to);};
  const mutants=[
-  ['every grid add skipped',main.replace('if(Engine_Mode==Engine_Single) LastBuyTradeSignal = false; else','if(true) LastBuyTradeSignal = false; else')],
-  ['every new entry blocked',main.replace('&&!g_GoatEntryBlocked) SignalEntryTrigger();','&&g_GoatEntryBlocked) SignalEntryTrigger();')],
+  ['every grid add skipped',{[H.MAIN]:swap(main,'if(Engine_Mode==Engine_Single) LastBuyTradeSignal = false; else','if(true) LastBuyTradeSignal = false; else')},['cum_partial']],
+  ['every new entry blocked',{[H.MAIN]:swap(main,'&&!g_GoatEntryBlocked) SignalEntryTrigger();','&&g_GoatEntryBlocked) SignalEntryTrigger();')},['cum_partial']],
+  ['the Friday line prefix inverted',{[H.MAIN]:swap(main,'if(Clock_Mode!=Clock_NewYork && InActive && stm_cur.day_of_week==5','if(Clock_Mode==Clock_NewYork && InActive && stm_cur.day_of_week==5')},['dayend_pause_friday_close']],
+  ['the day-end line prefix inverted',{[H.MAIN]:swap(main,'if(Clock_Mode!=Clock_NewYork && InActive && stm_cur.hour>=Hour_End[k])','if(Clock_Mode==Clock_NewYork && InActive && stm_cur.hour>=Hour_End[k])')},['dayend_pause_friday_close','day_friday_close']],
+  ['the server-session guard inverted',{[H.MAIN]:swap(main,'    if(Clock_Mode!=Clock_NewYork)\n    {\n    if((stm_cur.hour>Hour_Start[k]','    if(Clock_Mode==Clock_NewYork)\n    {\n    if((stm_cur.hour>Hour_Start[k]')},['cum_partial','dayend_pause_friday_close']],
+  ['the clock stub clears Sequence_Pause_Close',{'GOAT_NYClock.mqh':swap(clock,'void GoatNYClockApply(const int k)\n  {\n','void GoatNYClockApply(const int k)\n  {\n   Sequence_Pause_Close=false;\n')},['dayend_pause_friday_close']],
+  ['the clock stub blocks entries',{'GOAT_NYClock.mqh':swap(clock,'void GoatNYClockApply(const int k)\n  {\n','void GoatNYClockApply(const int k)\n  {\n   g_GoatEntryBlocked=true;\n')},['news_close']],
  ];
- const fx=FIXTURES.cum_partial;
- const base=worldFor(B49A,fx,true);base.run(fx.path);
- for(const [what,text] of mutants){
-  assert.notEqual(text,main,what+': the mutant applies');
-  const files=H.loadSources(undefined,{[H.MAIN]:text});
-  const m=worldFor({files},fx,true);m.run(fx.path);
-  assert.notDeepEqual(m.w.trace,base.w.trace,'mutant caught: '+what);
+ for(const [what,overrides,fixtures] of mutants){
+  const files=H.loadSources(undefined,overrides);
+  for(const name of fixtures){
+   const fx=FIXTURES[name];const base=worldFor(B49A,fx,true),m=worldFor({files},fx,true);base.run(fx.path);m.run(fx.path);
+   assert.notDeepEqual(m.w.trace,base.w.trace,'mutant caught: '+what+' ('+name+')');
+  }
+  killed.push(what);
  }
  ok();}
 
@@ -159,4 +179,4 @@ function writeSet(source,inputs={}){
  assert.deepEqual(all.slice(base.length),Object.values(changed).map(([,l])=>l),'in input order, after B49a\'s lines');
  ok();}
 
-console.log(JSON.stringify({passed,test:'b50_parity',baseline:B49A,fixtures:runs}));
+console.log(JSON.stringify({passed,test:'b50_parity',baseline:B49A,fixtures:runs,mutantsKilled:killed}));

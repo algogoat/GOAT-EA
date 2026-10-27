@@ -35,6 +35,14 @@ const REMOVED={
   'closeErrors++;',   // PR-3 (F3 D4): a failed live close is logged
   'if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;',   // PR-3 (F3 D5): a failed live modify is logged
   '{TSLmodifyErrors++; PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,DoubleToString(SL,Digits()),Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++;',   // PR-3: %.6f takes the double
+  'CopyBuffer(RSI_handle,0,shift+0,2,RSI_Buf);','for(int i=0;i<EMA_Count;i++)   CopyBuffer(EMA_handles[i],0,shift-0,1,EMAs[i].Buf);',   // Codex GOAT-EA#270 P2: one copy, in the check
+  'CopyBuffer(ADX_handle,MAIN_LINE   ,shift+0,1,ADX_Main_Buf); ADX_Main_Buf[0] = NormalizeDouble(ADX_Main_Buf[0],_Digits);',
+  'CopyBuffer(ADX_handle,PLUSDI_LINE ,shift+0,1,ADX_PLS_Buf);  ADX_PLS_Buf[0]  = NormalizeDouble(ADX_PLS_Buf[0],_Digits);',
+  'CopyBuffer(ADX_handle,MINUSDI_LINE,shift+0,1,ADX_MNS_Buf);  ADX_MNS_Buf[0]  = NormalizeDouble(ADX_MNS_Buf[0],_Digits);',
+  'CopyBuffer(BB_handle,BASE_LINE ,shift,2,BB_Mi_Buf);  BB_Mi_Buf[0] = NormalizeDouble(BB_Mi_Buf[0],_Digits);',
+  'CopyBuffer(BB_handle,UPPER_BAND,shift,2,BB_Hi_Buf);  BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits);',
+  'CopyBuffer(BB_handle,LOWER_BAND,shift,2,BB_Lo_Buf);  BB_Lo_Buf[0] = NormalizeDouble(BB_Lo_Buf[0],_Digits);',
+  'CopyBuffer(MACD_handle,1           ,shift+0,1,MACD_Clr_Buf);','CopyBuffer(RSI2_handle,0,shift+0,2,RSI2_Buf);',
  ],
 };
 const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3)

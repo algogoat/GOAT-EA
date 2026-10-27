@@ -17,6 +17,9 @@ const ROOT=path.join(__dirname,'..'),B49A_SOURCE='693cad05dca3ca7d5c9549465c8973
 const clean=t=>t.replace(/^﻿/,'').replace(/\r\n/g,'\n');
 const main=clean(fs.readFileSync(process.env.GOAT_EA_MAIN||path.join(ROOT,'GOAT V1.49.mq5'),'utf8'));
 const mainB49a=clean(execFileSync('git',['show',B49A_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
+// The pre-fix helper (a probe copy thrown away, then the caller's own copy; Codex GOAT-EA#270 P2), for the regression
+// proof in section 3. Skipped on a mutated entrypoint run (GOAT_EA_MAIN), whose subject is the tree's own source.
+const PROBE=process.env.GOAT_EA_MAIN?null:clean(execFileSync('git',['show','b5069ffe1b5411188d9431734a66f57d82df1db0:GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
 let passed=0;const ok=()=>passed++;
 
 function bodyOf(text,signature){
@@ -127,13 +130,17 @@ function signals(text,{modes,feed,buffers={},closes=[1.1,1.09],opens=[1.095,1.1]
   BB_Lo_Buf:buf('BB2'),MACD_Clr_Buf:buf('MACD'),RSI2_Buf:buf('RSI2'),EMAs:[0,1,2].map(i=>({Buf:buf('EMA'+i)})),
   g_goat_signal_short_logged:[false,false,false,false,false,false],
   EMA_Sample:{CheckTF:()=>true},ADX_Sample:{CheckTF:()=>true},BB_Sample:{CheckTF:()=>true},MACD_Sample:{CheckTF:()=>true},RSI2_Sample:{CheckTF:()=>true},
-  CopyBuffer:(h,b,shift,count,arr)=>{c.copies++;const f=feed[h+':'+b]||{n:count,values:[]};if(f.n<0)return -1;
+  CopyBuffer:(h,b,shift,count,arr)=>{c.copies++;let f=feed[h+':'+b]||{n:count,values:[]};
+   if(f.seq){f.i=(f.i??-1)+1;f=f.seq[Math.min(f.i,f.seq.length-1)];}   // per-call results: a copy that succeeds, then one that fails
+   if(f.n<0)return -1;
    const n=Math.min(f.n,count);arr.length=0;for(let i=0;i<n;i++)arr.push(f.values[i]??0);return n;},
   ...modes};
  vm.createContext(c);
  let code=fn('UpdateRSI',['shift'],bodyOf(text,'void UpdateRSI(int shift)'))+fn('UpdateCurrentSignals',['shift'],bodyOf(text,'void UpdateCurrentSignals(int shift)'));
  if(text.includes('// B49b:begin signal-ready'))
-  code+=fn('GoatSignalBufferReady',['handle','buffer','shift','count','need','buf'],bodyOf(text,'bool GoatSignalBufferReady(const int handle,const int buffer,const int shift,const int count,const int need,const double &buf[])'))
+  code+=fn('GoatSignalBufferReady',['handle','buffer','shift','count','need','buf'],bodyOf(text,text.includes('const int need,double &buf[])')
+   ?'bool GoatSignalBufferReady(const int handle,const int buffer,const int shift,const int count,const int need,double &buf[])'
+   :'bool GoatSignalBufferReady(const int handle,const int buffer,const int shift,const int count,const int need,const double &buf[])'))   // the pre-#270-P2 probe (PROBE)
    +'function GoatSignalReady(id,name,ready){'+js(bodyOf(text,'bool GoatSignalReady(const int id,const string name,const bool ready,int &sig)')).replace(/\bsig=OP_NULL;/,'')+'}\n'
    +fn('GoatEmaBuffersReady',['shift'],bodyOf(text,'bool GoatEmaBuffersReady(const int shift)'));
  // GoatSignalReady's by-reference sig: the caller's signal is set NEUTRAL when the probe is not ready.
@@ -201,6 +208,28 @@ function randomCase(){
   b.UpdateRSI(1);b.UpdateCurrentSignals(1);b.UpdateCurrentSignals(1);assert.equal(b.logs.length,1,'logged once');
   cfg.feed[H.ADX+':0']={n:1,values:[30]};b.UpdateCurrentSignals(1);assert.equal(b.g_goat_signal_short_logged[2],false,'re-armed');
   cfg.feed[H.ADX+':0']={n:-1};b.ADX_Main_Buf.length=0;b.UpdateCurrentSignals(1);assert.equal(b.logs.length,2,'logged again after a recovery');}
+ ok();}
+{// Codex GOAT-EA#270 P2: the check copies into the buffer the evaluation reads, once. A copy that succeeds and then a
+ // copy that fails (same tick, an indicator recalculating) over an empty buffer: B49a copies once and reads the values;
+ // B49b reads the same values. The pre-fix probe (PROBE, b5069ff) threw the first copy away, re-copied, and read out of
+ // range: proof that this section sees the regression.
+ const all={RSI_Mode:2,EMA_Mode:1,ADX_Mode:1,BB_Mode:2,MACD_Mode:1,RSI2_Mode:3};
+ const flaky=(n,values)=>({seq:[{n,values},{n:-1}]});
+ const cases=[['RSI',H.RSI+':0',flaky(2,[25,35])],['EMA',H.EMA[0]+':0',flaky(1,[1.1])],['ADX',H.ADX+':1',flaky(1,[30])],
+  ['BB',H.BB+':2',flaky(2,[1.09,0])],['MACD',H.MACD+':1',flaky(1,[3])],['RSI2',H.RSI2+':0',flaky(2,[75,65])],
+  ['RSI short',H.RSI+':0',{seq:[{n:2,values:[25,35]},{n:1,values:[25]}]}],['RSI2 short',H.RSI2+':0',{seq:[{n:2,values:[75,65]},{n:1,values:[75]}]}]];   // the second copy short (Mac 6438067335)
+ let probeCrashes=0;
+ for(const [label,key,f] of cases){
+  const base=randomCase();base.modes=all;base.feed[key]=f;
+  const mk=()=>JSON.parse(JSON.stringify(base));   // one case, a fresh copy (and fresh per-call results) for each source
+  const a=run(mainB49a,mk()),b=run(main,mk());
+  assert.equal(a.crash,false,label+': B49a copies once');assert.equal(b.crash,false,label+': B49b copies once too');
+  assert.deepEqual(b.out,a.out,label+': the same signals as B49a');assert.deepEqual(b.c.logs,[],label+': nothing logged');
+  if(PROBE&&run(PROBE,mk()).crash)probeCrashes++;
+ }
+ if(PROBE)assert.equal(probeCrashes,cases.length,'the pre-fix probe reads out of range in every case');
+ // One copy per buffer per evaluation, as in B49a.
+ {const cfg=randomCase();cfg.modes=all;const a=run(mainB49a,cfg),b=run(main,cfg);assert.equal(b.c.copies,a.c.copies,'B49a\'s copy count');}
  ok();}
 
 // ---- 4. Every enabled signal indicator's handle is checked at OnInit (SIG-01) ----

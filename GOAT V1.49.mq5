@@ -726,6 +726,11 @@ int DashboardBusCountCloseScopePositions(const int scope)
 // RiskperSeq start is refused for an unusable grid distance (SEQUENCE::StartDistancesUnavailable), re-armed once usable.
 bool g_goat_start_distances_logged[2];
 // B49b:end start-distances-flags
+// B49b:begin first-order-flags
+// F5 (Gate_Recheck): set per side (0 buy, 1 sell) when SEQUENCE::FirstOrderGatesRefused refused a first real order, so
+// the virtual candidate that promoted it ends too (GoatFirstOrderGateReason names the gate).
+bool g_goat_first_order_refused[2];
+// B49b:end first-order-flags
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
@@ -2364,6 +2369,28 @@ class SEQUENCE
     return true;
    }
 // B49b:end start-distances
+// B49b:begin first-order-gates
+// F5 (Gate_Recheck=Gate_AtFirstOrder; anatomy 02 §5.7, EX-11): every start's first real order (an immediate start, a
+// promoted virtual candidate, the delayed-live first order) passes each start gate for this sequence's own direction,
+// or the candidate ends with a logged reason and keeps no sizing. Legacy: never refuses (B49a).
+   bool FirstOrderGatesRefused()
+   {
+    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;
+    int side=(dir==OP_SELL) ? 1 : 0;
+    string reason=GoatFirstOrderGateReason(dir,(dir==OP_BUY) ? Seq_Sell.Traded : Seq_Buy.Traded);
+    if(reason=="") return false;
+    g_goat_first_order_refused[side]=true;
+    Print("GOAT gates: first order refused side=",(dir==OP_BUY ? "BUY" : "SELL")," gate=",reason," (Gate_Recheck: every start gate holds at the first real order)");
+    if(Active) End_Sequence("Gate at first order: "+reason);
+    else
+    {
+     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
+     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
+     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
+    }
+    return true;
+   }
+// B49b:end first-order-gates
 //---------------------- compute loss path and max loss (uses LotsCum & Distances)
    double FindCumLoss()
    {
@@ -2397,9 +2424,11 @@ class SEQUENCE
      if(Virtual && Level_Count==Delay_Trade && ((dir==OP_BUY&&!Seq_Buy.Active) || (dir==OP_SELL&&!Seq_Sell.Active)))
      {
       bool ret=false;
+      g_goat_first_order_refused[(dir==OP_SELL) ? 1 : 0]=false; // B49b (F5)
       if     (dir==OP_BUY &&MustCheck_Buy && DashboardEntryAllowed(OP_BUY))    ret=Seq_Buy.Add_Level(ask);
       else if(dir==OP_SELL&&MustCheck_Sell&& DashboardEntryAllowed(OP_SELL))   ret=Seq_Sell.Add_Level(bid);
       if(ret) End_Sequence("Real Sequence Start");
+      else if(g_goat_first_order_refused[(dir==OP_SELL) ? 1 : 0]) End_Sequence("Gate at first order"); // B49b (F5): its promoted order was refused, so the candidate ends too
       return false;
      }
      // Locking levels; is this active and traded ?
@@ -2488,6 +2517,7 @@ class SEQUENCE
       if(LotsToBeSent>(Lots_Max*StartLots) && Lots_Max>0.01) LotsToBeSent=Lots_Max*StartLots;
       if(LotsToBeSent>0.0 && !AllowPeakSmartPositiveAdd(LotsToBeSent)) return false;
       if(BiasRescueActive && LotsToBeSent>0.0 && !AllowBiasRescuePositiveAdd(LotsToBeSent)) return false;
+      if(FirstOrderGatesRefused()) return false; // B49b (F5): Gate_Recheck, the first real order passes every start gate
 
       bool has_real_order=(MathAbs(LotsToBeSent)>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN));
       bool previously_traded=GuardRealStarted;
@@ -7352,6 +7382,40 @@ void UpdateCurrentSignals(int shift)
 //-------------------------------------------------------------------------
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin first-order-gate-reason
+// F5 (Gate_Recheck): the start gates of OnTick's signal block and SignalEntryTrigger, for the position's direction
+// (pos_dir: the sequence that sends the order, so a Reverse_Seq start reads its own side's bias, EX-11). "" = all hold.
+string GoatFirstOrderGateReason(const int pos_dir,const bool opposite_traded)
+  {
+   if(!Active)                                    return "session";
+   if(!Allow_New_Sequence)                        return "allow_new_sequence";
+   if(!Sequence_New_Friday)                       return "friday";
+   if(!Sequence_New_Dec)                          return "december";
+   if(DashboardPortfolioPaused)                   return "dashboard_paused";
+   if(!DashboardTradeAllowed(pos_dir))            return "dashboard_direction";
+   if(!Sequence_New_News)                         return "news";
+   if(pos_dir==OP_BUY  && !Sequence_New_Bias_B)   return "bias";
+   if(pos_dir==OP_SELL && !Sequence_New_Bias_S)   return "bias";
+   if(pos_dir==OP_BUY  && !(Mode_Trade==Long_and_Short || Mode_Trade==Long))  return "mode_trade";
+   if(pos_dir==OP_SELL && !(Mode_Trade==Long_and_Short || Mode_Trade==Short)) return "mode_trade";
+   if(!Allow_Opposite_Seq && opposite_traded)     return "opposite_sequence";
+   if(!DashboardEntryAllowed(pos_dir))            return "dashboard_entry";
+   return "";
+  }
+// Under Gate_AtFirstOrder a Reverse_Seq signal starts the opposite position, so SignalEntryTrigger's bias pre-gate and its
+// skip counters read the POSITION's side too, as the recheck does (Claude-Mac and Codex GOAT-EA#271 P1: reading the
+// signal's side there made the two mutually exclusive under a directional bias, so reversed starts never traded).
+// Legacy, or no Reverse_Seq: the signal's side, as B49a.
+int GoatStartBiasSide(const int signal_side)
+  {
+   if(Gate_Recheck==Gate_AtFirstOrder && Reverse_Seq) return (signal_side==OP_BUY) ? OP_SELL : OP_BUY;
+   return signal_side;
+  }
+bool GoatStartBiasOpen(const int side)
+  {
+   return (side==OP_BUY) ? Sequence_New_Bias_B : Sequence_New_Bias_S;
+  }
+// B49b:end first-order-gate-reason
 void SignalEntryTrigger()//int Buys,int Sells)
   {
    static bool LastBuySignal=false,LastSellSignal=false;
@@ -7363,7 +7427,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
    {
-    if(Sequence_New_News&&Sequence_New_Bias_B)
+    if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_B
     {
      int gate_active_b=GoatGateActiveMask();
      if(Reverse_Seq)
@@ -7385,7 +7449,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     else
     {
      if(!Sequence_New_News&&!LastBuySignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_B&&!LastBuySignal) {Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);} // B44 item 4: log only
+     if(!GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))&&!LastBuySignal) {if(GoatStartBiasSide(OP_BUY)==OP_BUY) Sequence_Skipped_Bias_B++; else Sequence_Skipped_Bias_S++; GoatGateLog("VETO",GoatStartBiasSide(OP_BUY));} // B44 item 4: log only; B49b (F5): counted on the bias side that vetoed
     }
     LastBuySignal=true; // whether skipped of not the signal was present
    }
@@ -7399,7 +7463,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
    {
-    if(Sequence_New_News&&Sequence_New_Bias_S)
+    if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_S
     {
      int gate_active_s=GoatGateActiveMask();
      if(Reverse_Seq)
@@ -7420,7 +7484,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     else
     {
      if(!Sequence_New_News&&!LastSellSignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only
+     if(!GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))&&!LastSellSignal) {if(GoatStartBiasSide(OP_SELL)==OP_BUY) Sequence_Skipped_Bias_B++; else Sequence_Skipped_Bias_S++; GoatGateLog("VETO",GoatStartBiasSide(OP_SELL));} // B44 item 4: log only; B49b (F5): counted on the bias side that vetoed
     }
     LastSellSignal=true; // whether skipped of not the signal was present
    }

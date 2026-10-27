@@ -584,6 +584,7 @@ FileWrite(FileSET_handle,"Minutes_Max="+(string)Minutes_Max);//=1000
 FileWrite(FileSET_handle,"Trade_December="+(string)Trade_December);//=false
 if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode); // B49a (F2, Codex GOAT-EA#267 P1): a PositionJoin SET records its ledger; a Legacy SET stays B47's bytes (an omitted Ledger_Mode reads as Legacy)
 if(Fix_MoneyVolume!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_MoneyVolume="+(string)(int)Fix_MoneyVolume); // B49b (F7): as Ledger_Mode, a SET records the fix only when it is on; Off stays B49a's bytes
+if(Gate_Recheck!=Gate_Legacy) FileWrite(FileSET_handle,"Gate_Recheck="+(string)(int)Gate_Recheck); // B49b (F5): recorded only when not Legacy
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -794,6 +795,16 @@ enum ENUM_GOAT_FIX
 // F7 (EX-04, EX-05/R9): money per price unit on every PriceValuePerPointPerLot fallback, and the order volume rounded
 // to VOLUME_STEP and clamped to VOLUME_MIN..VOLUME_MAX (B49a rounds it to multiples of VOLUME_MIN, unclamped).
 sinput   ENUM_GOAT_FIX           Fix_MoneyVolume               =                   GoatFix_Off;       // Fix: money and volume units
+// F5 (anatomy 02 §5.7, EX-11): a delayed candidate's first real order skipped start gates the immediate start applies
+// (session, Allow_New_Sequence, Friday/December, news Avoid, bias, Allow_Opposite_Seq, DashboardEntryAllowed), and under
+// Reverse_Seq the bias gate read the signal's side. AtFirstOrder: the first real order of every start passes each start
+// gate for the POSITION's direction, or the candidate ends with a logged reason.
+enum ENUM_GATE_RECHECK
+  {
+   Gate_Legacy=0,         // Legacy (gates at the candidate's start)
+   Gate_AtFirstOrder=1    // Every start gate at the first real order
+  };
+sinput   ENUM_GATE_RECHECK       Gate_Recheck                  =                   Gate_Legacy;       // Gates: recheck at the first real order
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

@@ -62,6 +62,10 @@ assert.ok(!/Fix_MoneyVolume/.test(w));
 compare(w,a+'\nFix_MoneyVolume=0\n',true);
 compare(w,a+'\nFix_MoneyVolume=1\n',false,'Fix_MoneyVolume');
 compare(w,a+'\nFix_MoneyVolume=0||0||1||1||Y\n',false,'Fix_MoneyVolume');
+// B49b (F5): Gate_Recheck, the same rule.
+assert.ok(!/Gate_Recheck/.test(w));
+compare(w,a+'\nGate_Recheck=0\n',true);
+compare(w,a+'\nGate_Recheck=1\n',false,'Gate_Recheck');
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

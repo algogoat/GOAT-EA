@@ -309,6 +309,8 @@ function run(src=readSources()){
     MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
     Mode_Trade:0,Long_and_Short:0,Long:1,Short:2,Delay_Trade:0,Allow_Opposite_Seq:true,MathAbs:Math.abs,ask:1.2,bid:1.19,
     Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
+    // B49b (F5, GOAT-EA#271): the bias pre-gate's side (Legacy: the signal's side, as before); test_b49b_f5.cjs tests it.
+    Gate_Recheck:0,Gate_Legacy:0,Gate_AtFirstOrder:1,g_goat_first_order_refused:[false,false],   // and the promotion's first-order flag
     // B44 item 4: the AI gate log is Print-only (test_ai_gate_log.cjs); here it only has to exist.
     GoatGateActiveMask:()=>0,GoatGateLog:()=>{},
     // B46: the CID guard is tested in test_cid_guard.cjs; here no CID record is missing or duplicated.
@@ -316,6 +318,9 @@ function run(src=readSources()){
     Seq_Buy:seq('buy'),Seq_Sell:seq('sell'),Seq_Buy_Virtual:seq('vbuy'),Seq_Sell_Virtual:seq('vsell')};
    vm.createContext(c);vm.runInContext(gateCode,c);
    vm.runInContext('function DashboardEntryAllowed(op){'+js(entry)+'}',c);
+   if(src.main.includes('int GoatStartBiasSide(const int signal_side)'))   // B49b (F5)
+    vm.runInContext('function GoatStartBiasSide(signal_side){'+js(bodyOf(src.main,'int GoatStartBiasSide(const int signal_side)'))+'}'
+     +'function GoatStartBiasOpen(side){'+js(bodyOf(src.main,'bool GoatStartBiasOpen(const int side)'))+'}',c);
    const signalFn=vm.runInContext('(function(){'+js(signal).replace(/\bstatic /g,'')+'})',c);
    return {c,gv,opened,gateCalls,signal:()=>signalFn()};
   }
@@ -356,7 +361,8 @@ function run(src=readSources()){
    assert.deepEqual(w.opened,['buy'],'an existing sequence keeps adding levels');assert.deepEqual(w.gateCalls,[],'management never consults the gate');ok();}
   // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger and the promotion.
   {const callers=src.main.split('\n').filter(l=>/DashboardEntryAllowed\(/.test(l)&&!/^bool DashboardEntryAllowed/.test(l)).map(l=>l.trim().slice(0,40));
-   assert.equal(callers.length,6);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
+   assert.equal(callers.length,src.main.includes('string GoatFirstOrderGateReason(')?7:6); // B49b (F5): the first-order recheck is the 7th, an entry path too
+    assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
    for(const unit of ['void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('GoatStagedChildMayOpen'),unit);
    ok();}
   // Dashboard side: the marker is written only after the child's ack of the dispatched exposure policy.

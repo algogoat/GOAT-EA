@@ -28,10 +28,13 @@ const ADDED=[];
 const REMOVED={
  'GOAT V1.49.mq5':[
   'if((RSI_Mode!=RSI_Disabled))','if(EMA_Sample.CheckTF(EMA_TF)) {','if(ADX_Sample.CheckTF(ADX_TF)) {','if(BB_Sample.CheckTF(BB_TF)) {',   // PR-1 (F7 SIG-02): each
-  'if(MACD_Sample.CheckTF(MACD_TF)) {','if(RSI2_Sample.CheckTF(RSI2_TF)) {',                                                          // indicator gated on its buffers
+  'if(MACD_Sample.CheckTF(MACD_TF)) {','if(RSI2_Sample.CheckTF(RSI2_TF)) {',
+  'if(Sequence_New_News&&Sequence_New_Bias_B)','if(Sequence_New_News&&Sequence_New_Bias_S)',   // PR-5 (F5, GOAT-EA#271 P1): the bias pre-gate's side
+  'if(!Sequence_New_Bias_B&&!LastBuySignal) {Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);} // B44 item 4: log only',
+  'if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only',                                                          // indicator gated on its buffers
  ],
 };
-const NEW_INPUTS=['Fix_MoneyVolume'];   // PR-1 (F7)
+const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck'];   // PR-1 (F7), PR-5 (F5)
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

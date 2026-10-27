@@ -44,6 +44,7 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    if(identity=="[TesterInputs]|Sequence_Export_Model") return value=="4";
    if(identity=="[TesterInputs]|Ledger_Mode") return value=="0"; // B49a (F2): a SET from before the appended input runs it at its Legacy default, never PositionJoin
    if(identity=="[TesterInputs]|Fix_MoneyVolume") return value=="0"; // B49b (F7): an omitted fix flag runs Off (B49a), never On
+   if(identity=="[TesterInputs]|Gate_Recheck") return value=="0"; // B49b (F5): an omitted Gate_Recheck runs Legacy
    return false;
   }
 

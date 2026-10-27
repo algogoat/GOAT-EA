@@ -42,12 +42,16 @@ function model(source=SIGNAL,{tester=false,state=null,v2=true,mode='Bias_Opens',
   EnumToString:v=>v===c.Bias_Protocol?'BiasProtocol_ControlTowerV2DemoRaw':v===c.Mode_Bias?mode:String(v),
   GOATUsingControlTowerBias:()=>v2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,MQLInfoInteger:k=>(k===1&&tester)?1:0,
   IntegerToString:String,DoubleToString:(v,d)=>Number(v).toFixed(d),Symbol:()=>'EURUSD',Print:s=>prints.push(s),
-  g_GoatGateStateRead:!!state,g_GoatGateState:state||{}};
+  g_GoatGateStateRead:!!state,g_GoatGateState:state||{},Gate_Recheck:0,Gate_Legacy:0,Gate_AtFirstOrder:1};
  c.Seq_Buy=seq('Buy',calls,{fail});c.Seq_Sell=seq('Sell',calls,{fail});c.Seq_Buy_Virtual=seq('BuyV',calls,{fail});c.Seq_Sell_Virtual=seq('SellV',calls,{fail});
  vm.createContext(c);
  if(source===SIGNAL){
   vm.runInContext('function GoatGateActiveMask(){'+js(body(MASK))+'}',c);
   vm.runInContext('function GoatGateLog(gate_decision,gate_side){'+js(body(LOG))+'}',c);
+  // B49b (F5, GOAT-EA#271): the bias pre-gate's side (Legacy here: the signal's side, so B43's behaviour; test_b49b_f5.cjs tests AtFirstOrder).
+  if(main.includes('int GoatStartBiasSide(const int signal_side)'))
+   vm.runInContext('function GoatStartBiasSide(signal_side){'+js(body(unit(main,'int GoatStartBiasSide(const int signal_side)')))+'}'
+    +'function GoatStartBiasOpen(side){'+js(body(unit(main,'bool GoatStartBiasOpen(const int side)')))+'}',c);
  }
  const tick=vm.runInContext('(function(){'+js(body(source))+'})',c);
  const signal=side=>{c.RSI_Sig=side==='buy'?0:side==='sell'?1:-1;c.RSI_Mode=side?1:0;if(!side){c.RSI_Mode=1;c.RSI_Sig=-1;}};
@@ -89,7 +93,12 @@ for(const [label,opts,decision,reason] of [
 // 6) Trading unchanged: against the B43 function on the same random input stream, every Add_Level call and counter agree.
 let b43Signal=null;
 try{b43Signal=unit(norm(execFileSync('git',['show',B43_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8')),'void SignalEntryTrigger()');}catch(e){}
-{const stripped=SIGNAL.split('\n').filter(l=>!/int gate_active_[bs]=GoatGateActiveMask\(\);|GoatGateLog\("ALLOW"/.test(l)).join('\n')
+{const b49bLegacy=s=>s   // B49b (F5): under Gate_Legacy the bias helpers read exactly B43's flags and counters
+   .replace(/ \/\/ B49b \(F5\): the position's bias side under Gate_AtFirstOrder \+ Reverse_Seq; Legacy reads Sequence_New_Bias_[BS]/g,'')
+   .replace(/GoatStartBiasOpen\(GoatStartBiasSide\(OP_BUY\)\)/g,'Sequence_New_Bias_B').replace(/GoatStartBiasOpen\(GoatStartBiasSide\(OP_SELL\)\)/g,'Sequence_New_Bias_S')
+   .replace(/\{if\(GoatStartBiasSide\(OP_(BUY|SELL)\)==OP_BUY\) Sequence_Skipped_Bias_B\+\+; else Sequence_Skipped_Bias_S\+\+; GoatGateLog\("VETO",GoatStartBiasSide\(OP_(?:BUY|SELL)\)\);\} \/\/ B44 item 4: log only; B49b \(F5\): counted on the bias side that vetoed/g,
+     (m,side)=>'{Sequence_Skipped_Bias_'+(side==='BUY'?'B':'S')+'++; GoatGateLog("VETO",OP_'+side+');} // B44 item 4: log only');
+ const stripped=b49bLegacy(SIGNAL).split('\n').filter(l=>!/int gate_active_[bs]=GoatGateActiveMask\(\);|GoatGateLog\("ALLOW"/.test(l)).join('\n')
   .replace(/\{(Sequence_Skipped_Bias_[BS])\+\+; GoatGateLog\("VETO",OP_(?:BUY|SELL)\);\} \/\/ B44 item 4: log only/g,'$1++;');
  if(b43Signal){assert.equal(stripped,b43Signal,'SignalEntryTrigger is B43 plus the log lines only');ok();}
  let seed=20261012;const rnd=()=>(seed=(seed*48271)%2147483647)/2147483647;

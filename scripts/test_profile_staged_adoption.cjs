@@ -337,7 +337,11 @@ function run(src=readSources()){
    w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));w.signal();assert.deepEqual(w.opened,['vbuy','vsell']);ok();}
   for(const marked of [false,true]){
    const w=world({runPath:NONCE});if(marked) w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));
-   const run=vm.runInContext('(function(Virtual,Level_Count,Delay_Trade,dir,MustCheck_Buy,MustCheck_Sell,End_Sequence){'+js(promote)+'\nreturn "no-promotion";})',w.c);
+   // B50 (A0, GOAT-EA#273 P2): the promotion also waits while the clock blocks new entries (g_GoatEntryBlocked).
+   const logs=[];Object.assign(w.c,{g_GoatEntryBlocked:false,Desc:'GOAT Virtual Buy',Print:s=>logs.push(s)});
+   const run=vm.runInContext('(function(Virtual,Level_Count,Delay_Trade,dir,MustCheck_Buy,MustCheck_Sell,End_Sequence){'+js(promote).replace(/\bstatic /g,'')+'\nreturn "no-promotion";})',w.c);
+   w.c.g_GoatEntryBlocked=true;assert.equal(run(true,2,2,0,true,true,()=>{}),false);assert.deepEqual(w.opened,[],'no promotion while blocked');
+   assert.equal(logs.length,1);w.c.g_GoatEntryBlocked=false;
    assert.equal(run(true,2,2,0,true,true,()=>{}),false);assert.deepEqual(w.opened,marked?['buy']:[],'virtual-to-real promotion '+(marked?'after':'before')+' the marker');ok();
   }
   // Children without a deploy= nonce: DashboardEntryAllowed answers exactly as B41's, and never reads a GlobalVariable.

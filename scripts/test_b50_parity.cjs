@@ -153,6 +153,38 @@ const killed=[];
  }
  ok();}
 
+// GOAT-EA#273 P2: while the clock blocks new entries (g_GoatEntryBlocked, set by A2's clock: the rollover window or a
+// live clock mismatch), a virtual sequence started before the block never becomes a real first entry; it waits and
+// logs once, and converts after the block lifts. A real sequence still adds. Flags off it is never blocked (above).
+function blockedRun(source,fx,from,to){
+ const W=worldFor(source,fx,true);
+ for(const [t,bid] of fx.path){W.ctx.g_GoatEntryBlocked=t>=from&&t<to;W.tick(t,bid);}
+ return W;
+}
+{const fx=FIXTURES.delay_virtual,from=MON+2*H1+40*60,to=MON+6*H1;   // the virtual buy starts at 02:00, before the block
+ const open=worldFor(undefined,fx,true);open.run(fx.path);
+ const firstReal=open.w.trace.find(x=>x.op==='OrderSend');
+ assert.ok(firstReal&&firstReal.time>from&&firstReal.time<to,'unblocked, the real start falls inside the window');
+ const W=blockedRun(undefined,fx,from,to);
+ assert.ok(W.w.logs.findIndex(l=>/Virtual Buy Sequence Started/.test(l))>=0,'the virtual sequence started before the block');
+ assert.deepEqual(W.w.trace.filter(x=>x.op==='OrderSend'&&x.time>=from&&x.time<to),[],'no real first entry while blocked');
+ assert.equal(W.w.logs.filter(l=>/real start refused, new entries are blocked by the clock/.test(l)).length,1,'logged once while blocked');
+ assert.ok(W.w.trace.some(x=>x.op==='OrderSend'&&x.time>=to),'it converts once the block lifts');
+ // A real sequence (no delay) keeps adding while blocked; no new sequence starts.
+ const cum=FIXTURES.cum_partial,cf=MON+3*H1,ct=MON+5*H1;
+ const R=blockedRun(undefined,cum,cf,ct),U=worldFor(undefined,cum,true);U.run(cum.path);
+ const inside=w=>w.trace.filter(x=>x.op==='OrderSend'&&x.time>=cf&&x.time<ct);
+ assert.ok(inside(R.w).length>0,'adds of a real sequence continue while blocked');
+ // Mutant: without the virtual-block lines the blocked run converts inside the window.
+ const main=H.readSource(undefined,H.MAIN);
+ assert.ok(main.includes('      static bool b50_virtual_block_logged=false;\n      if(g_GoatEntryBlocked)\n'));
+ const mutant=main.replace('      if(g_GoatEntryBlocked)\n        {\n','      if(false)\n        {\n');
+ assert.notEqual(mutant,main);
+ const M=blockedRun({files:H.loadSources(undefined,{[H.MAIN]:mutant})},fx,from,to);
+ assert.ok(M.w.trace.some(x=>x.op==='OrderSend'&&x.time>=from&&x.time<to),'mutant caught: the conversion leaks through the block');
+ killed.push('the virtual-to-real block removed');
+ ok();}
+
 // WriteSet golden: a default SET written by this tree is B49a's, line for line; each B50 input differing from its
 // default adds exactly one line, in the form the Studio and the controller read back.
 function writeSet(source,inputs={}){

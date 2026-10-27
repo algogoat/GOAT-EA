@@ -60,7 +60,9 @@ jobs:
   controller:
     runs-on: windows-2022
     # Setup, fast fixtures and the full unittest suite: ~8-10 min (unittest alone 7 min on a slow runner).
-    timeout-minutes: 30
+    # B49b: its in-job mutation suites (F7, then F5 and F3) took a 27-min job past 30 (GOAT-EA#270 run 40462891356 was
+    # cancelled in the unittest step), so the job has 45.
+    timeout-minutes: 45
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"

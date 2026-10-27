@@ -46,12 +46,8 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    // B50:begin b50-fixed
    // B50 (A0): a SET from before the B50 inputs runs each at its default (the grid engine, the server clock), as B49a; any
    // other value, or an active optimization axis, is refused. The optimizable ones may read back as a dormant N tuple.
-   if(identity=="[TesterInputs]|Engine_Mode" || identity=="[TesterInputs]|Clock_Mode" || identity=="[TesterInputs]|Server_Clock_Model") return value=="0";
-   if(identity=="[TesterInputs]|Server_UTC_Offset") return value=="2";
-   if(identity=="[TesterInputs]|NY_Session") return value=="09:30-16:00";
-   if(identity=="[TesterInputs]|Single_SL_ATR" || identity=="[TesterInputs]|Single_TP_ATR" || identity=="[TesterInputs]|Single_TP_R") return GoatStudioSettingValueEqual("0",value,"double");
-   if(identity=="[TesterInputs]|Single_Exit_Opposite") return GoatStudioSettingValueEqual("false",value,"bool");
-   if(identity=="[TesterInputs]|Single_Time_Stop_Bars" || identity=="[TesterInputs]|Single_Time_Stop_TF" || identity=="[TesterInputs]|Rollover_Block_Minutes") return GoatStudioSettingValueEqual("0",value,"int");
+   if(StringSubstr(identity,0,15)=="[TesterInputs]|" && GoatStudioAppendedDefault(StringSubstr(identity,15))!="")
+      return GoatStudioSettingValueEqual(GoatStudioAppendedDefault(StringSubstr(identity,15)),value,GoatStudioSettingType(StringSubstr(identity,15)));
    // B50:end b50-fixed
    return false;
   }

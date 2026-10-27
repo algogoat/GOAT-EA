@@ -20,7 +20,8 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B49A_SOURCE='65fde12';
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
-const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingCompare.mqh','GOATPortfolioChildAudit.mqh'];
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingCompare.mqh','GOATPortfolioChildAudit.mqh',
+ 'GOATOptimizationInputs.mqh'];   // GOAT-EA#269 P1: the B50 axes a SET omits are written and verified at their defaults
 const ADDED=['GOAT_NYClock.mqh'];   // A0's stub; A2 fills it
 // Every B49a line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
@@ -28,6 +29,10 @@ const REMOVED={
   'if(InActive && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)',                        // A0: the NY clock's day end
   'if(InActive && stm_cur.day_of_week==5 && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)', // A0: the NY clock's Friday
   'if(!DashboardPortfolioPaused&&Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec&&(DashboardTradeAllowBuy||DashboardTradeAllowSell)) SignalEntryTrigger();//Buys,Sells);', // A0: g_GoatEntryBlocked
+ ],
+ 'GOATOptimizationInputs.mqh':[
+  'if(found<0) {error="Missing selected input: "+name;return false;}',                                              // #269 P1: a B50 axis may be omitted
+  'string encoded=values[found],parts[];StringReplace(encoded,"||","\\n");',                                       // #269 P1: an omitted one is its default
  ],
  'GOATStudioSettingTypes.mqh':[
   'return "|Trailing_Sample_Period|Allow_Opposite_Seq|Reverse_Seq|Mode_Trade|Grid_Size|Grid_Min|Grid_Max|Grid_Exponent|Grid_Factor|Lock_Profit_Size|Lock_Profit_Flexibility|TP_Pips|SL_Pips|RRR|Mode_RRR|TSL_Size|Mode_Trail|Delay_Trade|Delay_Trade_Live|Delay_Lots_Add|Max_Seq_Trades|CloseAtMaxLevels|ATR_TF_|ATR_Period|ATR_Method|Lots_Input|Lots_Max|Lots_Max_Cum|Lots_Exponent|Lots_Factor|Mode_Lots_Prog|Peak_Lots_Pos_PC|Partial_Profit_Factor|Peak_Smart_Release_PC|Peak_Smart_Max_Close_PC|MaxDailyLossLocal|MaxDailyProfitLocal|RSI_Mode|RSI_TF_|RSI_Period|RSI_Price|RSI_Level|EMA_Mode|EMA_TF_|EMA_Method|EMA_Price|EMA_Count|EMA_Period|EMA_Exponent|EMA_MustCheck|ADX_Mode|ADX_TF_|ADX_Period|ADX_Level|ADX_MustCheck|BB_Mode|BB_TF_|BB_Period|BB_Deviation|BB_MustCheck|MACD_Mode|MACD_Mode_Trend|MACD_TF_|MACD_Fast|MACD_Slow|MACD_Signal|MACD_Deviations|MACD_Price|MACD_MustCheck|RSI2_Mode|RSI2_TF_|RSI2_Period|RSI2_Price|RSI2_Level|RSI2_MustCheck|Active_Time_Weekday|Active_Time_Friday|Action_Dayend|Action_Friday|Trade_Friday|Bias_Protocol|Mode_Bias|Mode_Bias_Trades|Mode_Bias_Exit|Bias_Exit_Max_Exposure_Adds|Bias_threshold|Mode_News|News_threshold|News_beforeMinutes|News_afterMinutes|";', // A0: the B50 optimization axes

@@ -32,4 +32,19 @@ bool GoatStudioSettingOptimizable(const string key)
   {
    return StringFind(GoatStudioOptimizationNames(),"|"+key+"|")>=0;
   }
+// B50:begin b50-defaults
+// B50 (A0, GOAT-EA#269 P1): the default of an input appended after Ledger_Mode, as a SET spells it, or "" for any other
+// input. A SET written before B50 omits these inputs and runs them at these defaults (the grid engine, the server
+// clock), which reproduce B49a: the native config writes the axes among them explicitly (GoatStudioExplicitOptimizationInputs),
+// OnTesterInit verifies them (GoatStudioVerifyOptimizationInputs) and the Studio readback accepts them (GoatStudioFixedInternal).
+string GoatStudioAppendedDefault(const string key)
+  {
+   if(StringFind("|Engine_Mode|Single_Time_Stop_Bars|Single_Time_Stop_TF|Clock_Mode|Server_Clock_Model|Rollover_Block_Minutes|","|"+key+"|")>=0) return "0";
+   if(StringFind("|Single_SL_ATR|Single_TP_ATR|Single_TP_R|","|"+key+"|")>=0) return "0.0";
+   if(key=="Single_Exit_Opposite") return "false";
+   if(key=="Server_UTC_Offset") return "2";
+   if(key=="NY_Session") return "09:30-16:00";
+   return "";
+  }
+// B50:end b50-defaults
 #endif

@@ -30,7 +30,7 @@ class AppendedInputTests(unittest.TestCase):
         self.old = {k: v for k, v in self.full.items() if k not in APPENDED_INPUTS}   # a B47-era SET
 
     def test_the_appended_inputs_are_ledger_mode_last_in_the_header_defaulting_to_legacy(self):
-        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode', 'Fix_MoneyVolume'))
+        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck'))
         self.assertEqual(list(self.schema['inputs'])[-len(APPENDED_INPUTS):], list(APPENDED_INPUTS), 'appended last, in order')
         definition = self.schema['inputs']['Ledger_Mode']
         self.assertEqual((definition['type'], definition['declaration'], definition['default_expression']),
@@ -40,6 +40,10 @@ class AppendedInputTests(unittest.TestCase):
         fix = self.schema['inputs']['Fix_MoneyVolume']
         self.assertEqual((fix['type'], fix['declaration'], fix['default_expression']), ('ENUM_GOAT_FIX', 'sinput', 'GoatFix_Off'))
         self.assertEqual(fix['enum_choices'], {'GoatFix_Off': 0, 'GoatFix_On': 1})
+        # B49b (F5): Gate_Recheck, Legacy = B49a.
+        gate = self.schema['inputs']['Gate_Recheck']
+        self.assertEqual((gate['type'], gate['declaration'], gate['default_expression']), ('ENUM_GATE_RECHECK', 'sinput', 'Gate_Legacy'))
+        self.assertEqual(gate['enum_choices'], {'Gate_Legacy': 0, 'Gate_AtFirstOrder': 1})
         for name in APPENDED_INPUTS:
             self.assertEqual(appended_default(self.schema['inputs'][name]), '0', name)
             # The same default the tester report pins for any omitted input (GOAT-EA#250).
@@ -78,7 +82,7 @@ class AppendedInputTests(unittest.TestCase):
         # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no fix flag) adds only Ledger_Mode.
         v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in APPENDED_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, v148), self.old)
-        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k != 'Fix_MoneyVolume'})
+        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in ('Fix_MoneyVolume', 'Gate_Recheck')})
         self.assertEqual(complete_appended_inputs(self.old, b49a), dict(self.old, Ledger_Mode='0'))
 
     def test_the_paste_sets_the_default_instead_of_inheriting_the_last_run(self):
@@ -183,7 +187,7 @@ class LedgerModeRoundTripTests(unittest.TestCase):
         reloaded = read_values(self.raw(exported))
         self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Ledger_Mode'], '1')
         self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Ledger_Mode'], '1||0||0||0||N')
-        observed = dict(reloaded, Ledger_Mode='1', Fix_MoneyVolume='0')   # MT5 reports every input
+        observed = dict(reloaded, Ledger_Mode='1', Fix_MoneyVolume='0', Gate_Recheck='0')   # MT5 reports every input
         self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
             verify_input_readback(dict(reloaded), dict(observed, Ledger_Mode='0'), self.schema)
@@ -196,7 +200,7 @@ class LedgerModeRoundTripTests(unittest.TestCase):
         reloaded = read_values(self.raw(exported))
         self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Fix_MoneyVolume'], '1')
         self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Fix_MoneyVolume'], '1||0||0||0||N')
-        observed = dict(reloaded, Ledger_Mode='0', Fix_MoneyVolume='1')
+        observed = dict(reloaded, Ledger_Mode='0', Fix_MoneyVolume='1', Gate_Recheck='0')
         self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Fix_MoneyVolume'):
             verify_input_readback(dict(reloaded), dict(observed, Fix_MoneyVolume='0'), self.schema)

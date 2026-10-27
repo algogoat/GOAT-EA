@@ -12,6 +12,7 @@ string GoatStudioSettingType(const string key)
    if(key=="Studio_MonitorRunPath") return "string";
    if(key=="Ledger_Mode") return "int"; // B49a (F2): the appended ENUM_LEDGER_MODE sinput (never an optimization axis)
    if(key=="Fix_MoneyVolume") return "int"; // B49b (F7): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Gate_Recheck") return "int"; // B49b (F5): an appended ENUM_GATE_RECHECK sinput (never an optimization axis)
    return "";
   }
 string GoatStudioOptimizationNames()

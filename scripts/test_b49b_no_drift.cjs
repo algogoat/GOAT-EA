@@ -31,7 +31,7 @@ const REMOVED={
   'if(MACD_Sample.CheckTF(MACD_TF)) {','if(RSI2_Sample.CheckTF(RSI2_TF)) {',                                                          // indicator gated on its buffers
  ],
 };
-const NEW_INPUTS=['Fix_MoneyVolume'];   // PR-1 (F7)
+const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck'];   // PR-1 (F7), PR-5 (F5)
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

@@ -77,7 +77,7 @@ const MUTANTS=[
  ['an active sequence loses its sizing','    if(!Active && !Traded)\n    {\n     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;','    if(true)\n    {\n     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;'],
  ['the refusal logs every time','    if(!g_goat_start_distances_logged[side])\n','    if(true)\n'],
  ['the refusal log is never re-armed','    if(!unavailable) {g_goat_start_distances_logged[side]=false; return false;}','    if(!unavailable) return false;'],
- ['both sides share one log flag','    int side=(dir==OP_SELL) ? 1 : 0;','    int side=0;'],
+ ['both sides share one log flag','    int side=(dir==OP_SELL) ? 1 : 0;\n    bool unavailable=false;','    int side=0;\n    bool unavailable=false;'],
  // B49b PR-0: P-B49b-adopt-rescue-tp.
  ['an adopted basket\'s TP can be loosened','       if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_);','       ;'],
  ['a buy keeps the farther TP','    if(dir==OP_BUY)  return MathMin(first_tp,second_tp);','    if(dir==OP_BUY)  return MathMax(first_tp,second_tp);'],

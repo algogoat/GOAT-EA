@@ -130,7 +130,7 @@ function sequence(t,{dir=0,virtual=false}={}){
   // B49b (PR-0): the lot arrays, the per-side refusal log flags (an MQL global: zero-initialized), the solver's math.
   Distances:[],LotsRaw:[],LotsNorm:[],LotsCum:[],StartLots:0,PeakLots:0,PeakCumLots:0,ScaleFactor:0,
   g_goat_start_distances_logged:[false,false],ArrayInitialize:(a,v)=>{a.fill(v);},MathFloor:Math.floor,MathAbs:Math.abs,DBL_MAX:Number.MAX_VALUE,
-  Fix_ClosePath:0,GoatFix_Off:0,GoatFix_On:1,   // B49b PR-3 (F3): UpdateLockTPSL's monotonic SL (section 16)
+  Fix_ClosePath:0,GoatFix_Off:0,GoatFix_On:1,Trailing:false,   // B49b PR-3 (F3): UpdateLockTPSL's scoped never-loosen (section 16)
  };
  vm.createContext(c);
  vm.runInContext(METHODS.map(([n,a,s])=>fn(n,a,bodyOf(main,s))).join(''),c);
@@ -557,11 +557,16 @@ function solverSequence({dir=0,trades=4,ready=false}={}){
 //     writes the computed SL onto every position: over a trailed stop that moves it back (and with no SL size it writes
 //     the level SL as it stands, 0 on a basket that never had one, deleting the trailed stop). Off is B49a.
 {const TRAILED=1.0990;
- const run=fix=>{const t=midBasket({sl:[TRAILED,TRAILED,TRAILED]}),s=sequence(t);s.AdoptOpenPositions();
-  s.Adopted=false;s.Fix_ClosePath=fix;t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);return t;};
+ const run=(fix,trailing=true)=>{const t=midBasket({sl:[TRAILED,TRAILED,TRAILED]}),s=sequence(t);s.AdoptOpenPositions();
+  s.Adopted=false;s.Trailing=trailing;s.Fix_ClosePath=fix;t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);return t;};
  const off=run(0);
  assert.deepEqual(off.modifies.map(m=>[m.from,m.sl]),[[TRAILED,COMPUTED],[TRAILED,COMPUTED],[TRAILED,COMPUTED]],'B49a: the trailed stop is moved back to the computed SL');
  const on=run(1);assert.deepEqual(on.modifies,[],'Fix_ClosePath: the trailed stop stays');
+ // Claude-Mac GOAT-EA#276 P1: the grid's averaged re-placement is the strategy, not a defect. Not trailing, not rescuing,
+ // a non-zero computed SL: after an add or a harvest every SL moves to the new averaged level even when that is looser,
+ // with the flag on exactly as B49a (a basket pinned at its first, tightest SL would stop out early).
+ const avg=run(1,false);
+ assert.deepEqual(avg.modifies.map(m=>[m.from,m.sl]),off.modifies.map(m=>[m.from,m.sl]),'averaging re-placement: as B49a');
  // No SL size and no level SL: B49a sends SL 0 (the trailed stop is deleted); the fix keeps it.
  const zero=fix=>{const t=midBasket({sl:[TRAILED,TRAILED,TRAILED],sizes:[0.0012,0.0008,0,0,0.0004]}),s=sequence(t);s.AdoptOpenPositions();
   s.Adopted=false;s.Level_SL=0;s.Fix_ClosePath=fix;t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);return t;};
@@ -571,7 +576,7 @@ function solverSequence({dir=0,trades=4,ready=false}={}){
  const t=midBasket(),s=sequence(t);s.AdoptOpenPositions();s.Adopted=false;s.Fix_ClosePath=1;
  t.positions.forEach(p=>{p.sl=1.0800;});t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);
  assert.deepEqual(t.modifies.map(m=>m.sl),[COMPUTED,COMPUTED,COMPUTED],'tightened');
- assert.ok(bodyOf(main,'   void UpdateLockTPSL(int count=0)').includes('       if(Fix_ClosePath==GoatFix_On) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);'));
+ assert.ok(bodyOf(main,'   void UpdateLockTPSL(int count=0)').includes('       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);'));
  ok();}
 
 console.log(JSON.stringify({passed,test:'restart_adopt'}));

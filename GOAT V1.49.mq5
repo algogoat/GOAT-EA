@@ -2757,7 +2757,7 @@ class SEQUENCE
        double Level_SL_ = BiasRescueActive ? TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL) : Level_SL;
        if(Adopted) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49a (F1-lite): an adopted basket's stop is never loosened (a trailed or rescued SL stays)
        if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_); // B49b: P-B49b-adopt-rescue-tp, nor its TP (a rescue break-even TP stays)
-       if(Fix_ClosePath==GoatFix_On) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49b (F3 D2): no modify loosens a broker SL (a trailed stop is never reset to 0 or moved back)
+       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49b (F3 D2): a trailed or rescued stop is never moved back, and no stop is deleted by a computed SL of 0; the grid's averaged re-placement after an add or harvest still moves the SL as in B49a (Claude-Mac GOAT-EA#276 P1)
        if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
        {
         if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) {TPmodifyErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("TP/SL modify failed: ticket=%I64d SL=%.6f TP=%.6f ret=%u (%s)",TradeLevels[i].ticket,Level_SL_,Level_TP_,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TPSLmodifieds++; // B49b (F3 D5): a failed live modify is logged, never silent
@@ -7530,6 +7530,35 @@ void SignalEntryTrigger()//int Buys,int Sells)
    else LastSellSignal=false;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin close-failure-log
+// F3 (D4; Claude-Mac GOAT-EA#276 P2): a failed live close is never silent, but a closed market or disabled trading must
+// not log once per position per second forever (ClosePendingPump retries every second). One Alert on the first failure
+// of the run, then at most one line per ticket per minute, with the attempts since its last line. Never in the tester.
+ulong    g_goat_close_fail_ticket[16];
+datetime g_goat_close_fail_time[16];
+int      g_goat_close_fail_count[16];
+bool     g_goat_close_fail_alerted=false;
+void GoatCloseFailureLog(const ulong ticket,const uint ret,const string desc)
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   if(!g_goat_close_fail_alerted)
+     {
+      g_goat_close_fail_alerted=true;
+      Alert("GOAT: a close failed (ticket "+IntegerToString((long)ticket)+", "+IntegerToString((int)ret)+" "+desc+"); the EA retries every second and logs each failing ticket once a minute");
+     }
+   int slot=-1,oldest=0;
+   for(int i=0;i<16 && slot<0;i++)
+     {
+      if(g_goat_close_fail_ticket[i]==ticket) slot=i;
+      else if(g_goat_close_fail_time[i]<g_goat_close_fail_time[oldest]) oldest=i;
+     }
+   if(slot<0) {slot=oldest; g_goat_close_fail_ticket[slot]=ticket; g_goat_close_fail_time[slot]=0; g_goat_close_fail_count[slot]=0;}
+   g_goat_close_fail_count[slot]++;
+   if(g_goat_close_fail_time[slot]!=0 && TimeCurrent()-g_goat_close_fail_time[slot]<60) return;
+   PrintFormat("Close failed: ticket=%I64u ret=%u (%s), %d attempt(s) since the last line",ticket,ret,desc,g_goat_close_fail_count[slot]);
+   g_goat_close_fail_time[slot]=TimeCurrent(); g_goat_close_fail_count[slot]=0;
+  }
+// B49b:end close-failure-log
 void CloseAllPositions(int OP,int magic=0)
   {
    CTrade m_trade;
@@ -7547,7 +7576,7 @@ void CloseAllPositions(int OP,int magic=0)
      if(m_position.PositionType() != OP && OP != OP_BUYSELL)                  continue;
 
      if(!m_trade.PositionClose(m_position.Ticket())) // close a position by the specified symbol
-      {closeErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("Close failed: ticket=%I64u ret=%u (%s)",m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 D4): a failed live close is logged, never silent
+      {closeErrors++; GoatCloseFailureLog(m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 D4): a failed live close is logged (throttled), never silent
      closed++;
     }
    }

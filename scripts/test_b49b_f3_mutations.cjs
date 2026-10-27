@@ -27,11 +27,18 @@ const MUTANTS=[
  ['adds go on while a close is pending','    if(!Virtual && ClosePendingReason!="") return false; // B49b (F3): no add while an end waits for its close\n','',F3],
  ['OnTick never pumps','   Seq_Buy.ClosePendingPump(); Seq_Sell.ClosePendingPump(); // B49b (F3): an end deferred until flat retries its close\n','',F3],
  // The logs.
- ['a failed close logs in the tester','{closeErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("Close failed:','{closeErrors++; PrintFormat("Close failed:',F3],
+ ['a failed close is not logged','{closeErrors++; GoatCloseFailureLog(','{closeErrors++; if(false) GoatCloseFailureLog(',F3],
+ ['the close log runs in the tester','   if(MQLInfoInteger(MQL_TESTER)) return;\n   if(!g_goat_close_fail_alerted)','   if(!g_goat_close_fail_alerted)',F3],
+ ['the close log alerts every time','   if(!g_goat_close_fail_alerted)\n','   if(true)\n',F3],
+ ['the close log is not throttled (GOAT-EA#276 P2)','   if(g_goat_close_fail_time[slot]!=0 && TimeCurrent()-g_goat_close_fail_time[slot]<60) return;\n','',F3],
+ ['the close log never resets its count','   g_goat_close_fail_time[slot]=TimeCurrent(); g_goat_close_fail_count[slot]=0;','   g_goat_close_fail_time[slot]=TimeCurrent();',F3],
  ['a failed modify stays silent','{TPmodifyErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("TP/SL modify failed:','{TPmodifyErrors++; if(false) PrintFormat("TP/SL modify failed:',F3],
  // The monotonic SL (restart_adopt section 16).
- ['a broker SL can be loosened','       if(Fix_ClosePath==GoatFix_On) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);','       ;',ADOPT],
- ['the monotonic SL runs with the flag off','       if(Fix_ClosePath==GoatFix_On) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);','       Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);',ADOPT],
+ ['a trailed SL can be loosened','       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);','       ;',ADOPT],
+ ['never-loosen pins the averaging re-placement (GOAT-EA#276 P1)','       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_','       if(Fix_ClosePath==GoatFix_On) Level_SL_',ADOPT],
+ ['a trailed SL is not covered','(Trailing || BiasRescueActive || !(Level_SL_>0.0))','(BiasRescueActive || !(Level_SL_>0.0))',ADOPT],
+ ['a computed SL of 0 deletes the stop','(Trailing || BiasRescueActive || !(Level_SL_>0.0))','(Trailing || BiasRescueActive)',ADOPT],
+ ['the never-loosen rule runs with the flag off','       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_','       if((Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_',ADOPT],
 ];
 function runOn(test,mainText){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-f3-'));

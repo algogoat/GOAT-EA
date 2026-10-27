@@ -23,7 +23,8 @@ function bodyOf(text,signature){
  return text.slice(i+1,j-1);
 }
 const TYPE='(?:const\\s+)?(?:string|int|uint|long|ulong|bool|double|datetime)';
-const js=text=>text.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'').replace(new RegExp('\\b'+TYPE+'\\s+(?=\\w)','g'),'let ');
+const js=text=>text.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'').replace(new RegExp('\\b'+TYPE+'\\s+(?=\\w)','g'),'let ')
+ .replace(/\((?:long|int|uint|ulong|double|datetime)\)/g,'');
 const fn=(name,args,body)=>'function '+name+'('+args.join(',')+'){'+js(body)+'}\n';
 
 // A sequence with its own positions on the account; CloseAllPositions closes them unless the broker refuses.
@@ -78,12 +79,41 @@ function sequence({fix=1,virtual=false,active=true,traded=true,positions=2,refus
 
 // 3. The failure logs are live-only (the tester never prints them; trades are unaffected either way).
 {const CLOSE=bodyOf(main,'void CloseAllPositions(int OP,int magic=0)');
- assert.match(CLOSE,/\{closeErrors\+\+; if\(!MQLInfoInteger\(MQL_TESTER\)\) PrintFormat\("Close failed: ticket=%I64u ret=%u \(%s\)",m_position\.Ticket\(\),m_trade\.ResultRetcode\(\),m_trade\.ResultRetcodeDescription\(\)\);\}/);
+ assert.ok(CLOSE.includes('{closeErrors++; GoatCloseFailureLog(m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());}'),'a failed close goes to the throttled log');
  const UPD=bodyOf(main,'   void UpdateLockTPSL(int count=0)');
  assert.match(UPD,/\{TPmodifyErrors\+\+; if\(!MQLInfoInteger\(MQL_TESTER\)\) PrintFormat\("TP\/SL modify failed:/);
  assert.ok(!/TPmodifyErrors\+\+; TPSLmodifieds\+\+/.test(UPD),'B49a\'s silent form is gone');
  const TSL=bodyOf(main,'   void TrailingStoploss()');
  assert.ok(TSL.includes('PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,SL,'),'the %.6f gets the double');
+ ok();}
+
+// 4. The close-failure log is bounded (Claude-Mac GOAT-EA#276 P2): ClosePendingPump retries every second, so under a
+//    closed market or disabled trading a per-failure line would flood. One Alert per run, then at most one line per
+//    ticket per minute with the attempts since its last line; never in the tester.
+function closeLog({tester=false}={}){
+ const c={MQL_TESTER:1,tester,now:5000,lines:[],alerts:[],g_goat_close_fail_ticket:new Array(16).fill(0),g_goat_close_fail_time:new Array(16).fill(0),
+  g_goat_close_fail_count:new Array(16).fill(0),g_goat_close_fail_alerted:false,IntegerToString:v=>String(v)};
+ c.MQLInfoInteger=k=>(k===1&&c.tester)?1:0;c.TimeCurrent=()=>c.now;c.Alert=s=>c.alerts.push(s);
+ c.PrintFormat=(f,...a)=>{let i=0;c.lines.push(f.replace(/%(I64u|u|d|s)/g,()=>String(a[i++])));};
+ vm.createContext(c);
+ vm.runInContext(fn('GoatCloseFailureLog',['ticket','ret','desc'],bodyOf(main,'void GoatCloseFailureLog(const ulong ticket,const uint ret,const string desc)')),c);
+ return c;
+}
+{const c=closeLog();
+ c.GoatCloseFailureLog(1001,10018,'Market closed');
+ assert.deepEqual(c.alerts,['GOAT: a close failed (ticket 1001, 10018 Market closed); the EA retries every second and logs each failing ticket once a minute']);
+ assert.deepEqual(c.lines,['Close failed: ticket=1001 ret=10018 (Market closed), 1 attempt(s) since the last line']);
+ for(let i=0;i<59;i++){c.now++;c.GoatCloseFailureLog(1001,10018,'Market closed');}
+ assert.equal(c.lines.length,1,'quiet for the rest of the minute');
+ c.now++;c.GoatCloseFailureLog(1001,10018,'Market closed');
+ assert.equal(c.lines.length,2);assert.match(c.lines[1],/, 60 attempt\(s\) since the last line$/,'the attempts in between are counted');
+ // Another ticket is logged on its own clock; the Alert is once per run.
+ c.GoatCloseFailureLog(1002,10018,'Market closed');assert.equal(c.lines.length,3);assert.equal(c.alerts.length,1);
+ // More failing tickets than slots: the oldest slot is reused, nothing breaks.
+ for(let t=2000;t<2030;t++){c.now++;c.GoatCloseFailureLog(t,10018,'x');}
+ assert.equal(c.alerts.length,1);
+ // The tester never logs.
+ const quiet=closeLog({tester:true});quiet.GoatCloseFailureLog(1,2,'x');assert.deepEqual([quiet.alerts,quiet.lines],[[],[]]);
  ok();}
 
 console.log(JSON.stringify({passed,test:'b49b_f3'}));

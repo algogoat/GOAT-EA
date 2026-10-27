@@ -29,12 +29,18 @@ function path(start,points){   // a tick every 20 s (7 s past), linear between [
 const rsiAt=(sched,t)=>{let v=50;for(const [from,x] of sched)if(t-MON>=from)v=x;return v;};
 const BASE={EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70,
  Engine_Mode:'Engine_Single',Single_SL_ATR:1.5,Mode_Lots:'RiskperSeq',Risk:500};
-function single({inputs={},rsi=[[0,25]],atr1=0.0010,atr0=0.0030,fastSpeed=true,tester=true,world={}}={}){
- return H.build(undefined,{inputs:{...BASE,...inputs},fastSpeed,tester,world,
+// tickSize: SYMBOL_TRADE_TICK_SIZE when it differs from the point (the model answers the point); bid, spread: the quote.
+function single({inputs={},rsi=[[0,25]],atr1=0.0010,atr0=0.0030,fastSpeed=true,tester=true,world={},tickSize,bid,spread}={}){
+ const W=H.build(undefined,{inputs:{...BASE,...inputs},fastSpeed,tester,world,bid,spread,
   indicator:(name,buffer,shift,w)=>{
    if(name==='ATR_MA') return shift===1?atr1:(shift===0?atr0:undefined);
    if(name==='RSI') return rsiAt(rsi,w.time);
    return undefined;}});
+ if(tickSize!==undefined){
+  const orig=W.ctx.SymbolInfoDouble,K=W.ctx.SYMBOL_TRADE_TICK_SIZE;assert.equal(typeof K,'number');
+  W.ctx.SymbolInfoDouble=(sym,k,box)=>{if(k!==K)return orig(sym,k,box);if(box){box.v=tickSize;return true;}return tickSize;};
+ }
+ return W;
 }
 const sends=W=>W.w.trace.filter(x=>x.op==='OrderSend');
 const refusals=W=>W.w.logs.filter(l=>/Single refused/.test(l));
@@ -59,6 +65,72 @@ const FLAT=path(MON,[[2*H1,1.1000],[3*H1,1.1000]]);
  const W4=single({inputs:{Single_SL_ATR:1.8},world:{volumeMin:0.1,volumeStep:0.01}});W4.run(FLAT);
  assert.equal(sends(W4)[0].volume,2.7,'never rounded up past the risk by the volume-minimum grid');
  assert.ok(sends(W4)[0].volume*0.0018*VALUE<=500+1e-6);
+ assert.equal(W4.ctx.Seq_Buy.StartLots,2.7,'the single records what is sent');
+ // ... and never rounded down from what it records (GOAT-EA#272 P3): 500 / 183 = 2.73 would go out as 2.7.
+ const W5=single({inputs:{Single_SL_ATR:1.83},world:{volumeMin:0.1,volumeStep:0.01}});W5.run(FLAT);
+ assert.equal(sends(W5)[0].volume,2.7);assert.equal(W5.ctx.Seq_Buy.StartLots,2.7,'StartLots is the volume sent');
+ ok();
+}
+// 1b. GOAT-EA#272 P1: the money per price unit is SYMBOL_TRADE_TICK_VALUE / SYMBOL_TRADE_TICK_SIZE and nothing else.
+// PriceValuePerPointPerLot's fallbacks answer per tick or per point, which sized EURUSD with no tick size at the
+// volume maximum (Risk 500, SL 0.0015, tv 1: 333333 lots). No tick value or no tick size: refused, nothing sent.
+{
+ const ts0=single({tickSize:0});ts0.run(FLAT);
+ assert.equal(sends(ts0).length,0,'no tick size: refused, never sized at the volume maximum');
+ assert.equal(refusals(ts0).length,1);assert.match(refusals(ts0)[0],/no tick value or tick size/);
+ const tv0=single({world:{tickValue:0}});tv0.run(FLAT);
+ assert.equal(sends(tv0).length,0,'no tick value: refused');assert.match(refusals(tv0)[0],/no tick value or tick size/);
+ for(const bad of [NaN,-0.00001]){const B=single({tickSize:bad});B.run(FLAT);assert.equal(sends(B).length,0,'tick size '+bad+': refused');}
+ // FX (EURUSD, USD account): tv 1 per 0.00001 -> 100000 per price unit; 500 / (0.0015 x 100000) = 3.33.
+ const fx=single();fx.run(FLAT);assert.equal(sends(fx)[0].volume,3.33,'FX');
+ // JPY (USDJPY at 150, USD account): tick 0.001 worth 0.6667 USD -> 666.7 per price unit; ATR 0.30, SL 0.45:
+ // 500 / (0.45 x 666.7) = 1.6666 -> 1.66.
+ const jpyPath=path(MON,[[2*H1,150.000],[3*H1,150.000]]);
+ const jpy=single({atr1:0.30,atr0:0.90,bid:150,spread:0.01,world:{point:0.001,digits:3,tickValue:0.6667}});jpy.run(jpyPath);
+ assert.ok(near(sends(jpy)[0].volume,1.66),'JPY: '+sends(jpy).map(x=>x.volume));
+ assert.ok(near(sends(jpy)[0].price-sends(jpy)[0].sl,0.45,1e-6));
+ // A metal (XAUUSD at 2400, 100 oz): tick 0.01 worth 1 USD -> 100 per price unit; ATR 5, SL 7.5: 500 / 750 = 0.666 -> 0.66.
+ const xauPath=path(MON,[[2*H1,2400.00],[3*H1,2400.00]]);
+ const xau=single({atr1:5,atr0:15,bid:2400,spread:0.20,world:{point:0.01,digits:2,tickValue:1}});xau.run(xauPath);
+ assert.ok(near(sends(xau)[0].volume,0.66),'metal: '+sends(xau).map(x=>x.volume));
+ // A tick size that is not the point (an index: point 0.01, tick 0.25 worth 12.5 -> 50 per price unit, not 1250):
+ // ATR 10, SL 15: 500 / (15 x 50) = 0.666 -> 0.66 (tv / point would give 0.02).
+ const idxPath=path(MON,[[2*H1,18000.00],[3*H1,18000.00]]);
+ const idx=single({atr1:10,atr0:30,bid:18000,spread:1,tickSize:0.25,world:{point:0.01,digits:2,tickValue:12.5}});idx.run(idxPath);
+ assert.ok(near(sends(idx)[0].volume,0.66),'a tick size other than the point: '+sends(idx).map(x=>x.volume));
+ ok();
+}
+// 1c. The lot never exceeds Risk / (SL x tv / ts), whatever the tick value, tick size, ATR, risk and volume grid:
+// GoatSingleOpen called directly on an idle sequence over a seeded sweep; when it opens, the lot is the largest
+// step multiple within the risk (or the maximum, or the volume-minimum grid below it).
+{
+ const W=single();let seed=20261027;const rnd=()=>(seed=(seed*48271)%2147483647)/2147483647;
+ const pick=a=>a[Math.floor(rnd()*a.length)];
+ let opened=0,refused=0;
+ for(let n=0;n<400;n++){
+  const point=pick([1e-5,1e-3,1e-2,1]),ts=point*pick([1,1,5,25]),tv=pick([0.01,0.6667,1,2.5,12.5,0])*pick([1,1,10]);
+  const step=pick([0.01,0.01,0.1,1]),vmin=step*pick([1,1,5,10]),vmax=pick([5,50,100,1000]);
+  const atr=point*pick([20,100,333,1500]),risk=pick([10,250,500,5000,123456]);
+  Object.assign(W.w,{point,digits:Math.max(0,Math.round(-Math.log10(point))),tickValue:tv,volumeStep:step,volumeMin:vmin,volumeMax:vmax,stopsLevel:0});
+  const K=W.ctx.SYMBOL_TRADE_TICK_SIZE,orig=W.w.__sid||(W.w.__sid=W.ctx.SymbolInfoDouble);
+  W.ctx.SymbolInfoDouble=(sym,k,box)=>{if(k!==K)return orig(sym,k,box);if(box){box.v=ts;return true;}return ts;};
+  W.ctx._Point=point;W.ctx._Digits=W.w.digits;
+  W.w.bid=1000*point*pick([1,10,100]);W.w.ask=W.w.bid;   // no spread: the stops check reads the stop alone
+  W.w.indicator=(name,b,shift)=>name==='ATR_MA'&&shift===1?atr:undefined;
+  W.setInput('Risk',risk);
+  const before=sends(W).length,b=W.ctx.Seq_Buy;
+  const did=W.ctx.GoatSingleOpen(b,W.w.ask);
+  const sl=1.5*atr,cap=tv>0&&ts>0?risk/(sl*(tv/ts)):0;
+  if(!did){assert.equal(sends(W).length,before,'a refusal sends nothing');refused++;continue;}
+  const vol=sends(W).at(-1).volume;opened++;
+  assert.ok(tv>0&&ts>0,'opened only with a tick value and size');
+  assert.ok(vol<=cap*(1+1e-9)+1e-12,`lot ${vol} <= Risk/(SL x tv/ts) = ${cap} (tv ${tv}, ts ${ts}, sl ${sl}, risk ${risk})`);
+  assert.ok(vol>=vmin-1e-12&&vol<=vmax+1e-12,'within the volume limits');
+  const floorStep=Math.min(Math.floor(cap/step+1e-9)*step,vmax);
+  assert.ok(vol>=Math.floor(floorStep/vmin+1e-9)*vmin-1e-9,`and the largest lot the grid allows (${vol} vs ${floorStep})`);
+  b.End_Sequence('sweep');W.w.positions.length=0;
+ }
+ assert.ok(opened>=100&&refused>=40,'the sweep exercises both ('+opened+' opened, '+refused+' refused)');
  ok();
 }
 // 2. Below the volume minimum: refused, logged once, nothing sent, still armed; a later SET that fits opens.
@@ -118,6 +190,11 @@ const FLAT=path(MON,[[2*H1,1.1000],[3*H1,1.1000]]);
  assert.equal(sends(E).length,0,'a stop on the boundary is refused');
  const O=single({world:{stopsLevel:100}});O.run(FLAT);   // 0.0015 > 0.0011
  assert.equal(sends(O).length,1,'a stop outside opens');
+ // The TP too (GOAT-EA#272 P3): Size_TP + the spread must clear the stops level.
+ const P=single({inputs:{Single_TP_ATR:0.9},world:{stopsLevel:100}});P.run(FLAT);   // 0.0009 + 0.0001 <= 0.0010
+ assert.equal(sends(P).length,0,'a TP inside the stops level: refused');assert.match(refusals(P)[0],/take profit .* inside the stops level/);
+ const Q=single({inputs:{Single_TP_ATR:1},world:{stopsLevel:100}});Q.run(FLAT);   // 0.0010 + 0.0001 > 0.0010
+ assert.equal(sends(Q).length,1,'a TP outside opens');
  ok();
 }
 // 7. No virtual leg (Delay_Trade=1, Delay_Trade_Live=1, the defaults), no grid add, one level; the sizes at start.
@@ -202,12 +279,14 @@ for(const fastSpeed of [true,false]){
  const b=W.ctx.Seq_Buy;
  for(const k of ['Size_Grid','Size_Lock','Size_TP','Size_SL','Size_TSL']) assert.equal(b[k],1234.5,'a denial resets '+k);
  assert.equal(b.StartLots,0);assert.equal(b.Active,false);assert.equal(W.ctx.g_GoatSingleArmed[0],true);
- assert.ok(!W.w.logs.some(l=>/Single Failed/.test(l)),'a denial is not a failed order');
+ assert.ok(!W.w.logs.some(l=>/order failed/.test(l)),'a denial is not a failed order');
  W.ctx.GoatDirectionGuardBegin=()=>true;W.run(FLAT.slice(10,14));   // SignalEntryTrigger runs once a minute here
 assert.equal(sends(W).length,1);
  // A rejected order: nothing starts, the sizes go back to the sentinel, the failure is logged.
  const R=single({world:{rejectOrders:true}});R.run(FLAT.slice(0,6));assert.ok(R.w.trace.some(x=>x.op==='OrderSend'),'the order was sent');
- assert.equal(R.ctx.Seq_Buy.Active,false);assert.equal(R.ctx.Seq_Buy.Size_SL,1234.5);assert.ok(R.w.logs.some(l=>/Single Failed/.test(l)));
+ assert.equal(R.ctx.Seq_Buy.Active,false);assert.equal(R.ctx.Seq_Buy.Size_SL,1234.5);
+ R.run(FLAT.slice(6,40));assert.ok(sends(R).length>=5,'retried on each signal check while armed');
+ assert.equal(R.w.logs.filter(l=>/Single refused \(order failed/.test(l)).length,1,'a failed order is logged once while it repeats (GOAT-EA#272 P3)');
  ok();
 }
 // 13. The ledger join, the entry commission, the restart record and UpdateLockTPSL run after the order, in order.

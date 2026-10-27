@@ -7398,10 +7398,10 @@ void SignalEntryTrigger()//int Buys,int Sells)
 // Sizes at start: Size_SL = Single_SL_ATR x the closed bar's ATR (shift 1 of ATR_MA_handle, read into a local buffer:
 // ATR_Buf and GetSize's state never change); Size_TP = Single_TP_R x Size_SL, else Single_TP_ATR x ATR, else 0; the
 // lock, trailing and grid sizes are 0 (UpdateLockTPSL parks the lock at 999999 or 0, so nothing trails).
-// Lots: RiskperSeq floors Risk / (Size_SL x value per price unit per lot) to the volume step, caps it at the volume
+// Lots: RiskperSeq floors Risk / (Size_SL x tick value / tick size) to the volume step, caps it at the volume
 // maximum and refuses below the volume minimum (never rounded up past the risk); FixedLots and ScaledLots as Add_Level.
 // Refused, and logged once per side until the reason changes or a single opens: no ATR, a stop inside the stops level
-// plus the spread, lots below the volume minimum.
+// plus the spread, a TP inside the stops level, no tick value or size, lots below the volume minimum, a failed order.
 void GoatSingleRefusal(const int side,const int code,const string desc,const string why)
   {
    static int b50_logged[2];
@@ -7432,6 +7432,12 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
       GoatSingleRefusal(b50_side,2,s.Desc,"stop "+DoubleToString(b50_size_sl,_Digits)+" inside the stops level plus the spread "+DoubleToString(b50_min_stop,_Digits));
       return false;
      }
+   // A buy's TP (ask + Size_TP) must clear bid + the stops level, a sell's likewise: Size_TP + the spread above the stops level.
+   if(b50_size_tp>0.0 && b50_size_tp+(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD)*_Point<=(double)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL)*_Point)
+     {
+      GoatSingleRefusal(b50_side,6,s.Desc,"take profit "+DoubleToString(b50_size_tp,_Digits)+" inside the stops level");
+      return false;
+     }
    //---- lots
    double b50_vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
    double b50_vmax=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
@@ -7439,16 +7445,21 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
    double b50_lots=0.0;
    if(Mode_Lots==RiskperSeq)
      {
-      double b50_value=s.PriceValuePerPointPerLot();
+      // Money per 1.0 price unit per lot from the tick alone (GOAT-EA#272 P1): PriceValuePerPointPerLot's fallbacks answer
+      // per tick or per point (EX-04), which sizes ~1/point too large, so at the volume maximum. No tick value or size: refused.
+      double b50_tv=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+      double b50_ts=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+      double b50_value=((MathIsValidNumber(b50_tv) && MathIsValidNumber(b50_ts) && b50_tv>0.0 && b50_ts>0.0) ? b50_tv/b50_ts : 0.0);
       if(!MathIsValidNumber(b50_value) || !(b50_value>0.0) || !(b50_vstep>0.0) || !(b50_vmax>0.0))
         {
-         GoatSingleRefusal(b50_side,3,s.Desc,"no money value per price unit or no volume step");
+         GoatSingleRefusal(b50_side,3,s.Desc,"no tick value or tick size (value "+DoubleToString(b50_tv,8)+", size "+DoubleToString(b50_ts,8)+") or no volume step");
          return false;
         }
       double b50_risk_lots=Risk/(b50_size_sl*b50_value);
       b50_lots=MathMin(MathFloor(b50_risk_lots/b50_vstep+1e-9)*b50_vstep,b50_vmax);
-      // OpenPosition sends multiples of the volume minimum (GetNormalizedLots): never one rounded up past the risk.
-      if(b50_vmin>0.0 && GetNormalizedLots(b50_lots)>b50_lots+b50_vstep*1e-6) b50_lots=MathFloor(b50_lots/b50_vmin+1e-9)*b50_vmin;
+      // OpenPosition sends multiples of the volume minimum (GetNormalizedLots): never one rounded up past the risk, and
+      // never one rounded down from what the single records (GOAT-EA#272 P3).
+      if(b50_vmin>0.0 && MathAbs(GetNormalizedLots(b50_lots)-b50_lots)>b50_vstep*1e-6) b50_lots=MathFloor(b50_lots/b50_vmin+1e-9)*b50_vmin;
       b50_lots=NormalizeDouble(b50_lots,8);
       if(b50_lots<=0.0 || b50_lots<b50_vmin)
         {
@@ -7480,8 +7491,9 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
       // A denied or failed candidate did not start a single: it keeps none of its sizes.
       s.Size_Grid=s.Size_Lock=s.Size_TP=s.Size_SL=s.Size_TSL=1234.5;
       s.StartLots=0.0;
-      if(!g_direction_guard_denied)
-         Print(b50_desc,": Price=",DoubleToString(price,_Digits)," Lots=",DoubleToString(b50_lots,2)," Single Failed. Return Code:",LastRetCode," ID:",GetRetcodeID((int)LastRetCode));
+      if(!g_direction_guard_denied) // once per return code while it repeats (a spread cap or a stop-out returns 0 on every check)
+         GoatSingleRefusal(b50_side,1000+(int)LastRetCode,b50_desc,"order failed at "+DoubleToString(price,_Digits)+", lots "+DoubleToString(b50_lots,2)
+                           +", return code "+IntegerToString((int)LastRetCode)+" "+GetRetcodeID((int)LastRetCode));
       return false;
      }
    s.GuardRealStarted=true;
@@ -7505,7 +7517,6 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
    GoatSingleRefusal(b50_side,0,"","");
    return true;
   }
-//----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:end b50-single-open
 void CloseAllPositions(int OP,int magic=0)
   {

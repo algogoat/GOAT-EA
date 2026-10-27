@@ -24,7 +24,15 @@ const MUTANTS=[
  ['TP_ATR wins over TP_R','   if(Single_TP_R>0.0)        b50_size_tp=Single_TP_R*b50_size_sl;','   if(Single_TP_R>0.0 && Single_TP_ATR<=0.0)        b50_size_tp=Single_TP_R*b50_size_sl;'],
  // Lots.
  ['below the minimum rounds up to the minimum','      b50_lots=NormalizeDouble(b50_lots,8);\n','      b50_lots=NormalizeDouble(MathMax(b50_lots,b50_vmin),8);\n'],
- ['the volume-minimum grid may round up past the risk','      if(b50_vmin>0.0 && GetNormalizedLots(b50_lots)>b50_lots+b50_vstep*1e-6) b50_lots=MathFloor(b50_lots/b50_vmin+1e-9)*b50_vmin;','      ;'],
+ ['the volume-minimum grid may round up past the risk','      if(b50_vmin>0.0 && MathAbs(GetNormalizedLots(b50_lots)-b50_lots)>b50_vstep*1e-6) b50_lots=MathFloor(b50_lots/b50_vmin+1e-9)*b50_vmin;','      ;'],
+ ['a volume-minimum round-down is recorded, not sent (GOAT-EA#272 P3)','MathAbs(GetNormalizedLots(b50_lots)-b50_lots)>b50_vstep*1e-6','GetNormalizedLots(b50_lots)-b50_lots>b50_vstep*1e-6'],
+ // GOAT-EA#272 P1: the money per price unit.
+ ['the PriceValuePerPointPerLot path is restored (GOAT-EA#272 P1)','      double b50_value=((MathIsValidNumber(b50_tv) && MathIsValidNumber(b50_ts) && b50_tv>0.0 && b50_ts>0.0) ? b50_tv/b50_ts : 0.0);','      double b50_value=s.PriceValuePerPointPerLot();'],
+ ['the value is per point, not per tick size','b50_tv>0.0 && b50_ts>0.0) ? b50_tv/b50_ts : 0.0);','b50_tv>0.0 && b50_ts>0.0) ? b50_tv/_Point : 0.0);'],
+ ['no tick value is read as one','      double b50_value=((MathIsValidNumber(b50_tv) && MathIsValidNumber(b50_ts) && b50_tv>0.0 && b50_ts>0.0) ? b50_tv/b50_ts : 0.0);','      double b50_value=((MathIsValidNumber(b50_ts) && b50_ts>0.0) ? MathMax(b50_tv,1.0)/b50_ts : 0.0);'],
+ // GOAT-EA#272 P3.
+ ['the TP is not checked against the stops level','   if(b50_size_tp>0.0 && b50_size_tp+(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD)*_Point<=','   if(false && b50_size_tp+(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD)*_Point<='],
+ ['a failed order is logged on every check','         GoatSingleRefusal(b50_side,1000+(int)LastRetCode,b50_desc,"order failed at "','         Print(b50_desc,": Single refused (order failed)"); GoatSingleRefusal(b50_side,0,b50_desc,"order failed at "'],
  ['no volume-maximum cap','b50_lots=MathMin(MathFloor(b50_risk_lots/b50_vstep+1e-9)*b50_vstep,b50_vmax);','b50_lots=MathFloor(b50_risk_lots/b50_vstep+1e-9)*b50_vstep;'],
  ['FixedLots below the minimum is sent','      if(b50_lots<=0.0 || b50_lots<b50_vmin) {GoatSingleRefusal(b50_side,4,s.Desc,"lots below the volume minimum "','      if(false) {GoatSingleRefusal(b50_side,4,s.Desc,"lots below the volume minimum "'],
  ['ScaledLots reads as FixedLots','      if(Mode_Lots==ScaledLots) b50_lots=Lots*AccountInfoDouble(ACCOUNT_EQUITY)/1000;','      if(Mode_Lots==ScaledLots) b50_lots=Lots;'],

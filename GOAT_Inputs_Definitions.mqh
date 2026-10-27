@@ -586,6 +586,8 @@ if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(
 if(Fix_MoneyVolume!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_MoneyVolume="+(string)(int)Fix_MoneyVolume); // B49b (F7): as Ledger_Mode, a SET records the fix only when it is on; Off stays B49a's bytes
 if(Gate_Recheck!=Gate_Legacy) FileWrite(FileSET_handle,"Gate_Recheck="+(string)(int)Gate_Recheck); // B49b (F5): recorded only when not Legacy
 if(Fix_ClosePath!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_ClosePath="+(string)(int)Fix_ClosePath); // B49b (F3): recorded only when on
+if(Max_Spread_Points!=0) FileWrite(FileSET_handle,"Max_Spread_Points="+(string)Max_Spread_Points); // B49b (F6): recorded only when set
+if(Min_Margin_Level_PC!=0.0) FileWrite(FileSET_handle,"Min_Margin_Level_PC="+(string)Min_Margin_Level_PC); // B49b (F6): recorded only when set
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -810,6 +812,11 @@ sinput   ENUM_GATE_RECHECK       Gate_Recheck                  =                
 // open retries the close each server second, adds frozen, and ends when flat), and no stop modify ever loosens a
 // position's broker SL (B49a can write 0 over a trailed stop after a harvest).
 sinput   ENUM_GOAT_FIX           Fix_ClosePath                 =                   GoatFix_Off;       // Fix: end only when flat; never loosen a stop
+// F6: pre-trade checks that can fire. B49a's spread cap is a fixed 9999 points (MaxSP) and its margin check is commented
+// out. 0 is off for both, which is B49a: Max_Spread_Points replaces MaxSP when set; Min_Margin_Level_PC refuses an order
+// whose projected margin level (equity over current plus this order's margin) would fall below it.
+sinput   int                     Max_Spread_Points             =                             0;       // Pre-trade: maximum spread in points (0 = off)
+sinput   double                  Min_Margin_Level_PC           =                             0;       // Pre-trade: minimum margin level % after the order (0 = off)
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

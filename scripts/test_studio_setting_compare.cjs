@@ -69,6 +69,12 @@ compare(w,a+'\nGate_Recheck=1\n',false,'Gate_Recheck');
 // B49b (F3): Fix_ClosePath, the same rule.
 compare(w,a+'\nFix_ClosePath=0\n',true);
 compare(w,a+'\nFix_ClosePath=1\n',false,'Fix_ClosePath');
+// B49b (F6): the pre-trade caps; an omitted cap is accepted only at 0 (off), however MT5 prints it.
+compare(w,a+'\nMax_Spread_Points=0\n',true);
+compare(w,a+'\nMax_Spread_Points=30\n',false,'Max_Spread_Points');
+compare(w,a+'\nMin_Margin_Level_PC=0\n',true);
+compare(w,a+'\nMin_Margin_Level_PC=0.00\n',true);
+compare(w,a+'\nMin_Margin_Level_PC=150.0\n',false,'Min_Margin_Level_PC');
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

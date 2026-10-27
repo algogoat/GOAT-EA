@@ -175,7 +175,7 @@ def _fwd_end_before_start(start, end):
     return _set(start) and _set(end) and end < start
 
 
-# ---- the lot/exit/RRR chain (GOAT V1.49.mq5:4180-4196, 4446-4519) --------------------------------------------
+# ---- the lot/exit/RRR chain (GOAT V1.49.mq5:4180-4196, 4446-4520) --------------------------------------------
 def _risk_per_seq(v):
     return v['Mode_Lots'] == v.choice('Mode_Lots', 'RiskperSeq')
 
@@ -193,28 +193,28 @@ def _tp_size(v):
 
 
 def _lp_tp_both_disabled(v):
-    """Line 4519 after the RRR block may have derived TP, SL or LP, and lines 4517-4518 zero sizes under 1."""
+    """Line 4520 after the RRR block may have derived TP, SL or LP, and lines 4518-4519 zero sizes under 1."""
     lp = v['Lock_Profit_Size']
     tp = v['TP_Pips'] * lp
     if _rrr_on(v):
         rrr = v['RRR']
         if rrr <= 0:
-            return False                                  # refused earlier (4477/4478); 4519 is not reached
+            return False                                  # refused earlier (4478/4479); 4520 is not reached
         sl = v['SL_Pips']
         if v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP'):
             if sl != 0:
                 if tp != 0:
-                    return False                          # refused at 4483
+                    return False                          # refused at 4484
                 tp = sl * rrr
             elif tp == 0:
-                return False                              # refused at 4489
+                return False                              # refused at 4490
         elif v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP'):
             if sl != 0:
                 if lp != 0:
-                    return False                          # refused at 4496
+                    return False                          # refused at 4497
                 lp = sl * rrr
             elif lp == 0:
-                return False                              # refused at 4502
+                return False                              # refused at 4503
     if -1.0 < lp < 1.0:
         lp = 0
     if -1.0 < tp < 1.0:
@@ -279,65 +279,65 @@ EA_INIT_RULES = (
           {'Mode_Lots': ['RiskperSeq']}, 'Mode_Lots==RiskperSeq && Risk<10',
           'Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low.',
           lambda v: _risk_per_seq(v) and v['Risk'] < 10),
-    _rule('MLPS_HARD_CLOSE_RISK_TOO_LOW', [4451], 'Sequence_MLPS_Hard_Close && Risk<10.0',
+    _rule('MLPS_HARD_CLOSE_RISK_TOO_LOW', [4452], 'Sequence_MLPS_Hard_Close && Risk<10.0',
           ['Sequence_MLPS_Hard_Close', 'Risk'], {}, 'Sequence_MLPS_Hard_Close && Risk<10.0',
           'Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10.',
           lambda v: v['Sequence_MLPS_Hard_Close'] and v['Risk'] < 10.0),
-    _rule('SMART_PEAK_RISK_TOO_LOW', [4457], 'Smart Peak requires Risk/MLPS amount of at least 10',
+    _rule('SMART_PEAK_RISK_TOO_LOW', [4458], 'Smart Peak requires Risk/MLPS amount of at least 10',
           ['Mode_Lots_Prog', 'Risk'], {'Mode_Lots_Prog': ['Lots_Prog_PeakSmart']},
           'Mode_Lots_Prog==Lots_Prog_PeakSmart && Risk<10.0',
           'Initialization Failed: Smart Peak requires Risk/MLPS amount of at least 10.',
           lambda v: _peak_smart(v) and v['Risk'] < 10.0),
-    _rule('SMART_PEAK_PERCENT_RANGE', [4462],
+    _rule('SMART_PEAK_PERCENT_RANGE', [4463],
           'Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0',
           ['Mode_Lots_Prog', 'Peak_Smart_Release_PC', 'Peak_Smart_Max_Close_PC'], {'Mode_Lots_Prog': ['Lots_Prog_PeakSmart']},
           'Mode_Lots_Prog==Lots_Prog_PeakSmart && (Peak_Smart_Release_PC or Peak_Smart_Max_Close_PC outside 0..100)',
           'Initialization Failed: Smart Peak inputs must use 0-100 percent ranges.',
           lambda v: _peak_smart(v) and (v['Peak_Smart_Release_PC'] < 0.0 or v['Peak_Smart_Release_PC'] > 100.0
                                         or v['Peak_Smart_Max_Close_PC'] < 0.0 or v['Peak_Smart_Max_Close_PC'] > 100.0)),
-    _rule('SMART_RESCUE_MAX_ADDS_BELOW_MINUS_ONE', [4465], 'Bias_Exit_Max_Exposure_Adds<-1',
+    _rule('SMART_RESCUE_MAX_ADDS_BELOW_MINUS_ONE', [4466], 'Bias_Exit_Max_Exposure_Adds<-1',
           ['Bias_Exit_Max_Exposure_Adds'], {}, 'Bias_Exit_Max_Exposure_Adds<-1',
           'Initialization Failed: Smart Rescue max positive adds cannot be less than -1.',
           lambda v: v['Bias_Exit_Max_Exposure_Adds'] < -1),
-    _rule('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', [4471], 'Mode_Lots!=RiskperSeq || Risk<=0.0',
+    _rule('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', [4472], 'Mode_Lots!=RiskperSeq || Risk<=0.0',
           ['Mode_Bias_Exit', 'Mode_Lots', 'Risk'],
           {'Mode_Bias_Exit': ['BiasExit_SmartRescue'], 'Mode_Lots': ['RiskperSeq']},
           'Mode_Bias_Exit==BiasExit_SmartRescue && (Mode_Lots!=RiskperSeq || Risk<=0.0)',
           'Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0.',
           lambda v: v['Mode_Bias_Exit'] == v.choice('Mode_Bias_Exit', 'BiasExit_SmartRescue')
           and (not _risk_per_seq(v) or v['Risk'] <= 0.0)),
-    _rule('RRR_NEGATIVE', [4477], 'if(RRR<0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
+    _rule('RRR_NEGATIVE', [4478], 'if(RRR<0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
           'Mode_RRR!=RRR_Disabled && RRR<0', 'Initialization Failed: Risk/Reward ratio cannot be negative',
           lambda v: _rrr_on(v) and v['RRR'] < 0),
-    _rule('RRR_ZERO', [4478], 'if(RRR==0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
+    _rule('RRR_ZERO', [4479], 'if(RRR==0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
           'Mode_RRR!=RRR_Disabled && RRR==0', 'Initialization Failed: Risk/Reward ratio is enabled but RRR=0',
           lambda v: _rrr_on(v) and v['RRR'] == 0),
-    _rule('RRR_SL_TP_BOTH_SET', [4483], 'Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
+    _rule('RRR_SL_TP_BOTH_SET', [4484], 'Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
           ['Mode_RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_TP']},
           'Mode_RRR==RRR_SL_TP && SL_Pips!=0 && TP_Pips*Lock_Profit_Size!=0',
           'Initialization Failed: Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP') and v['SL_Pips'] != 0 and _tp_size(v) != 0),
-    _rule('RRR_SL_TP_BOTH_ZERO', [4489], 'Risk/Reward mode is SL/TP, but both TP and SL are zero',
+    _rule('RRR_SL_TP_BOTH_ZERO', [4490], 'Risk/Reward mode is SL/TP, but both TP and SL are zero',
           ['Mode_RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_TP']},
           'Mode_RRR==RRR_SL_TP && SL_Pips==0 && TP_Pips*Lock_Profit_Size==0',
           'Initialization Failed: Risk/Reward mode is SL/TP, but both TP and SL are zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP') and v['SL_Pips'] == 0 and _tp_size(v) == 0),
-    _rule('RRR_SL_LP_BOTH_SET', [4496], 'Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
+    _rule('RRR_SL_LP_BOTH_SET', [4497], 'Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
           ['Mode_RRR', 'SL_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_LP']},
           'Mode_RRR==RRR_SL_LP && SL_Pips!=0 && Lock_Profit_Size!=0',
           'Initialization Failed: Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP') and v['SL_Pips'] != 0 and v['Lock_Profit_Size'] != 0),
-    _rule('RRR_SL_LP_BOTH_ZERO', [4502], 'Risk/Reward mode is SL/LP, but both LP and SL are zero',
+    _rule('RRR_SL_LP_BOTH_ZERO', [4503], 'Risk/Reward mode is SL/LP, but both LP and SL are zero',
           ['Mode_RRR', 'SL_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_LP']},
           'Mode_RRR==RRR_SL_LP && SL_Pips==0 && Lock_Profit_Size==0',
           'Initialization Failed: Risk/Reward mode is SL/LP, but both LP and SL are zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP') and v['SL_Pips'] == 0 and v['Lock_Profit_Size'] == 0),
-    _rule('GRID_SIZE_TOO_SMALL', [4514], 'Grid_Size >-0.5 && Grid_Size <0.5', ['Grid_Size'], {},
+    _rule('GRID_SIZE_TOO_SMALL', [4515], 'Grid_Size >-0.5 && Grid_Size <0.5', ['Grid_Size'], {},
           'Grid_Size>-0.5 && Grid_Size<0.5', 'Initialization Failed: Pip Gap Size too small or zero',
           lambda v: -0.5 < v['Grid_Size'] < 0.5),
-    _rule('LP_AND_TP_BOTH_DISABLED', [4519], 'LP_Size_  ==0   && TP_Pips_  ==0', RRR_CHAIN,
+    _rule('LP_AND_TP_BOTH_DISABLED', [4520], 'LP_Size_  ==0   && TP_Pips_  ==0', RRR_CHAIN,
           {'Mode_RRR': ['RRR_Disabled', 'RRR_SL_TP', 'RRR_SL_LP']},
-          'after the RRR block and the |x|<1 -> 0 normalisation of lines 4517-4518: LP_Size_==0 && TP_Pips_==0',
+          'after the RRR block and the |x|<1 -> 0 normalisation of lines 4518-4519: LP_Size_==0 && TP_Pips_==0',
           'Initialization Failed: Both LP and TP cannot be zero/disabled.', _lp_tp_both_disabled),
 )
 
@@ -394,21 +394,25 @@ NOT_PORTED = (
          condition='credential rejected and replacement cannot begin', reason='license service response'),
     dict(lines=(4436,), anchor='GOAT license service is temporarily unavailable', condition='license service unavailable', reason='license service response'),
     dict(lines=(4441,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
-    dict(lines=(4559,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4567,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
+    # B49b (F6): the EA now refuses what validate_strategy already refused, so it is decided before these rules run.
+    dict(lines=(4451,), anchor='Mode_Lots == RiskperSeq && Max_Seq_Trades<=1', condition='Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
+         reason='decided first by studio_strategy_settings.check_risk_sizing (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), over every '
+                'reachable value, before check_ea_init runs'),
+    dict(lines=(4560,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4568,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
     # B49b (F7 SIG-01): every enabled signal indicator's handle, as ATR's.
-    dict(lines=(4580,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4581,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4582,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4583,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4584,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
+    dict(lines=(4581,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4582,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4583,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4584,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4585,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
          reason='symbol/indicator runtime (the indicator file)'),
-    dict(lines=(4585,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4648,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4586,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4649,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4649,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4657,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4662,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4650,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4658,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4663,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

@@ -67,9 +67,10 @@ def numeric(value, definition, *, step=False):
 # bytes and values are never rewritten: the controller writes MT5's tester profile from exactly the launch's
 # [TesterInputs] (studio_tester_profile), so an omitted appended input runs its build default, and the EA's Studio
 # accepts it in the readback only at that default (GOATStudioSettingCompare.mqh, GoatStudioFixedInternal).
-# B49b appends its per-fix flags (PR-1 Fix_MoneyVolume, PR-5 Gate_Recheck, PR-3 Fix_ClosePath), each defaulting to
+# B49b appends its per-fix flags (PR-1 Fix_MoneyVolume, PR-5 Gate_Recheck, PR-3 Fix_ClosePath) and PR-6's pre-trade caps
+# (Max_Spread_Points, Min_Margin_Level_PC; 0 = off), each defaulting to
 # B49a's behaviour.
-APPENDED_INPUTS = ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath')
+APPENDED_INPUTS = ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC')
 
 
 def appended_default(definition):

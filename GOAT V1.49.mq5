@@ -7402,6 +7402,19 @@ string GoatFirstOrderGateReason(const int pos_dir,const bool opposite_traded)
    if(!DashboardEntryAllowed(pos_dir))            return "dashboard_entry";
    return "";
   }
+// Under Gate_AtFirstOrder a Reverse_Seq signal starts the opposite position, so SignalEntryTrigger's bias pre-gate and its
+// skip counters read the POSITION's side too, as the recheck does (Claude-Mac and Codex GOAT-EA#271 P1: reading the
+// signal's side there made the two mutually exclusive under a directional bias, so reversed starts never traded).
+// Legacy, or no Reverse_Seq: the signal's side, as B49a.
+int GoatStartBiasSide(const int signal_side)
+  {
+   if(Gate_Recheck==Gate_AtFirstOrder && Reverse_Seq) return (signal_side==OP_BUY) ? OP_SELL : OP_BUY;
+   return signal_side;
+  }
+bool GoatStartBiasOpen(const int side)
+  {
+   return (side==OP_BUY) ? Sequence_New_Bias_B : Sequence_New_Bias_S;
+  }
 // B49b:end first-order-gate-reason
 void SignalEntryTrigger()//int Buys,int Sells)
   {
@@ -7414,7 +7427,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
    {
-    if(Sequence_New_News&&Sequence_New_Bias_B)
+    if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_B
     {
      int gate_active_b=GoatGateActiveMask();
      if(Reverse_Seq)
@@ -7436,7 +7449,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     else
     {
      if(!Sequence_New_News&&!LastBuySignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_B&&!LastBuySignal) {Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);} // B44 item 4: log only
+     if(!GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))&&!LastBuySignal) {if(GoatStartBiasSide(OP_BUY)==OP_BUY) Sequence_Skipped_Bias_B++; else Sequence_Skipped_Bias_S++; GoatGateLog("VETO",GoatStartBiasSide(OP_BUY));} // B44 item 4: log only; B49b (F5): counted on the bias side that vetoed
     }
     LastBuySignal=true; // whether skipped of not the signal was present
    }
@@ -7450,7 +7463,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
    {
-    if(Sequence_New_News&&Sequence_New_Bias_S)
+    if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_S
     {
      int gate_active_s=GoatGateActiveMask();
      if(Reverse_Seq)
@@ -7471,7 +7484,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     else
     {
      if(!Sequence_New_News&&!LastSellSignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only
+     if(!GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))&&!LastSellSignal) {if(GoatStartBiasSide(OP_SELL)==OP_BUY) Sequence_Skipped_Bias_B++; else Sequence_Skipped_Bias_S++; GoatGateLog("VETO",GoatStartBiasSide(OP_SELL));} // B44 item 4: log only; B49b (F5): counted on the bias side that vetoed
     }
     LastSellSignal=true; // whether skipped of not the signal was present
    }

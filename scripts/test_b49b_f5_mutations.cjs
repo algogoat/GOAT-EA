@@ -34,6 +34,13 @@ const MUTANTS=[
  // The promotion block and the placement.
  ['a stale refusal is not cleared','      g_goat_first_order_refused[(dir==OP_SELL) ? 1 : 0]=false; // B49b (F5)\n',''],
  ['a refused promotion leaves its candidate waiting','      else if(g_goat_first_order_refused[(dir==OP_SELL) ? 1 : 0]) End_Sequence("Gate at first order");','      ;'],
+ // GOAT-EA#271 P1: the pre-gate reads the position's side under AtFirstOrder + Reverse_Seq.
+ ['the pre-gate reads the signal\'s side (P1)','   if(Gate_Recheck==Gate_AtFirstOrder && Reverse_Seq) return (signal_side==OP_BUY) ? OP_SELL : OP_BUY;\n',''],
+ ['Legacy reads the position\'s side too','   if(Gate_Recheck==Gate_AtFirstOrder && Reverse_Seq) return (signal_side==OP_BUY) ? OP_SELL : OP_BUY;','   if(Reverse_Seq) return (signal_side==OP_BUY) ? OP_SELL : OP_BUY;'],
+ ['the bias side maps to the wrong flag','   return (side==OP_BUY) ? Sequence_New_Bias_B : Sequence_New_Bias_S;','   return (side==OP_BUY) ? Sequence_New_Bias_S : Sequence_New_Bias_B;'],
+ ['a buy-signal veto is counted on the signal side','{if(GoatStartBiasSide(OP_BUY)==OP_BUY) Sequence_Skipped_Bias_B++; else Sequence_Skipped_Bias_S++; GoatGateLog("VETO",GoatStartBiasSide(OP_BUY));}','{Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);}'],
+ ['a sell-signal veto is counted on the signal side','{if(GoatStartBiasSide(OP_SELL)==OP_BUY) Sequence_Skipped_Bias_B++; else Sequence_Skipped_Bias_S++; GoatGateLog("VETO",GoatStartBiasSide(OP_SELL));}','{Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);}'],
+ ['the buy pre-gate ignores bias','    if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_BUY)))','    if(Sequence_New_News)'],
  ['the first order is not gated','      if(FirstOrderGatesRefused()) return false; // B49b (F5): Gate_Recheck, the first real order passes every start gate\n',''],
 ];
 function runOn(mainText){

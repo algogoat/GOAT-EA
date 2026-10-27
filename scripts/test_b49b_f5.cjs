@@ -138,4 +138,51 @@ function promote({dir=0,mustCheck=true,refused=false,started=false,stale=false})
  assert.equal((main.match(/FirstOrderGatesRefused\(\)/g)||[]).length,2,'defined once, called once');
  ok();}
 
+// 5. End to end through SignalEntryTrigger (Claude-Mac and Codex GOAT-EA#271 P1). A directional bias mode (Bias_Opens,
+//    Bias_Close_low) leaves exactly one side open: bullish B=true/S=false, bearish the mirror, neutral neither. Under
+//    Gate_AtFirstOrder with Reverse_Seq the pre-gate reads the position's side, so the reversed start passes both the
+//    pre-gate and the first-order recheck. Each start runs the recheck (GoatFirstOrderGateReason) as Add_Level does.
+//    Legacy keeps B49a's signal-side pre-gate and no recheck (EX-11 as it was).
+const BIAS={bullish:[true,false],bearish:[false,true],neutral:[false,false],open:[true,true]};
+function trigger({gate=1,reverse=true,bias='bullish',signal=0}){
+ const [b,s]=BIAS[bias];
+ const g=gates({Sequence_New_Bias_B:b,Sequence_New_Bias_S:s});
+ Object.assign(g,{Gate_Recheck:gate,Reverse_Seq:reverse,Delay_Trade:0,RSI_Disabled:0,RSI_Mode:1,RSI_Sig:signal,EMA_Mode:0,ADX_Mode:0,BB_Mode:0,MACD_Mode:0,
+  RSI2_Mode:0,Trade_Disabled:0,BB_Disabled:0,OP_BUYSELL:2,ask:1.1001,bid:1.1,Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
+  LastBuySignal:false,LastSellSignal:false,opened:[],vetoes:[],GoatGateActiveMask:()=>0,GoatGateLog:(kind,op)=>g.vetoes.push(kind+':'+op),
+  MathAbs:Math.abs});
+ const seq=dir=>({dir,Active:false,Traded:false,Add_Level:()=>{
+  const reason=g.Gate_Recheck===1?g.GoatFirstOrderGateReason(dir,false):'';
+  if(reason==='') g.opened.push(dir===0?'BUY':'SELL');return reason==='';}});
+ g.Seq_Buy=seq(0);g.Seq_Sell=seq(1);g.Seq_Buy_Virtual={Active:false};g.Seq_Sell_Virtual={Active:false};
+ const body=js(bodyOf(main,'void SignalEntryTrigger()').replace(/^\s*static\s+bool\s+LastBuySignal=false,LastSellSignal=false;\s*$/m,''));
+ vm.runInContext('function SignalEntryTrigger(){'+body+'}',g);
+ if(main.includes('int GoatStartBiasSide(const int signal_side)'))
+  vm.runInContext(fn('GoatStartBiasSide',['signal_side'],bodyOf(main,'int GoatStartBiasSide(const int signal_side)'))
+   +fn('GoatStartBiasOpen',['side'],bodyOf(main,'bool GoatStartBiasOpen(const int side)')),g);
+ g.SignalEntryTrigger();return g;
+}
+{const B=0,S=1;
+ // AtFirstOrder + Reverse_Seq: the reversed start trades whenever the position's side is open.
+ assert.deepEqual(trigger({bias:'bullish',signal:S}).opened,['BUY'],'bullish: a sell signal opens the reversed buy');
+ assert.deepEqual(trigger({bias:'bearish',signal:B}).opened,['SELL'],'bearish: a buy signal opens the reversed sell');
+ const veto=trigger({bias:'bullish',signal:B});
+ assert.deepEqual([veto.opened,veto.Sequence_Skipped_Bias_S,veto.Sequence_Skipped_Bias_B,veto.vetoes],[[],1,0,['VETO:1']],
+  'bullish: a buy signal\'s reversed sell is vetoed on the sell side (counted there)');
+ const vetoS=trigger({bias:'bearish',signal:S});
+ assert.deepEqual([vetoS.opened,vetoS.Sequence_Skipped_Bias_B,vetoS.Sequence_Skipped_Bias_S,vetoS.vetoes],[[],1,0,['VETO:0']],
+  'bearish: a sell signal\'s reversed buy is vetoed on the buy side (counted there)');
+ assert.deepEqual(trigger({bias:'neutral',signal:B}).opened,[],'neutral: nothing');assert.deepEqual(trigger({bias:'neutral',signal:S}).opened,[]);
+ assert.deepEqual(trigger({bias:'open',signal:B}).opened,['SELL']);assert.deepEqual(trigger({bias:'open',signal:S}).opened,['BUY']);
+ // AtFirstOrder without Reverse_Seq: the position is the signal's side.
+ assert.deepEqual(trigger({reverse:false,bias:'bullish',signal:B}).opened,['BUY']);
+ assert.deepEqual(trigger({reverse:false,bias:'bullish',signal:S}).opened,[]);
+ const plain=trigger({reverse:false,bias:'bullish',signal:S});assert.deepEqual([plain.Sequence_Skipped_Bias_S,plain.vetoes],[1,['VETO:1']]);
+ // Legacy keeps B49a: the signal's side pre-gates and nothing rechecks (a bullish buy signal opens a reversed sell).
+ assert.deepEqual(trigger({gate:0,bias:'bullish',signal:B}).opened,['SELL'],'Legacy: B49a\'s EX-11 behaviour, unchanged');
+ const legacyVeto=trigger({gate:0,bias:'bullish',signal:S});
+ assert.deepEqual([legacyVeto.opened,legacyVeto.Sequence_Skipped_Bias_S,legacyVeto.vetoes],[[],1,['VETO:1']],'Legacy: vetoed and counted as B49a');
+ assert.deepEqual(trigger({gate:0,reverse:false,bias:'bullish',signal:B}).opened,['BUY']);
+ ok();}
+
 console.log(JSON.stringify({passed,test:'b49b_f5'}));

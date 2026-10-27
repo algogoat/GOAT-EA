@@ -285,7 +285,7 @@ function dailyFixture(mode,text=main){
 //     SET is B47's bytes exactly (an omitted Ledger_Mode reads as Legacy: the controller's APPENDED_INPUTS, the child
 //     audit's Legacy default). WriteSet's last lines run here, with the same tail cut from B47's header as the control.
 {const writeSet=bodyOf(header,'void WriteSet(string desc)');
- // B50 (A0) writes its own lines after this one; they are tested in scripts/test_b50_no_drift.cjs (the WriteSet golden).
+ // B50 (A0) writes its own lines after this one; they are tested in scripts/test_b50_parity.cjs (the WriteSet golden).
  const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.includes('// B50:begin b50-writeset')?text.indexOf('// B50:begin b50-writeset'):text.indexOf('FileClose(FileSET_handle);'));
  const run=(text,mode)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
   FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};

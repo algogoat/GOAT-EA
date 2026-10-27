@@ -103,6 +103,12 @@ class PortedRuleTests(RuleCase):
         # V1.48 has no B50 input: its schema carries none of these rules, and nothing else changes.
         self.assertFalse(set(self.B50_CASES) & {rule['id'] for rule in applicable_rules(SCHEMAS['1.48'])})
         self.assertEqual({rule['id'] for rule in applicable_rules(SCHEMAS['1.48'])}, set(self.CASES))
+        # GOAT-EA#269 P3: a B50 schema that lost one of its inputs fails closed, as for any other lost input.
+        for lost in ('Engine_Mode', 'NY_Session', 'Server_UTC_Offset'):
+            with self.subTest(lost=lost):
+                damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs'][lost]
+                with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no ' + lost):
+                    applicable_rules(damaged)
 
     def test_the_ny_session_mirrors_the_eas_parse(self):
         # GOAT V1.49.mq5:4439-4450: one '-', one ':' per half, hours of one or two digits, two-digit minutes.

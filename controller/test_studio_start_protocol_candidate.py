@@ -1,5 +1,6 @@
 """Keep the forward B49a candidate, and the retained B47, B46, B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
+import subprocess
 import json
 from pathlib import Path
 import re
@@ -47,9 +48,16 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b50_guard = (ROOT / 'scripts/test_b50_no_drift.cjs').read_text(encoding='utf-8')
         b50_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b50_guard, re.M)[1].replace("'", '"') + ']'))
         self.assertTrue({'GOAT V1.49.mq5', 'GOAT_Inputs_Definitions.mqh'} <= b50_changed)
+        # Those files cannot hash to B49a's identity in the tree (they carry B50's lines by design), so each is checked
+        # where it does: B49a's identity pins B49a's own commit (65fde12, checked out with CRLF as .gitattributes
+        # does). The tree's version of them is test_b50_no_drift's: B49a plus marked B50 lines only (GOAT-EA#269 P3).
         for relative, expected in identity['sources'].items():
             if relative not in b50_changed:
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                blob = subprocess.run(['git', 'show', '65fde12:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+                blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B49a commit)')
         # B47 is B46 plus Claude-Mac's B46 review items (goatai#2350): live-chart CID mappings, claim heartbeat expiry,
         # the cid_duplicate add freeze, an unreadable claim refuses, no claim under login 0. Only the entrypoint differs.
         self.assertEqual(sorted(b47['consolidates']), ['B47.1', 'B47.2', 'B47.3', 'B47.4', 'B47.5'])

@@ -73,6 +73,7 @@ APPENDED_INPUTS = ('Ledger_Mode',
                    'Engine_Mode', 'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite',
                    'Single_Time_Stop_Bars', 'Single_Time_Stop_TF', 'Clock_Mode', 'Server_Clock_Model', 'Server_UTC_Offset',
                    'NY_Session', 'Rollover_Block_Minutes')
+B50_INPUTS = APPENDED_INPUTS[1:]
 
 
 def appended_default(definition):

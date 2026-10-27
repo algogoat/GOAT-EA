@@ -30,7 +30,7 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 import re
 
-from studio_strategy_settings import APPENDED_INPUTS, numeric
+from studio_strategy_settings import B50_INPUTS, numeric
 
 EA_SOURCE = 'GOAT V1.49.mq5'
 EA_INIT_CODE = 'EA_INIT_REFUSED'
@@ -543,8 +543,10 @@ def applicable_rules(schema, table=EA_INIT_RULES):
     rules = []
     for rule in table:
         missing = [name for name in rule['inputs'] if name not in inputs]
-        if missing and all(name in APPENDED_INPUTS for name in missing):
-            continue    # B50 (A0): a schema without an appended input is a build without that input's rules (V1.48, B49a)
+        # B50 (A0): a schema that declares none of B50's inputs is a build without them, so without their rules (V1.48,
+        # B49a). One that declares some but lost one a rule reads fails closed below, like any other lost input.
+        if missing and all(name in B50_INPUTS for name in missing) and not any(name in inputs for name in B50_INPUTS):
+            continue
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
                   for label in wanted if label not in (inputs[name].get('enum_choices') or {})]
         if not missing and not labels:

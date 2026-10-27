@@ -10,12 +10,14 @@
 //   inputs.json is exactly what studio_input_schema.discover reads from this header; inputs are append-only: B49a's 115
 //   inputs keep their order, type, default and enum choices, except that each ENUM_MODE_TFs input gains exactly
 //   {"TF_D1":1440} (Claude-Mac ruling 1), and the new ones are exactly NEW_INPUTS, in order, after Ledger_Mode;
-// - until the A4 assembly the build identity is B49a's (A4 moves the build ID and marker and adds IDENTITY_LINES).
+// - the tree is B50's identity (candidate-builds/beta17-B50/identity.json, A4): every source hashes to it, it differs
+//   from B49a in exactly CHANGED and ADDED, and the build ID and marker are its own. The build ID line is the one
+//   unmarked change (IDENTITY_LINES).
 // Replaces test_b49a_no_drift.cjs as the tree's guard; that one now proves B49a's own commit (65fde12).
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B50 change is marked, listed and reviewable. Neutrality with
 // the new inputs at their defaults is proven by scripts/test_b50_parity.cjs (the converted OnTick region of B49a and
 // of this tree on the same fixtures, and the WriteSet golden) and, natively, by the tester parity on Banker (flags off,
-// B50 against B49a e43ed98e, identical deal tables on the 48 templates and sampled exports).
+// B50 against B49a 220a8725, identical deal tables on the 48 templates and sampled exports).
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B49A_SOURCE='65fde12';
@@ -29,6 +31,7 @@ const REMOVED={
   'if(InActive && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)',                        // A0: the NY clock's day end
   'if(InActive && stm_cur.day_of_week==5 && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)', // A0: the NY clock's Friday
   'if(!DashboardPortfolioPaused&&Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec&&(DashboardTradeAllowBuy||DashboardTradeAllowSell)) SignalEntryTrigger();//Buys,Sells);', // A0: g_GoatEntryBlocked
+  '#define   GOAT_BUILD_ID "V1.49-BETA17-49"','#define   GOAT_BUILD_MARKER "B49a"',                                    // A4: the build identity
  ],
  'GOATOptimizationInputs.mqh':[
   'if(found<0) {error="Missing selected input: "+name;return false;}',                                              // #269 P1: a B50 axis may be omitted
@@ -46,6 +49,9 @@ const NEW_DEFAULTS={Engine_Mode:['sinput','ENUM_ENGINE_MODE','Engine_Grid'],Sing
  Single_Time_Stop_TF:['input','ENUM_MODE_TFs','TF_Cur'],Clock_Mode:['sinput','ENUM_CLOCK_MODE','Clock_Server'],
  Server_Clock_Model:['sinput','ENUM_SERVER_CLOCK_MODEL','ServerClock_NYClose'],Server_UTC_Offset:['sinput','int','2'],
  NY_Session:['input','string','"09:30-16:00"'],Rollover_Block_Minutes:['input','int','0']};
+// A4: the build ID line (exact text in GOAT V1.49.mq5) is the one unmarked change: its value "V1.49-BETA17-50" is the
+// build's name, so it cannot carry the marker inside the string; the marker line carries "B50" in its value.
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-50"'];
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
@@ -115,7 +121,7 @@ for(const f of CHANGED){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B49a line(s) is unmarked');
   for(const n of added){
    const text=lines[n-1];
-   assert.ok(/B50/.test(text)||inBlock[n-1],f+':'+n+' changed since B49a without a B50 marker: '+text.trim());
+   assert.ok(/B50/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)),f+':'+n+' changed since B49a without a B50 marker: '+text.trim());
   }
  }
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[])].sort(),f+': the B49a lines removed are exactly REMOVED');
@@ -160,10 +166,18 @@ const header=read('GOAT_Inputs_Definitions.mqh').toString('utf8');
 assert.match(header,/\r\n    case TF_H4:   return PERIOD_H4;\r\n    case TF_D1:   return PERIOD_D1; \/\/ B50/,'TF2TF: TF_D1 is PERIOD_D1');
 checks++;
 
-// 6. Until the A4 assembly the build identity stays B49a's; A4 moves it (and adds IDENTITY_LINES and identity checks).
+// 6. The tree is B50's identity (A4): every source hashes to candidate-builds/beta17-B50/identity.json, it differs from
+//    B49a in exactly CHANGED and ADDED, and the build ID and marker are its own.
+const b50=JSON.parse(read('candidate-builds/beta17-B50/identity.json'));
+assert.equal(b50.build_id,'V1.49-BETA17-50');assert.equal(b50.build_marker,'B50');assert.equal(b50.supersedes_candidate,'beta17-B49a');
+assert.deepEqual(Object.keys(b50.sources).sort(),[...Object.keys(b49a.sources),...ADDED].sort(),'B50\'s identity covers B49a\'s closure plus ADDED');
+for(const [f,h] of Object.entries(b50.sources)) assert.equal(sha(read(f)),h,'B50 identity pins '+f);
+assert.deepEqual(Object.keys(b50.sources).filter(f=>b50.sources[f]!==b49a.sources[f]).sort(),[...CHANGED,...ADDED].sort(),'B50 differs from B49a in exactly CHANGED and ADDED');
 const mainText=read('GOAT V1.49.mq5').toString('utf8');
-assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_ID "'+b49a.build_id+'"').length,1,'the build ID is B49a\'s until A4');
-assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "'+b49a.build_marker+'"').length,1,'the marker is B49a\'s until A4');
+assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_ID "'+b50.build_id+'"').length,1,'the build ID is the identity\'s');
+assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "'+b50.build_marker+'"').length,1,'the marker is the identity\'s');
+assert.equal((mainText.match(/#define\s+GOAT_BUILD_(?:ID|MARKER)\b/g)||[]).length,2,'one build ID and one marker');
+assert.equal(deps.main_sha256,b50.sources['GOAT V1.49.mq5'],'the contract pins the identity\'s entrypoint');
 checks++;
 
 console.log('b50_no_drift: '+checks+' checks passed (B49a '+B49A_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');

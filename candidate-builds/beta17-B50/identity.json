@@ -1,0 +1,97 @@
+{
+  "schema": "goat-forward-candidate-identity-v1",
+  "version": "1.49",
+  "build_id": "V1.49-BETA17-50",
+  "build_marker": "B50",
+  "source_base": "65fde1223e152d37f07a7685416a3ab51194ed53",
+  "consolidates": [
+    "B50.0",
+    "B50.0b",
+    "B50.1",
+    "B50.2",
+    "B50.3"
+  ],
+  "consolidated_heads": {
+    "B50.0": {
+      "change": "A0 scaffold: the 12 B50-alpha inputs appended after Ledger_Mode (Engine_Mode default Engine_Grid, the single, clock and rollover inputs at their B49a-reproducing defaults), TF_D1 appended to ENUM_MODE_TFs, the NY clock and single-trade stubs, the OnTesterInit default for an omitted B50 axis (GOAT-EA#269 P1)",
+      "pr": "algogoat/GOAT-EA#269 (claude-mac/b50-a0)",
+      "coordination": "algogoat/goatai#2587 (B50-alpha, Track B: 6433781951 / 6433796100; integration GOAT-EA#277)"
+    },
+    "B50.0b": {
+      "change": "A0 follow-up: the entry block holds through the Delay_Trade virtual-to-real promotion; the NY clock refuses pre-2007 tester history for the Fixed and EUDST models",
+      "pr": "algogoat/GOAT-EA#275 (claude-mac/b50-a0-fix2)",
+      "coordination": "algogoat/goatai#2587 (B50-alpha, Track B: 6433781951 / 6433796100; integration GOAT-EA#277)"
+    },
+    "B50.1": {
+      "change": "A1 single core: GoatSingleOpen opens one ATR-stopped position per signal episode under Engine_Single (RiskperSeq sized from tick value / tick size only, floored to the step, refused below the minimum; TP from R or ATR; the stop and TP clear the stops level), following Add_Level's order; re-armed on the signal's false edge (Release cross-review GOAT-EA#272)",
+      "pr": "algogoat/GOAT-EA#272 (claude-mac/b50-a1r)",
+      "coordination": "algogoat/goatai#2587 (B50-alpha, Track B: 6433781951 / 6433796100; integration GOAT-EA#277)"
+    },
+    "B50.2": {
+      "change": "A2 New York clock: DST, the server-clock models (NY-close, fixed, EU DST), the NY session, the rollover block and the live self-check; the Friday close fires at the earlier of the session end or Friday 16:55 NY; the FX trade-date convention",
+      "pr": "algogoat/GOAT-EA#273 (claude-mac/b50-a2r)",
+      "coordination": "algogoat/goatai#2587 (B50-alpha, Track B: 6433781951 / 6433796100; integration GOAT-EA#277)"
+    },
+    "B50.3": {
+      "change": "A3 single exits: the opposite-signal exit, the time stop (retried every tick until it closes), and the FastSpeed bypass under Engine_Single",
+      "pr": "algogoat/GOAT-EA#274 (claude-mac/b50-a3r)",
+      "coordination": "algogoat/goatai#2587 (B50-alpha, Track B: 6433781951 / 6433796100; integration GOAT-EA#277)"
+    }
+  },
+  "change": "B49a plus B50-alpha (research only: no admission, no live arm): the single-trade engine (Engine_Single) with ATR stops, R/ATR take-profits, the opposite-signal exit and the time stop; D1; the New York clock with server-clock models, the NY session and the rollover block. Every input defaults to B49a's behaviour (Engine_Grid, Clock_Server, zero sizes), so flags off is B49a; every changed line since B49a is marked B50 (scripts/test_b50_no_drift.cjs); the input header gains 12 appended inputs and TF_D1, so B50 batch packages carry its own header pin.",
+  "supersedes_candidate": "beta17-B49a",
+  "sources": {
+    "Dashboard.mqh": "34f9fbc47d2c18c76ab52a6ebd9b0ba140f5b61151596410696b634821480f40",
+    "GOAT V1.49.mq5": "a77a3aac1bdfbbfb13ad9b73918a84929f561f02c35491d75a9adef3986ccdca",
+    "GOATAIWireV2.mqh": "14a1f0f2ae0baf65494fea67df0d8efc26ce547cd346fbbc47d3264d00006c90",
+    "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
+    "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",
+    "GOATEADeviceActivation.mqh": "71f3956405b599911ff70dd37c981a820b859b5b312a5ea363c94d617d43a17b",
+    "GOATEvidenceEnd.mqh": "c4765e143bf005cd326b8e388639fb90f34ac9fc99a89c77334b3b561e15ec7f",
+    "GOATLicenseInitRetry.mqh": "e8ebe975238350d7838791eccb0e1cd844a13dd0f73c9d5765e13425fc192379",
+    "GOATOptimizationInputs.mqh": "a908ff7152217f4936d7e38ad69b97735999e8766448c6296caae74ae9057b53",
+    "GOATPortfolioChildAudit.mqh": "644242a163c308d3ea2a6a7e1b290aa45791a599b7ecafaa756ddada1c20a4c9",
+    "GOATPortfolioSetupControl.mqh": "d1cd09294c88b29a37acdd75223a73ba7cf88a1b36593d3f68b64e5fa1aace86",
+    "GOATSetupControl.mqh": "b4ac1c18c6f4a19b67acd513994cfc76baaa39d0f6f60bfbaf48a074988b6d70",
+    "GOATStudioBridge.mqh": "3d3b314d74d9f9e6031be0be2f2964dbda5234ebda3222b05bd6a0f8a3d196c6",
+    "GOATStudioCompletion.mqh": "94395d1c2729378df724aaa03a652e2cbafc3888d1b5353fa32b5df314fd5f47",
+    "GOATStudioControlFeedback.mqh": "50d8cad0d64b7730ed90b7e4b692cf74530dcb8952ff5aa3914dbb16be1934ca",
+    "GOATStudioDispatch.mqh": "a8292c3f1fb8c48288880a2389f74d4eb5134cbae6237efda8d22b7168838250",
+    "GOATStudioDraftDisplayPolicy.mqh": "5626e0d51afffc9e74116de3daf8805c3d9f057eaaefa1565f26473e9106c226",
+    "GOATStudioExportDates.mqh": "ed5fe016c3beaf75632a11a1f2142b69239a2e5055d638cb4922c5d055195358",
+    "GOATStudioNative.mqh": "1fa4458dc58f13bc9113232d35c596f95f2da360b59a50ba194b5fe6eed04c56",
+    "GOATStudioQueueList.mqh": "924592b9ad494f23b3cd0a6c8c8c33c580a874308ffc781ee4772351d3a2d4e0",
+    "GOATStudioRecovery.mqh": "8280f8d3194075183b087061d6d4d0193b4d9c3db5db7b2d99fca845032c3993",
+    "GOATStudioRecoveryFiles.mqh": "ed3192689d9e7f02ca05c8034caf82778989ab5a8481372ca8e46c64610220c8",
+    "GOATStudioSettingCompare.mqh": "644501cfe5eb84ffdc5213cb01401c4a10c77cabfcf2e4afaba9aa21b1b23b49",
+    "GOATStudioSettingTypes.mqh": "b587df570f1962eb25f6244d822c77c242c8831e03799a0566e331ff12138403",
+    "GOATStudioSettingValues.mqh": "8483511a7e9a7498d268c95923342f620a8a6de6eaffa7afcd8d228c8daadabf",
+    "GOATStudioUI.mqh": "88313c21db89bb0293619191eb988503c3aa1b06dcf2cd26bfb822f666d8666a",
+    "GOATStudioWorkers.mqh": "5ef12818f142840e9f6964caa0a231fff6d1a2742ceca1ed0c6449d5a42640e2",
+    "GOATTesterStopConfirm.mqh": "796cd047c12d633bef8616ae63b356f265a87efebc50f6651d3a2a2f7afd3732",
+    "GOAT_DashboardAILaunchPolicy.mqh": "835a1e98906353fed9b6f3f668b6a4e2f5c1f1381fbd2de33dc6b70579f920c8",
+    "GOAT_DashboardOverview.mqh": "f7011e51e21ffe25a026d24cab548713c7bb9095d46d6e210efe62c56e3284ad",
+    "GOAT_DirectionGuard.mqh": "a682957659fa16f534d2dab54cdfa5d4def759cde522f4991487cb62bf10bfea",
+    "GOAT_DirectionGuardCore.mqh": "dc46e1c6f1deef1414af73126fbd58098ae32ac54cbf163565a9d2ee4d602f78",
+    "GOAT_Inputs_Definitions.mqh": "37f27f3d49471c57488ed313ba8acc2961745529ae06afaf2e24c1e391c4a958",
+    "GOAT_NYClock.mqh": "afb0b5c22afcec5e1097df9a349db67f2c91179cac6eb990bc817bbcddf5aede",
+    "GOAT_SequenceExport.mqh": "2b969d5fa363beba69398569d94911ae901cec1e52f9ffb7eb75113adb90a54c",
+    "GOAT_SequenceHostIO.mqh": "fbde0abaa7d1f9bca3318f2707b2d278581c2887dea419fe5495146004c1d9d9",
+    "GOAT_SequencePackage.mqh": "5db878a58b7080dbdc110554bc46a64c2dad867c9f1f3d0972974b8f3ad9fc9a",
+    "MTTester.mqh": "a86dbdee543c944357ca45f28c69f4f01e247138d14a879eec5ad04f74c3b179",
+    "NewsBiasFilter.mqh": "d0aa07a7e8dbe1c64a90d8e3b43293428a0eff398e47987c28ce270eb4b50285",
+    "Optimizer.mqh": "0f21071b8418b0ef32663c5d7a3ee4b9807989000e1d435104065c6f6bd729c0",
+    "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
+    "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
+  },
+  "binary": {
+    "name": "GOAT V1.49.ex5",
+    "sha256": "8364a37121b01d7ce2f59668c2d1f7300c693ab2c9d49a3a89b6d7568544a795",
+    "bytes": 2536774
+  },
+  "compile": "compile-receipt.json",
+  "native_qualified": false,
+  "customer_delivery": false,
+  "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",
+  "dependencies": "External MT5 include/resource qualification and native execution remain unproven; compile is not admission."
+}

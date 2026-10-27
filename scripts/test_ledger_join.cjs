@@ -130,7 +130,9 @@ function chart(acct,mode,text=main){
 }
 const HOOK_LINE='        if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {LedgerAddPosition((ulong)LastOrderTicket); AccumulateSequenceDealPL((ulong)LastDealTicket);} // B49a (F2): join the position, book its entry commission';
 assert.ok(main.includes('        TradeLevels[Level_Count-1].ticket      = LastOrderTicket;\n'+HOOK_LINE+'\n'),'the hook follows the new level\'s ticket in Add_Level');
-assert.equal(main.split('LedgerAddPosition(').length-1,4,'LedgerAddPosition: defined once, called by the Add_Level hook, the Init backfill and F1-lite adoption (test_restart_adopt.cjs)');
+assert.equal(main.split('LedgerAddPosition(').length-1,5,'LedgerAddPosition: defined once, called by the Add_Level hook, the Init backfill, F1-lite adoption (test_restart_adopt.cjs) and the single\'s entry (B50, test_b50_single.cjs)');
+// B50 (A1): GoatSingleOpen carries the same hook on its one level (test_b50_single.cjs runs it).
+assert.ok(main.includes('   if(Ledger_Mode==Ledger_PositionJoin && LastOrderTicket>0) {s.LedgerAddPosition((ulong)LastOrderTicket); s.AccumulateSequenceDealPL((ulong)LastDealTicket);}'),'the single\'s entry joins its position');
 
 // A buy sequence of three levels; a CumPartial harvest closes part of level 1 at a loss with the close helper's magic.
 function harvest(mode,{exitMagic,text=main}={}){

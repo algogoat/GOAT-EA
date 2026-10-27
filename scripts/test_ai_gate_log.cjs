@@ -38,7 +38,9 @@ function model(source=SIGNAL,{tester=false,state=null,v2=true,mode='Bias_Opens',
   RSI_Mode:0,EMA_Mode:0,ADX_Mode:0,BB_Mode:0,MACD_Mode:0,RSI2_Mode:0,RSI_Sig:0,EMA_Sig:0,ADX_Sig:0,BB_Sig:0,MACD_Sig:0,RSI2_Sig:0,
   Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
   Reverse_Seq:reverse,Mode_Trade:0,Delay_Trade:0,Allow_Opposite_Seq:true,bid:1.1,ask:1.2,MAGIC1:1342177,LastBuySignal:false,LastSellSignal:false,
-  DashboardEntryAllowed:()=>true,MathAbs:Math.abs,...ENUMS,Mode_Bias:ENUMS[mode],Bias_Protocol:102,
+  DashboardEntryAllowed:()=>true,MathAbs:Math.abs,...ENUMS,
+  Engine_Mode:0,Engine_Grid:0,Engine_Single:1,g_GoatSingleArmed:[true,true],   // B50 (A1): the grid engine; the single's branches are test_b50_single.cjs's
+  Mode_Bias:ENUMS[mode],Bias_Protocol:102,
   EnumToString:v=>v===c.Bias_Protocol?'BiasProtocol_ControlTowerV2DemoRaw':v===c.Mode_Bias?mode:String(v),
   GOATUsingControlTowerBias:()=>v2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,MQLInfoInteger:k=>(k===1&&tester)?1:0,
   IntegerToString:String,DoubleToString:(v,d)=>Number(v).toFixed(d),Symbol:()=>'EURUSD',Print:s=>prints.push(s),
@@ -89,7 +91,8 @@ for(const [label,opts,decision,reason] of [
 // 6) Trading unchanged: against the B43 function on the same random input stream, every Add_Level call and counter agree.
 let b43Signal=null;
 try{b43Signal=unit(norm(execFileSync('git',['show',B43_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8')),'void SignalEntryTrigger()');}catch(e){}
-{const stripped=SIGNAL.split('\n').filter(l=>!/int gate_active_[bs]=GoatGateActiveMask\(\);|GoatGateLog\("ALLOW"/.test(l)).join('\n')
+{// B50 (A1) adds the single's branches and re-arm lines (marked; test_b50_single.cjs and test_b50_no_drift.cjs).
+ const stripped=SIGNAL.split('\n').filter(l=>!/int gate_active_[bs]=GoatGateActiveMask\(\);|GoatGateLog\("ALLOW"|\/\/ B50 \(A1\)/.test(l)).join('\n')
   .replace(/\{(Sequence_Skipped_Bias_[BS])\+\+; GoatGateLog\("VETO",OP_(?:BUY|SELL)\);\} \/\/ B44 item 4: log only/g,'$1++;');
  if(b43Signal){assert.equal(stripped,b43Signal,'SignalEntryTrigger is B43 plus the log lines only');ok();}
  let seed=20261012;const rnd=()=>(seed=(seed*48271)%2147483647)/2147483647;

@@ -22,7 +22,7 @@ const ROOT=path.join(__dirname,'..'),B49A_SOURCE='693cad05dca3ca7d5c9549465c8973
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
 // PR-0: the entrypoint (the start-distance refusal, the adopted TP). PR-1: Fix_MoneyVolume (the header's input and
 // WriteSet, the child audit, the Studio readback and type). One line: test_studio_start_protocol_candidate reads it.
-const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATPortfolioChildAudit.mqh','GOATStudioSettingCompare.mqh','GOATStudioSettingTypes.mqh'];
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATPortfolioChildAudit.mqh','GOATStudioSettingCompare.mqh','GOATStudioSettingTypes.mqh','Dashboard.mqh'];
 const ADDED=[];
 // Every B49a line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
@@ -43,6 +43,10 @@ const REMOVED={
   'CopyBuffer(BB_handle,UPPER_BAND,shift,2,BB_Hi_Buf);  BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits);',
   'CopyBuffer(BB_handle,LOWER_BAND,shift,2,BB_Lo_Buf);  BB_Lo_Buf[0] = NormalizeDouble(BB_Lo_Buf[0],_Digits);',
   'CopyBuffer(MACD_handle,1           ,shift+0,1,MACD_Clr_Buf);','CopyBuffer(RSI2_handle,0,shift+0,2,RSI2_Buf);',
+  'DashboardPortfolioCommandIdApplied=command_id;','DashboardPortfolioCommandIdApplied=command_id;','close_errors++;','close_errors++;',   // PR-3b (both close commands, both bus helpers) (F3 DASH-04): applied only once flat; a failed bus close is logged
+ ],
+ 'Dashboard.mqh':[
+  'if(!m_risk_policy_armed || m_risk_policy_breached) return;','if(m_portfolio_command_pending) return;',   // PR-3b (F3 RISK-01): a breach is followed until flat
  ],
 };
 const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3)

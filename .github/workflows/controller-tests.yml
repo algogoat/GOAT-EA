@@ -27,7 +27,7 @@ concurrency:
 #           test_terminal_isolation, test_profile_staged_adoption, test_b49b_no_drift, test_ticket_width,
 #           test_ledger_join, test_ledger_join_mutations, test_restart_adopt, test_restart_adopt_mutations,
 #           test_b49b_f7, test_b49b_f7_mutations, test_b49b_f5, test_b49b_f5_mutations, test_b49b_f3,
-#           test_b49b_f3_mutations,
+#           test_b49b_f3_mutations, test_b49b_f3b, test_b49b_f3b_mutations,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -164,6 +164,10 @@ jobs:
         run: node scripts/test_b49b_f3.cjs
       - name: B49b F3 mutations
         run: node scripts/test_b49b_f3_mutations.cjs
+      - name: B49b F3b dashboard (a failed child close is retried; a risk breach is followed until flat)
+        run: node scripts/test_b49b_f3b.cjs
+      - name: B49b F3b mutations
+        run: node scripts/test_b49b_f3b_mutations.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness

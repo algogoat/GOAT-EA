@@ -159,6 +159,8 @@ public:
     bool      m_risk_policy_breached;
     int       m_risk_policy_breach_code;
     datetime  m_risk_policy_breach_time;
+    datetime  m_risk_breach_last_send;      // B49b (F3 RISK-01): the last emergency close sent for the breach
+    bool      m_risk_breach_flat_logged;    // B49b (F3 RISK-01): the FLAT audit line is written once per breach
     double    m_risk_running_loss_limit,m_risk_daily_loss_limit,m_risk_daily_target_limit,m_risk_low_equity_stop,m_risk_equity_target;
      bool      m_currency_rules_editor_visible;
      bool      m_close_scope_editor_visible;
@@ -399,6 +401,8 @@ private:
    void SaveRiskPolicyState(void);
    void AppendRiskPolicyAudit(const string stage,const string reason,const string detail);
    void EvaluateRiskPolicy(void);
+   void FollowRiskBreachClose(void);   // B49b (F3 RISK-01)
+   int  LinkedOpenPositions(void);     // B49b (F3 RISK-01)
    void ReadChildCommandState(const int idx);
    void UpdatePortfolioCommandCompletion(void);
    void RefreshRowsViewportMetrics(void);
@@ -952,6 +956,8 @@ CGOATDashboard::CGOATDashboard()
    m_risk_policy_breached=false;
    m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
    m_risk_policy_breach_time=0;
+   m_risk_breach_last_send=0;        // B49b (F3 RISK-01): a breach restored from saved state is followed at once
+   m_risk_breach_flat_logged=false;  // B49b (F3 RISK-01)
    m_risk_running_loss_limit=0.0;
    m_risk_daily_loss_limit=0.0;
    m_risk_daily_target_limit=0.0;
@@ -2371,8 +2377,8 @@ bool CGOATDashboard::ArmRiskPolicyFromHeader(void)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::EvaluateRiskPolicy(void)
 {
-   if(!m_risk_policy_armed || m_risk_policy_breached) return;
-   if(m_portfolio_command_pending) return;
+   if(m_risk_policy_breached) {FollowRiskBreachClose(); return;} // B49b (F3 RISK-01): a breach is followed until flat
+   if(!m_risk_policy_armed) return; // B49b (F3 RISK-01): a pending command no longer hides a breach; the close supersedes it
 
    double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
    int breach_code=GOAT_RISK_BREACH_NONE;
@@ -2401,12 +2407,56 @@ void CGOATDashboard::EvaluateRiskPolicy(void)
    AppendRiskPolicyAudit("BREACH",reason,"Portfolio paused; preparing emergency close command");
    PrintFormat("Dashboard risk breach: %s. Equity=%.2f RunLoss=%.2f DayLoss=%.2f DayTarget=%.2f",
                reason,current_equity,Port_RunningLoss,Port_DailyLoss,Port_DailyTarget);
+   if(m_portfolio_command_pending) AppendPortfolioCommandAudit("SUPERSEDED",0,0,0,"A risk breach close replaces the pending command"); // B49b (F3 RISK-01)
+   m_risk_breach_last_send=TimeCurrent(); m_risk_breach_flat_logged=false; // B49b (F3 RISK-01): the follow-up resends from here
    bool command_sent=SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"RiskBreachClose",false);
    AppendRiskPolicyAudit(command_sent ? "ACTION" : "ACTION_FAILED",
                          reason,
                          command_sent ? "Emergency close command dispatched to linked child charts" : "No linked child charts were available for emergency close command");
    UpdateHeaderStateButtons();
 }
+// B49b:begin breach-follow
+// F3 RISK-01 (audit 06): the breach used to send ONE emergency close and then only label rows "No Ack" or "Close Failed":
+// no retry and no check that the account was flat. While breached, the dashboard now checks the linked child charts'
+// positions once the last command has completed and, while any is open, sends the emergency close again every 60 s
+// (children retry inside each command: DASH-04). Flat is audited once (FLAT). Re-arming is unchanged. Live only.
+void CGOATDashboard::FollowRiskBreachClose(void)
+{
+   if(m_portfolio_command_pending) return;
+   int open_positions=LinkedOpenPositions();
+   string reason=RiskBreachText(m_risk_policy_breach_code);
+   if(open_positions==0)
+   {
+      if(!m_risk_breach_flat_logged)
+      {
+         m_risk_breach_flat_logged=true;
+         AppendRiskPolicyAudit("FLAT",reason,"Every linked child chart is flat after the breach");
+      }
+      return;
+   }
+   m_risk_breach_flat_logged=false;
+   if(m_risk_breach_last_send>0 && TimeCurrent()-m_risk_breach_last_send<60) return;
+   m_risk_breach_last_send=TimeCurrent();
+   bool command_sent=SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"RiskBreachClose",false);
+   AppendRiskPolicyAudit(command_sent ? "RETRY" : "RETRY_FAILED",reason,
+                         IntegerToString(open_positions)+" position(s) still open on linked child charts; emergency close "
+                         +(command_sent ? "sent again" : "not sent (no linked child chart)"));
+   UpdateHeaderStateButtons();
+}
+int CGOATDashboard::LinkedOpenPositions(void)
+{
+   int open_positions=0;
+   for(int i=PositionsTotal()-1;i>=0;--i)
+   {
+      if(PositionGetTicket(i)==0) continue;
+      long position_magic=PositionGetInteger(POSITION_MAGIC);
+      string position_symbol=PositionGetString(POSITION_SYMBOL);
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         if(g_sets[idx].magic>0 && g_sets[idx].magic==position_magic && g_sets[idx].sym==position_symbol) {open_positions++; break;}
+   }
+   return open_positions;
+}
+// B49b:end breach-follow
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify)
 {

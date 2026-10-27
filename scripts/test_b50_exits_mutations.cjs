@@ -13,7 +13,7 @@ const MUTANTS=[
  ['the bypass needs the opposite exit again (|| !Single_Exit_Opposite)','   if(Engine_Mode!=Engine_Single) // B50 (A3)','   if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) // B50 (A3)'],
  ['the bypass reaches the grid engine','   if(Engine_Mode!=Engine_Single) // B50 (A3)','   if(false) // B50 (A3)'],
  ['Reverse_Seq is ignored','   bool b50_rev=Reverse_Seq;','   bool b50_rev=false;'],
- ['the time stop closes on -1','      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Buy.CloseSequencePositions("Single Exit: time stop");','      if(b50_bars<0 || b50_bars>=Single_Time_Stop_Bars) Seq_Buy.CloseSequencePositions("Single Exit: time stop");'],
+ ['the time stop closes on -1','         b50_unknown_buy=b50_tk_buy;\n','         b50_unknown_buy=b50_tk_buy; b50_due_buy=b50_tk_buy;\n'],
  ['the time stop counts from TimeCurrent() (no entry time)',ENTRY,'datetime b50_entry=TimeCurrent();\n      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);',2],
  ['the time stop counts hours elapsed since the entry (TimeCurrent() - entry), not bars',ENTRY,'datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);\n      int b50_bars=(int)((TimeCurrent()-b50_entry)/PeriodSeconds(b50_tf));',2],
  ['the time stop counts from the first TimeCurrent() it sees (lost on a restart)',ENTRY,'static datetime b50_seen=0; if(b50_seen==0) b50_seen=TimeCurrent();\n      datetime b50_entry=b50_seen;\n      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);',2],
@@ -25,10 +25,16 @@ const MUTANTS=[
  ['the exit runs only in session','   if(!Seq_Buy.Traded && !Seq_Sell.Traded) return; // no single','   if((!Seq_Buy.Traded && !Seq_Sell.Traded) || Sequence_Pause_Close || Sequence_Pause_News) return; // no single'],
  ['GoatSignalAll drifts from the entry condition (MACD range read dropped)','            && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)\n            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY','            && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY)\n            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY'],
  ['GoatSignalAll answers a non-direction','   return false;\n  }\n// GoatSingleSignalExits','   return true;\n  }\n// GoatSingleSignalExits'],
- ['the unknown bar count is logged on every bar','         if(b50_unknown_buy!=Seq_Buy.TradeLevels[0].ticket) Print(','         Print('],
- ['the time stop is off by one bar','      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Buy','      else if(b50_bars>Single_Time_Stop_Bars) Seq_Buy'],
+ ['the unknown bar count is logged on every tick','         if(b50_unknown_buy!=b50_tk_buy) Print(','         Print('],
+ ['the time stop is off by one bar','         if(b50_bars>=Single_Time_Stop_Bars) b50_due_buy','         if(b50_bars>Single_Time_Stop_Bars) b50_due_buy'],
  ['the time stop reads the chart timeframe','   ENUM_TIMEFRAMES b50_tf=TF2TF(Single_Time_Stop_TF);','   ENUM_TIMEFRAMES b50_tf=PERIOD_CURRENT;'],
- ['the time stop is off','   if(!b50_TimeStop_Sample.CheckTF(b50_tf)) return;','   return;'],
+ ['the time stop is off','   bool b50_newbar=b50_TimeStop_Sample.CheckTF(b50_tf);','   bool b50_newbar=false;'],
+ // GOAT-EA#274 P2: a due stop and an unknown count are retried every tick; the marks end with the position.
+ ['a due close waits for the next bar (not retried every tick)','   if(b50_tk_buy!=0 && b50_due_buy==b50_tk_buy) Seq_Buy','   if(b50_tk_buy!=0 && b50_due_buy==b50_tk_buy && b50_newbar) Seq_Buy'],
+ ['the due mark is dropped after one attempt','   if(b50_due_buy!=b50_tk_buy)     b50_due_buy=0;','   b50_due_buy=0;'],
+ ['the due mark outlives its position','   if(b50_due_buy!=b50_tk_buy)     b50_due_buy=0;','   ;'],
+ ['an unknown count waits for the next bar','(b50_newbar || b50_unknown_buy==b50_tk_buy)','(b50_newbar)'],
+ ['the every-tick gate ignores the due marks','   if(!b50_newbar && b50_due_buy==0 && b50_due_sell==0 && b50_unknown_buy==0','   if(!b50_newbar && b50_unknown_buy==0'],
 ];
 function runOn(mainText){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-b50-exits-'));

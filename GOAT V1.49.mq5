@@ -8029,38 +8029,60 @@ void GoatSingleSignalExits(bool &checked)
    if(Seq_Buy.Traded  && b50_short && !b50_long)  Seq_Buy.CloseSequencePositions("Single Exit: opposite signal");
    if(Seq_Sell.Traded && b50_long  && !b50_short) Seq_Sell.CloseSequencePositions("Single Exit: opposite signal");
   }
-// GoatSingleTimeStop(): on each new bar of Single_Time_Stop_TF, closes a single whose entry bar is Single_Time_Stop_Bars
-// or more bars back. The entry time is the position's own POSITION_TIME (TradeLevels[0].ticket), so the count survives
-// a restart. An unknown bar count (iBarShift -1) never closes: the single keeps its stop, and the EA logs it once.
+// GoatSingleTimeStop(): on each new bar of Single_Time_Stop_TF, a single whose entry bar is Single_Time_Stop_Bars or
+// more bars back is due. The entry time is the position's own POSITION_TIME (TradeLevels[0].ticket), so the count
+// survives a restart. A due single is closed on every tick until it is (a failed close is retried at once, not a bar
+// later). An unknown bar count (iBarShift -1, cold history) never closes: the single keeps its stop, the EA logs it
+// once, and the count is retried every tick until it is known. Both marks end with the position.
 void GoatSingleTimeStop()
   {
    if(Engine_Mode!=Engine_Single || Single_Time_Stop_Bars<=0) return;
    static INTERVAL b50_TimeStop_Sample;
+   static long b50_due_buy=0,b50_due_sell=0;         // the ticket whose time stop is due (closed every tick until it is)
+   static long b50_unknown_buy=0,b50_unknown_sell=0; // the ticket whose bar count is unknown (retried every tick)
    ENUM_TIMEFRAMES b50_tf=TF2TF(Single_Time_Stop_TF);
-   if(!b50_TimeStop_Sample.CheckTF(b50_tf)) return;
-   static long b50_unknown_buy=0,b50_unknown_sell=0; // the ticket whose unknown bar count was logged
-   if(Seq_Buy.Traded && ArraySize(Seq_Buy.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Buy.TradeLevels[0].ticket))
+   bool b50_newbar=b50_TimeStop_Sample.CheckTF(b50_tf);
+   if(!b50_newbar && b50_due_buy==0 && b50_due_sell==0 && b50_unknown_buy==0 && b50_unknown_sell==0) return;
+   long b50_tk_buy=0;
+   if(Seq_Buy.Traded && ArraySize(Seq_Buy.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Buy.TradeLevels[0].ticket)) b50_tk_buy=Seq_Buy.TradeLevels[0].ticket;
+   if(b50_due_buy!=b50_tk_buy)     b50_due_buy=0;     // the position ended (or another one runs): its marks end with it
+   if(b50_unknown_buy!=b50_tk_buy) b50_unknown_buy=0;
+   if(b50_tk_buy!=0 && b50_due_buy==0 && (b50_newbar || b50_unknown_buy==b50_tk_buy))
      {
       datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);
       int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);
       if(b50_bars<0)
         {
-         if(b50_unknown_buy!=Seq_Buy.TradeLevels[0].ticket) Print(Seq_Buy.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop.");
-         b50_unknown_buy=Seq_Buy.TradeLevels[0].ticket;
+         if(b50_unknown_buy!=b50_tk_buy) Print(Seq_Buy.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop, and the count is retried every tick.");
+         b50_unknown_buy=b50_tk_buy;
         }
-      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Buy.CloseSequencePositions("Single Exit: time stop");
+      else
+        {
+         b50_unknown_buy=0;
+         if(b50_bars>=Single_Time_Stop_Bars) b50_due_buy=b50_tk_buy;
+        }
      }
-   if(Seq_Sell.Traded && ArraySize(Seq_Sell.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Sell.TradeLevels[0].ticket))
+   if(b50_tk_buy!=0 && b50_due_buy==b50_tk_buy) Seq_Buy.CloseSequencePositions("Single Exit: time stop");
+   long b50_tk_sell=0;
+   if(Seq_Sell.Traded && ArraySize(Seq_Sell.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Sell.TradeLevels[0].ticket)) b50_tk_sell=Seq_Sell.TradeLevels[0].ticket;
+   if(b50_due_sell!=b50_tk_sell)     b50_due_sell=0;     // the position ended (or another one runs): its marks end with it
+   if(b50_unknown_sell!=b50_tk_sell) b50_unknown_sell=0;
+   if(b50_tk_sell!=0 && b50_due_sell==0 && (b50_newbar || b50_unknown_sell==b50_tk_sell))
      {
       datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);
       int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);
       if(b50_bars<0)
         {
-         if(b50_unknown_sell!=Seq_Sell.TradeLevels[0].ticket) Print(Seq_Sell.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop.");
-         b50_unknown_sell=Seq_Sell.TradeLevels[0].ticket;
+         if(b50_unknown_sell!=b50_tk_sell) Print(Seq_Sell.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop, and the count is retried every tick.");
+         b50_unknown_sell=b50_tk_sell;
         }
-      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Sell.CloseSequencePositions("Single Exit: time stop");
+      else
+        {
+         b50_unknown_sell=0;
+         if(b50_bars>=Single_Time_Stop_Bars) b50_due_sell=b50_tk_sell;
+        }
      }
+   if(b50_tk_sell!=0 && b50_due_sell==b50_tk_sell) Seq_Sell.CloseSequencePositions("Single Exit: time stop");
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:end b50-exits

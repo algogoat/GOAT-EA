@@ -9,6 +9,10 @@
 // - the time stop counts bars of Single_Time_Stop_TF from the position's POSITION_TIME (mid-bar entries, H1 and D1),
 //   survives a restart, and never closes on an unknown bar count (iBarShift -1), logging it once per position;
 // - flags off (the grid engine, or the single without the opposite exit) the optimization return is B49a's.
+// HARNESS LIMIT: the harness iBarShift is clock arithmetic (whole bar periods between the two times), while real MT5
+// counts the bars that exist. So on a broker that prints a Sunday D1 bar, an N=1 D1 single opened Friday closes at the
+// weekly open (Sunday's bar is the next bar), not Monday's. Accepted for alpha (Claude-Mac review of GOAT-EA#274);
+// the native Banker parity and the research runs exercise real bar counts.
 // The entry path differs before and after A1 (Add_Level in A0's base, GoatSingleOpen after A1): every assertion here
 // is about the first position and its exit, never the re-entry that follows.
 'use strict';
@@ -268,6 +272,61 @@ const BUY_ALL=[[2*H1+35*60,'buy']];
  W.ctx.iBarShift=shift;W.run(flat(8*H1,9*H1+60));
  assert.ok(W.w.trace.some(x=>x.op==='PositionClose'),'the time stop resumes when the bar count is known');
  assert.equal(ended(W,TS).length,1);
+ ok();
+}
+
+// 9. A due time stop is retried every tick until the single is closed (a failed close is not left for a bar; Claude-Mac
+// GOAT-EA#274 P2), and an unknown bar count is retried every tick too (cold history), not only on the next bar.
+function failCloses(W,n){
+ const make=W.ctx.__ctrade;let left=n;
+ W.ctx.__ctrade=()=>{const o=make(),close=o.PositionClose;
+  o.PositionClose=t=>{if(left>0){left--;W.w.trace.push({op:'PositionCloseFailed',ticket:t,time:W.w.time});o.retcode=10004;return false;}return close(t);};return o;};
+}
+{
+ for(const fastSpeed of [true,false]){
+  const W=world(STOP,BUY_ALL,{fastSpeed});W.run(flat(H1,5*H1));
+  failCloses(W,2);W.run(flat(5*H1,7*H1));
+  const failed=W.w.trace.filter(x=>x.op==='PositionCloseFailed');
+  assert.deepEqual(failed.map(x=>x.time),[at(5*H1)+7,at(5*H1)+27],'the due close fails at 05:00:07 and again on the next tick');
+  assert.ok(W.events.some(e=>/Single Exit: time stop close requested; positions remain open/.test(e.text)),'the failed close is logged');
+  const x=firstExit(W);assert.ok(x.close,'the single is closed');assert.equal(x.reason,TS);
+  assert.equal(x.close.time,at(5*H1)+47,'on the third tick of the due bar, not on the next H1 bar');
+  assert.equal(W.w.trace.filter(x=>x.op==='PositionClose'||x.op==='PositionCloseFailed').filter(x=>x.time<at(6*H1)).length,3,'one close attempt per tick until it is closed');
+ }
+ // The marks end with the position: the next single gets its own time stop (3 H1 bars after its own entry bar), and
+ // so does the one after it (A0's base reopens at once; A1 reopens once the 05:15 sell read re-arms it).
+ {
+  const W=world(STOP,[[2*H1+35*60,'buy'],[5*H1+5*60,'sell'],[5*H1+35*60,'buy']],{fastSpeed:true});failCloses(W,1);
+  W.run(flat(H1,12*H1));
+  const o=opens(W);assert.ok(o.length>=3,'three singles ('+o.length+')');
+  for(const open of o.slice(0,3)){
+   const due=Math.floor(open.time/H1)*H1+3*H1+7;
+   const close=W.w.trace.find(x=>x.op==='PositionClose'&&x.time>=open.time);
+   assert.ok(close,'the single opened at '+new Date(open.time*1000).toISOString()+' is closed');
+   assert.equal(close.time,due+(open===o[0]?20:0),'by its own time stop, three H1 bars after its entry bar');
+  }
+ }
+ // Cold history: the count is unknown (-1) until 05:10, then known; the single closes on that tick, not at 06:00.
+ const W=world(STOP,BUY_ALL,{fastSpeed:true});const shift=W.ctx.iBarShift;
+ W.ctx.iBarShift=(...a)=>W.w.time<at(5*H1+10*60)?-1:shift(...a);
+ W.run(flat(H1,7*H1));
+ const x=firstExit(W);assert.ok(x.close,'the single is closed once its bar count is known');assert.equal(x.reason,TS);
+ assert.equal(x.close.time,at(5*H1+10*60)+7,'on the first tick with a known count');
+ assert.equal(W.events.filter(e=>/time stop: no bar for the entry time/.test(e.text)).length,1,'the unknown count is logged once');
+ ok();
+}
+
+// 10. Same-tick stop-and-reverse under Long_and_Short (as designed: the exit runs before the entry check, and the new
+// direction starts a fresh episode): the opposite signal closes the buy and opens the sell on the same tick.
+{
+ for(const fastSpeed of [true,false]){
+  const W=world({Single_Exit_Opposite:true,Mode_Trade:'Long_and_Short'},FLIP,{fastSpeed});W.run(flat(H1,9*H1));
+  const t=at(6*H1+15*60)+7,same=W.w.trace.filter(x=>x.time===t);
+  const buy=opens(W).find(x=>x.type===0);assert.ok(buy,'a buy single opened');
+  assert.deepEqual(same.map(x=>x.op+(x.type!==undefined?':'+x.type:'')),['PositionClose','OrderSend:1'],'06:15:07: the buy is closed, then the sell opens, in that order (FastSpeed '+fastSpeed+')');
+  assert.equal(W.w.positions.length,1);assert.equal(W.w.positions[0].type,1,'the sell is the one position left');
+  assert.ok(ended(W,OPP).some(e=>e.time===t),'closed by the opposite signal');
+ }
  ok();
 }
 

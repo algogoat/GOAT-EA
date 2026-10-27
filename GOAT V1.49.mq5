@@ -7191,7 +7191,10 @@ bool GoatSignalReady(const int id,const string name,const bool ready,int &sig)
   }
 bool GoatEmaBuffersReady(const int shift)
   {
-   for(int i=0;i<EMA_Count;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,1,EMAs[i].Buf)) return false;
+   // Claude-Mac 6439600461: the trend loop only compares pairs (i!=j), so with one EMA no buffer is read and B49a never
+   // indexes it; it then signals by mode. Each EMA is still copied, as in B49a, but one EMA needs no value.
+   int need=(EMA_Count>=2 ? 1 : 0);
+   for(int i=0;i<EMA_Count;i++) if(!GoatSignalBufferReady(EMA_handles[i],0,shift-0,1,need,EMAs[i].Buf)) return false;
    return true;
   }
 // B49b:end signal-ready

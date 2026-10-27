@@ -34,15 +34,22 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertEqual(identity['supersedes_candidate'], 'beta17-B47')
         # B49a is B47 plus WEEKEND-1031 (goatai#2587): 64-bit tickets, B48's daily CID touch, F2 Ledger_Mode and F1-lite
         # restart adoption. It differs from B47 in exactly the no-drift guard's CHANGED files, every changed line marked
-        # (scripts/test_b49a_no_drift.cjs), and every source hashes to the identity.
+        # (B49a's guard, scripts/test_b49a_no_drift.cjs at 693cad0; its CHANGED list is pinned here).
         self.assertEqual(sorted(identity['consolidates']), ['B49a.1', 'B49a.2', 'B49a.3', 'B49a.4'])
         b47 = json.loads((RETAINED_B47 / 'identity.json').read_text(encoding='utf-8'))
-        guard = (ROOT / 'scripts/test_b49a_no_drift.cjs').read_text(encoding='utf-8')
-        b49a_changed = json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", guard, re.M)[1].replace("'", '"') + ']')
+        b49a_changed = ['GOAT V1.49.mq5', 'GOAT_Inputs_Definitions.mqh', 'GOATStudioSettingTypes.mqh', 'GOATStudioSettingCompare.mqh',
+                        'GOATPortfolioChildAudit.mqh']
         self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b47['sources'].get(name)), sorted(b49a_changed))
         self.assertEqual(sorted(identity['sources']), sorted(b47['sources']), 'same compile closure as B47')
+        # B49b (Track A, goatai#2587 6433828681) is built on B49a in reviewed PRs into claude-pc/b49b: until its assembly
+        # moves the forward candidate, the files B49b's guard lists as CHANGED (scripts/test_b49b_no_drift.cjs, every
+        # changed line marked) differ from B49a, and every other source hashes to B49a's identity.
+        guard = (ROOT / 'scripts/test_b49b_no_drift.cjs').read_text(encoding='utf-8')
+        b49b_changed = json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", guard, re.M)[1].replace("'", '"') + ']')
+        self.assertIn('GOAT V1.49.mq5', b49b_changed)
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b49b_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
         # B47 is B46 plus Claude-Mac's B46 review items (goatai#2350): live-chart CID mappings, claim heartbeat expiry,
         # the cid_duplicate add freeze, an unreadable claim refuses, no claim under login 0. Only the entrypoint differs.
         self.assertEqual(sorted(b47['consolidates']), ['B47.1', 'B47.2', 'B47.3', 'B47.4', 'B47.5'])

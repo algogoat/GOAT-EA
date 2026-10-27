@@ -68,6 +68,13 @@ const METHODS=[
  ['UpdateLockTPSL',['count=0'],'   void UpdateLockTPSL(int count=0)'],
  ['SizesUnavailable',[],'   bool SizesUnavailable()'],
  ['EnforceSequenceMLPS',['context'],'   bool EnforceSequenceMLPS(const string context)'],
+ // B49b (PR-0): the start-distance refusal over the real solver path, and the adopted TP.
+ ['TighterTakeProfit',['first_tp','second_tp'],'   double TighterTakeProfit(const double first_tp,const double second_tp)'],
+ ['StartDistancesUnavailable',[],'   bool StartDistancesUnavailable()'],
+ ['BuildDistances',[],'   void BuildDistances()'],
+ ['FindCumLoss',[],'   double FindCumLoss()'],
+ ['EvalLossForStart',['L0'],'   double EvalLossForStart(double L0)'],
+ ['SolveStartLotsByRisk',['targetLoss'],'   double SolveStartLotsByRisk(double targetLoss)'],
 ];
 const FLUSH_MS=Number((main.match(/^#define GOAT_SQ_FLUSH_MS (\d+)$/m)||[])[1]);assert.equal(FLUSH_MS,5000);
 const UPDATE_GUARD='    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP';
@@ -120,6 +127,9 @@ function sequence(t,{dir=0,virtual=false}={}){
   // EnforceSequenceMLPS: the sequence's P/L (realized + open) is modelled; a breach closes the basket.
   GOAT_ATR_UNAVAILABLE:Number.MAX_VALUE,Sequence_MLPS_Hard_Close:true,Risk:500,g_PerformanceProfileTester:false,GoatPerformanceRecord:()=>{},g_PerfMLPSUS:0,g_PerfMLPSCalls:0,
   OpenPL:0,CurrentSequencePL:()=>c.SequenceRealizedPL+c.OpenPL,CloseSequencePositions:why=>{t.closes.push(why);},
+  // B49b (PR-0): the lot arrays, the per-side refusal log flags (an MQL global: zero-initialized), the solver's math.
+  Distances:[],LotsRaw:[],LotsNorm:[],LotsCum:[],StartLots:0,PeakLots:0,PeakCumLots:0,ScaleFactor:0,
+  g_goat_start_distances_logged:[false,false],ArrayInitialize:(a,v)=>{a.fill(v);},MathFloor:Math.floor,MathAbs:Math.abs,DBL_MAX:Number.MAX_VALUE,
  };
  vm.createContext(c);
  vm.runInContext(METHODS.map(([n,a,s])=>fn(n,a,bodyOf(main,s))).join(''),c);
@@ -168,12 +178,12 @@ const addLevel=s=>{s.Level_Count++;s.Trades_Count++;s.PersistLevels();};
 // A basket mid-way (CumPartial: level 1 partly harvested at a loss) whose terminal stops; the stops are at the levels'
 // computed SL or tighter (a trailed one), as the EA left them.
 const SIZES=[0.0012,0.0008,0,0.0030,0.0004];
-function midBasket({sl=[0,0,0],ledger=1}={}){
- const t=terminal({ledger,positions:[pos(1002,{msc:T0+60000,open:1.0985,volume:0.2,sl:sl[1]}),pos(1001,{msc:T0,open:1.1,volume:0.05,sl:sl[0]}),
-  pos(1003,{msc:T0+120000,open:1.0970,volume:0.3,sl:sl[2]})]});
+function midBasket({sl=[0,0,0],tp=[0,0,0],ledger=1,sizes=SIZES}={}){
+ const t=terminal({ledger,positions:[pos(1002,{msc:T0+60000,open:1.0985,volume:0.2,sl:sl[1],tp:tp[1]}),pos(1001,{msc:T0,open:1.1,volume:0.05,sl:sl[0],tp:tp[0]}),
+  pos(1003,{msc:T0+120000,open:1.0970,volume:0.3,sl:sl[2],tp:tp[2]})]});
  for(const [p,msc] of [[1001,T0],[1002,T0+60000],[1003,T0+120000]]) deal(t,{entry:0,type:0,magic:M,position:p,msc,commission:-3.5});
  deal(t,{entry:1,type:1,magic:M,position:1001,msc:T0+150000,profit:-40,commission:-1});   // the harvest
- const before=sequence(t);startSequence(before,t,1001,SIZES);addLevel(before);addLevel(before);
+ const before=sequence(t);startSequence(before,t,1001,sizes);addLevel(before);addLevel(before);
  before.SequenceRealizedPL=-51.5;t.now+=FLUSH_MS;before.PersistFlush();   // the join ledger: 3 entry commissions + the harvest
  t.modifies.length=0;t.alerts.length=0;t.logs.length=0;
  return t;
@@ -467,6 +477,79 @@ function firstTick(text,buy,sell,{ready=false}={}){
  assert.deepEqual([us.AdoptMatched,us.Trades_Count],[false,2],'unmatched: the live count (its record\'s C=3 is not this basket\'s)');
  // The end deletes C with the rest.
  ls.PersistEnd();assert.equal(low.gv.has(key('C')),false);
+ ok();}
+
+// 14. B49b PR-0, P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266 6430221100): a pips Grid_Size with an ATR
+//     Grid_Min_/Grid_Max_ while the ATR indicator is not ready (CopyBuffer failing). The real GetSize answers the
+//     sentinel for GRID_VALID, the real BuildDistances stores it (Distances[1] = EMPTY_VALUE, finite; later ones
+//     infinite), and the real solver settles on the minimum volume. The start is refused, logged once per side, and
+//     keeps no sizing; once the buffer fills the same start solves to its risk volume. The lot ladder (BuildRawLots and
+//     its scaling) is modelled as standing lots L0, 2xL0, 3xL0, ...; the solver, its loss and the distances are the EA's.
+const VMIN=0.01,VSTEP=0.01,VMAX=100,PER_UNIT=100000;   // EURUSD on a USD account: $1 per 0.00001 per lot
+function solverSequence({dir=0,trades=4,ready=false}={}){
+ const s=sequence(terminal(),{dir}),g=getSize(main,{ready,active:false});
+ Object.assign(g,{Grid_Size:15,Grid_Min_:-0.5,Grid_Max_:-6});        // a 15-pip base grid clamped to 0.5-6 x ATR
+ Object.assign(s,{Max_Seq_Trades:trades,GRID:121,GRID_VALID:124,GetSize:(...a)=>g.GetSize(...a),Size_Grid:0.0015,Size_SL:0.003,
+  SymbolInfoDouble:(sym,k)=>({VMIN,VMAX,VSTEP})[k],SYMBOL_VOLUME_MIN:'VMIN',SYMBOL_VOLUME_MAX:'VMAX',SYMBOL_VOLUME_STEP:'VSTEP',
+  NormalizedLots:v=>Math.round(v/VSTEP)*VSTEP,PriceValuePerPointPerLot:()=>PER_UNIT,GetMicrosecondCount:()=>0,g_PerfLotSolverUS:0,g_PerfLotSolverCalls:0,
+  BuildRawLots:()=>{},ScaleRawLots:()=>{},BuildNormalizedLots:()=>{},
+  BuildCumulativeLots:()=>{s.LotsCum.length=0;for(let i=0;i<s.Max_Seq_Trades;i++)s.LotsCum.push(s.StartLots*(i+1));}});
+ s.Print=(...a)=>s.logs.push(a.join(''));s.logs=[];
+ return {s,g};
+}
+{const {s,g}=solverSequence();
+ const cold=s.SolveStartLotsByRisk(500);
+ assert.equal(cold,VMIN,'the solver settles on the minimum volume: the under-sized start the row describes');
+ assert.equal(s.Distances[1],Number.MAX_VALUE,'the sentinel distance');assert.equal(s.Distances[2],Infinity,'then infinite');
+ assert.equal(s.StartDistancesUnavailable(),true,'refused');
+ assert.deepEqual(s.logs,['GOAT sizes: start_refused reason=grid_distance_unavailable side=BUY symbol=EURUSD (RiskperSeq needs every grid distance and the ATR indicator is not ready: no order; the next start solves again)']);
+ assert.deepEqual([s.Size_Grid,s.Size_SL,s.StartLots,s.Distances.length,s.LotsCum.length],[1234.5,1234.5,0,0,0],'no sizing kept (a denied candidate)');
+ s.Size_Grid=0.0015;s.SolveStartLotsByRisk(500);assert.equal(s.StartDistancesUnavailable(),true);assert.equal(s.logs.length,1,'logged once per side');
+ // Two trades: the only distance is the sentinel itself, which is finite; still refused.
+ const two=solverSequence({trades:2}).s;two.SolveStartLotsByRisk(500);
+ assert.deepEqual([two.Distances.length,Number.isFinite(two.Distances[1])],[2,true]);assert.equal(two.StartDistancesUnavailable(),true,'the finite sentinel is refused too');
+ const nan=solverSequence().s;nan.Distances.push(0,0.001,NaN);assert.equal(nan.StartDistancesUnavailable(),true,'a NaN distance too');
+ // The buffer fills: the same start solves to its risk volume and goes ahead; the log is re-armed.
+ g.ready=true;s.Size_Grid=0.0015;const solved=s.SolveStartLotsByRisk(500);
+ assert.ok(solved>VMIN*10,'solved to the risk volume: '+solved);assert.ok(s.Distances.every(Number.isFinite)&&s.Distances[1]<0.01,'real distances');
+ assert.ok(Math.abs(s.EvalLossForStart(solved)-500)<500*0.05,'its planned loss is the risk');
+ assert.equal(s.StartDistancesUnavailable(),false,'goes ahead');assert.equal(s.g_goat_start_distances_logged[0],false,'re-armed');
+ assert.equal(s.Size_Grid,0.0015,'its sizing stays');
+ // A sell logs on its own side; an active sequence (never at a start) keeps its sizing.
+ const sell=solverSequence({dir:1}).s;sell.g_goat_start_distances_logged=[true,false];sell.SolveStartLotsByRisk(500);
+ assert.equal(sell.StartDistancesUnavailable(),true);assert.equal(sell.logs.length,1,'the buy flag does not silence the sell');assert.match(sell.logs[0],/side=SELL/);
+ const act=solverSequence().s;act.Active=act.Traded=true;act.SolveStartLotsByRisk(500);act.StartDistancesUnavailable();assert.equal(act.Size_Grid,0.0015);
+ // Where it sits: right after the solver at the first level, before the ladder is built and before any order.
+ const ADD=bodyOf(main,'   bool Add_Level(double Level_New)');
+ const GUARD='      if(Mode_Lots==RiskperSeq && StartDistancesUnavailable()) return false; // B49b: P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266)';
+ assert.ok(ADD.includes('      else if(Mode_Lots==RiskperSeq)     Lots_Calc = StartLots = SolveStartLotsByRisk(Risk);\n'+GUARD+'\n\n      BuildRawLots(StartLots);'),'right after the solver');
+ assert.ok(ADD.indexOf(GUARD)<ADD.indexOf('OpenPosition('),'before any order');
+ assert.equal((main.match(/StartDistancesUnavailable\(\)/g)||[]).length,2,'defined once, called once');
+ ok();}
+
+// 15. B49b PR-0, P-B49b-adopt-rescue-tp (Claude-Mac GOAT-EA#266 6429693333): with the lock off, a bias rescue moves the
+//     TP to its break-even price, which is nearer than the normal TP. After a restart the matched restore recomputes the
+//     normal TP from the frozen sizes; each position keeps the nearer of its broker TP and that one, so the rescue TP
+//     stays. A basket on its normal TP is unchanged; a farther broker TP comes in to the normal one.
+{const LOCKOFF=[0.0012,0,0.0025,0.0030,0.0004],NORMAL=Number((ENTRY+0.0025).toFixed(5)),RESCUE=1.0990;
+ assert.ok(RESCUE<NORMAL,'the rescue break-even TP is nearer (a buy)');
+ const t=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[RESCUE,RESCUE,RESCUE],sizes:LOCKOFF}),s=sequence(t);s.AdoptOpenPositions();
+ assert.deepEqual([s.AdoptMatched,s.AdoptSizes,s.Level_TP],[true,true,NORMAL],'matched, and the recomputed TP is the normal one');
+ assert.deepEqual(t.modifies,[],'no modify loosens the rescue TP');assert.deepEqual(t.positions.map(p=>p.tp),[RESCUE,RESCUE,RESCUE]);
+ const n=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[NORMAL,NORMAL,NORMAL],sizes:LOCKOFF});sequence(n).AdoptOpenPositions();
+ assert.deepEqual(n.modifies,[],'a basket on its normal TP is unchanged');
+ const far=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[1.1100,NORMAL,0],sizes:LOCKOFF});sequence(far).AdoptOpenPositions();
+ assert.deepEqual(far.modifies.map(m=>[m.ticket,m.tp]).sort(),[[1001,NORMAL],[1003,NORMAL]],'a farther or missing broker TP comes in to the normal one');
+ // A sell keeps the higher of the two.
+ const sellT=terminal({positions:[pos(2001,{type:1,open:1.1,sl:1.1030,tp:1.0990,msc:T0})]});deal(sellT,{entry:0,type:1,magic:M,position:2001,msc:T0,commission:-3.5});
+ const sb=sequence(sellT,{dir:1});startSequence(sb,sellT,2001,LOCKOFF);sellT.modifies.length=0;
+ const sa=sequence(sellT,{dir:1});sa.AdoptOpenPositions();assert.equal(sa.Level_TP,1.0975);
+ assert.deepEqual(sellT.modifies,[],'a sell rescue TP above the normal one stays');
+ // Lock and TP both off: the rescue's break-even TP is the only TP the basket ever had. The frozen sizes give none (0);
+ // B49a would send 0 and delete it, an adopted basket keeps it.
+ const off=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[RESCUE,RESCUE,RESCUE],sizes:[0.0012,0,0,0.0030,0.0004]});sequence(off).AdoptOpenPositions();
+ assert.deepEqual(off.modifies,[],'no TP from the sizes: the broker TP stays');
+ assert.ok(bodyOf(main,'   void UpdateLockTPSL(int count=0)').includes('       if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_);'));
  ok();}
 
 console.log(JSON.stringify({passed,test:'restart_adopt'}));

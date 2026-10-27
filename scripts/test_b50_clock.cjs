@@ -111,22 +111,38 @@ const CHECKS={
  },
  session_phase(src,fail){
   const {ctx}=world(src);
-  const SUN=0,MON=1,TUE=2,FRI=5,SAT=6;
+  const SUN=0,MON=1,TUE=2,WED=3,THU=4,FRI=5,SAT=6;
+  // The FX trade-date convention (GOAT-EA#273 P2): a start at or after 17:00 NY trades the next NY date; Friday's
+  // session ends by 16:55 NY Friday (P1).
   const cases=[ // [dow, minute, start, end, phase, session_dow]
+   // 09:30-16:00
    [MON,569,570,960,0,MON],[MON,570,570,960,1,MON],[MON,959,570,960,1,MON],[MON,960,570,960,2,MON],[MON,1439,570,960,2,MON],
-   [SUN,600,570,960,0,SUN],[SAT,600,570,960,0,SAT],[FRI,1000,570,960,2,FRI],
-   [MON,1080,1080,120,1,MON],[TUE,60,1080,120,1,MON],[TUE,119,1080,120,1,MON],[TUE,120,1080,120,2,MON],[TUE,1079,1080,120,2,MON],
-   [MON,60,1080,120,0,SUN],[MON,500,1080,120,0,SUN],[SAT,60,1080,120,1,FRI],[SAT,130,1080,120,2,FRI],[SUN,1080,1080,120,0,SUN],
-   [FRI,1100,1080,120,1,FRI],[SUN,60,1080,120,0,SAT],[SAT,1100,1080,120,0,SAT]];
+   [SUN,600,570,960,0,SUN],[SAT,600,570,960,0,SAT],[FRI,1000,570,960,2,FRI],[FRI,1014,570,960,2,FRI],
+   // 18:00-02:00: Sunday 18:00 is Monday's session, Thursday 18:00 Friday's, Friday 18:00 Saturday's (none)
+   [SUN,1080,1080,120,1,MON],[MON,60,1080,120,1,MON],[MON,120,1080,120,2,MON],[MON,1079,1080,120,2,MON],[SUN,1079,1080,120,0,MON],
+   [MON,1080,1080,120,1,TUE],[TUE,60,1080,120,1,TUE],[TUE,119,1080,120,1,TUE],[TUE,120,1080,120,2,TUE],
+   [THU,1080,1080,120,1,FRI],[FRI,60,1080,120,1,FRI],[FRI,120,1080,120,2,FRI],[FRI,1079,1080,120,2,FRI],
+   [FRI,1080,1080,120,0,SAT],[SAT,60,1080,120,0,SAT],[SAT,130,1080,120,0,SAT],[SAT,1100,1080,120,0,SUN],[SUN,60,1080,120,0,SUN],
+   // 18:00-16:00: Monday through Friday sessions, Friday's from Thursday 18:00 to Friday 16:00
+   [SUN,1080,1080,960,1,MON],[MON,959,1080,960,1,MON],[MON,960,1080,960,2,MON],[THU,1100,1080,960,1,FRI],[FRI,959,1080,960,1,FRI],
+   [FRI,960,1080,960,2,FRI],[FRI,1080,1080,960,0,SAT],[SAT,600,1080,960,0,SAT],
+   // 09:30-20:00: Friday's session is cut at 16:55 NY; Thursday's is not
+   [THU,1015,570,1200,1,THU],[THU,1199,570,1200,1,THU],[FRI,1014,570,1200,1,FRI],[FRI,1015,570,1200,2,FRI],[FRI,1199,570,1200,2,FRI],
+   // 09:00-02:00 (a start before 17:00 that crosses midnight): Friday's session is cut at 16:55, its Saturday tail too
+   [FRI,1014,540,120,1,FRI],[FRI,1015,540,120,2,FRI],[SAT,30,540,120,2,FRI],[SAT,130,540,120,2,FRI],[FRI,60,540,120,1,THU],[FRI,130,540,120,2,THU],
+   // 17:00-23:00 (a start at exactly 17:00 trades the next date)
+   [SUN,1020,1020,1380,1,MON],[FRI,1020,1020,1380,0,SAT],[THU,1020,1020,1380,1,FRI],[THU,1380,1020,1380,2,FRI]];
   for(const [dow,m,s,e,phase,sd] of cases){const box={v:-1};const got=ctx.GoatNYSessionPhase(dow,m,s,e,box);
    if(got!==phase||(phase!==0&&box.v!==sd)) fail('phase(dow '+dow+', '+m+', '+s+'-'+e+') = '+got+'/'+box.v+', expected '+phase+'/'+sd);}
  },
  ny_session_active(src,fail){
-  // NYClose: server = NY + 7 h. 2026-10-05 is a Monday. A crossing window 18:00-02:00 NY.
+  // NYClose: server = NY + 7 h. 2026-10-05 is a Monday. A crossing window 18:00-02:00 NY, FX trade dates: Sunday 18:00
+  // opens Monday's session, Friday 18:00 would be Saturday's (none).
   const W=world(src,{inputs:{Clock_Mode:'Clock_NewYork',NY_Session:'18:00-02:00'}});
   const ny=(d,h,m=0)=>U(2026,10,d,h,m)+7*HOUR;
-  const exp=[[ny(5,17,59),false],[ny(5,18,0),true],[ny(5,23,0),true],[ny(6,1,30),true],[ny(6,2,0),false],[ny(5,1,0),false],
-   [ny(9,19,0),true],[ny(10,1,0),true],[ny(10,19,0),false],[ny(11,1,0),false],[ny(11,19,0),false],[ny(12,1,0),false],[ny(12,19,0),true]];   // 9 Fri, 10 Sat, 11 Sun, 12 Mon
+  const exp=[[ny(4,17,59),false],[ny(4,18,0),true],[ny(5,1,0),true],[ny(5,2,0),false],[ny(5,17,59),false],[ny(5,18,0),true],[ny(5,23,0),true],
+   [ny(6,1,30),true],[ny(6,2,0),false],[ny(8,19,0),true],[ny(9,1,0),true],[ny(9,2,0),false],
+   [ny(9,19,0),false],[ny(10,1,0),false],[ny(10,19,0),false],[ny(11,1,0),false],[ny(11,19,0),true],[ny(12,1,0),true],[ny(12,19,0),true]];   // 4 Sun, 9 Fri, 10 Sat, 11 Sun, 12 Mon
   for(const [t,a] of exp){W.apply(t);if(W.ctx.Active!==a)fail('NY '+new Date((t-7*HOUR)*1000).toISOString()+': Active should be '+a);
    if(!a&&W.ctx.InActive!==true)fail('outside the session InActive is true');}
   // through the real tick: the server session (SESS_AS, 01:30-11:00 server) is shut while the NY session runs.
@@ -158,10 +174,16 @@ const CHECKS={
   W.ctx.StopOut_Flag=false;W.apply(ny(6,9,0));if(W.ctx.StopOut_Flag)fail('no day end before Tuesday\'s session');
   W.apply(ny(9,16,30));if(!W.ctx.Sequence_Pause_Close)fail('the NY Friday close pauses (Action_Friday)');
   W.apply(ny(12,9,30));if(W.ctx.Sequence_Pause_Close)fail('the next session clears Sequence_Pause_Close');
-  // Crossing window: Friday's session ends at 02:00 Saturday NY; its Friday close fires then, not Thursday's.
+  // Crossing 18:00-02:00: Friday's session (from Thursday 18:00) ends at 02:00 Friday NY, the Friday close;
+  // Thursday's (from Wednesday 18:00) ends at 02:00 Thursday, not the Friday close.
   const X=world(src,{inputs:{Clock_Mode:'Clock_NewYork',NY_Session:'18:00-02:00',Action_Friday:'Action_Close'}});
-  X.apply(ny(9,3,0));if(X.ctx.StopOut_Flag)fail('crossing: Thursday\'s session end on Friday 03:00 is not the Friday close');
-  X.apply(ny(10,3,0));if(!X.ctx.StopOut_Flag)fail('crossing: Friday\'s session ends Saturday 02:00 NY, the Friday close');
+  X.apply(ny(8,3,0));if(X.ctx.StopOut_Flag)fail('crossing: Thursday\'s session end is not the Friday close');
+  X.apply(ny(9,2,0));if(!X.ctx.StopOut_Flag)fail('crossing: Friday\'s session ends Friday 02:00 NY, the Friday close');
+  // 09:00-02:00: Thursday's session ends on calendar Friday 02:00 (not the Friday close); Friday's is cut at 16:55.
+  const Y=world(src,{inputs:{Clock_Mode:'Clock_NewYork',NY_Session:'09:00-02:00',Action_Friday:'Action_Close'}});
+  Y.apply(ny(9,3,0));if(Y.ctx.StopOut_Flag)fail('09:00-02:00: Thursday\'s session end on Friday 03:00 is not the Friday close');
+  Y.apply(ny(9,16,54));if(Y.ctx.StopOut_Flag||!Y.ctx.Active)fail('09:00-02:00: Friday 16:54 still in session');
+  Y.apply(ny(9,16,55));if(!Y.ctx.StopOut_Flag||Y.ctx.Active)fail('09:00-02:00: the 16:55 cutoff ends Friday\'s session and closes');
  },
  new_friday_ny_weekday(src,fail){
   const ny=(d,h,m=0)=>U(2026,10,d,h,m,7)+7*HOUR;
@@ -169,8 +191,33 @@ const CHECKS={
   W.apply(ny(8,19,0));if(W.ctx.Sequence_New_Friday!==true)fail('Thursday 19:00 NY (server Friday 02:00) is not Friday');
   W.apply(ny(9,10,0));if(W.ctx.Sequence_New_Friday!==false)fail('Friday 10:00 NY is Friday');
   const X=world(src,{inputs:{Clock_Mode:'Clock_NewYork',Trade_Friday:false,NY_Session:'18:00-02:00'}});
-  X.apply(ny(9,1,0));if(X.ctx.Sequence_New_Friday!==true||X.ctx.Active!==true)fail('crossing: Friday 01:00 NY is Thursday\'s session');
-  X.apply(ny(10,1,0));if(X.ctx.Sequence_New_Friday!==false||X.ctx.Active!==true)fail('crossing: Saturday 01:00 NY is Friday\'s session');
+  X.apply(ny(7,19,0));if(X.ctx.Sequence_New_Friday!==true||X.ctx.Active!==true)fail('crossing: Wednesday 19:00 NY is Thursday\'s session');
+  X.apply(ny(8,19,0));if(X.ctx.Sequence_New_Friday!==false||X.ctx.Active!==true)fail('crossing: Thursday 19:00 NY is Friday\'s session');
+  X.apply(ny(9,1,0));if(X.ctx.Sequence_New_Friday!==false||X.ctx.Active!==true)fail('crossing: Friday 01:00 NY is Friday\'s session');
+  X.apply(ny(4,19,0));if(X.ctx.Sequence_New_Friday!==true||X.ctx.Active!==true)fail('crossing: Sunday 19:00 NY is Monday\'s session');
+ },
+ friday_close_all_windows(src,fail){
+  // GOAT-EA#273 P1 through the real tick: Action_Friday=Close, a trading run from Thursday 12:00 NY to Friday 17:30 NY;
+  // every window has closed everything before 17:00 NY Friday and opens nothing after its Friday close.
+  // [window, the Friday close (NY, Friday 2026-10-09)]: the session end, or the 16:55 cutoff when that is earlier.
+  const nyT=(d,h,m=0)=>U(2026,10,d,h,m)+7*HOUR;
+  for(const [win,closeAt] of [['18:00-02:00',nyT(9,2)],['18:00-16:00',nyT(9,16)],['09:30-20:00',nyT(9,16,55)],['09:30-16:00',nyT(9,16)]]){
+   const W=world(src,{inputs:{Clock_Mode:'Clock_NewYork',NY_Session:win,Action_Friday:'Action_Close',Mode_Restart:'Restart_1'}});
+   const start=nyT(8,12),end=nyT(9,17,30);let openBefore=0,openAt1659=-1;
+   // ticks every 97 s (IsNewSecond compares the second of the minute), the price swinging 60 points every 2 h
+   for(let t=start,i=0;t<end;t+=97,i++){
+    W.tick(t,1.1+0.0030*Math.sin(i*97*Math.PI/7200));
+    if(t<closeAt) openBefore=Math.max(openBefore,W.w.positions.length);
+    if(t>=nyT(9,16,59)&&t<nyT(9,17)) openAt1659=W.w.positions.length;
+   }
+   const sends=W.w.trace.filter(x=>x.op==='OrderSend');
+   if(!openBefore){fail(win+': the run opens a position before the Friday close');continue;}
+   if(openAt1659!==0) fail(win+': '+openAt1659+' position(s) still open at 16:59 NY Friday');
+   if(W.w.positions.length) fail(win+': positions held over the weekend');
+   const closes=W.w.trace.filter(x=>x.op==='PositionClose'&&x.time>=closeAt&&x.time<closeAt+600);
+   if(!closes.length) fail(win+': the Friday close closes at '+new Date((closeAt-7*HOUR)*1000).toISOString().slice(11,16)+' NY');
+   if(sends.some(x=>x.time>=closeAt)) fail(win+': no new entry after the Friday close');
+  }
  },
  rollover_symmetric(src,fail){
   const {ctx}=world(src);
@@ -278,7 +325,7 @@ let passed=Object.keys(CHECKS).length+1;
 const MUTANTS=[
  ['first Sunday of March for the second','GoatNYNthSunday(year,3,2)','GoatNYNthSunday(year,3,1)'],
  ['NYClose offset 6 h','server_time-7*3600','server_time-6*3600',true],
- ['a midnight-crossing window treated as empty','   session_dow=dow;\n   if(start_min<end_min)','   session_dow=dow;\n   if(start_min>end_min) return 0;\n   if(start_min<end_min)'],
+ ['a midnight-crossing window treated as empty','   if(start_min<end_min || minute>=start_min)','   if(start_min>end_min) return 0;\n   if(start_min<end_min || minute>=start_min)'],
  ['the tester check inverted','bool live=(MQLInfoInteger(MQL_TESTER)==0 && MQLInfoInteger(MQL_OPTIMIZATION)==0);','bool live=!(MQLInfoInteger(MQL_TESTER)==0 && MQLInfoInteger(MQL_OPTIMIZATION)==0);'],
  ['EU DST for US DST (UTC to NY)','if(GoatNYUSDST(utc)) return utc-4*3600;','if(GoatNYEUDST(utc)) return utc-4*3600;'],
  ['US DST for EU DST (the EUDST server model)','if(GoatNYEUDST(utc_summer)) return utc_summer;','if(GoatNYUSDST(utc_summer)) return utc_summer;'],
@@ -293,7 +340,11 @@ const MUTANTS=[
  ['the mismatch never blocks','g_GoatEntryBlocked=(g_GoatNYClockMismatch || ','g_GoatEntryBlocked=(false || '],
  ['the Friday close keyed to the NY date','if(InActive && phase==2 && session_dow==5)','if(InActive && phase==2 && nst.day_of_week==5)'],
  ['Sequence_New_Friday from the server weekday','int new_dow=(phase==1 ? session_dow : nst.day_of_week);','int new_dow=stm_cur.day_of_week;'],
- ['a weekend session date counts','      if(dow<1 || dow>5) return 0;\n      if(minute<start_min) return 0;','      if(minute<start_min) return 0;'],
+ ['the Friday 16:55 cutoff removed','   if(phase==1 && session_dow==5 && (dow==6 || (dow==5 && minute>=16*60+55))) phase=2;   // the Friday cutoff\n','   '],
+ ['the cutoff at 17:00','minute>=16*60+55','minute>=17*60'],
+ ['no FX trade date (a session belongs to its calendar start date)','int next_date=(start_min>=17*60 ? 1 : 0);','int next_date=0;'],
+ ['the trade date from 18:00, not 17:00','int next_date=(start_min>=17*60 ? 1 : 0);','int next_date=(start_min>=18*60 ? 1 : 0);'],
+ ['a weekend session date counts','   if(session_dow<1 || session_dow>5) return 0;\n','   '],
  // A0's guard (GOAT V1.49.mq5, B50 block b50-server-session): the server session block must not run under Clock_NewYork.
  ['the server session block runs under Clock_NewYork','    if(Clock_Mode!=Clock_NewYork)\n    {\n    if((stm_cur.hour>Hour_Start[k]','    if(true)\n    {\n    if((stm_cur.hour>Hour_Start[k]',false,H.MAIN],
 ];

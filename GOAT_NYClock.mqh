@@ -17,6 +17,10 @@
 // - ServerClock_EUDST:   UTC = server - Server_UTC_Offset h - 1 h while EU DST is active;
 // - then NY = UTC - (US DST ? 4 : 5) h.
 // The transition hours are ambiguous by one hour; they fall on a Sunday while the market is shut.
+// These are the DST rules in force since 2007 (US: Energy Policy Act of 2005; EU: since 1996). Before 2007-03-11 the US
+// rule differed (1st Sunday of April to the last Sunday of October), so the Fixed and EUDST models derive a wrong NY
+// time for earlier server times; NYClose needs no DST and is unaffected. A tester start before 2007-03-11 under
+// Clock_NewYork with Fixed or EUDST is refused in OnInit (A0, GOAT-EA#273 P3).
 
 // B50 clock state. g_GoatNYClockMismatch: the last live self-check failed (fails closed: entries blocked);
 // g_GoatNYClockChecked: TimeGMT of that check (0 = not yet); g_GoatNYTesterNoted: the tester's one log line that it
@@ -119,29 +123,33 @@ datetime GoatNYTime(const datetime server_time)
   }
 
 //--- the session and the rollover window (pure)
-// The phase of a New York time in the NY_Session window [start_min, end_min) (minutes after NY midnight; start > end
-// crosses midnight). A session counts only on a Mon-Fri NY date and belongs to the date it starts on (ruling 5), whose
-// weekday lands in session_dow. 0: before the session (or no session that date), 1: in the session, 2: after it, up to
-// NY midnight (or, crossing midnight, up to the next start): the day end of session_dow's session.
+// The phase of a New York time (dow: NY calendar weekday, minute: minutes after NY midnight) in the NY_Session window
+// [start_min, end_min) (start > end crosses midnight). Ruling 5 as amended (GOAT-EA#273 P2), the FX trade-date
+// convention: a session belongs to the NY trade date it starts on, and one starting at or after 17:00 NY belongs to the
+// next one (Sunday 18:00 is Monday's session, Friday 18:00 Saturday's). Only a Mon-Fri trade date has a session; its
+// weekday lands in session_dow. Friday's session ends no later than Friday 16:55 NY (GOAT-EA#273 P1: the Friday close
+// fires at the earlier of its end and that cutoff, 5 minutes before the 17:00 NY FX close).
+// 0: no session (before one, or on a weekend trade date), 1: in the session, 2: after it, up to NY midnight (or,
+// crossing midnight, up to the next start): the day end of session_dow's session.
 int GoatNYSessionPhase(const int dow,const int minute,const int start_min,const int end_min,int &session_dow)
   {
-   session_dow=dow;
-   if(start_min<end_min)
+   int next_date=(start_min>=17*60 ? 1 : 0);   // a start at or after 17:00 NY trades the next NY date
+   int phase=0;
+   if(start_min<end_min || minute>=start_min)
      {
-      if(dow<1 || dow>5) return 0;
-      if(minute<start_min) return 0;
-      if(minute<end_min) return 1;
-      return 2;
+      session_dow=(dow+next_date)%7;            // the session that starts on this calendar date
+      if(minute<start_min)    phase=0;
+      else if(start_min>end_min || minute<end_min) phase=1;
+      else                    phase=2;
      }
-   if(minute>=start_min)
+   else
      {
-      if(dow<1 || dow>5) return 0;
-      return 1;
+      session_dow=(dow+6+next_date)%7;          // before the start: the tail of the previous calendar date's session, or its day end
+      phase=(minute<end_min ? 1 : 2);
      }
-   session_dow=(dow+6)%7;   // before the start: the tail of the previous date's session, or its day end
    if(session_dow<1 || session_dow>5) return 0;
-   if(minute<end_min) return 1;
-   return 2;
+   if(phase==1 && session_dow==5 && (dow==6 || (dow==5 && minute>=16*60+55))) phase=2;   // the Friday cutoff
+   return phase;
   }
 // No new entry while |NY - 17:00| < minutes (symmetric, to the second; 0 = off).
 bool GoatNYRolloverBlocked(const datetime ny_time,const int minutes)
@@ -238,7 +246,7 @@ void GoatNYClockApply(const int k)
       if(Action_Dayend==Action_Close) StopOut_Flag = true;
       if(Action_Dayend==Action_Pause) Sequence_Pause_Close = true;
      }
-   // End of Friday's NY session
+   // End of Friday's NY session: its end or the 16:55 NY cutoff, whichever comes first (GoatNYSessionPhase)
    if(InActive && phase==2 && session_dow==5)
      {
       if(Action_Friday==Action_Close) StopOut_Flag = true;

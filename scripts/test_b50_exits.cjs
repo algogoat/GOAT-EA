@@ -100,16 +100,31 @@ const flipInputs={Single_Exit_Opposite:true};
  assert.equal(exits[true],exits[false],'optimization and visual runs exit on the same tick');
  ok();
 }
-// The signals were frozen, not merely late: with the exit off, a FastSpeed single keeps B49a's early return.
+// The bypass is the single engine's (coordinator ruling on the A1 finding): with or without the opposite exit, a
+// FastSpeed single keeps its signals current, so its re-arm (A1: g_GoatSingleArmed re-arms on a false read while the
+// position is open) runs in optimization as in visual runs. The grid engine keeps B49a's early return.
 {
- const W=world({Single_Exit_Opposite:false},FLIP,{fastSpeed:true});W.run(flat(H1,9*H1));
- assert.equal(W.ctx.EMA_Sig,0,'flags off, the optimization return still freezes the signals once the single trades (EMA_Sig stays BUY)');
- assert.ok(!W.w.trace.some(x=>x.op==='PositionClose'),'and nothing closes the single');
- const V=world({Single_Exit_Opposite:true},FLIP,{fastSpeed:true});V.run(flat(H1,9*H1));
- assert.equal(V.ctx.EMA_Sig,1,'with the exit on, the signals stay current (EMA_Sig is SELL)');
- // The grid engine with Single_Exit_Opposite set keeps the return too (the bypass is the single's only).
+ for(const exit of [false,true]){
+  const W=world({Single_Exit_Opposite:exit},FLIP,{fastSpeed:true});W.run(flat(H1,9*H1));
+  assert.equal(W.ctx.EMA_Sig,1,'Single_Exit_Opposite='+exit+': a FastSpeed single\'s signals stay current (EMA_Sig is SELL)');
+ }
  const G=world({Engine_Mode:'Engine_Grid',Single_Exit_Opposite:true,Grid_Size:200},FLIP,{fastSpeed:true});G.run(flat(H1,9*H1));
- assert.ok(opens(G).length>=1,'the grid started');assert.equal(G.ctx.EMA_Sig,0,'the grid engine keeps B49a\'s return');
+ assert.ok(opens(G).length>=1,'the grid started');assert.equal(G.ctx.EMA_Sig,0,'the grid engine keeps B49a\'s return (EMA_Sig stays BUY)');
+ // Re-arm and reopen: the buy signal goes false and comes back while the single is open (03:05-03:35 sell), the time
+ // stop closes it at 05:00, and the still-true buy signal reopens it on the next signal check. Without the bypass a
+ // FastSpeed single never sees the false read (A1: never re-armed, no reopen), while a visual run reopens.
+ const phases=[[2*H1+35*60,'buy'],[3*H1+5*60,'sell'],[3*H1+35*60,'buy']],traces={};
+ for(const fastSpeed of [true,false]){
+  const W=world({Single_Time_Stop_Bars:3,Single_Time_Stop_TF:'TF_H1'},phases,{fastSpeed});
+  W.run(flat(H1,3*H1+20*60));
+  assert.equal(W.ctx.EMA_Sig,1,'FastSpeed '+fastSpeed+': the sell read is seen while the single is open');
+  W.run(flat(3*H1+20*60,5*H1+30*60));
+  const o=opens(W);assert.equal(o.length,2,'FastSpeed '+fastSpeed+': the single reopened after its time stop');
+  assert.equal(o[0].time,at(2*H1+45*60)+7);assert.equal(ended(W,TS)[0].time,at(5*H1)+7);
+  assert.equal(o[1].time,at(5*H1+60)+7,'reopened on the first signal check after the close');
+  traces[fastSpeed]=W.w.trace.map(({comment,...x})=>x);   // the order comment is blank under FastSpeed (OpenPosition)
+ }
+ assert.deepEqual(traces[true],traces[false],'optimization and visual runs trade the same (comments aside)');
  ok();
 }
 

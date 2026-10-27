@@ -13,8 +13,9 @@
 // counts the bars that exist. So on a broker that prints a Sunday D1 bar, an N=1 D1 single opened Friday closes at the
 // weekly open (Sunday's bar is the next bar), not Monday's. Accepted for alpha (Claude-Mac review of GOAT-EA#274);
 // the native Banker parity and the research runs exercise real bar counts.
-// The entry path differs before and after A1 (Add_Level in A0's base, GoatSingleOpen after A1): every assertion here
-// is about the first position and its exit, never the re-entry that follows.
+// The entry path is A1's (GoatSingleOpen, one position per signal episode, re-armed by a false read): the assertions
+// are about the first position and its exit, except the re-arm/reopen check, which proves that A1's re-arm runs under
+// FastSpeed (the bypass) and that the reopen comes from it (with no false read there is no reopen).
 'use strict';
 const assert=require('node:assert/strict');
 const H=require('./b50_tick_harness.cjs');
@@ -117,6 +118,14 @@ const flipInputs={Single_Exit_Opposite:true};
  // Re-arm and reopen: the buy signal goes false and comes back while the single is open (03:05-03:35 sell), the time
  // stop closes it at 05:00, and the still-true buy signal reopens it on the next signal check. Without the bypass a
  // FastSpeed single never sees the false read (A1: never re-armed, no reopen), while a visual run reopens.
+ // The control: the same single with a buy signal that never reads false is not reopened after its time stop (one
+ // position per signal episode, A1), so the reopen below is the re-arm's and not the entry check's alone.
+ for(const fastSpeed of [true,false]){
+  const W=world({Single_Time_Stop_Bars:3,Single_Time_Stop_TF:'TF_H1'},[[2*H1+35*60,'buy']],{fastSpeed});
+  W.run(flat(H1,5*H1+30*60));
+  assert.equal(ended(W,TS).length,1,'control, FastSpeed '+fastSpeed+': the time stop closed the single');
+  assert.equal(opens(W).length,1,'control, FastSpeed '+fastSpeed+': no false read, no re-arm, no reopen');
+ }
  const phases=[[2*H1+35*60,'buy'],[3*H1+5*60,'sell'],[3*H1+35*60,'buy']],traces={};
  for(const fastSpeed of [true,false]){
   const W=world({Single_Time_Stop_Bars:3,Single_Time_Stop_TF:'TF_H1'},phases,{fastSpeed});
@@ -294,9 +303,11 @@ function failCloses(W,n){
   assert.equal(W.w.trace.filter(x=>x.op==='PositionClose'||x.op==='PositionCloseFailed').filter(x=>x.time<at(6*H1)).length,3,'one close attempt per tick until it is closed');
  }
  // The marks end with the position: the next single gets its own time stop (3 H1 bars after its own entry bar), and
- // so does the one after it (A0's base reopens at once; A1 reopens once the 05:15 sell read re-arms it).
+ // so does the one after it. A1 opens one single per buy-signal episode, so each reopen needs a false read: the 05:15
+ // sell read re-arms the second single (05:45) and the 08:15 one the third (08:45). (On A0's base, without A1, the
+ // single reopened at once; the assembled tree needs the second false read, integration finding on B50 int2.)
  {
-  const W=world(STOP,[[2*H1+35*60,'buy'],[5*H1+5*60,'sell'],[5*H1+35*60,'buy']],{fastSpeed:true});failCloses(W,1);
+  const W=world(STOP,[[2*H1+35*60,'buy'],[5*H1+5*60,'sell'],[5*H1+35*60,'buy'],[8*H1+5*60,'sell'],[8*H1+35*60,'buy']],{fastSpeed:true});failCloses(W,1);
   W.run(flat(H1,12*H1));
   const o=opens(W);assert.ok(o.length>=3,'three singles ('+o.length+')');
   for(const open of o.slice(0,3)){

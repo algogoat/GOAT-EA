@@ -315,8 +315,8 @@ const M=1843920117,O=907113355,Y=1210448821;   // this chart's magic, an orphane
  t.acct.positions=[];assert.equal(t.c.GoatCidGuardRefuses(),true,'cached');assert.equal(t.c.GoatCidGuardRefuses(true),false,'forced');
  ok();}
 
-// 7. Source pins: the build identity (B49a); the input header (contract pin, and GoatFindMagicByCid in it) is unchanged.
-{assert.match(main,/^#define   GOAT_BUILD_ID "V1\.49-BETA17-49"$/m);assert.match(main,/^#define   GOAT_BUILD_MARKER "B49a"$/m);
+// 7. Source pins: the build identity (B50); the input header (contract pin, and GoatFindMagicByCid in it) is unchanged.
+{assert.match(main,/^#define   GOAT_BUILD_ID "V1\.49-BETA17-50"$/m);assert.match(main,/^#define   GOAT_BUILD_MARKER "B50"$/m);
  const sha=crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'))).digest('hex');
  const deps=JSON.parse(fs.readFileSync(path.join(ROOT,'controller/contracts/v149/dependencies.json'),'utf8').replace(/^\uFEFF/,''));
  assert.equal(sha,deps.header_sha256,'the input contract pins this GOAT_Inputs_Definitions.mqh (B49a changes it; test_b49a_no_drift.cjs)');

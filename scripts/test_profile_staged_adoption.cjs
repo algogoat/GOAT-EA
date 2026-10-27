@@ -392,7 +392,7 @@ function run(src=readSources()){
 
  // ---- the nonce carrier is inert on a child: every reader of Studio_MonitorRunPath is pinned here ----
  {const uses=[];
-  const sources=Object.keys(JSON.parse(fs.readFileSync(path.join(ROOT,'candidate-builds/beta17-B49a/identity.json'),'utf8')).sources).filter(f=>f!==FILES.audit).sort();
+  const sources=Object.keys(JSON.parse(fs.readFileSync(path.join(ROOT,'candidate-builds/beta17-B50/identity.json'),'utf8')).sources).filter(f=>f!==FILES.audit).sort();
   for(const f of sources){
    const text=f==='GOAT V1.49.mq5'?src.main:fs.readFileSync(path.join(ROOT,f),'utf8').replace(/\r\n/g,'\n');
    text.split('\n').forEach(l=>{if(/\b(?:g_GoatStudioMonitorRunPath|Studio_MonitorRunPath)\b/.test(l)&&!/^\s*\/\//.test(l))uses.push(f+': '+l.trim());});
@@ -502,7 +502,7 @@ function run(src=readSources()){
   assert.ok(!/\.magic\s*=\s*lparam/.test(ev));assert.match(ev,/cid_match=\(g_sets\[idx\]\.cid>0 && g_sets\[idx\]\.magic>0 && /);ok();}
 
  // ---- the template attach path is retired, not dormant ----
- const identity=JSON.parse(fs.readFileSync(path.join(ROOT,'candidate-builds/beta17-B49a/identity.json'),'utf8'));
+ const identity=JSON.parse(fs.readFileSync(path.join(ROOT,'candidate-builds/beta17-B50/identity.json'),'utf8'));
  const closure=Object.keys(identity.sources).filter(f=>/\.mq[5h]$/.test(f));
  assert.ok(closure.length>30 && closure.includes('Dashboard.mqh') && closure.includes('GOAT V1.49.mq5'));
  for(const f of closure){

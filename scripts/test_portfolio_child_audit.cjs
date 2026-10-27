@@ -72,7 +72,11 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=0\n'+tail,expert),true,'Legacy SET, B49b child at Legacy');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=1\n'+tail,expert),false,'Legacy SET, child rechecking');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Gate_Recheck=1\n',0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=1\n'+tail,expert),true,'AtFirstOrder SET and child');passed++;
- assert.equal(api.GoatChildAuditMaps(original+'Gate_Recheck=1\n',0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),false,'AtFirstOrder SET, a PR-1 child without the input');passed++;}
+ assert.equal(api.GoatChildAuditMaps(original+'Gate_Recheck=1\n',0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),false,'AtFirstOrder SET, a PR-1 child without the input');passed++;
+ // B49b (F3): Fix_ClosePath under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=0\n'+tail,expert),true,'Off SET, B49b child at Off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=1\n'+tail,expert),false,'Off SET, child at On');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_ClosePath=1\n',0,50,2,fix+'Fix_ClosePath=1\n'+tail,expert),true,'On SET and child');passed++;}
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.

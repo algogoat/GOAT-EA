@@ -31,10 +31,13 @@ const REMOVED={
   'if(MACD_Sample.CheckTF(MACD_TF)) {','if(RSI2_Sample.CheckTF(RSI2_TF)) {',
   'if(Sequence_New_News&&Sequence_New_Bias_B)','if(Sequence_New_News&&Sequence_New_Bias_S)',   // PR-5 (F5, GOAT-EA#271 P1): the bias pre-gate's side
   'if(!Sequence_New_Bias_B&&!LastBuySignal) {Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);} // B44 item 4: log only',
-  'if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only',                                                          // indicator gated on its buffers
+  'if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only',
+  'closeErrors++;',   // PR-3 (F3 D4): a failed live close is logged
+  'if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;',   // PR-3 (F3 D5): a failed live modify is logged
+  '{TSLmodifyErrors++; PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,DoubleToString(SL,Digits()),Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++;',   // PR-3: %.6f takes the double
  ],
 };
-const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck'];   // PR-1 (F7), PR-5 (F5)
+const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3)
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

@@ -206,6 +206,20 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(!GoatChildAuditAdd(names,values,"Ledger_Mode","0")) return false;found=true;}
    }
    // B49a:end f2-audit
+   // B49b:begin fix-audit
+   // B49b (F7): the fix flags are written by WriteSet only when on, like Ledger_Mode; a child that carries one while the
+   // SET does not must hold Off (0).
+   {
+      string fix_names[1]={"Fix_MoneyVolume"};
+      for(int n=0;n<ArraySize(fix_names);n++)
+      {
+         bool found=false;
+         for(int i=0;i<ArraySize(names);i++) if(names[i]==fix_names[n]) found=true;
+         for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]==fix_names[n])
+         {if(!GoatChildAuditAdd(names,values,fix_names[n],"0")) return false;found=true;}
+      }
+   }
+   // B49b:end fix-audit
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

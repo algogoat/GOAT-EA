@@ -43,6 +43,7 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    if(identity=="[TesterInputs]|Sequence_Export_Start" || identity=="[TesterInputs]|Sequence_Export_End") return value=="0";
    if(identity=="[TesterInputs]|Sequence_Export_Model") return value=="4";
    if(identity=="[TesterInputs]|Ledger_Mode") return value=="0"; // B49a (F2): a SET from before the appended input runs it at its Legacy default, never PositionJoin
+   if(identity=="[TesterInputs]|Fix_MoneyVolume") return value=="0"; // B49b (F7): an omitted fix flag runs Off (B49a), never On
    return false;
   }
 

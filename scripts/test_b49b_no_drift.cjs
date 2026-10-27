@@ -20,11 +20,18 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B49A_SOURCE='693cad05dca3ca7d5c9549465c8973ba4d737d8a';
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
-const CHANGED=['GOAT V1.49.mq5'];   // PR-0: the start-distance refusal and the adopted TP
+// PR-0: the entrypoint (the start-distance refusal, the adopted TP). PR-1: Fix_MoneyVolume (the header's input and
+// WriteSet, the child audit, the Studio readback and type). One line: test_studio_start_protocol_candidate reads it.
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATPortfolioChildAudit.mqh','GOATStudioSettingCompare.mqh','GOATStudioSettingTypes.mqh'];
 const ADDED=[];
 // Every B49a line a changed hunk removes, verbatim (trimmed), per file.
-const REMOVED={};
-const NEW_INPUTS=[];
+const REMOVED={
+ 'GOAT V1.49.mq5':[
+  'if((RSI_Mode!=RSI_Disabled))','if(EMA_Sample.CheckTF(EMA_TF)) {','if(ADX_Sample.CheckTF(ADX_TF)) {','if(BB_Sample.CheckTF(BB_TF)) {',   // PR-1 (F7 SIG-02): each
+  'if(MACD_Sample.CheckTF(MACD_TF)) {','if(RSI2_Sample.CheckTF(RSI2_TF)) {',                                                          // indicator gated on its buffers
+ ],
+};
+const NEW_INPUTS=['Fix_MoneyVolume'];   // PR-1 (F7)
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

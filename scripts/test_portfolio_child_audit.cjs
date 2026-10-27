@@ -59,7 +59,15 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),false,'Legacy SET, child at PositionJoin');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),true,'PositionJoin SET and child');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=0\n'+tail,expert),false,'PositionJoin SET, child at Legacy');passed++;
- assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+tail,expert),false,'PositionJoin SET, a B47 child without the input');passed++;}
+ assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+tail,expert),false,'PositionJoin SET, a B47 child without the input');passed++;
+ // B49b (F7): Fix_MoneyVolume follows the same rule (written only when on; a child that carries it must hold Off).
+ const fix=ledger+'Ledger_Mode=0\n';
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),true,'Off SET, B49b child at Off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=1\n'+tail,expert),false,'Off SET, child at On');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_MoneyVolume=1\n',0,50,2,fix+'Fix_MoneyVolume=1\n'+tail,expert),true,'On SET and child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_MoneyVolume=1\n',0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),false,'On SET, child at Off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_MoneyVolume=1\n',0,50,2,fix+tail,expert),false,'On SET, a B49a child without the input');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+tail,expert),true,'Off SET, a B49a child without the input');passed++;}
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.

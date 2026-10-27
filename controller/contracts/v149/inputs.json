@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_sha256": "38b3270e8bfca6e037097ff9b716ada2d9d62a665057c92346393af455953909",
+  "source_sha256": "b73c6201596fbf1e96a92ab040140ac86872fe58b72c8e12479e013fda9ada23",
   "defines": {
     "GOAT_VERSION_LABEL": "\"1.49\"",
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
@@ -1158,6 +1158,17 @@
       "enum_choices": {
         "Ledger_Legacy": 0,
         "Ledger_PositionJoin": 1
+      },
+      "dependency_audited": false
+    },
+    "Fix_MoneyVolume": {
+      "type": "ENUM_GOAT_FIX",
+      "declaration": "sinput",
+      "default_expression": "GoatFix_Off",
+      "optimizable": false,
+      "enum_choices": {
+        "GoatFix_Off": 0,
+        "GoatFix_On": 1
       },
       "dependency_audited": false
     }

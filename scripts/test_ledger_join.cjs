@@ -231,7 +231,9 @@ function dailyFixture(mode,text=main){
 // 7. The input: appended last to the header, default Legacy.
 {assert.match(header,/enum ENUM_LEDGER_MODE\n  \{\n   Ledger_Legacy=0, +\/\/ Legacy \(magic only\)\n   Ledger_PositionJoin=1  \/\/ Position join\n  \};\nsinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;/);
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
- assert.equal(inputs.at(-1),'Ledger_Mode','the last header input');
+ // B49b appends its per-fix flags after it (test_b49b_no_drift.cjs NEW_INPUTS): Ledger_Mode is B49a's last input.
+ assert.equal(inputs[inputs.indexOf('Trade_December')+1],'Ledger_Mode','appended right after B47\'s last input');
+ assert.deepEqual(inputs.slice(inputs.indexOf('Ledger_Mode')+1).filter(n=>!/^Fix_/.test(n)),[],'only B49b\'s fix flags follow it');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the
@@ -283,8 +285,9 @@ function dailyFixture(mode,text=main){
 //     audit's Legacy default). WriteSet's last lines run here, with the same tail cut from B47's header as the control.
 {const writeSet=bodyOf(header,'void WriteSet(string desc)');
  const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'));
- const run=(text,mode)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
-  FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
+ // B49b (F7): Fix_MoneyVolume is written under the same rule (only when on), after Ledger_Mode.
+ const run=(text,mode,fix=0)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
+  Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
  assert.deepEqual(run(writeSet,0),['Trade_December=true'],'Legacy: no Ledger_Mode line, as B47');
  assert.deepEqual(run(writeSet,1),['Trade_December=true','Ledger_Mode=1'],'PositionJoin: recorded');
  const headerB47=clean(execFileSync('git',['show',B47_SOURCE+':GOAT_Inputs_Definitions.mqh'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
@@ -293,6 +296,9 @@ function dailyFixture(mode,text=main){
  const line=writeSet.split('\n').find(l=>l.includes('"Ledger_Mode="'));assert.ok(line&&/^if\(Ledger_Mode!=Ledger_Legacy\) /.test(line),line);
  assert.deepEqual(run(writeSet.replace('if(Ledger_Mode!=Ledger_Legacy) ',''),0),['Trade_December=true','Ledger_Mode=0'],'mutant: ungated');
  assert.equal(writeSet.indexOf(line)<writeSet.indexOf('FileClose(FileSET_handle);'),true,'written before the file closes');
+ assert.deepEqual(run(writeSet,0,1),['Trade_December=true','Fix_MoneyVolume=1'],'B49b: a fix flag on is recorded');
+ assert.deepEqual(run(writeSet,1,1),['Trade_December=true','Ledger_Mode=1','Fix_MoneyVolume=1'],'after Ledger_Mode');
+ assert.deepEqual(run(writeSet.replace('if(Fix_MoneyVolume!=GoatFix_Off) ',''),0,0),['Trade_December=true','Fix_MoneyVolume=0'],'mutant: ungated fix flag');
  ok();}
 
 console.log(JSON.stringify({passed,test:'ledger_join'}));

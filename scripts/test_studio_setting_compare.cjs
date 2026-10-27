@@ -57,6 +57,11 @@ assert.ok(!/Ledger_Mode/.test(w));
 compare(w,a+'\nLedger_Mode=0\n',true);
 compare(w,a+'\nLedger_Mode=1\n',false,'Ledger_Mode');
 compare(w,a+'\nLedger_Mode=0||0||1||1||Y\n',false,'Ledger_Mode');
+// B49b (F7): Fix_MoneyVolume, appended after Ledger_Mode, under the same rule (an omitted flag runs Off, never On).
+assert.ok(!/Fix_MoneyVolume/.test(w));
+compare(w,a+'\nFix_MoneyVolume=0\n',true);
+compare(w,a+'\nFix_MoneyVolume=1\n',false,'Fix_MoneyVolume');
+compare(w,a+'\nFix_MoneyVolume=0||0||1||1||Y\n',false,'Fix_MoneyVolume');
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

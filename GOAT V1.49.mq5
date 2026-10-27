@@ -7106,6 +7106,7 @@ void UpdateRSI(int shift)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void UpdateCurrentSignals(int shift)
   {
+   if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) // B50 (A3): a single with the opposite exit keeps its signals current in optimization (FastSpeed_Flag), or that exit would fire only in visual runs
    if(FastSpeed_Flag && (!Buy_EN||Seq_Buy.Traded) && (!Sell_EN||Seq_Sell.Traded) ) return;
  //if(FastSpeed_Flag && (!Buy_EN||Seq_Buy.Active) && (!Sell_EN||Seq_Sell.Active) ) return;
 //-------------------------------------------------------------------------
@@ -8101,22 +8102,80 @@ double GetSize(int type,int level_count=0,double grid_size=0)
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:begin b50-exits
-// B50 (A3 fills the bodies; docs/b50/B50_ALPHA_DESIGN.md section 3). The stubs never close anything.
-// GoatSignalAll(op): the combined entry signal for direction op, the same six terms as SignalEntryTrigger's.
+// B50 (A3; docs/b50/B50_ALPHA_DESIGN.md section 3): the single's two exits. Each closes through the sequence's own
+// CloseSequencePositions, so the ledger, the restart record and the trace end as they do for every other exit.
+// GoatSignalAll(op): the combined entry signal for direction op, the same six terms as SignalEntryTrigger's, copied
+// verbatim (scripts/test_b50_exits.cjs asserts the text matches the entry conditions, so the two cannot drift).
 bool GoatSignalAll(const int op)
   {
+   if(op==OP_BUY)
+      return(  ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_BUY)
+            && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_BUY|| EMA_Sig==OP_BUYSELL)
+            && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_BUY|| ADX_Sig==OP_BUYSELL)
+            && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_BUY||  BB_Sig==OP_BUYSELL)
+            && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
+            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL));
+   if(op==OP_SELL)
+      return(  ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_SELL)
+            && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_SELL|| EMA_Sig==OP_BUYSELL)
+            && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_SELL|| ADX_Sig==OP_BUYSELL)
+            && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_SELL||  BB_Sig==OP_BUYSELL)
+            && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
+            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL));
    return false;
   }
-// GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence; it refreshes the signals
-// first when checked is false, and then sets it.
+// GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence, before the entry check, in
+// or out of session (ruling 5); it refreshes the signals first when checked is false, and then sets it. A single exits
+// when the signal that opens the other side reads true AND its own signal reads false, so a range mode, where both read
+// true, never exits. Under Reverse_Seq a buy opens on the sell signal, so the two are swapped.
 void GoatSingleSignalExits(bool &checked)
   {
    if(Engine_Mode!=Engine_Single || !Single_Exit_Opposite) return;
+   if(!Seq_Buy.Traded && !Seq_Sell.Traded) return; // no single open: nothing to exit, and no extra signal refresh
+   if(!checked)
+     {
+      if(Sequence_Pause_Close || Sequence_Pause_News) UpdateRSI(Shift_Sig); // paused, the tick skipped the RSI refresh
+      UpdateCurrentSignals(Shift_Sig);
+      checked=true;
+     }
+   bool b50_rev=Reverse_Seq;
+   bool b50_long =(b50_rev ? GoatSignalAll(OP_SELL) : GoatSignalAll(OP_BUY));  // the signal that opens a buy
+   bool b50_short=(b50_rev ? GoatSignalAll(OP_BUY)  : GoatSignalAll(OP_SELL)); // the signal that opens a sell
+   if(Seq_Buy.Traded  && b50_short && !b50_long)  Seq_Buy.CloseSequencePositions("Single Exit: opposite signal");
+   if(Seq_Sell.Traded && b50_long  && !b50_short) Seq_Sell.CloseSequencePositions("Single Exit: opposite signal");
   }
-// GoatSingleTimeStop(): closes a single after Single_Time_Stop_Bars bars of Single_Time_Stop_TF.
+// GoatSingleTimeStop(): on each new bar of Single_Time_Stop_TF, closes a single whose entry bar is Single_Time_Stop_Bars
+// or more bars back. The entry time is the position's own POSITION_TIME (TradeLevels[0].ticket), so the count survives
+// a restart. An unknown bar count (iBarShift -1) never closes: the single keeps its stop, and the EA logs it once.
 void GoatSingleTimeStop()
   {
    if(Engine_Mode!=Engine_Single || Single_Time_Stop_Bars<=0) return;
+   static INTERVAL b50_TimeStop_Sample;
+   ENUM_TIMEFRAMES b50_tf=TF2TF(Single_Time_Stop_TF);
+   if(!b50_TimeStop_Sample.CheckTF(b50_tf)) return;
+   static long b50_unknown_buy=0,b50_unknown_sell=0; // the ticket whose unknown bar count was logged
+   if(Seq_Buy.Traded && ArraySize(Seq_Buy.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Buy.TradeLevels[0].ticket))
+     {
+      datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);
+      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);
+      if(b50_bars<0)
+        {
+         if(b50_unknown_buy!=Seq_Buy.TradeLevels[0].ticket) Print(Seq_Buy.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop.");
+         b50_unknown_buy=Seq_Buy.TradeLevels[0].ticket;
+        }
+      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Buy.CloseSequencePositions("Single Exit: time stop");
+     }
+   if(Seq_Sell.Traded && ArraySize(Seq_Sell.TradeLevels)>0 && PositionSelectByTicket((ulong)Seq_Sell.TradeLevels[0].ticket))
+     {
+      datetime b50_entry=(datetime)PositionGetInteger(POSITION_TIME);
+      int b50_bars=iBarShift(_Symbol,b50_tf,b50_entry,false);
+      if(b50_bars<0)
+        {
+         if(b50_unknown_sell!=Seq_Sell.TradeLevels[0].ticket) Print(Seq_Sell.Desc,": time stop: no bar for the entry time ",TimeToString(b50_entry),"; the single keeps its stop.");
+         b50_unknown_sell=Seq_Sell.TradeLevels[0].ticket;
+        }
+      else if(b50_bars>=Single_Time_Stop_Bars) Seq_Sell.CloseSequencePositions("Single Exit: time stop");
+     }
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:end b50-exits

@@ -71,6 +71,22 @@ class AppendedInputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, name+': Input not exposed for optimization'):
                 validate_strategy(dict(self.old, **{name: '0||0||1||1||Y'}), self.schema)
 
+    def test_the_pre_trade_caps_only_tighten(self):
+        # B49b (F6, Claude-Mac GOAT-EA#281 6445315361): Max_Spread_Points 0..9999 (B49a's fixed MaxSP), both caps >= 0.
+        for name, value in (('Max_Spread_Points', '0'), ('Max_Spread_Points', '30'), ('Max_Spread_Points', '9999'),
+                            ('Min_Margin_Level_PC', '0'), ('Min_Margin_Level_PC', '150.0'), ('Min_Margin_Level_PC', '100000'),
+                            ('Max_Spread_Points', '30||10000||1||10000||N')):            # a dormant tuple runs its first field
+            with self.subTest(name=name, value=value):
+                self.assertEqual(validate_strategy(dict(self.old, **{name: value}), self.schema)['values'][name], value)
+        for name, value in (('Max_Spread_Points', '10000'), ('Max_Spread_Points', '50000'), ('Max_Spread_Points', '-1'),
+                            ('Min_Margin_Level_PC', '-0.5'), ('Min_Margin_Level_PC', '-100'),
+                            ('Max_Spread_Points', '50000||0||1||10||N')):
+            with self.subTest(name=name, value=value):
+                with self.assertRaisesRegex(ValueError, '^PRETRADE_CAP_OUT_OF_RANGE: .*' + name + '=' + value.replace('|', r'\|')):
+                    validate_strategy(dict(self.old, **{name: value}), self.schema)
+        # An omitted cap is its default, 0 (off), and passes.
+        validate_strategy(dict(self.old), self.schema)
+
     def test_every_other_input_stays_required_and_unknown_inputs_stay_refused(self):
         missing = {k: v for k, v in self.old.items() if k != 'Mode_News'}
         with self.assertRaisesRegex(ValueError, r"missing=\['Mode_News'\], unknown=\[\]"):

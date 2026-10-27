@@ -43,7 +43,9 @@ const REMOVED={
   'CopyBuffer(BB_handle,UPPER_BAND,shift,2,BB_Hi_Buf);  BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits);',
   'CopyBuffer(BB_handle,LOWER_BAND,shift,2,BB_Lo_Buf);  BB_Lo_Buf[0] = NormalizeDouble(BB_Lo_Buf[0],_Digits);',
   'CopyBuffer(MACD_handle,1           ,shift+0,1,MACD_Clr_Buf);','CopyBuffer(RSI2_handle,0,shift+0,2,RSI2_Buf);',
-  'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>MaxSP) return 0;',   // PR-6 (F6): Max_Spread_Points replaces the fixed MaxSP when set
+  'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>MaxSP) return 0;',   // PR-6 (F6): Max_Spread_Points tightens the fixed MaxSP when set
+  'else {Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)',   // PR-6 (Mac #281 P2): no per-tick line for a pre-trade refusal
+  'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>=MaxSP)  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta);',   // PR-6 (Mac #281 P3): the label shows the effective cap
   'DashboardPortfolioCommandIdApplied=command_id;','DashboardPortfolioCommandIdApplied=command_id;','close_errors++;','close_errors++;',   // PR-3b (both close commands, both bus helpers) (F3 DASH-04): applied only once flat; a failed bus close is logged
  ],
  'Dashboard.mqh':[

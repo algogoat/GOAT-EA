@@ -1,7 +1,8 @@
 // B49b PR-6 (F6: pre-trade checks that can fire; goatai#2587 6433828681, Claude-Mac 6433854745). The production
 // functions run here from GOAT V1.49.mq5, side by side with B49a's OpenPosition spread line (source 693cad0):
-// 1. GoatSpreadRefused: Max_Spread_Points 0 is B49a's fixed MaxSP check exactly; set, it replaces MaxSP (refuses above it,
-//    allows at it), and logs at most once a minute, live only.
+// 1. GoatSpreadRefused: Max_Spread_Points 0 is B49a's fixed MaxSP check exactly (no log, no code); set, the gate is
+//    min(MaxSP, it) (Claude-Mac GOAT-EA#281: a cap only tightens), refuses above it with LastRetCode 742, allows at it,
+//    and logs at most once a minute, live only.
 // 2. GoatMarginLevelRefused: Min_Margin_Level_PC 0 never refuses (B49a has no margin check). Set, it refuses an order whose
 //    projected margin level, equity / (current margin + OrderCalcMargin of this order) x 100, would fall below it, allows
 //    at it, refuses when the margin cannot be computed, and logs at most once a minute, live only.
@@ -9,6 +10,8 @@
 //    requested volume and the below-minimum early return, and refuses with LastRetCode 741.
 // 4. OnInit refuses Mode_Lots RiskperSeq with Max_Seq_Trades <= 1 (validate-set's RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), right
 //    after B49a's Risk<10 refusal. Ops' scan (10-27): 0 of 382 SETs we run have the pair.
+// 5. Add_Level's per-tick "Failed. Return Code:" line is skipped for a pre-trade refusal (741/742), counted over N ticks.
+// 6. The chart's spread label tests the gate's own cap.
 // test_b49b_f6_mutations.cjs runs this file on mutated entrypoints (GOAT_EA_MAIN).
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
@@ -34,7 +37,7 @@ const fmt=(f,...a)=>{let i=0;return f.replace(/%%|%(\.\d+)?([dfs])/g,(m,p,t)=>{i
 function ctx({spread=20,maxSP=9999,maxSpread=0,minMargin=0,margin=0,equity=10000,need=500,calc=true,tester=false}={}){
  const c={MaxSP:maxSP,Max_Spread_Points:maxSpread,Min_Margin_Level_PC:minMargin,POSITION_TYPE_BUY:0,POSITION_TYPE_SELL:1,ORDER_TYPE_BUY:0,ORDER_TYPE_SELL:1,
   SYMBOL_SPREAD:1,SYMBOL_ASK:2,SYMBOL_BID:3,ACCOUNT_MARGIN:4,ACCOUNT_EQUITY:5,MQL_TESTER:6,_Symbol:'EURUSD',now:1000,logs:[],calcs:[],
-  g_goat_pretrade_logged:[0,0],Symbol:()=>'EURUSD',MathIsValidNumber:Number.isFinite,StringFormat:fmt};
+  g_goat_pretrade_logged:[0,0],LastRetCode:0,Symbol:()=>'EURUSD',MathIsValidNumber:Number.isFinite,StringFormat:fmt};
  c.SymbolInfoInteger=(s,k)=>k===1?spread:0;c.SymbolInfoDouble=(s,k)=>k===2?1.1002:1.1000;
  c.AccountInfoDouble=k=>k===4?margin:equity;c.MQLInfoInteger=k=>k===6&&tester?1:0;c.TimeCurrent=()=>c.now;
  c.Print=(...a)=>c.logs.push(a.join(''));
@@ -44,6 +47,8 @@ function ctx({spread=20,maxSP=9999,maxSpread=0,minMargin=0,margin=0,equity=10000
  const margin_fn=bodyOf(main,'bool GoatMarginLevelRefused(const int op,const double volume)')
   .replace(/!OrderCalcMargin\(([^;]*?),need\)/,'!(OrderCalcMargin($1,0)&&((need=__need),true))');
  vm.runInContext(fn('GoatPreTradeRefusal',['kind','text'],bodyOf(main,'void GoatPreTradeRefusal(const int kind,const string text)'))
+  +fn('GoatPreTradeRefusalCode',['code'],bodyOf(main,'bool GoatPreTradeRefusalCode(const uint code)'))
+  +fn('GoatSpreadCap',[],bodyOf(main,'long GoatSpreadCap(void)'))
   +fn('GoatSpreadRefused',[],bodyOf(main,'bool GoatSpreadRefused(void)'))+fn('GoatMarginLevelRefused',['op','volume'],margin_fn),c);
  return c;
 }
@@ -54,13 +59,18 @@ const b49aRefused=(spread,maxSP)=>spread>maxSP;
 
 {// 1. Spread. Off: B49a exactly, for every spread around MaxSP.
  for(const maxSP of [9999,15])for(const spread of [0,14,15,16,9998,9999,10000]){
-  const c=ctx({spread,maxSP});assert.equal(c.GoatSpreadRefused(),b49aRefused(spread,maxSP),'off '+spread+'/'+maxSP);assert.deepEqual(c.logs,[]);}
- // Set: replaces MaxSP (even a lower MaxSP), refuses above it, allows at it.
- for(const [spread,want] of [[29,false],[30,false],[31,true],[500,true]]){const c=ctx({spread,maxSpread:30,maxSP:9999});assert.equal(c.GoatSpreadRefused(),want,'set '+spread);}
- assert.equal(ctx({spread:20,maxSpread:30,maxSP:15}).GoatSpreadRefused(),false,'the input replaces MaxSP, never adds to it');
+  const c=ctx({spread,maxSP});assert.equal(c.GoatSpreadRefused(),b49aRefused(spread,maxSP),'off '+spread+'/'+maxSP);assert.deepEqual(c.logs,[]);
+  assert.equal(c.LastRetCode,0,'off: no return code, as B49a');}
+ // Set: the gate is min(MaxSP, the cap): refuses above it, allows at it, with its own return code.
+ for(const [spread,want] of [[29,false],[30,false],[31,true],[500,true]]){const c=ctx({spread,maxSpread:30,maxSP:9999});
+  assert.equal(c.GoatSpreadRefused(),want,'set '+spread);assert.equal(c.LastRetCode,want?742:0,'code '+spread);}
+ // Claude-Mac GOAT-EA#281 P2: a cap may only tighten. Above MaxSP it changes nothing; below, it is the gate.
+ for(const [spread,want] of [[9999,false],[10000,true],[49999,true]])assert.equal(ctx({spread,maxSpread:50000,maxSP:9999}).GoatSpreadRefused(),want,'cap above MaxSP, spread '+spread);
+ assert.equal(ctx({spread:20,maxSpread:30,maxSP:15}).GoatSpreadRefused(),true,'MaxSP still applies under a looser cap');
+ assert.equal(ctx({maxSpread:-5,maxSP:9999}).GoatSpreadCap(),9999,'a negative cap is off');
  // Logged once a minute, live only.
  {const c=ctx({spread:50,maxSpread:30});for(let s=0;s<120;s++){c.GoatSpreadRefused();c.now++;}
-  assert.equal(c.logs.length,2);assert.match(c.logs[0],/^GOAT pre-trade: order refused: spread 50 > Max_Spread_Points 30 symbol=EURUSD$/);}
+  assert.equal(c.logs.length,2);assert.match(c.logs[0],/^GOAT pre-trade: order refused: spread 50 > cap 30 \(Max_Spread_Points 30\) symbol=EURUSD$/);}
  {const c=ctx({spread:50,maxSpread:30,tester:true});c.GoatSpreadRefused();assert.deepEqual(c.logs,[],'never in the tester');}
  ok();}
 
@@ -76,6 +86,8 @@ const b49aRefused=(spread,maxSP)=>spread>maxSP;
  // The margin cannot be computed: refused (the floor is set), logged.
  {const c=ctx({minMargin:150,calc:false});assert.equal(c.GoatMarginLevelRefused(0,1),true);assert.match(c.logs[0],/its margin could not be computed/);}
  {const c=ctx({minMargin:150,need:NaN});assert.equal(c.GoatMarginLevelRefused(0,1),true,'a non-finite margin is refused');}
+ {const c=ctx({minMargin:150,margin:0,need:-5});assert.equal(c.GoatMarginLevelRefused(0,1),true,'a negative margin is refused');}
+ {const c=ctx({minMargin:150,margin:100,equity:-50});assert.equal(c.GoatMarginLevelRefused(0,1),true,'equity <= 0 is refused');}
  // Logged once a minute, live only.
  {const c=ctx({minMargin:600,margin:1500,need:500});for(let s=0;s<120;s++){c.GoatMarginLevelRefused(0,1);c.now++;}
   assert.equal(c.logs.length,2);assert.match(c.logs[0],/^GOAT pre-trade: order refused: margin level after it 500\.0% < Min_Margin_Level_PC 600\.0% symbol=EURUSD$/);}
@@ -104,6 +116,36 @@ const b49aRefused=(spread,maxSP)=>spread>maxSP;
  for(const [lots,trades,want] of [[2,1,true],[2,0,true],[2,-1,true],[2,2,false],[2,10,false],[0,1,false],[1,1,false]])
   assert.equal(refused(lots,trades),want,'Mode_Lots '+lots+', Max_Seq_Trades '+trades);
  assert.match(m[2],/^Initialization Failed: Risk per Sequence lot sizing needs at least 2 sequence trades/);
+ ok();}
+
+{// 5. Claude-Mac GOAT-EA#281 P2: no per-tick log flood. Add_Level's failure branch (production text) runs once per refused
+ //    tick; over N ticks a pre-trade refusal prints its own line at most once a minute and never the "Failed" line, while
+ //    a broker failure and B49a's off-path spread refusal (code 0) still print every tick, as B49a.
+ const at=main.indexOf(' Failed. Return Code:');assert.ok(at>=0);assert.equal(main.indexOf(' Failed. Return Code:',at+1),-1,'one failure line');
+ const start=main.lastIndexOf('else {',at),stop=main.indexOf('return false;}',at);
+ const branch=js(main.slice(start+'else {'.length,stop)).replace(/\bDesc_lvl\b/g,'"L1"');
+ assert.match(branch,/^if\(!GoatPreTradeRefusalCode\(LastRetCode\)\) Print\(/,'the failure line is skipped only for a pre-trade refusal code');
+ const N=600;   // ten minutes of one-second ticks
+ function run(opts,refuse){
+  const c=ctx(opts);let failed=0;
+  vm.runInContext('function DoubleToString(v,d){return Number(v).toFixed(d);} function GetRetcodeID(c){return "ID"+c;}'
+   +' var Level_New=1.1,Lots_Order=0.1,Lots_Calc=0.1,Lots_Delayed=0,_Digits=5; var MathMax=Math.max;'
+   +' function Branch(){'+branch+'}',c);
+  const print=c.Print;c.Print=(...a)=>{if(a.join('').includes('Failed. Return Code:'))failed++;print(...a);};
+  for(let s=0;s<N;s++){c.LastRetCode=0;refuse(c);c.Branch();c.now++;}
+  return {failed,own:c.logs.filter(l=>l.startsWith('GOAT pre-trade:')).length};
+ }
+ const spread=run({spread:50,maxSpread:30},c=>assert.equal(c.GoatSpreadRefused(),true));
+ assert.deepEqual(spread,{failed:0,own:10},'a spread refusal: one line a minute, no per-tick line');
+ const margin=run({minMargin:600,margin:1500,need:500},c=>{if(c.GoatMarginLevelRefused(0,1))c.LastRetCode=741;});
+ assert.deepEqual(margin,{failed:0,own:10},'a margin refusal: one line a minute, no per-tick line');
+ assert.deepEqual(run({spread:50,maxSP:15},c=>assert.equal(c.GoatSpreadRefused(),true)),{failed:N,own:0},'off: B49a\'s code-0 line every tick');
+ assert.deepEqual(run({},c=>{c.LastRetCode=10019;}),{failed:N,own:0},'a broker failure still prints every tick');
+ ok();}
+
+{// 6. Claude-Mac GOAT-EA#281 P3: the chart label tests the effective cap with >, as the gate.
+ const line=main.split('\n').find(l=>l.includes('"Spread Filter Active, Sp="'));
+ assert.ok(line&&line.includes('if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>GoatSpreadCap())'),'the label uses the gate\'s cap: '+line);
  ok();}
 
 console.log(JSON.stringify({passed,test:'b49b_f6',b49aCompared:true}));

@@ -2601,7 +2601,7 @@ class SEQUENCE
         Print(Desc_lvl,": Price=",DoubleToString(Level_New,Digits())," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)," Filled");
         return true;
        }
-       else {Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)
+       else {if(!GoatPreTradeRefusalCode(LastRetCode)) Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2) // B49b (F6): a pre-trade refusal is logged once a minute (GoatPreTradeRefusal), not every tick
                            ," Failed. Return Code:",LastRetCode," ID:",GetRetcodeID(LastRetCode)); return false;}
      }
      else
@@ -7717,10 +7717,13 @@ void CalculateAllPendingOrders(int &count_buy_limits,int &count_sell_limits,int 
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B49b:begin pre-trade
 // F6 (roadmap EX-07 area; anatomy 05): B49a's spread cap is a fixed 9999 points (MaxSP) and its margin check is commented
-// out. Max_Spread_Points (when set) replaces MaxSP; Min_Margin_Level_PC (when set) refuses an order whose projected margin
-// level, equity over (current margin + this order's OrderCalcMargin), would fall below it, and refuses when that margin
-// cannot be computed. Both inputs default to 0, which is B49a's path exactly. A refusal is logged at most once a minute
-// per kind, and only live (the tester's journal stays B49a's).
+// out. Max_Spread_Points (when set) tightens MaxSP: the gate is the lower of the two (Claude-Mac GOAT-EA#281: a cap may
+// only tighten). Min_Margin_Level_PC (when set) refuses an order whose projected margin level, equity over (current margin
+// + this order's OrderCalcMargin), would fall below it, and refuses when that margin cannot be computed; on a broker with
+// tiered margin the projection can under-state the margin, since OrderCalcMargin prices the order alone. Both inputs
+// default to 0, which is B49a's path exactly. A refusal is logged at most once a minute per kind, and only live (the
+// tester's journal stays B49a's); it carries its own LastRetCode (742 spread, 741 margin), for which Add_Level skips its
+// per-tick "Failed" line (GoatPreTradeRefusalCode).
 datetime g_goat_pretrade_logged[2];   // 0 spread, 1 margin
 void GoatPreTradeRefusal(const int kind,const string text)
   {
@@ -7728,11 +7731,17 @@ void GoatPreTradeRefusal(const int kind,const string text)
    g_goat_pretrade_logged[kind]=TimeCurrent();
    Print("GOAT pre-trade: ",text," symbol=",_Symbol);
   }
+bool GoatPreTradeRefusalCode(const uint code) {return(code==741 || code==742);}
+long GoatSpreadCap(void) {return((Max_Spread_Points>0 && Max_Spread_Points<MaxSP) ? (long)Max_Spread_Points : (long)MaxSP);}
 bool GoatSpreadRefused(void)
   {
    long spread=SymbolInfoInteger(Symbol(),SYMBOL_SPREAD);
-   if(spread<=(Max_Spread_Points>0 ? (long)Max_Spread_Points : (long)MaxSP)) return false;
-   if(Max_Spread_Points>0) GoatPreTradeRefusal(0,StringFormat("order refused: spread %d > Max_Spread_Points %d",(int)spread,Max_Spread_Points));
+   if(spread<=GoatSpreadCap()) return false;
+   if(Max_Spread_Points>0)
+     {
+      LastRetCode=742;
+      GoatPreTradeRefusal(0,StringFormat("order refused: spread %d > cap %d (Max_Spread_Points %d)",(int)spread,(int)GoatSpreadCap(),Max_Spread_Points));
+     }
    return true;
   }
 bool GoatMarginLevelRefused(const int op,const double volume)
@@ -7757,7 +7766,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
    g_direction_guard_send_attempted=false;
    g_direction_guard_denied=false;
    //if((100*AccountInfoDouble(ACCOUNT_MARGIN))/AccountInfoDouble(ACCOUNT_EQUITY)>=Max_Margin) {LastRetCode=741; return 0;}
-   if(GoatSpreadRefused()) return 0; // B49b (F6): Max_Spread_Points replaces the fixed MaxSP when set
+   if(GoatSpreadRefused()) return 0; // B49b (F6): Max_Spread_Points tightens the fixed MaxSP when set
    if(StopOut_Flag) {LastRetCode=740; return 0;}
 
    int ret=0;
@@ -8310,7 +8319,7 @@ void PrintTradeStatus(int k,int buys,int sells,double PL_Buy,double PL_Sell)
  //                 +" Signals=" +(string)(Signals-SignalDiscarded)  +"/"+(string)Signals                                     ,Font_Size,"NULL",clr_Text);
    ObjectSetText("03","Equity="+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),1)
                     +" Margin="+DoubleToString(100*AccountInfoDouble(ACCOUNT_MARGIN)/AccountInfoDouble(ACCOUNT_EQUITY),1)+"%",Font_Size,"NULL",clr_Text);
-   if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>=MaxSP)  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta);
+   if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>GoatSpreadCap())  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta); // B49b (F6): the effective cap, as the gate
    else                                                  ObjectSetText("05","Spread Filter Inactive, Sp="+(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clr_Text);
    if(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))       ObjectSetText(IntegerToString(TotalText_Trade-3,2,'0'),"Algo Trading ON" ,Font_Size,"NULL",clrGreen);
    else                                                  ObjectSetText(IntegerToString(TotalText_Trade-3,2,'0'),"Algo Trading OFF",Font_Size,"NULL",clrRed);

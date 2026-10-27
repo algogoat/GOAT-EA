@@ -813,8 +813,10 @@ sinput   ENUM_GATE_RECHECK       Gate_Recheck                  =                
 // position's broker SL (B49a can write 0 over a trailed stop after a harvest).
 sinput   ENUM_GOAT_FIX           Fix_ClosePath                 =                   GoatFix_Off;       // Fix: end only when flat; never loosen a stop
 // F6: pre-trade checks that can fire. B49a's spread cap is a fixed 9999 points (MaxSP) and its margin check is commented
-// out. 0 is off for both, which is B49a: Max_Spread_Points replaces MaxSP when set; Min_Margin_Level_PC refuses an order
-// whose projected margin level (equity over current plus this order's margin) would fall below it.
+// out. 0 is off for both, which is B49a. Max_Spread_Points only tightens: when set, the gate is min(MaxSP, it), and the
+// controller refuses values outside 0..9999. Min_Margin_Level_PC refuses an order whose projected margin level (equity
+// over current plus this order's margin) would fall below it. On a broker with tiered margin the projection can
+// under-state the margin (OrderCalcMargin prices the order alone), so the floor is a guard, not a guarantee.
 sinput   int                     Max_Spread_Points             =                             0;       // Pre-trade: maximum spread in points (0 = off)
 sinput   double                  Min_Margin_Level_PC           =                             0;       // Pre-trade: minimum margin level % after the order (0 = off)
 // B49b:end fix-inputs
@@ -1251,6 +1253,7 @@ string GetRetcodeID(int retcode)
      {
       case   740: return("STOPOUT FLAG: Max DD/Profit OR Stop at DayEnd/WeekEnd");break;
       case   741: return("Max Allowed Margin Reached");        break;
+   case   742: return("Max Allowed Spread Reached");        break; // B49b (F6): Max_Spread_Points refused the order
       case 10004: return("TRADE_RETCODE_REQUOTE");             break;
       case 10006: return("TRADE_RETCODE_REJECT");              break;
       case 10007: return("TRADE_RETCODE_CANCEL");              break;

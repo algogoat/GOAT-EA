@@ -763,6 +763,7 @@ class SEQUENCE
    ulong       LedgerPositions[],LedgerDeals[]; // B49a (F2): this sequence's position ids, and the deals already booked
    bool        Adopted,AdoptMatched,AdoptSizes,PersistFailed,ManageOnlyLogged; // B49a (F1-lite): restart adoption, manage-only
    long        PersistStartMsc; double PersistedRealized; int PersistedLevels; uint PersistFlushedMs; ulong PersistFirstTicket; datetime PersistTouchedDay; // B49a (F1-lite): the restart record
+   string      ClosePendingReason; datetime ClosePendingTried; // B49b (F3): an end requested while positions stay open; its last close attempt (server second)
    //double      FirstTradeEquity;
 
    SEQUENCE()
@@ -777,6 +778,7 @@ class SEQUENCE
     SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
     PersistReset(); // B49a (F1-lite)
+    ClosePendingReason=""; ClosePendingTried=0; // B49b (F3)
     //FirstTradeEquity=0.0;
    }
 //----------------------
@@ -792,6 +794,7 @@ class SEQUENCE
 //----------------------
    void End_Sequence(string desc)
    {
+    if(EndDeferredUntilFlat(desc)) return; // B49b (F3): Fix_ClosePath, a sequence ends only when its positions are flat
     if(Active)
     {
      if(Traded)// && ((dir==OP_BUY&&Last_PL_Buy>0.0)||(dir==OP_SELL&&Last_PL_Sell>0.0)) )
@@ -838,6 +841,7 @@ class SEQUENCE
      if(!Virtual) GoatDirectionGuardEnd(dir);
      GuardRealStarted=false;
      Active=Traded=Trailing=Retrace_Triggered=false;
+     ClosePendingReason=""; ClosePendingTried=0; // B49b (F3)
      ResetSequenceRiskState();
      Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
      Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
@@ -2391,6 +2395,38 @@ class SEQUENCE
     return true;
    }
 // B49b:end first-order-gates
+// B49b:begin close-path
+// F3 (Fix_ClosePath; D3/R14): B49a ends a sequence right after a close request even when the close failed (a bias exit
+// is edge-triggered, so it is never retried), leaving its positions with no MLPS, no lock and no session close. Under
+// the flag an end requested while this real sequence's positions are still open is deferred: the request is kept,
+// adds are frozen (Add_Level), and ClosePendingPump retries the close once per server second until flat, then ends the
+// sequence with the original reason. Off: never defers (B49a).
+   bool EndDeferredUntilFlat(const string desc)
+   {
+    if(Fix_ClosePath!=GoatFix_On || Virtual || !Active || !Traded) return false;
+    if(FindNumberOfPositions(dir,MAGIC1)==0) return false;
+    if(ClosePendingReason=="")
+       Print(Desc,": ",desc," requested while positions remain open: the close is retried and the sequence ends when flat (Fix_ClosePath)");
+    ClosePendingReason=desc;
+    return true;
+   }
+   void ClosePendingPump()
+   {
+    if(ClosePendingReason=="") return;
+    if(!Active) {ClosePendingReason=""; ClosePendingTried=0; return;}
+    if(FindNumberOfPositions(dir,MAGIC1)>0)
+    {
+     datetime now=TimeCurrent();
+     if(now==ClosePendingTried) return;   // once per server second (deterministic in the tester)
+     ClosePendingTried=now;
+     CloseAllPositions(dir,MAGIC1);
+     if(FindNumberOfPositions(dir,MAGIC1)>0) return;
+    }
+    string reason=ClosePendingReason;
+    ClosePendingReason=""; ClosePendingTried=0;
+    End_Sequence(reason);
+   }
+// B49b:end close-path
 //---------------------- compute loss path and max loss (uses LotsCum & Distances)
    double FindCumLoss()
    {
@@ -2418,6 +2454,7 @@ class SEQUENCE
   //if(!IsLicensed())        {Alert("Trial Expired"); return false;}
     if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: cid_duplicate freezes adds (grid and rescue) of a real sequence
     if(!Virtual && ManageOnlyFrozen(Level_Count+1)) return false; // B49a (F1-lite): an adopted basket, or a failed restart record, freezes adds
+    if(!Virtual && ClosePendingReason!="") return false; // B49b (F3): no add while an end waits for its close
     if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)
     {
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
@@ -2720,9 +2757,10 @@ class SEQUENCE
        double Level_SL_ = BiasRescueActive ? TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL) : Level_SL;
        if(Adopted) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49a (F1-lite): an adopted basket's stop is never loosened (a trailed or rescued SL stays)
        if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_); // B49b: P-B49b-adopt-rescue-tp, nor its TP (a rescue break-even TP stays)
+       if(Fix_ClosePath==GoatFix_On) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49b (F3 D2): no modify loosens a broker SL (a trailed stop is never reset to 0 or moved back)
        if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
        {
-        if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;
+        if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) {TPmodifyErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("TP/SL modify failed: ticket=%I64d SL=%.6f TP=%.6f ret=%u (%s)",TradeLevels[i].ticket,Level_SL_,Level_TP_,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TPSLmodifieds++; // B49b (F3 D5): a failed live modify is logged, never silent
       }
      }
      }
@@ -2781,7 +2819,7 @@ class SEQUENCE
        if(currSL==0.0 || (SL>currSL && (SL-currSL)>=minStep))
        {
         if(!Trade.PositionModify(TradeLevels[i].ticket,SL,PositionGetDouble(POSITION_TP)))
-        {TSLmodifyErrors++; PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,DoubleToString(SL,Digits()),Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++;
+        {TSLmodifyErrors++; PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,SL,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++; // B49b (F3): %.6f takes the double (B49a passed a string)
        }
        else g_TSLBuySkipped++;
       }
@@ -7007,6 +7045,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    static bool LastBuyTradeSignal=false,LastSellTradeSignal=false;
 
+   Seq_Buy.ClosePendingPump(); Seq_Sell.ClosePendingPump(); // B49b (F3): an end deferred until flat retries its close
    bool buyMlpsExit=false,sellMlpsExit=false;
    if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
    if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
@@ -7508,7 +7547,7 @@ void CloseAllPositions(int OP,int magic=0)
      if(m_position.PositionType() != OP && OP != OP_BUYSELL)                  continue;
 
      if(!m_trade.PositionClose(m_position.Ticket())) // close a position by the specified symbol
-      closeErrors++;
+      {closeErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("Close failed: ticket=%I64u ret=%u (%s)",m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 D4): a failed live close is logged, never silent
      closed++;
     }
    }

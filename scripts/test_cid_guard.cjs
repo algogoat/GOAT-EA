@@ -426,8 +426,12 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
   ['if(TimeCurrent()>Expiry) {Alert("This ve','if(!Virtual && GoatCidGuardAddFrozen(dir']);
  assert.ok(ADD.includes('    if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: '));
  assert.ok(ADD.includes('OpenPosition(dir,MAGIC1,')&&ADD.includes('BiasRescuePositiveAdds++'));
- assert.equal((main.match(/\bOpenPosition\(/g)||[]).length,2,'OpenPosition: defined once, called once (in Add_Level)');
- assert.equal((main.match(/GoatCidGuardAddFrozen\(/g)||[]).length,2,'the freeze: defined once, called once (in Add_Level)');
+ // B50 (A1): the single's entry, GoatSingleOpen, is OpenPosition's other caller; it consults the freeze first too.
+ const SINGLE=bodyOf(main,'bool GoatSingleOpen(SEQUENCE &s,double price)');
+ const freeze=SINGLE.indexOf('   if(GoatCidGuardAddFrozen(s.dir,s.Level_Count+1)) return false; // B47: ');
+ assert.ok(freeze>=0&&freeze<SINGLE.indexOf('OpenPosition(s.dir,MAGIC1,'),'GoatSingleOpen: the freeze before the order');
+ assert.equal((main.match(/\bOpenPosition\(/g)||[]).length,3,'OpenPosition: defined once, called in Add_Level and GoatSingleOpen (B50)');
+ assert.equal((main.match(/GoatCidGuardAddFrozen\(/g)||[]).length,3,'the freeze: defined once, called in Add_Level and GoatSingleOpen (B50)');
  ok();}
 
 // 13. B49a (B48): the daily CID touch. MT5 drops a GlobalVariable after 4 weeks without access, so once per UTC day

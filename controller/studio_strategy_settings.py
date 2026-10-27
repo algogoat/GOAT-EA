@@ -67,9 +67,10 @@ def numeric(value, definition, *, step=False):
 # bytes and values are never rewritten: the controller writes MT5's tester profile from exactly the launch's
 # [TesterInputs] (studio_tester_profile), so an omitted appended input runs its build default, and the EA's Studio
 # accepts it in the readback only at that default (GOATStudioSettingCompare.mqh, GoatStudioFixedInternal).
-# B49b appends its per-fix flags (PR-1 Fix_MoneyVolume, PR-5 Gate_Recheck, PR-3 Fix_ClosePath), each defaulting to
+# B49b appends its per-fix flags (PR-1 Fix_MoneyVolume, PR-5 Gate_Recheck, PR-3 Fix_ClosePath) and PR-6's pre-trade caps
+# (Max_Spread_Points, Min_Margin_Level_PC; 0 = off), each defaulting to
 # B49a's behaviour.
-APPENDED_INPUTS = ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath')
+APPENDED_INPUTS = ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC')
 
 
 def appended_default(definition):
@@ -146,6 +147,7 @@ def validate_strategy(values, schema):
         except ValueError as exc:
             raise ValueError(name+': '+str(exc)) from exc
     check_risk_sizing(values, schema)    # the money-safety refusal is reported first
+    check_pretrade_caps(values, schema)  # PRETRADE_CAP_OUT_OF_RANGE: the B49b (F6) caps only ever tighten B49a
     check_enum_ladders(values, schema)   # ENUM_LADDER_NOT_NATIVE: a ladder the EA refuses at OnTesterInit
     from studio_ea_init_rules import check_ea_init   # imports numeric from here; bound at call time
     check_ea_init(values, schema)                    # EA_INIT_REFUSED: the EA's own OnInit refusals, every reachable value
@@ -286,3 +288,28 @@ def check_risk_sizing(values, schema):
     if (can_reach(value('Mode_Lots', lots), lots, Fraction(choices['RiskperSeq']))
             and lowest_reachable(value('Max_Seq_Trades', trades), trades) <= 1):
         raise ValueError(RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE)
+
+
+PRETRADE_CAP_CODE = 'PRETRADE_CAP_OUT_OF_RANGE'
+# B49b (F6, Claude-Mac GOAT-EA#281 6445315361): (lowest, highest) allowed; 0 = off = B49a. B49a's spread cap is the fixed
+# MaxSP 9999 points (GOAT_Inputs_Definitions.mqh, not an input), so a larger Max_Spread_Points would loosen it.
+PRETRADE_CAPS = {'Max_Spread_Points': (0, 9999), 'Min_Margin_Level_PC': (0, None)}
+
+
+def check_pretrade_caps(values, schema):
+    """Refuse a pre-trade cap outside its range, over every reachable value (the current value, an active ladder's ends,
+    a dormant tuple's first field). The EA treats a negative cap as off, but WriteSet records it and the child audit
+    reports it as set, so a negative is refused rather than silently meaning off. An omitted cap is its default, 0."""
+    problems = []
+    for name, (lowest, highest) in PRETRADE_CAPS.items():
+        definition = schema['inputs'].get(name)
+        if definition is None or name not in values:
+            continue
+        current, ladder = _reachable(values[name], definition)
+        reached = [current] + ([ladder[0], ladder[2]] if ladder else [])
+        if any(value < lowest or (highest is not None and value > highest) for value in reached):
+            allowed = f'{lowest}..{highest}' if highest is not None else f'{lowest} or more'
+            problems.append(f'{name}={values[name]} reaches a value outside {allowed} (0 = off)')
+    if problems:
+        raise ValueError(PRETRADE_CAP_CODE + ': a pre-trade cap may only tighten the EA\'s own limits: '
+                         + ' | '.join(problems))

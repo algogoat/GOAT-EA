@@ -233,7 +233,7 @@ function dailyFixture(mode,text=main){
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
  // B49b appends its per-fix flags after it (test_b49b_no_drift.cjs NEW_INPUTS): Ledger_Mode is B49a's last input.
  assert.equal(inputs[inputs.indexOf('Trade_December')+1],'Ledger_Mode','appended right after B47\'s last input');
- assert.deepEqual(inputs.slice(inputs.indexOf('Ledger_Mode')+1).filter(n=>!['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath'].includes(n)),[],'only B49b\'s flags follow it');
+ assert.deepEqual(inputs.slice(inputs.indexOf('Ledger_Mode')+1).filter(n=>!['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC'].includes(n)),[],'only B49b\'s flags follow it');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the
@@ -286,8 +286,8 @@ function dailyFixture(mode,text=main){
 {const writeSet=bodyOf(header,'void WriteSet(string desc)');
  const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'));
  // B49b (F7): Fix_MoneyVolume is written under the same rule (only when on), after Ledger_Mode.
- const run=(text,mode,fix=0,gate=0,close=0)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
-  Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,Gate_Recheck:gate,Gate_Legacy:0,Gate_AtFirstOrder:1,Fix_ClosePath:close,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
+ const run=(text,mode,fix=0,gate=0,close=0,spread=0,margin=0)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
+  Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,Gate_Recheck:gate,Gate_Legacy:0,Gate_AtFirstOrder:1,Fix_ClosePath:close,Max_Spread_Points:spread,Min_Margin_Level_PC:margin,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
  assert.deepEqual(run(writeSet,0),['Trade_December=true'],'Legacy: no Ledger_Mode line, as B47');
  assert.deepEqual(run(writeSet,1),['Trade_December=true','Ledger_Mode=1'],'PositionJoin: recorded');
  const headerB47=clean(execFileSync('git',['show',B47_SOURCE+':GOAT_Inputs_Definitions.mqh'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
@@ -304,6 +304,11 @@ function dailyFixture(mode,text=main){
  assert.deepEqual(run(writeSet.replace('if(Gate_Recheck!=Gate_Legacy) ',''),0,0,0),['Trade_December=true','Gate_Recheck=0'],'mutant: ungated Gate_Recheck');
  assert.deepEqual(run(writeSet,0,0,0,1),['Trade_December=true','Fix_ClosePath=1'],'B49b (F3): Fix_ClosePath recorded when on');
  assert.deepEqual(run(writeSet.replace('if(Fix_ClosePath!=GoatFix_Off) ',''),0,0,0,0),['Trade_December=true','Fix_ClosePath=0'],'mutant: ungated Fix_ClosePath');
+ // B49b (F6): the pre-trade caps are recorded only when set (0 = off stays B49a's bytes).
+ assert.deepEqual(run(writeSet,0,0,0,0,30,150),['Trade_December=true','Max_Spread_Points=30','Min_Margin_Level_PC=150'],'B49b (F6): both caps recorded when set');
+ assert.deepEqual(run(writeSet,0,0,0,0,0,0),['Trade_December=true'],'B49b (F6): off, no lines');
+ assert.deepEqual(run(writeSet.replace('if(Max_Spread_Points!=0) ',''),0),['Trade_December=true','Max_Spread_Points=0'],'mutant: ungated Max_Spread_Points');
+ assert.deepEqual(run(writeSet.replace('if(Min_Margin_Level_PC!=0.0) ',''),0),['Trade_December=true','Min_Margin_Level_PC=0'],'mutant: ungated Min_Margin_Level_PC');
  ok();}
 
 console.log(JSON.stringify({passed,test:'ledger_join'}));

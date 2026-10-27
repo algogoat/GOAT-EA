@@ -43,13 +43,16 @@ const REMOVED={
   'CopyBuffer(BB_handle,UPPER_BAND,shift,2,BB_Hi_Buf);  BB_Hi_Buf[0] = NormalizeDouble(BB_Hi_Buf[0],_Digits);',
   'CopyBuffer(BB_handle,LOWER_BAND,shift,2,BB_Lo_Buf);  BB_Lo_Buf[0] = NormalizeDouble(BB_Lo_Buf[0],_Digits);',
   'CopyBuffer(MACD_handle,1           ,shift+0,1,MACD_Clr_Buf);','CopyBuffer(RSI2_handle,0,shift+0,2,RSI2_Buf);',
+  'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>MaxSP) return 0;',   // PR-6 (F6): Max_Spread_Points tightens the fixed MaxSP when set
+  'else {Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)',   // PR-6 (Mac #281 P2): no per-tick line for a pre-trade refusal
+  'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>=MaxSP)  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta);',   // PR-6 (Mac #281 P3): the label shows the effective cap
   'DashboardPortfolioCommandIdApplied=command_id;','DashboardPortfolioCommandIdApplied=command_id;','close_errors++;','close_errors++;',   // PR-3b (both close commands, both bus helpers) (F3 DASH-04): applied only once flat; a failed bus close is logged
  ],
  'Dashboard.mqh':[
   'if(!m_risk_policy_armed || m_risk_policy_breached) return;','if(m_portfolio_command_pending) return;',   // PR-3b (F3 RISK-01): a breach is followed until flat
  ],
 };
-const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3)
+const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3), PR-6 (F6)
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

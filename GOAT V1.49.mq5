@@ -2601,7 +2601,7 @@ class SEQUENCE
         Print(Desc_lvl,": Price=",DoubleToString(Level_New,Digits())," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)," Filled");
         return true;
        }
-       else {Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)
+       else {if(!GoatPreTradeRefusalCode(LastRetCode)) Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2) // B49b (F6): a pre-trade refusal is logged once a minute (GoatPreTradeRefusal), not every tick
                            ," Failed. Return Code:",LastRetCode," ID:",GetRetcodeID(LastRetCode)); return false;}
      }
      else
@@ -4448,6 +4448,7 @@ int OnInit()
    if(Mode_Lots == FixedLots)  Lots = Lots_Input;
    if(Mode_Lots == ScaledLots) Lots = Lots_Input/(AccountInfoDouble(ACCOUNT_EQUITY)/1000);
    if(Mode_Lots == RiskperSeq && Risk<10) {Alert("Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low."); return INIT_PARAMETERS_INCORRECT;}
+   if(Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {Alert("Initialization Failed: Risk per Sequence lot sizing needs at least 2 sequence trades (Max_Seq_Trades)."); return INIT_PARAMETERS_INCORRECT;} // B49b (F6): validate-set refuses the pair (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES); the EA did not, and sized a single trade at about half VOLUME_MAX
    if(Sequence_MLPS_Hard_Close && Risk<10.0) {Alert("Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10."); return INIT_PARAMETERS_INCORRECT;}
    if(Mode_Lots_Prog==Lots_Prog_PeakSmart)
    {
@@ -7714,12 +7715,58 @@ void CalculateAllPendingOrders(int &count_buy_limits,int &count_sell_limits,int 
         }
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin pre-trade
+// F6 (roadmap EX-07 area; anatomy 05): B49a's spread cap is a fixed 9999 points (MaxSP) and its margin check is commented
+// out. Max_Spread_Points (when set) tightens MaxSP: the gate is the lower of the two (Claude-Mac GOAT-EA#281: a cap may
+// only tighten). Min_Margin_Level_PC (when set) refuses an order whose projected margin level, equity over (current margin
+// + this order's OrderCalcMargin), would fall below it, and refuses when that margin cannot be computed; on a broker with
+// tiered margin the projection can under-state the margin, since OrderCalcMargin prices the order alone. Both inputs
+// default to 0, which is B49a's path exactly. A refusal is logged at most once a minute per kind, and only live (the
+// tester's journal stays B49a's); it carries its own LastRetCode (742 spread, 741 margin), for which Add_Level skips its
+// per-tick "Failed" line (GoatPreTradeRefusalCode).
+datetime g_goat_pretrade_logged[2];   // 0 spread, 1 margin
+void GoatPreTradeRefusal(const int kind,const string text)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || TimeCurrent()-g_goat_pretrade_logged[kind]<60) return;
+   g_goat_pretrade_logged[kind]=TimeCurrent();
+   Print("GOAT pre-trade: ",text," symbol=",_Symbol);
+  }
+bool GoatPreTradeRefusalCode(const uint code) {return(code==741 || code==742);}
+long GoatSpreadCap(void) {return((Max_Spread_Points>0 && Max_Spread_Points<MaxSP) ? (long)Max_Spread_Points : (long)MaxSP);}
+bool GoatSpreadRefused(void)
+  {
+   long spread=SymbolInfoInteger(Symbol(),SYMBOL_SPREAD);
+   if(spread<=GoatSpreadCap()) return false;
+   if(Max_Spread_Points>0)
+     {
+      LastRetCode=742;
+      GoatPreTradeRefusal(0,StringFormat("order refused: spread %d > cap %d (Max_Spread_Points %d)",(int)spread,(int)GoatSpreadCap(),Max_Spread_Points));
+     }
+   return true;
+  }
+bool GoatMarginLevelRefused(const int op,const double volume)
+  {
+   if(!(Min_Margin_Level_PC>0.0)) return false;
+   double need=0.0,price=(op==POSITION_TYPE_BUY ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID));
+   if(!OrderCalcMargin(op==POSITION_TYPE_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,_Symbol,volume,price,need) || !MathIsValidNumber(need) || need<0.0)
+     {
+      GoatPreTradeRefusal(1,"order refused: its margin could not be computed (Min_Margin_Level_PC is set)");
+      return true;
+     }
+   double margin=AccountInfoDouble(ACCOUNT_MARGIN)+need;
+   if(!(margin>0.0)) return false;
+   double level=100.0*AccountInfoDouble(ACCOUNT_EQUITY)/margin;
+   if(level>=Min_Margin_Level_PC) return false;
+   GoatPreTradeRefusal(1,StringFormat("order refused: margin level after it %.1f%% < Min_Margin_Level_PC %.1f%%",level,Min_Margin_Level_PC));
+   return true;
+  }
+// B49b:end pre-trade
 int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,double Size_TP,string desc,const bool guard_previously_traded)
   {
    g_direction_guard_send_attempted=false;
    g_direction_guard_denied=false;
    //if((100*AccountInfoDouble(ACCOUNT_MARGIN))/AccountInfoDouble(ACCOUNT_EQUITY)>=Max_Margin) {LastRetCode=741; return 0;}
-   if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>MaxSP) return 0;
+   if(GoatSpreadRefused()) return 0; // B49b (F6): Max_Spread_Points tightens the fixed MaxSP when set
    if(StopOut_Flag) {LastRetCode=740; return 0;}
 
    int ret=0;
@@ -7730,6 +7777,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
    static ENUM_ORDER_TYPE_FILLING TypeFillingOpen = -1;//ORDER_FILLING_IOC;
 
    if(MathAbs(lots)<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN)) {Lots_Order=LastOpen=LastSL=LastTP=0; LastOrderTicket=0; return 1;} // 0 lots added successfully
+   if(GoatMarginLevelRefused(OP,requestedVolume)) {LastRetCode=741; return 0;} // B49b (F6): Min_Margin_Level_PC (741 = "Max Allowed Margin Reached")
 
    MqlTradeRequest request;   ZeroMemory(request);
    MqlTradeResult  result;    ZeroMemory(result);
@@ -8271,7 +8319,7 @@ void PrintTradeStatus(int k,int buys,int sells,double PL_Buy,double PL_Sell)
  //                 +" Signals=" +(string)(Signals-SignalDiscarded)  +"/"+(string)Signals                                     ,Font_Size,"NULL",clr_Text);
    ObjectSetText("03","Equity="+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),1)
                     +" Margin="+DoubleToString(100*AccountInfoDouble(ACCOUNT_MARGIN)/AccountInfoDouble(ACCOUNT_EQUITY),1)+"%",Font_Size,"NULL",clr_Text);
-   if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>=MaxSP)  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta);
+   if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>GoatSpreadCap())  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta); // B49b (F6): the effective cap, as the gate
    else                                                  ObjectSetText("05","Spread Filter Inactive, Sp="+(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clr_Text);
    if(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))       ObjectSetText(IntegerToString(TotalText_Trade-3,2,'0'),"Algo Trading ON" ,Font_Size,"NULL",clrGreen);
    else                                                  ObjectSetText(IntegerToString(TotalText_Trade-3,2,'0'),"Algo Trading OFF",Font_Size,"NULL",clrRed);

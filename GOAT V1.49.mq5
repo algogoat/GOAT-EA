@@ -3715,6 +3715,54 @@ void DashboardBusProcessCommands(void)
    datetime expires_at=(datetime)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_EXPIRES));
    DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);
   }
+// B49b:begin f8-export
+// F8 export integrity (goatai#2587 6433828681; Claude-Mac 6411161557, 6433854745 ruling 3, 6443122557): OPT-01 (the
+// trim, Tester.mqh), OPT-04 (mismatched forward rows, XmlProcessor.mqh), R16 (window P/L), R17 (the equity CSV's final
+// row) and R21 (the bounded tester wait). They change what an export says, never a trade, and are on in every build from
+// B49b with no input. Each export says so on one more stamp line, after the B44 one: format:2 is a new evidence
+// segment, readers key on it (a SET without the line is format 1), and format 1 and format 2 exports never pool.
+// rank: names the trim's ranking key (the export settings' ExportRank). Like every "; EXPORT" line it holds no "=", so
+// every controller writer, old or new, drops it from a deployed chart.
+#define GOAT_EXPORT_FORMAT        2
+#define GOAT_TESTER_READY_WAIT_MS 600000
+int    g_GoatExportRank=GOAT_EXPORT_RANK_ARFxSR;   // set from EA_Desc's rank=pf on an export run
+bool   g_GoatFwdClosed=false;                      // R16: the FWD window's end equity is its next day's open
+long   g_GoatCsvLastMinute=-1;                     // R17: the minute of the equity CSV's last row
+string GoatExportFormatLine(void)
+  {
+   return "; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"+(g_GoatExportRank==GOAT_EXPORT_RANK_PF ? "pf" : "arf_sr");
+  }
+// R16: a FWD day by calendar day, dt_FWD_start's to dt_FWD_end's inclusive (both are dates). B49a compared the time
+// with dt_FWD_end's midnight, so the printed end date's own day fell outside FWD.
+bool GoatFwdDay(const datetime when)
+  {
+   if(dt_FWD_start==0 || dt_FWD_end==0) return false;
+   long day=(long)when/86400;
+   return (day>=(long)dt_FWD_start/86400 && day<=(long)dt_FWD_end/86400);
+  }
+// R16: B49a's BOOS, SAMPLE and FWD P/L ran from the equity at the first day's open to the equity at the LAST day's
+// open, leaving the last day of each window out of every window. A window now closes at the next window's open (the
+// day block), and one still open when the test ends closes here, at the final equity, as FOOS always did.
+void GoatCloseOpenWindows(void)
+  {
+   double final_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(days_BOOS>0 && days_IS==0 && days_FOOS==0) eq_BOOS_end=final_equity;
+   if(days_IS>0 && days_FOOS==0)                  eq_IS_end=final_equity;
+   if(days_FWD>0 && !g_GoatFwdClosed)             {eq_FWD_end=final_equity; g_GoatFwdClosed=true;}
+  }
+// R17: the equity CSV writes a row only on a minute whose equity or price moved enough, so its curve could stop before
+// the evidence end. One final row at the test's end (balance, equity), unless that minute already has a row.
+void GoatEquityCsvFinalRow(void)
+  {
+   if(FileCSV_handle==INVALID_HANDLE) return;
+   if((long)TimeCurrent()/60==g_GoatCsvLastMinute) return;
+   FileWrite(FileCSV_handle,TimeToString(TimeCurrent(),TIME_DATE|TIME_MINUTES)
+                           ,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)
+                           ,DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)
+                           ,0.0);
+   g_GoatCsvLastMinute=(long)TimeCurrent()/60;
+  }
+// B49b:end f8-export
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 sinput bool Studio_ReadOnlyMonitor=false; // Optimization Studio: read-only batch monitor
 sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch
@@ -4035,6 +4083,7 @@ int OnInit()
       dt_FWD_end = StringToTime(values[i]); Print("dt_FWD_end:",TimeToString(dt_FWD_end,TIME_DATE));
      }
      if(names[i]=="blind" && values[i]=="1") {g_GoatBlindExport=true; Print("EXPORT blind:1 ranked:fit+fwd");} // B44 item 5
+     if(names[i]=="rank" && values[i]=="pf") g_GoatExportRank=GOAT_EXPORT_RANK_PF; // B49b (F8): stamped on the export, see GoatExportFormatLine
     }
     if(MQLInfoInteger(MQL_TESTER))
     {
@@ -5265,6 +5314,7 @@ double OnTester()
    //FileClose(File_handle);
 //-----------------------------------------------------------------------------------
    string desc="",temp="";
+   GoatCloseOpenWindows(); // B49b (F8 R16): a window still open at the test's end closes at its final equity
    temp="--------------------------------------------------------------------------------------------------------"; Print(temp); desc+="; "+temp+"\n";
    temp=MQLInfoString(MQL_PROGRAM_NAME)+" "+Symbol()+",M"+(string)Period(); Print(temp); desc+="; "+temp+"\n";
 
@@ -5449,7 +5499,7 @@ double OnTester()
 //-----------------------------------------------------------------------------------
    if(Mode=="EXPORT" && !MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD))
    {
-    if(FileCSV_handle != INVALID_HANDLE) {FileClose(FileCSV_handle); FileCSV_handle=INVALID_HANDLE;}
+    if(FileCSV_handle != INVALID_HANDLE) {GoatEquityCsvFinalRow(); FileClose(FileCSV_handle); FileCSV_handle=INVALID_HANDLE;} // B49b (F8 R17): a final row
 
     string oldFile = FileCSV_Name+"_"+(string)MAGIC1+".csv";
     string newFile = FileCSV_Name; // Date ranges live in the exported .set header.
@@ -5479,8 +5529,8 @@ double OnTester()
       {
        // B44 item 5: every export says how it was ranked (an export without this line is blind=0).
        // sr= names the Sharpe the file's SR is: the window's daily annualized one, or MT5's STAT_SHARPE_RATIO.
-       if(g_GoatBlindExport) WriteSet(GoatBlindDesc(desc));
-       else                  WriteSet(desc+"\n; EXPORT blind:0 ranked:full_span sr:mt5_stat");
+       if(g_GoatBlindExport) WriteSet(GoatBlindDesc(desc)+"\n"+GoatExportFormatLine()); // B49b (F8): the export-format stamp follows
+       else                  WriteSet(desc+"\n; EXPORT blind:0 ranked:full_span sr:mt5_stat\n"+GoatExportFormatLine()); // B49b (F8)
       }
     g_sequence_export_csv=newFile;
     g_sequence_export_set=FileSET_Name;
@@ -5716,6 +5766,8 @@ bool StartExporter(bool reportMode)
     double TargetDD    = StringToDouble(FetchExportSetting("TargetDD",Key,EA_Name,Server)); if(TargetDD<100) TargetDD=100;
     bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key,EA_Name,Server))!=0;//Print(AdjustLots);
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;//Print(InclBackOOS);
+    int    ExportRank  = GoatExportRankSetting(FetchExportSetting("ExportRank",Key,EA_Name,Server)); // B49b (F8): the trim's ranking key
+    if(ExportRank<0) {LogOrPrint(reportMode,"❌ ExportRank in the export settings must be ARFxSR or PF. No exports were run.",Key,EA_Name,Server); return false;} // B49b (F8)
     const int EXPORT_START_ATTEMPTS = 3;
     const int EXPORT_ERROR_ABORTS   = 2;
 #ifdef GOAT_EVIDENCE_END_V149
@@ -5743,9 +5795,11 @@ bool StartExporter(bool reportMode)
      strT.fromDate=TimeToString(xmlData.startD,TIME_DATE); strT.toDate=TimeToString(xmlData.forwardD,TIME_DATE);
      int initExportPass=RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true,EXPORT_START_ATTEMPTS); // Just Export enabling is required here
      if(initExportPass<0) LogOrPrint(reportMode,"DEINIT: Top-set export verification could not complete; continuing with candidate exports.",Key,EA_Name,Server);
+     ulong readyDeadline=GetTickCount64()+GOAT_TESTER_READY_WAIT_MS; // B49b (F8 R21): bounded; B49a waited until a cancel
      while(!MTTESTER::IsReady())
      {
       if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
+      if(GetTickCount64()>readyDeadline) {LogOrPrint(reportMode,"DEINIT: ❌ The Strategy Tester was not ready "+IntegerToString(GOAT_TESTER_READY_WAIT_MS/1000)+" s after the top-set check. No exports were run.",Key,EA_Name,Server); return false;} // B49b (F8 R21)
       Sleep(1000);
      }
     }
@@ -5779,7 +5833,7 @@ bool StartExporter(bool reportMode)
                                             +" Set Exports stored="+(string)ArraySize(g_allExports)+"/"+IntegerToString(passes)+" Above Threshold="+IntegerToString(fitterCount),Key,EA_Name,Server);
 
       int PositivePass=RunAndStoreSet(i,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT,"+"dt_BOOS_end="  +TimeToString(xmlData.startD,TIME_DATE)+","
-                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+(BlindExport ? ",blind=1" : "")+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
+                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+(BlindExport ? ",blind=1" : "")+(ExportRank==GOAT_EXPORT_RANK_PF ? ",rank=pf" : "")+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS); // B49b (F8): rank=pf stamps the export
       //@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
       if(PositivePass==1)
       {
@@ -5823,7 +5877,7 @@ bool StartExporter(bool reportMode)
                                                                                ,passes,profits,losses,errors,duplicates,fitterCount),Key,EA_Name,Server);
     if(ArraySize(g_allExports)>0)
     {
-     SortAndTrimExports(SetsToExport,MinARF,MinSR,g_allExports);
+     SortAndTrimExports(SetsToExport,MinARF,MinSR,g_allExports,ExportRank); // B49b (F8 OPT-01)
      if(AdjustLots)
      {
        LogOrPrint(reportMode,"⚠️ Lot Adjustment to Target DD is enabled. Rerunning Shorlisted Exports...",Key,EA_Name,Server);
@@ -5864,7 +5918,7 @@ bool StartExporter(bool reportMode)
                                                                                             ,j,profits,losses,errors,fitterCount),Key,EA_Name,Server);
       if(ArraySize(AdjustedExports)>0)
       {
-       SortAndTrimExports(SetsToExport,MinARF,MinSR,AdjustedExports);
+       SortAndTrimExports(SetsToExport,MinARF,MinSR,AdjustedExports,ExportRank); // B49b (F8 OPT-01)
        if(MoveKeptExports(AdjustedExports,GoatOptDeployPath(EA_Name,Server))) LogOrPrint(reportMode,"✅ All Shortlisted and Adjusted Exports migrated & saved.",Key,EA_Name,Server);
        else                                     LogOrPrint(reportMode,"❌ Problem migrating the adjusted export package.",Key,EA_Name,Server);
 #ifdef GOAT_EVIDENCE_END_V149
@@ -6279,7 +6333,7 @@ void GoatTradeTransactionBody(const MqlTradeTransaction &trans,
         if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
    else if(TimeCurrent()>=dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++; // B45 item 2: FOOS starts at dt_Fwrd_OOS, as days_FOOS and the RANKED window
    else                                                 trd_IS++;
-   if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end) trd_FWD++;
+   if(GoatFwdDay(TimeCurrent())) trd_FWD++; // B49b (F8 R16): the FWD line's days and trades share one calendar-day window
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -6487,23 +6541,26 @@ void GoatTickBody()
     }
     else if(TimeCurrent()>=dt_Fwrd_OOS && dt_Fwrd_OOS!=0)
     {
+     if(days_FOOS==0 && days_IS>0) eq_IS_end = DStartEquity; // B49b (F8 R16): SAMPLE closes at the FOOS open, its last day included
      days_FOOS++;
      if(eq_FOOS_start==0) eq_FOOS_start = DStartEquity;
      //eq_FOOS_end = DStartEquity; // fetch realtime
     }
     else
     {
+     if(days_IS==0 && days_BOOS>0) eq_BOOS_end = DStartEquity; // B49b (F8 R16): BOOS closes at the SAMPLE open, its last day included
      days_IS++;
      if(eq_IS_start==0) eq_IS_start = DStartEquity;
      eq_IS_end = DStartEquity;
      dt_IS_end = DLastTime;
     }
-    if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end)
+    if(GoatFwdDay(TimeCurrent())) // B49b (F8 R16): by calendar day, so the printed end date's day counts
     {
      days_FWD++;
      if(eq_FWD_start==0) eq_FWD_start = DStartEquity;
      eq_FWD_end = DStartEquity;
     }
+    else if(days_FWD>0 && !g_GoatFwdClosed) {eq_FWD_end = DStartEquity; g_GoatFwdClosed=true;} // B49b (F8 R16): FWD closes at the next day's open
     DLastTime=TimeCurrent();
    }
 //-------------------------------------------------------------------------
@@ -6527,6 +6584,7 @@ void GoatTickBody()
                                ,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)
                                ,DoubleToString(MinuteLowEquity,2)
                                ,0.0);//(AccountInfoDouble(ACCOUNT_MARGIN)/AccountInfoDouble(ACCOUNT_EQUITY))*100.0;
+       g_GoatCsvLastMinute=(long)TimeCurrent()/60; // B49b (F8 R17): the final row never repeats this minute
        LastBid=bid; LastAsk=ask;
        LastEquity=AccountInfoDouble(ACCOUNT_EQUITY); LastBalance=AccountInfoDouble(ACCOUNT_BALANCE);
       }

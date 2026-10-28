@@ -22,7 +22,8 @@ const ROOT=path.join(__dirname,'..'),B49A_SOURCE='693cad05dca3ca7d5c9549465c8973
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
 // PR-0: the entrypoint (the start-distance refusal, the adopted TP). PR-1: Fix_MoneyVolume (the header's input and
 // WriteSet, the child audit, the Studio readback and type). One line: test_studio_start_protocol_candidate reads it.
-const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATPortfolioChildAudit.mqh','GOATStudioSettingCompare.mqh','GOATStudioSettingTypes.mqh','Dashboard.mqh'];
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATPortfolioChildAudit.mqh','GOATStudioSettingCompare.mqh','GOATStudioSettingTypes.mqh','Dashboard.mqh',
+ 'Tester.mqh','XmlProcessor.mqh'];   // PR-7 (F8): the trim (OPT-01) and the forward-row mismatch (OPT-04)
 const ADDED=[];
 // Every B49a line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
@@ -48,6 +49,23 @@ const REMOVED={
   'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>=MaxSP)  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta);',   // PR-6 (Mac #281 P3): the label shows the effective cap
   'DashboardPortfolioCommandIdApplied=command_id;','DashboardPortfolioCommandIdApplied=command_id;','close_errors++;','close_errors++;',   // PR-3b (both close commands, both bus helpers) (F3 DASH-04): applied only once flat; a failed bus close is logged
   'MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));',   // PR-4 (F4, Mac GOAT-EA#282 P3): the minute's low equity counts real ticks only
+  'if(FileCSV_handle != INVALID_HANDLE) {FileClose(FileCSV_handle); FileCSV_handle=INVALID_HANDLE;}',   // PR-7 (F8 R17): the equity CSV's final row
+  'if(g_GoatBlindExport) WriteSet(GoatBlindDesc(desc));','else                  WriteSet(desc+"\\n; EXPORT blind:0 ranked:full_span sr:mt5_stat");',   // PR-7 (F8): the export-format stamp
+  '+"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+(BlindExport ? ",blind=1" : "")+"}\\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);',   // PR-7 (F8): rank=pf
+  'SortAndTrimExports(SetsToExport,MinARF,MinSR,g_allExports);','SortAndTrimExports(SetsToExport,MinARF,MinSR,AdjustedExports);',   // PR-7 (F8 OPT-01): the trim's rank
+  'if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end) trd_FWD++;',   // PR-7 (F8 R16): FWD by calendar day
+  'if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end)',
+ ],
+ 'Tester.mqh':[   // PR-7 (F8 OPT-01): passing rows first, ranked by ExportRank
+  'void SortAndTrimExports(const int keepTop,const double minARF,const double minSR,ExportRecord &expArr[])        // highest (ARF*SR) first',
+  '/* ---------- sort by ARF*SR (selection sort) ---------- */','int    best = i;','double top  = expArr[i].arf * expArr[i].sr;','{',
+  'double score = expArr[j].arf * expArr[j].sr;','if(score > top) { best = j; top = score; }','}',
+  'int passCnt = 0;                                       // # of rows passing the thresholds',
+  'if(expArr[i].arf >= minARF && expArr[i].sr >= minSR) ++passCnt;',
+  'WriteLog(StringFormat("SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d",n,passCnt,keepCnt,n-keepCnt),false,strT._K,strT._N,strT._S);',
+ ],
+ 'XmlProcessor.mqh':[   // PR-7 (F8 OPT-04): a mismatched forward row is marked, then scores 0
+  'Inputs=""; Score=0; forward_seen=false;','if(Rows[bPos].forward_seen) forwardMismatches++;','forwardMismatches++;','forwardMismatches++;',
  ],
  'Dashboard.mqh':[
   'if(!m_risk_policy_armed || m_risk_policy_breached) return;','if(m_portfolio_command_pending) return;',   // PR-3b (F3 RISK-01): a breach is followed until flat

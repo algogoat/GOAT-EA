@@ -682,39 +682,62 @@ bool ReplaceSettingsInputs(string &settings,
    Print("Tester Config and Inputs Adjustments Generated.");
    return(true);
   }
+// B49b:begin f8-trim
+// F8 OPT-01 (goatai#2587 6433828681, Claude-Mac 6433854745 ruling 3): B49a sorted every row by ARF x SR, counted the
+// passing rows, then kept that many rows from the top whether they passed or not, deleting the rest from disk: a
+// failing row could be kept and a passing one deleted. Now the passing rows come first, each group ranked by the
+// export settings' ExportRank (ARFxSR, B49a's key and the default, or PF), and only passing rows are kept (at most
+// keepTop). With none passing, the best-ranked row alone is kept, logged as the fallback. Passing= stays the number
+// of passing rows kept, which the controller's export-qualification cross-check reads (studio_export_qualification).
+#define GOAT_EXPORT_RANK_ARFxSR 0
+#define GOAT_EXPORT_RANK_PF     1
+// The ExportRank export setting: absent or ARFxSR is ARF x SR, PF is the profit factor, anything else -1 (refused).
+int GoatExportRankSetting(const string value)
+  {
+   if(value=="" || value=="ARFxSR") return GOAT_EXPORT_RANK_ARFxSR;
+   if(value=="PF") return GOAT_EXPORT_RANK_PF;
+   return -1;
+  }
+double GoatExportRankScore(const ExportRecord &r,const int rank) {return (rank==GOAT_EXPORT_RANK_PF ? r.pf : r.arf*r.sr);}
+bool   GoatExportPasses(const ExportRecord &r,const double minARF,const double minSR) {return (r.arf>=minARF && r.sr>=minSR);}
+// a ranks before b: a passing row before a failing one, then the higher score.
+bool   GoatExportBefore(const ExportRecord &a,const ExportRecord &b,const double minARF,const double minSR,const int rank)
+  {
+   bool pass_a=GoatExportPasses(a,minARF,minSR),pass_b=GoatExportPasses(b,minARF,minSR);
+   if(pass_a!=pass_b) return pass_a;
+   return (GoatExportRankScore(a,rank)>GoatExportRankScore(b,rank));
+  }
 //-------------------------------------------------------------------------
 //  keepTop   – desired maximum records to keep
 //  minARF    – minimum acceptable ARF
 //  minSR     – minimum acceptable SR
 //  expArr[]  – array of collected ExportRecord objects (will be modified)
+//  rank      – GOAT_EXPORT_RANK_ARFxSR or GOAT_EXPORT_RANK_PF (B49b F8)
 //-------------------------------------------------------------------------
-void SortAndTrimExports(const int keepTop,const double minARF,const double minSR,ExportRecord &expArr[])        // highest (ARF*SR) first
+void SortAndTrimExports(const int keepTop,const double minARF,const double minSR,ExportRecord &expArr[],const int rank=GOAT_EXPORT_RANK_ARFxSR)        // passing rows first, highest rank score first
   {
    const int n = ArraySize(expArr);
    if(n <= 1) return;
-   /* ---------- sort by ARF*SR (selection sort) ---------- */
+   /* ---------- sort: passing rows first, then by the rank score (selection sort) ---------- */
    for(int i = 0; i < n-1; ++i)
    {
-      int    best = i;
-      double top  = expArr[i].arf * expArr[i].sr;
+      int best = i;
       for(int j = i+1; j < n; ++j)
-      {
-         double score = expArr[j].arf * expArr[j].sr;
-         if(score > top) { best = j; top = score; }
-      }
+         if(GoatExportBefore(expArr[j],expArr[best],minARF,minSR,rank)) best = j;
       if(best != i) {ExportRecord tmp = expArr[i]; expArr[i] = expArr[best]; expArr[best] = tmp;}
    }
    /* ---------- decide how many to keep ---------- */
-   int passCnt = 0;                                       // # of rows passing the thresholds
+   int passCnt = 0;                                       // # of passing rows kept (the passing rows lead the array)
    for(int i = 0; i < n && passCnt < keepTop; ++i)
    {
-      if(expArr[i].arf >= minARF && expArr[i].sr >= minSR) ++passCnt;
+      if(GoatExportPasses(expArr[i],minARF,minSR)) ++passCnt;
    }
    // rule-set logic
    int keepCnt = 0;
    if(passCnt > 0) keepCnt = passCnt; // at least one row passes → keep the (≤keepTop) passing rows
    else            keepCnt = 1;       // nothing passes → keep only the very first row
-   WriteLog(StringFormat("SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d",n,passCnt,keepCnt,n-keepCnt),false,strT._K,strT._N,strT._S);
+   WriteLog(StringFormat("SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d Rank=%s%s",n,passCnt,keepCnt,n-keepCnt,
+                         (rank==GOAT_EXPORT_RANK_PF ? "PF" : "ARFxSR"),(passCnt>0 ? "" : " (fallback: none passed, the best-ranked row kept)")),false,strT._K,strT._N,strT._S);
    /* ---------- trim anything beyond keepCnt ---------- */
    if(n <= keepCnt) return;      // nothing to delete
    string files[];
@@ -729,6 +752,7 @@ void SortAndTrimExports(const int keepTop,const double minARF,const double minSR
    ArrayResize(expArr, keepCnt); // shrink in-memory list
    PrintFormat("SortAndTrimExports: deleted %d file pairs (csv+set)",(n - keepCnt));
   }
+// B49b:end f8-trim
 //--------------------------------------------------------------------
 //  MoveKeptExports – relocate every file that survived the trimming
 //  • dstKey  … relative path under <Common\Files> (e.g.  "TEMP2\\BEST")

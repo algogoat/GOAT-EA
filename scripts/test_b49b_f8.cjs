@@ -165,7 +165,8 @@ function dayBlock(text){
 function windows(text,{days,boos,foos,fwdStart,fwdEnd,equity,finalEquity,tickAt=60}){
  const c={now:0,eq:0,dt_Back_OOS:boos*DAY,dt_Fwrd_OOS:foos?foos*DAY:0,dt_FWD_start:fwdStart*DAY,dt_FWD_end:fwdEnd*DAY,
   days_BOOS:0,days_IS:0,days_FOOS:0,days_FWD:0,eq_BOOS_start:0,eq_BOOS_end:0,eq_IS_start:0,eq_IS_end:0,eq_FOOS_start:0,eq_FWD_start:0,eq_FWD_end:0,
-  dt_IS_end:0,DLastTime:0,DStartEquity:0,g_GoatFwdClosed:false,ACCOUNT_EQUITY:1,TimeCurrent:()=>c.now,AccountInfoDouble:()=>c.eq};
+  dt_IS_end:0,DLastTime:0,DStartEquity:0,g_GoatFwdClosed:false,ACCOUNT_EQUITY:1,TimeCurrent:()=>c.now,AccountInfoDouble:()=>c.eq,
+  GoatStateLive:()=>false};   // B49b PR-2 (F1 full): the day block's state-file restore is live-only (test_b49b_f1.cjs)
  vm.createContext(c);
  const b49b=text===main;
  vm.runInContext((b49b?fn('GoatFwdDay',['when'],bodyOf(main,'bool GoatFwdDay(const datetime when)'))

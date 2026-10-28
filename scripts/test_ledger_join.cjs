@@ -89,7 +89,8 @@ function common(acct,mode){
 function sequence(acct,mode,text=main){
  const c={...common(acct,mode),SequenceRealizedPL:0,LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,ended:[],
   Strat:'Trend',dir:0,Virtual:false,Desc:'',Retrace_Triggered:false,Level_Retrace:0,BiasRescueBEProtected:false,BiasRescuePositiveAdds:0,
-  BiasRescueBEPrice:0,BiasRescueSLPrice:0,Level_Count:0,TradeLevels:[]};
+  BiasRescueBEPrice:0,BiasRescueSLPrice:0,Level_Count:0,TradeLevels:[],
+  GoatManageOnlyLive:()=>true};   // B49b PR-2 (F1 full): a live chart (Init keeps a running sequence's state; test_b49b_f1.cjs)
  c.End_Sequence=d=>{c.ended.push(d);c.Active=c.Traded=false;};
  vm.createContext(c);
  const methods=text===main?SEQ_METHODS:SEQ_METHODS.filter(([n])=>n==='ClosedDealPL'||n==='AccumulateSequenceDealPL');

@@ -667,10 +667,79 @@ bool DashboardExposureConflict(const int op)
    }
    return false;
   }
+// B49b:begin f1-full-flags
+//---------------------- B49b (F1 full; split goatai#2587 6433828681 row 2, design 6474780229): manage-only.
+// A licence outage, a refused licence or an expired build on a live chart manages the positions the EA already holds
+// (closes, stops, MLPS, the session and Friday closes, trailing, Lock/TP/SL) and never opens or adds, instead of
+// INIT_FAILED or ExpertRemove with a basket open. An outage re-verifies from the timer and clears on success; a rejected
+// credential (401/403), another refused licence or an expired build removes the EA once nothing is left to manage.
+// Re-derived at every OnInit from the licence and expiry state, never carried over (Claude-Mac 6475450194). The tester, an optimization, a batch and
+// the dashboard keep B49a's paths, and so does every mode but the trading chart (GoatManageOnlyLive: a licence outage
+// never unlocks the report or export tools). No input.
+#define GOAT_MANAGE_NONE             0
+#define GOAT_MANAGE_LICENCE_DOWN     1
+#define GOAT_MANAGE_LICENCE_REFUSED  2
+#define GOAT_MANAGE_EXPIRED          3
+#define GOAT_MANAGE_CREDENTIAL       4   // 401/403 with an open basket (Claude-Mac 6475450194); none open: B49a's reactivation
+#define GOAT_LICENCE_RETRY_MS        300000
+int    g_GoatManageOnly=GOAT_MANAGE_NONE;
+uint   g_GoatLicenceRetriedMs=0;
+bool   g_GoatStateFailed=false;                            // the state file was not written: adds freeze until it is
+bool   g_GoatLastStopOutB=false,g_GoatLastStopOutS=false;  // the bias stop-out edges (OnTick statics through B49a), kept for the day
+bool GoatManageOnlyLive()
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+   return(Mode_Operation==Operation_Standard && Mode!="EXPORT");
+  }
+string GoatManageOnlyReason()
+  {
+   if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN)    return "licence_unavailable";
+   if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) return "licence_refused";
+   if(g_GoatManageOnly==GOAT_MANAGE_EXPIRED)         return "expired";
+   if(g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)      return "credential_rejected";
+   return "none";
+  }
+// An expired build: on a live chart, manage-only (said once) and true; otherwise false, and B49a's expiry path runs.
+bool GoatExpiryManageOnly()
+  {
+   if(!GoatManageOnlyLive()) return false;
+   if(g_GoatManageOnly!=GOAT_MANAGE_EXPIRED)
+     {
+      g_GoatManageOnly=GOAT_MANAGE_EXPIRED;
+      Print("GOAT manage-only: reason=expired expiry=",TimeToString(Expiry,TIME_DATE)," new_trades=refused adds=frozen closes_stops_mlps=continue");
+     }
+   return true;
+  }
+// An outage, never a refusal: no answer (<0), a server error (>=500, which includes MT5's 1003), a timeout (408) or a
+// rate limit (429), the statuses GOATLicenseAuthenticatedRequest retries as transient (Claude-Mac #284 P2-2).
+bool GoatLicenceTransient(const int key)
+  {
+   return(key<0 || key>=500 || key==408 || key==429);
+  }
+// VerifyLicense's answer at OnInit. On the trading chart, anything but a valid licence becomes manage-only and true, so
+// init goes on to adopt: an outage (GoatLicenceTransient), a rejected credential (401/403; with nothing open, OnInit then runs
+// B49a's reactivation: GoatManageOnlyAfterAdopt) or another refusal. False otherwise (0 = never checked). An expired
+// build stays expired: a licence that comes back never lifts it.
+bool GoatLicenceManageOnly(const int key)
+  {
+   if(!GoatManageOnlyLive() || key==0 || key==LICENSE_VALID) return false;
+   if(g_GoatManageOnly!=GOAT_MANAGE_EXPIRED) g_GoatManageOnly=((key==401 || key==403) ? GOAT_MANAGE_CREDENTIAL : GoatLicenceTransient(key) ? GOAT_MANAGE_LICENCE_DOWN : GOAT_MANAGE_LICENCE_REFUSED);
+   g_GoatLicenceRetriedMs=GetTickCount();
+   Print("GOAT manage-only: reason=",GoatManageOnlyReason()," licence_status=",IntegerToString(key)," new_trades=refused adds=frozen closes_stops_mlps=continue");
+   return true;
+  }
+// A section value of the state file, "" when absent (keys and values are parallel; GoatStateRead).
+string GoatStateValue(const string &keys[],const string &values[],const string key)
+  {
+   for(int i=0; i<ArraySize(keys); i++) if(keys[i]==key) return values[i];
+   return "";
+  }
+// B49b:end f1-full-flags
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool DashboardEntryAllowed(const int op)
   {
    if(GoatCidGuardRefuses(true)) return false; // B46: a missing or duplicate CID record refuses new sequences (GoatCidGuardEvaluate)
+   if(g_GoatManageOnly!=GOAT_MANAGE_NONE) return false; // B49b (F1): manage-only (a licence outage or refusal, an expired build) opens nothing new
    if(!GoatStagedChildMayOpen(g_GoatStudioMonitorRunPath,MAGIC1,Symbol())) return false; // beta.25: a profile-staged child opens nothing before its dashboard policy (GOATPortfolioSetupControl.mqh)
    if(!DashboardTradeAllowed(op)) return false;
    if(DashboardExposureConflict(op)) return false;
@@ -786,9 +855,11 @@ class SEQUENCE
    {
     dir=OP; Virtual=v;
     Desc = Strat+((Virtual)?" Virtual ":" ")+((dir==OP_BUY)?"Buy":"Sell");
+    if(!(Active && !Virtual && GoatManageOnlyLive())) { // B49b (F1): a live re-init (an input change) of a running sequence keeps its retrace, rescue and realized P/L (GOAT-EA#266 P3)
     Retrace_Triggered=false;
     Level_Retrace=0.0;
     ResetSequenceRiskState();
+    } // B49b (F1)
     if(Active && Ledger_Mode==Ledger_PositionJoin) for(int i=0; i<Level_Count; i++) if(TradeLevels[i].ticket>0) LedgerAddPosition((ulong)TradeLevels[i].ticket); // B49a (F2): a live re-init into PositionJoin joins the running sequence's positions (Codex GOAT-EA#265)
    }
 //----------------------
@@ -1681,11 +1752,11 @@ class SEQUENCE
    // Adds stay frozen while the basket is adopted (manage-only) or its record cannot be written; logged once.
    bool ManageOnlyFrozen(const int level)
    {
-    if(!Adopted && !PersistFailed) {ManageOnlyLogged=false; return false;}
+    if(!Adopted && !PersistFailed && !g_GoatStateFailed && g_GoatManageOnly==GOAT_MANAGE_NONE) {ManageOnlyLogged=false; return false;} // B49b (F1): manage-only and an unwritten state file freeze adds too
     if(!ManageOnlyLogged)
     {
        ManageOnlyLogged=true;
-       Print("GOAT restart: add_frozen=",(Adopted ? "manage_only" : "record_unwritten")," side=",(dir==OP_BUY ? "BUY" : "SELL"),
+       Print("GOAT restart: add_frozen=",(g_GoatManageOnly!=GOAT_MANAGE_NONE ? GoatManageOnlyReason() : Adopted ? "manage_only" : PersistFailed ? "record_unwritten" : "state_unwritten")," side=",(dir==OP_BUY ? "BUY" : "SELL"), // B49b (F1): manage-only's reason, or the unwritten state file
              " magic=",IntegerToString(MAGIC1)," symbol=",_Symbol," level=",IntegerToString(level)," closes_stops_mlps=continue");
     }
     return true;
@@ -1794,6 +1865,7 @@ class SEQUENCE
     if(dir==OP_BUY) LastTradeCountBuy=count; else LastTradeCountSell=count;
     Active=Traded=true;
     Adopted=true; AdoptMatched=matched; AdoptSizes=sizes;
+    GuardRealStarted=true; // B49b (F1): the direction guard publishes an adopted basket as an existing sequence (state 4), not as blocked exposure (2)
     if(matched)
     {
      SequenceRealizedPL=(Ledger_Mode==Ledger_PositionJoin ? RealizedFromHistory((long)rec_t,rec_r) : rec_r);
@@ -1819,6 +1891,49 @@ class SEQUENCE
     return true;
    }
 // B49a:end f1-lite
+// B49b:begin f1-full
+// The state file's section for this sequence (B49b F1 full): what the restart record cannot carry (retrace, rescue,
+// trailing, a deferred close). Written for a live, traded, recorded sequence only, and keyed to its restart record by
+// start time and first ticket, so a restore never applies one basket's state to another.
+   string StateText()
+   {
+    if(!PersistLive() || !Active || !Traded || PersistStartMsc==0) return "";
+    string p=(dir==OP_BUY ? "B." : "S."),reason=ClosePendingReason;
+    StringReplace(reason,"\n"," "); StringReplace(reason,"\r"," ");
+    return p+"start_msc="+IntegerToString(PersistStartMsc)+"\n"+p+"first_ticket="+IntegerToString((long)PersistFirstTicket)+"\n"
+          +p+"level_retrace="+DoubleToString(Level_Retrace,8)+"\n"+p+"retrace_triggered="+(Retrace_Triggered ? "1" : "0")+"\n"
+          +p+"rescue_active="+(BiasRescueActive ? "1" : "0")+"\n"+p+"rescue_be_protected="+(BiasRescueBEProtected ? "1" : "0")+"\n"
+          +p+"rescue_positive_adds="+IntegerToString(BiasRescuePositiveAdds)+"\n"+p+"rescue_be_price="+DoubleToString(BiasRescueBEPrice,8)+"\n"
+          +p+"rescue_sl_price="+DoubleToString(BiasRescueSLPrice,8)+"\n"+p+"trailing="+(Trailing ? "1" : "0")+"\n"
+          +p+"close_tried="+IntegerToString((long)ClosePendingTried)+"\n"+p+"close_reason="+reason+"\n";
+   }
+// OnInit, after AdoptOpenPositions: a matched adopted basket takes back its section, all or nothing, when the section
+// names the matched record's start and first ticket. Anything else is ignored and said; the basket stays F1-lite's.
+   void StateRestore(const string &keys[],const string &values[])
+   {
+    if(!Adopted || !AdoptMatched) return;
+    string p=(dir==OP_BUY ? "B." : "S.");
+    string fields[]={"start_msc","first_ticket","level_retrace","retrace_triggered","rescue_active","rescue_be_protected",
+                     "rescue_positive_adds","rescue_be_price","rescue_sl_price","trailing","close_tried"};
+    string v[]; ArrayResize(v,ArraySize(fields));
+    int present=0;
+    for(int i=0; i<ArraySize(fields); i++) {v[i]=GoatStateValue(keys,values,p+fields[i]); if(v[i]!="") present++;}
+    if(present==0) return;
+    if(present<ArraySize(fields) || v[0]!=IntegerToString(PersistStartMsc) || v[1]!=IntegerToString((long)PersistFirstTicket))
+    {
+     Print("GOAT state: ",Desc," section ignored (",IntegerToString(present),"/",IntegerToString(ArraySize(fields))," fields, start ",v[0],
+           " ticket ",v[1],"; the restart record's are ",IntegerToString(PersistStartMsc)," ",IntegerToString((long)PersistFirstTicket),")");
+     return;
+    }
+    Level_Retrace=StringToDouble(v[2]); Retrace_Triggered=(v[3]=="1");
+    BiasRescueActive=(v[4]=="1"); BiasRescueBEProtected=(v[5]=="1"); BiasRescuePositiveAdds=(int)StringToInteger(v[6]);
+    BiasRescueBEPrice=StringToDouble(v[7]); BiasRescueSLPrice=StringToDouble(v[8]); Trailing=(v[9]=="1");
+    ClosePendingTried=(datetime)StringToInteger(v[10]); ClosePendingReason=GoatStateValue(keys,values,p+"close_reason");
+    if(AdoptSizes) UpdateLockTPSL(Trades_Count); // the rescue BE and trailing apply at once (stops still only tighten)
+    Print("GOAT state: ",Desc," restored retrace=",DoubleToString(Level_Retrace,_Digits)," triggered=",v[3]," rescue=",v[4],
+          " be_protected=",v[5]," trailing=",v[9]," close_pending=",(ClosePendingReason=="" ? "none" : ClosePendingReason));
+   }
+// B49b:end f1-full
 //---------------------- true sequence P/L = realized ledger + live open P/L
    double CurrentSequencePL()
    {
@@ -2450,7 +2565,7 @@ class SEQUENCE
 //----------------------
    bool Add_Level(double Level_New)
    {
-    if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
+    if(TimeCurrent()>Expiry) {if(GoatExpiryManageOnly()) return false; Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();} // B49b (F1): live, an expired build adds nothing and manages what it holds
   //if(!IsLicensed())        {Alert("Trial Expired"); return false;}
     if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: cid_duplicate freezes adds (grid and rescue) of a real sequence
     if(!Virtual && ManageOnlyFrozen(Level_Count+1)) return false; // B49a (F1-lite): an adopted basket, or a failed restart record, freezes adds
@@ -3429,6 +3544,7 @@ void DashboardBusSendStatus(const string status)
    long dashboard_cid=(long)GlobalVariableGet("Dashboard_ChartID");
    if(dashboard_cid<=0) return;
 
+   if(g_GoatManageOnly!=GOAT_MANAGE_NONE && status!="Offline" && status!="Close Failed") {EventChartCustom(dashboard_cid,GOAT_EVENT_CHILD_STATUS,(long)MAGIC1,(double)ChartID(),Symbol()+"|Managing only"); return;} // B49b (F1, Claude-Mac #284 P3): a manage-only row stays "Managing only" through every ack and heartbeat (Offline and Close Failed still show)
    EventChartCustom(dashboard_cid,GOAT_EVENT_CHILD_STATUS,(long)MAGIC1,(double)ChartID(),Symbol()+"|"+status);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -4001,11 +4117,247 @@ bool GoatPanelCreate(const string panel_name,const int panel_x1,const int panel_
    GoatDeploymentPhase("panel_unavailable",ChartID());
    return false;
   }
+// B49b:begin f1-full-state
+//---------------------- B49b (F1 full): the state file, one per login + magic + symbol in common files
+// (GOAT\State\<login>\<magic>_<symbol>.txt, the CID claim's per-login layout), written atomically by GoatStateWrite (a
+// unique .pending, an exact byte count, FileMove). It carries what the F1-lite GlobalVariable record cannot: each
+// sequence's retrace, rescue, trailing and deferred-close state (SEQUENCE::StateText; restored only onto the basket its
+// restart record matched) and the chart's day state (the stop-out, the daily baselines, the restart cooldown and the
+// bias stop-out edges; restored by the first tick's new-day block only when the file is from that server day). A file
+// that is missing, unreadable, another version's or another login, magic or symbol's is ignored and said, and the
+// chart behaves as B49a. Nothing is written before the first tick has stamped the day, so a fresh init never
+// overwrites the file it is about to restore. A failed write freezes adds until a write succeeds. Live trading charts
+// only (GoatManageOnlyLive).
+#define GOAT_STATE_VERSION 1
+string g_GoatStateLast="";                 // the text last written
+uint   g_GoatStateWrittenMs=0;
+long   g_GoatStateDay=0;                   // the server day (days since 1970) of the day state; 0 before the first tick
+bool   g_GoatDayRestorePending=false;
+string g_GoatDayKeys[],g_GoatDayValues[];  // the file's lines, kept for the first tick's new-day block
+string GoatStatePath()
+  {
+   return "GOAT\\State\\"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\\"+IntegerToString(MAGIC1)+"_"+_Symbol+".txt";
+  }
+bool GoatStateLive()
+  {
+   return(GoatManageOnlyLive() && MAGIC1>0);
+  }
+string GoatStateText()
+  {
+   return "version="+IntegerToString(GOAT_STATE_VERSION)+"\nlogin="+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\nmagic="+IntegerToString(MAGIC1)
+         +"\nsymbol="+_Symbol+"\nday="+IntegerToString(g_GoatStateDay)+"\nstopout="+(StopOut_Flag ? "1" : "0")
+         +"\ndstart_equity="+DoubleToString(DStartEquity,2)+"\ndstart_local_loss="+DoubleToString(DStartLocalLoss,2)
+         +"\ndstart_time="+IntegerToString((long)DStartTime)+"\nlast_stopout_time="+IntegerToString((long)LastStopoutTime)
+         +"\nlast_stopout_b="+(g_GoatLastStopOutB ? "1" : "0")+"\nlast_stopout_s="+(g_GoatLastStopOutS ? "1" : "0")+"\n"
+         +Seq_Buy.StateText()+Seq_Sell.StateText();
+  }
+// The file, atomically: a unique .pending written in FILE_BIN with an exact UTF-8 byte count, then FileMove. Not
+// GoatSetupWrite: it opens FILE_TXT, which writes "\r\n" for each "\n", so a multi-line body never matches its length
+// check (Claude-Mac #284 P1); its single-line JSON callers keep it. The .pending is deleted on any failure, and the
+// error is kept for the alert.
+int    g_GoatStateWriteError=0;
+bool GoatStateWrite(const string path,const string body)
+  {
+   static long serial=0;
+   g_GoatStateWriteError=0;
+   string temporary=path+"."+IntegerToString(ChartID())+"."+IntegerToString((long)GetTickCount64())+"."+IntegerToString(++serial)+".pending";
+   if(FileIsExist(temporary,FILE_COMMON)) {g_GoatStateWriteError=-1; return false;}     // -1: never truncate another writer's file
+   uchar bytes[];
+   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8)-1;                     // without the terminating 0
+   if(size<=0) {g_GoatStateWriteError=-2; return false;}                                // -2: nothing to write
+   ResetLastError();
+   int h=FileOpen(temporary,FILE_WRITE|FILE_BIN|FILE_COMMON);
+   if(h==INVALID_HANDLE) {g_GoatStateWriteError=GetLastError(); return false;}
+   uint written=FileWriteArray(h,bytes,0,size); FileFlush(h);
+   bool okay=(written==(uint)size && GetLastError()==0);
+   if(!okay) g_GoatStateWriteError=GetLastError();
+   FileClose(h);
+   if(okay && FileMove(temporary,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE)) return true;
+   if(okay) g_GoatStateWriteError=GetLastError();
+   FileDelete(temporary,FILE_COMMON);
+   return false;
+  }
+// From the timer, at most every GOAT_SQ_FLUSH_MS (force: at once, OnDeinit): the file, when its text changed.
+void GoatStateFlush(const bool force=false)
+  {
+   if(!GoatStateLive() || g_GoatStateDay==0) return;
+   if(!force && GetTickCount()-g_GoatStateWrittenMs<GOAT_SQ_FLUSH_MS) return;
+   string text=GoatStateText();
+   if(text==g_GoatStateLast && !g_GoatStateFailed) return;
+   g_GoatStateWrittenMs=GetTickCount();
+   string login=IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   FolderCreate("GOAT",FILE_COMMON); FolderCreate("GOAT\\State",FILE_COMMON); FolderCreate("GOAT\\State\\"+login,FILE_COMMON); // each level, as the CID claim
+   if(GoatStateWrite(GoatStatePath(),text))
+     {
+      if(g_GoatStateFailed) Print("GOAT state: ",GoatStatePath()," written again; adds resume unless the chart is manage-only");
+      g_GoatStateLast=text; g_GoatStateFailed=false;
+      return;
+     }
+   if(!g_GoatStateFailed) Alert("GOAT state file not written ("+GoatStatePath()+", error "+IntegerToString(g_GoatStateWriteError)+"). Adds are frozen until a write succeeds; closes, stops and MLPS continue.");
+   g_GoatStateFailed=true;
+  }
+// The file's key=value lines; false (said) when it is missing, unreadable, or another version, login, magic or symbol's.
+bool GoatStateRead(string &keys[],string &values[])
+  {
+   ArrayResize(keys,0); ArrayResize(values,0);
+   if(!FileIsExist(GoatStatePath(),FILE_COMMON)) return false;
+   string body;
+   if(!GoatSetupRead(GoatStatePath(),body)) {Print("GOAT state: ",GoatStatePath()," unreadable; ignored (B49a behaviour)"); return false;}
+   string state_lines[];
+   int n=StringSplit(body,'\n',state_lines);
+   for(int i=0; i<n; i++)
+     {
+      StringReplace(state_lines[i],"\r","");
+      int eq=StringFind(state_lines[i],"=");
+      if(eq<=0) continue;
+      int k=ArraySize(keys);
+      ArrayResize(keys,k+1); ArrayResize(values,k+1);
+      keys[k]=StringSubstr(state_lines[i],0,eq); values[k]=StringSubstr(state_lines[i],eq+1);
+     }
+   if(GoatStateValue(keys,values,"version")!=IntegerToString(GOAT_STATE_VERSION) || GoatStateValue(keys,values,"login")!=IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
+      || GoatStateValue(keys,values,"magic")!=IntegerToString(MAGIC1) || GoatStateValue(keys,values,"symbol")!=_Symbol)
+     {
+      Print("GOAT state: ",GoatStatePath()," is another version, login, magic or symbol's; ignored (B49a behaviour)");
+      ArrayResize(keys,0); ArrayResize(values,0);
+      return false;
+     }
+   return true;
+  }
+// OnInit, after AdoptOpenPositions: the adopted sequences take back their sections; the day section waits for the
+// first tick's new-day block (GoatStateDayRestore).
+void GoatStateRestore()
+  {
+   g_GoatDayRestorePending=false;
+   if(!GoatStateLive()) return;
+   string keys[],values[];
+   if(!GoatStateRead(keys,values)) return;
+   Seq_Buy.StateRestore(keys,values); Seq_Sell.StateRestore(keys,values);
+   ArrayResize(g_GoatDayKeys,0); ArrayResize(g_GoatDayValues,0);
+   ArrayCopy(g_GoatDayKeys,keys); ArrayCopy(g_GoatDayValues,values);
+   g_GoatDayRestorePending=true;
+  }
+// The new-day block (right after its resets): every new day stamps the day the file is written with; on the first
+// tick, today's day section comes back, all or nothing. A file from another day leaves the reset that just ran.
+void GoatStateDayRestore()
+  {
+   g_GoatStateDay=(long)tm_cur/86400;
+   if(!g_GoatDayRestorePending) return;
+   g_GoatDayRestorePending=false;
+   string f[]={"day","stopout","dstart_equity","dstart_local_loss","dstart_time","last_stopout_time","last_stopout_b","last_stopout_s"};
+   string v[]; ArrayResize(v,ArraySize(f));
+   for(int i=0; i<ArraySize(f); i++)
+     {
+      v[i]=GoatStateValue(g_GoatDayKeys,g_GoatDayValues,f[i]);
+      if(v[i]=="") {Print("GOAT state: the day section has no ",f[i],"; the day starts fresh"); return;}
+     }
+   if(v[0]!=IntegerToString(g_GoatStateDay)) {Print("GOAT state: the day section is day ",v[0],"'s, not today's ",IntegerToString(g_GoatStateDay),"; the day starts fresh"); return;}
+   if(!(StringToDouble(v[2])>0.0)) {Print("GOAT state: the day section has no daily start equity; the day starts fresh"); return;}
+   StopOut_Flag=(v[1]=="1"); DStartEquity=StringToDouble(v[2]); DStartLocalLoss=StringToDouble(v[3]); DStartTime=(datetime)StringToInteger(v[4]);
+   LastStopoutTime=(datetime)StringToInteger(v[5]); g_GoatLastStopOutB=(v[6]=="1"); g_GoatLastStopOutS=(v[7]=="1");
+   Print("GOAT state: today's day state restored stopout=",v[1]," dstart_equity=",v[2]," dstart_local_loss=",v[3],
+         " last_stopout_time=",v[5]," bias_edges=",v[6],v[7]);
+  }
+// Says manage-only loudly, once per reason: an Alert, a prompt on the chart and the dashboard row "Managing only" (never
+// counted as active: Dashboard.mqh counts only Active/Linked rows). DashboardBusSendStatus sends "Managing only" in place
+// of every other status while manage-only (an ack, the heartbeat), and the row is sent again every minute for a
+// dashboard that started since. When manage-only ends, the prompt goes and the row is Linked again.
+string g_GoatManageOnlyAnnounced="";
+uint   g_GoatManageOnlyStatusMs=0;
+bool   g_GoatManageOnlyHeldLogged=false;   // "not removed: positions still open", said once
+string GoatManageOnlyWhy()
+  {
+   if(g_GoatManageOnly==GOAT_MANAGE_EXPIRED)         return "This version expired on "+TimeToString(Expiry,TIME_DATE)+" (download the latest from "+URL_Web+")";
+   if(g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)      return "The GOAT sign-in for this MT5 account was rejected (re-attach GOAT to renew it)";
+   if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) return "The GOAT licence check refused this account";
+   return "The GOAT licence service can't be reached (retried every 5 minutes)";
+  }
+void GoatManageOnlyPrompt()
+  {
+   ShowPrompt("GOAT is managing only",GoatManageOnlyWhy(),"Open positions are managed; nothing new opens.",URL_Web);
+  }
+void GoatManageOnlyAnnounce()
+  {
+   if(g_GoatManageOnly==GOAT_MANAGE_NONE)
+     {
+      if(g_GoatManageOnlyAnnounced!="") {g_GoatManageOnlyAnnounced=""; HidePrompt(); DashboardBusSendStatus("Linked");}
+      return;
+     }
+   if(GoatManageOnlyReason()!=g_GoatManageOnlyAnnounced)
+     {
+      g_GoatManageOnlyAnnounced=GoatManageOnlyReason();
+      Print("GOAT manage-only: announced reason=",g_GoatManageOnlyAnnounced," buy_active=",(Seq_Buy.Active ? "1" : "0")," sell_active=",(Seq_Sell.Active ? "1" : "0"));
+      Alert(GoatManageOnlyWhy()+". GOAT manages its open positions (closes, stops, MLPS) and opens nothing new"
+            +(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN ? " until the licence is verified." : "; it stops once they are closed."));
+      GoatManageOnlyPrompt();
+      g_GoatManageOnlyStatusMs=0;
+     }
+   if(g_GoatManageOnlyStatusMs!=0 && GetTickCount()-g_GoatManageOnlyStatusMs<60000) return;
+   g_GoatManageOnlyStatusMs=GetTickCount();
+   if(g_GoatManageOnlyStatusMs==0) g_GoatManageOnlyStatusMs=1;
+   DashboardBusSendStatus("Managing only");
+  }
+// OnInit after adoption: -1 when init goes on. With nothing to manage, B49a's outcome stands: an expired build alerts
+// and fails, a refused licence waits 20 s and fails, a rejected credential starts B49a's secure replacement
+// (activation-only mode). Otherwise the chart runs manage-only and says why.
+int GoatManageOnlyAfterAdopt()
+  {
+   if(g_GoatManageOnly==GOAT_MANAGE_NONE) return -1;
+   bool holding=(Seq_Buy.Active || Seq_Sell.Active);
+   if(!holding && g_GoatManageOnly==GOAT_MANAGE_EXPIRED) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED;}
+   if(!holding && g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) {Sleep(20000); return INIT_FAILED;}
+   if(!holding && g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)
+     {
+      g_GoatManageOnly=GOAT_MANAGE_NONE;
+      Print("Stored GOAT user credential was rejected. Starting secure replacement for this MT5 account.");
+      if(!GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true)) return INIT_FAILED;
+      return INIT_SUCCEEDED;
+     }
+   GoatManageOnlyAnnounce();
+   return -1;
+  }
+// From the timer: announces manage-only; an outage re-verifies every GOAT_LICENCE_RETRY_MS (one attempt: no init
+// retries, so the timer waits at most the request timeout) and ends manage-only on success; any other answer from the
+// service becomes credential_rejected (401/403) or licence_refused. Every reason but an outage removes the EA once
+// nothing is left to manage.
+void GoatManageOnlyTimer()
+  {
+   static bool removing=false;
+   if(removing) return;
+   GoatManageOnlyAnnounce();
+   if(g_GoatManageOnly==GOAT_MANAGE_NONE) return;
+   if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN)
+     {
+      if(GetTickCount()-g_GoatLicenceRetriedMs<GOAT_LICENCE_RETRY_MS) return;
+      g_GoatLicenceRetriedMs=GetTickCount();
+      int key=VerifyLicense(AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_NAME),AccountInfoString(ACCOUNT_SERVER));
+      if(key==LICENSE_VALID) {g_GoatManageOnly=GOAT_MANAGE_NONE; Print("GOAT manage-only: ended (licence verified); new trades and adds resume"); GoatManageOnlyAnnounce(); return;}
+      if(GoatLicenceTransient(key)) {GoatManageOnlyPrompt(); return;}   // VerifyLicense's "re-attach" prompt never replaces it (Claude-Mac #284 P3)
+      g_GoatManageOnly=((key==401 || key==403) ? GOAT_MANAGE_CREDENTIAL : GOAT_MANAGE_LICENCE_REFUSED);
+      Print("GOAT manage-only: reason=",GoatManageOnlyReason()," licence_status=",IntegerToString(key));
+      GoatManageOnlyAnnounce();
+     }
+   if(Seq_Buy.Active || Seq_Sell.Active) return;
+   // Claude-Mac #284 P2-1: a sequence can end with its positions still open (with Fix_ClosePath off a failed close still
+   // runs End_Sequence), so flat means no position of this magic on this symbol either. Removing then would leave them
+   // unmanaged for good; the chart stays manage-only, said once.
+   int open_positions=FindNumberOfPositions(OP_BUYSELL,MAGIC1);
+   if(open_positions>0)
+     {
+      if(!g_GoatManageOnlyHeldLogged) Print("GOAT manage-only: not removed: ",IntegerToString(open_positions)," position(s) of magic ",IntegerToString(MAGIC1)," are still open on ",_Symbol," with no sequence managing them");
+      g_GoatManageOnlyHeldLogged=true;
+      return;
+     }
+   removing=true;
+   Alert(GoatManageOnlyWhy()+". No positions are left to manage, so GOAT stops on this chart.");
+   ExpertRemove();
+  }
+// B49b:end f1-full-state
 bool g_GoatStudioWorkerDiagnosticPending=false;
 ulong g_GoatStudioWorkerDiagnosticDeadline=0;
 int OnInit()
   {
    GoatNoTickForget(); // B49b (F4): a re-init (symbol, timeframe, inputs) keeps the EA's globals, never its last tick
+   g_GoatManageOnly=GOAT_MANAGE_NONE; g_GoatLicenceRetriedMs=0; // B49b (F1): manage-only is re-derived below from the licence and expiry, never carried over a re-init
    g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
    g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;
    if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&
@@ -4116,7 +4468,7 @@ int OnInit()
    if(Mode_Trade==Long_and_Short || Mode_Trade==Short) Sell_EN=true;    else Sell_EN=false;
 //-------------------------------------------------------------------------
    do Sleep(20); while(TimeToString(TimeCurrent())=="");
-   if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED; ExpertRemove();}
+   if(TimeCurrent()>Expiry && !GoatExpiryManageOnly()) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED; ExpertRemove();} // B49b (F1): live, manage-only; INIT_FAILED after adoption when nothing is open (GoatManageOnlyAfterAdopt)
 //-------------------------------------------------------------------------
    if(Mode_Download==Download_News||Mode_Download==Download_NewsBias)
    {
@@ -4286,7 +4638,7 @@ int OnInit()
     if(Mode_Download!=Download_News&&Mode_Download!=Download_NewsBias)
     LicenseKey = VerifyLicense(AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_NAME),AccountInfoString(ACCOUNT_SERVER),true);
 
-    if(LicenseKey==LICENSE_VALID)//||LicenseKey!=0)
+    if(LicenseKey==LICENSE_VALID || GoatLicenceManageOnly(LicenseKey)) // B49b (F1): an outage or a refusal on the trading chart inits manage-only (was INIT_FAILED below)
     {
      if(Mode_Operation==Operation_Report)
      {
@@ -4695,6 +5047,7 @@ int OnInit()
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)
      Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions(); // B49a (F1-lite): a restart adopts its open baskets, manage-only (live charts only)
+     GoatStateRestore(); // B49b (F1): the state file's retrace/rescue/trailing/deferred-close sections for the matched baskets; its day section waits for the first tick
      if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
      DashboardBusRebuildClosedStats();
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
@@ -4708,6 +5061,9 @@ int OnInit()
      }
     GlobalVariablesFlush();
    }
+   int manage_only_init=GoatManageOnlyAfterAdopt(); // B49b (F1): -1 = init goes on (manage-only announced when a basket is held)
+   if(manage_only_init==INIT_FAILED) return INIT_FAILED; // B49b (F1): a refused licence or an expired build with nothing open keeps B49a's INIT_FAILED
+   if(manage_only_init==INIT_SUCCEEDED) return INIT_SUCCEEDED; // B49b (F1): a rejected credential with nothing open keeps B49a's secure replacement
 //-------------------------------------------------------------------------
  //if(Mode_Operation==Operation_Export)
    if(Mode=="EXPORT")
@@ -4752,6 +5108,7 @@ void OnDeinit(const int reason)
    GoatTraceClose(reason);
    GoatDirectionGuardDeinit();
    Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true); // B49a (F1-lite): the restart record is current when the chart stops
+   GoatStateFlush(true); // B49b (F1): and the state file
    if(g_GoatStudioReadOnlyMonitor)
    {GOATDeviceActivationWithdrawCode();TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
@@ -6198,6 +6555,7 @@ void GoatTimerBody(void)
    }
    GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
    Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush(); // B49a (F1-lite): the restart record's realized P/L (at most every GOAT_SQ_FLUSH_MS)
+   GoatStateFlush(); GoatManageOnlyTimer(); // B49b (F1): the state file when it changed; manage-only's licence retry and its end
    GoatNoTickTimer(); // B49b (F4): exits without a tick (live trading charts only)
    if(g_GoatStudioReadOnlyMonitor)
    {
@@ -6559,6 +6917,7 @@ void GoatTickBody()
     //ObjectSetText("06","- - -",Font_Size,"NULL",clrDarkGray);
     static datetime DLastTime;
     DStartEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+    if(GoatStateLive()) GoatStateDayRestore(); // B49b (F1): stamps the day; on the first tick, today's saved stop-out, baselines and cooldown come back
 
     if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0)
     {
@@ -7111,20 +7470,18 @@ void GoatTickBody()
 //-------
     if(!g_GoatNoTickRun) { // B49b (F4): a timer run never handles a bias edge (no rescue, no SL/TP on a stale quote); the next real tick does
     // Direction-specific Bias StopOut handling - Buy
-    static bool Last_StopOut_Flag_B = false;
-    if(StopOut_Flag_B && !Last_StopOut_Flag_B)
+    if(StopOut_Flag_B && !g_GoatLastStopOutB) // B49b (F1): the edge is a global (was a static), so the state file keeps it across a restart
     {
      HandleBiasExitBuy(Buys);
     }
-    Last_StopOut_Flag_B = StopOut_Flag_B;
+    g_GoatLastStopOutB = StopOut_Flag_B; // B49b (F1)
 //-------
     // Direction-specific Bias StopOut handling - Sell
-    static bool Last_StopOut_Flag_S = false;
-    if(StopOut_Flag_S && !Last_StopOut_Flag_S)
+    if(StopOut_Flag_S && !g_GoatLastStopOutS) // B49b (F1)
     {
      HandleBiasExitSell(Sells);
     }
-    Last_StopOut_Flag_S = StopOut_Flag_S;
+    g_GoatLastStopOutS = StopOut_Flag_S; // B49b (F1)
     } // B49b (F4)
 //-------
     if(AccountInfoDouble(ACCOUNT_EQUITY) > MaxEquity)
@@ -7239,7 +7596,7 @@ void GoatTickBody()
     {
      // an adjustment for good comparison Weekend Close
      //if(Active && CloseTradesWeekend && stm_cur.day_of_week==1 && stm_cur.hour==Hour_Start[0] && stm_cur.min==Minute_Start[0]) {if(FirstRun) FirstRun=false; else return;}
-     if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
+     if(TimeCurrent()>Expiry && !GoatExpiryManageOnly()) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();} // B49b (F1): live, manage-only (no start passes DashboardEntryAllowed)
      //if(!IsLicensed())    {Alert("Trial Expired"); return;}
      //if(!FastSpeed_Flag) OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,false);
      SetEdit(PanelDialog.m_edit_Info_2,"Active: Checking...",clrLime,Font_Size);
@@ -8716,7 +9073,7 @@ bool CPanelDialog::HandleChartEvent(const int id,const long &lparam,const double
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CPanelDialog::Create(const long chart,const string name,const int subwin,const int x1,const int y1,const int x2,const int y2)
   {
-   if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
+   if(TimeCurrent()>Expiry && !GoatExpiryManageOnly()) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();} // B49b (F1): live, manage-only
    Vertical_Pointer=INDENT_TOP;
    //GlobalVariableSet("CaptionHeight",0.05*D_Height);
    GoatDeploymentPhase("panel_base_begin",chart);

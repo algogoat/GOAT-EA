@@ -253,4 +253,29 @@ function windows(text,{days,boos,foos,fwdStart,fwdEnd,equity,finalEquity,tickAt=
  assert.ok(!/EXPORT format:/.test(mainB49a));
  ok();}
 
+// ---- 8. The rank:pf read-back (Claude-Mac 6469934085): with ExportRank=PF, an export whose stamp does not say
+//      rank:pf (a meta cut short) is refused before it is moved or stored, never kept mislabelled ----
+{const says=(()=>{const c={GOAT_EXPORT_FORMAT:define(main,'GOAT_EXPORT_FORMAT'),IntegerToString:String,StringFind:(s,t)=>s.indexOf(t),
+  StringSplit:(s,ch,out)=>{out.splice(0,out.length,...s.split(String.fromCharCode(ch)));return out.length;}};
+  vm.createContext(c);vm.runInContext(fn('GoatExportStampSays',['text','rank'],bodyOf(main,'bool GoatExportStampSays(const string text,const string rank)'))
+   .replace(/StringTrimLeft\((\w+)\)/g,'$1=$1.trimStart()').replace(/StringTrimRight\((\w+)\)/g,'$1=$1.trimEnd()').replace(/'\\n'/g,'10'),c);return c.GoatExportStampSays;})();
+ const head='; SAMPLE: x\r\n'+'; EXPORT blind:0 ranked:full_span sr:mt5_stat\r\n';
+ assert.equal(says(head+'; EXPORT format:2 rank:pf\r\nRisk=500\r\n','pf'),true,'stamped pf');
+ assert.equal(says(head+'; EXPORT format:2 rank:arf_sr\r\n','pf'),false,'stamped arf_sr (a meta cut short)');
+ assert.equal(says(head,'pf'),false,'no format line');
+ assert.equal(says(head+'; EXPORT format:1 rank:pf\r\n','pf'),false,'another format');
+ assert.equal(says(head+'; EXPORT format:2 rank:pf\r\n; EXPORT format:2 rank:pf\r\n','pf'),false,'two format lines');
+ assert.equal(says(head+'; EXPORT format:2 rank:pf extra\r\n','pf'),false,'trailing text');
+ // Where it sits: after the blind read, before the move and the store; set from the exporter's own setting.
+ const store=bodyOf(main,'int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)');
+ const check=store.indexOf('if(g_GoatExporterRank==GOAT_EXPORT_RANK_PF)');
+ assert.ok(check>store.indexOf('profit=rank_pl;')&&check<store.indexOf('if(profit>0)')&&check<store.indexOf('MoveExportsFromRoot('),'before the floor, the move and the store');
+ assert.ok(check>store.indexOf('if(Init &&'),'the top-set verification run is not checked (it is never stored)');
+ assert.match(store.slice(check),/^if\(g_GoatExporterRank==GOAT_EXPORT_RANK_PF\)\s*\{\s*string stamp_set="";\s*for\(int k=0;k<ArraySize\(exports\);k\+\+\) if\(StringFind\(exports\[k\],"\.set",0\)!=-1\) stamp_set=exports\[k\];\s*if\(stamp_set=="" \|\| !GoatExportStampSays\(GoatExportReadTextCommon\(stamp_set,0\),"pf"\)\)\s*\{LogOrPrint\([^;]*\); return -1;\}/,'no set or a wrong stamp: refused');
+ const exporter=bodyOf(main,'bool StartExporter(bool reportMode)');
+ const set=exporter.indexOf('g_GoatExporterRank=ExportRank;');
+ assert.ok(set>exporter.indexOf('if(ExportRank<0)')&&set<exporter.indexOf('RunAndStoreSet('),'set from the setting before any export run');
+ assert.match(main,/int    g_GoatExporterRank=GOAT_EXPORT_RANK_ARFxSR;/,'ARFxSR (no read-back) outside the exporter');
+ ok();}
+
 console.log(JSON.stringify({passed,test:'b49b_f8'}));

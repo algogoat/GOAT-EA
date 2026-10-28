@@ -252,7 +252,7 @@ try{
  const old=norm(execFileSync('git',['show',B43_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
  compared=true;
  // B49b (F8, test_b49b_f8.cjs): its ExportRank setting, rank=pf meta and bounded tester wait are taken out too.
- const f8=s=>s.replace(/\n[^\n]*ExportRank  = GoatExportRankSetting[^\n]*/,'').replace(/\n[^\n]*if\(ExportRank<0\)[^\n]*/,'')
+ const f8=s=>s.replace(/\n[^\n]*ExportRank  = GoatExportRankSetting[^\n]*/,'').replace(/\n[^\n]*if\(ExportRank<0\)[^\n]*/,'').replace(/\n[^\n]*g_GoatExporterRank=ExportRank;[^\n]*/,'')
   .replace(/\n[^\n]*ulong readyDeadline=[^\n]*/,'').replace(/\n[^\n]*if\(GetTickCount64\(\)>readyDeadline\)[^\n]*/,'')
   .replace('+(ExportRank==GOAT_EXPORT_RANK_PF ? ",rank=pf" : "")','').replace(' // B49b (F8): rank=pf stamps the export','')
   .replace(/,ExportRank\); \/\/ B49b \(F8 OPT-01\)/g,');');

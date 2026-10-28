@@ -54,9 +54,15 @@ const MUTANTS=[
  ['main','a timed-out wait goes on exporting','s after the top-set check. No exports were run.",Key,EA_Name,Server); return false;} // B49b (F8 R21)','s after the top-set check. No exports were run.",Key,EA_Name,Server);} // B49b (F8 R21)'],
  // The stamp.
  ['main','the stamp says format 1','#define GOAT_EXPORT_FORMAT        2','#define GOAT_EXPORT_FORMAT        1'],
- ['main','the stamp holds =','"; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"','"; EXPORT format="+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"'],
+ ['main','the stamp holds =','   return "; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"','   return "; EXPORT format="+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"'],
  ['main','the stamp hides the rank','(g_GoatExportRank==GOAT_EXPORT_RANK_PF ? "pf" : "arf_sr")','"arf_sr"'],
  ['main','a blind export carries no stamp','WriteSet(GoatBlindDesc(desc)+"\\n"+GoatExportFormatLine());','WriteSet(GoatBlindDesc(desc));'],
+ // The rank:pf read-back (Claude-Mac 6469934085).
+ ['main','a PF export is never read back','   if(g_GoatExporterRank==GOAT_EXPORT_RANK_PF)\n   {\n    string stamp_set="";','   if(false)\n   {\n    string stamp_set="";'],
+ ['main','a mislabelled PF export is kept','"pf"))\n    {LogOrPrint(reportMode,"❌ Export is not stamped rank:pf while ExportRank=PF: "+FileNameOnly(exports[0])+". Skipping...",Key,EA_Name,Server); return -1;}','"pf"))\n    {LogOrPrint(reportMode,"❌ Export is not stamped rank:pf while ExportRank=PF: "+FileNameOnly(exports[0])+". Skipping...",Key,EA_Name,Server);}'],
+ ['main','the exporter never sets its rank','    g_GoatExporterRank=ExportRank; // B49b (F8): RunAndStoreSet reads each PF export\'s stamp back\n',''],
+ ['main','a repeated format line passes','   return (found==1 && match);','   return (match);'],
+ ['main','any format line passes','      match=(line=="; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"+rank);','      match=true;'],
  ['main','a full-span export carries no stamp','ranked:full_span sr:mt5_stat\\n"+GoatExportFormatLine());','ranked:full_span sr:mt5_stat");'],
 ];
 function runOn(which,text){

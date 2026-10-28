@@ -3726,11 +3726,27 @@ void DashboardBusProcessCommands(void)
 #define GOAT_EXPORT_FORMAT        2
 #define GOAT_TESTER_READY_WAIT_MS 600000
 int    g_GoatExportRank=GOAT_EXPORT_RANK_ARFxSR;   // set from EA_Desc's rank=pf on an export run
+int    g_GoatExporterRank=GOAT_EXPORT_RANK_ARFxSR; // the exporter's ExportRank (StartExporter), for the stamp read-back
 bool   g_GoatFwdClosed=false;                      // R16: the FWD window's end equity is its next day's open
 long   g_GoatCsvLastMinute=-1;                     // R17: the minute of the equity CSV's last row
 string GoatExportFormatLine(void)
   {
    return "; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"+(g_GoatExportRank==GOAT_EXPORT_RANK_PF ? "pf" : "arf_sr");
+  }
+// The exporter's read-back: the export's text holds exactly one format line, and it is this build's format with rank.
+bool GoatExportStampSays(const string text,const string rank)
+  {
+   string stamp_lines[];
+   int count=StringSplit(text,'\n',stamp_lines),found=0;
+   bool match=false;
+   for(int i=0;i<count;i++)
+     {
+      string line=stamp_lines[i]; StringTrimLeft(line); StringTrimRight(line);
+      if(StringFind(line,"; EXPORT format")!=0) continue;
+      found++;
+      match=(line=="; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"+rank);
+     }
+   return (found==1 && match);
   }
 // R16: a FWD day by calendar day, dt_FWD_start's to dt_FWD_end's inclusive (both are dates). B49a compared the time
 // with dt_FWD_end's midnight, so the printed end date's own day fell outside FWD.
@@ -5768,6 +5784,7 @@ bool StartExporter(bool reportMode)
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;//Print(InclBackOOS);
     int    ExportRank  = GoatExportRankSetting(FetchExportSetting("ExportRank",Key,EA_Name,Server)); // B49b (F8): the trim's ranking key
     if(ExportRank<0) {LogOrPrint(reportMode,"❌ ExportRank in the export settings must be ARFxSR or PF. No exports were run.",Key,EA_Name,Server); return false;} // B49b (F8)
+    g_GoatExporterRank=ExportRank; // B49b (F8): RunAndStoreSet reads each PF export's stamp back
     const int EXPORT_START_ATTEMPTS = 3;
     const int EXPORT_ERROR_ABORTS   = 2;
 #ifdef GOAT_EVIDENCE_END_V149
@@ -6012,6 +6029,17 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
     {LogOrPrint(reportMode,"❌ Blind export has no fit+FWD ranking line: "+FileNameOnly(exports[0])+". Skipping...",Key,EA_Name,Server); return -1;}
     profit=rank_pl;
    }
+   // B49b:begin f8-rank-readback
+   // F8 (Claude-Mac 6469934085): with ExportRank=PF the run is told rank=pf through EA_Desc's meta. If that meta were
+   // ever cut short, the export would say rank:arf_sr while the trim ranks it on PF, so it is refused, never mislabelled.
+   if(g_GoatExporterRank==GOAT_EXPORT_RANK_PF)
+   {
+    string stamp_set="";
+    for(int k=0;k<ArraySize(exports);k++) if(StringFind(exports[k],".set",0)!=-1) stamp_set=exports[k];
+    if(stamp_set=="" || !GoatExportStampSays(GoatExportReadTextCommon(stamp_set,0),"pf"))
+    {LogOrPrint(reportMode,"❌ Export is not stamped rank:pf while ExportRank=PF: "+FileNameOnly(exports[0])+". Skipping...",Key,EA_Name,Server); return -1;}
+   }
+   // B49b:end f8-rank-readback
    if(profit>0)
    {
     // move first, because MoveExports rewrites paths

@@ -52,7 +52,7 @@ const REMOVED={
   'if(!m_risk_policy_armed || m_risk_policy_breached) return;','if(m_portfolio_command_pending) return;',   // PR-3b (F3 RISK-01): a breach is followed until flat
  ],
 };
-const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3), PR-6 (F6)
+const NEW_INPUTS=['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC','Fix_Clock'];   // PR-1 (F7), PR-5 (F5), PR-3 (F3), PR-6 (F6), PR-4 (F4/R2)
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

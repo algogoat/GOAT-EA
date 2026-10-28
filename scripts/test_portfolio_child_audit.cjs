@@ -81,7 +81,11 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Max_Spread_Points=0\nMin_Margin_Level_PC=0.0\n'+tail,expert),true,'Off SET, B49b child with both caps off');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Max_Spread_Points=30\n'+tail,expert),false,'Off SET, child with a spread cap');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Min_Margin_Level_PC=150\n'+tail,expert),false,'Off SET, child with a margin floor');passed++;
- assert.equal(api.GoatChildAuditMaps(original+'Min_Margin_Level_PC=150\n',0,50,2,fix+'Min_Margin_Level_PC=150.0\n'+tail,expert),true,'Set SET and child, as numbers');passed++;}
+ assert.equal(api.GoatChildAuditMaps(original+'Min_Margin_Level_PC=150\n',0,50,2,fix+'Min_Margin_Level_PC=150.0\n'+tail,expert),true,'Set SET and child, as numbers');passed++;
+ // B49b (F4/R2): Fix_Clock under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=0\n'+tail,expert),true,'Off SET, B49b child with Fix_Clock off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=1\n'+tail,expert),false,'Off SET, child with Fix_Clock on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_Clock=1\n',0,50,2,fix+'Fix_Clock=1\n'+tail,expert),true,'On SET and child');passed++;}
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.

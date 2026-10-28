@@ -5995,6 +5995,38 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    return -1;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin F4
+// F4, exits without a tick (goatai#2587 6433828681; Claude-Mac 6433854745 ruling 2: live-only, no input, a demo drill).
+// B49a closes for the session end, Friday, the money and equity stops and the bias exits only inside OnTick's
+// per-second block, so a symbol that stops ticking (a quiet Friday close, a feed gap) keeps its positions. On a live
+// trading chart, once no tick has arrived for GOAT_NO_TICK_MS, the timer runs that block on the trade server's clock,
+// and nothing else of OnTick: no trailing, no signals, no entries (GoatTickBody returns right after it). It runs at most
+// once per GOAT_NO_TICK_MS, so a refused close (market closed) is retried and logged every 5 s, not every second, and
+// each close attempt it makes is logged. Never in the tester, a read-only monitor or the batch/dashboard modes, so
+// tester parity holds by construction.
+#define GOAT_NO_TICK_MS 5000
+ulong g_GoatLastTickMs=0,g_GoatLastNoTickRunMs=0;
+bool GoatNoTickDue(const bool tester,const bool monitor,const ulong now_ms)
+  {
+   if(tester || monitor || g_GoatLastTickMs==0) return false;
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return false;
+   return now_ms-g_GoatLastTickMs>=GOAT_NO_TICK_MS && now_ms-g_GoatLastNoTickRunMs>=GOAT_NO_TICK_MS;
+  }
+void GoatNoTickTimer(void)
+  {
+   ulong now_ms=GetTickCount64();
+   if(!GoatNoTickDue(MQLInfoInteger(MQL_TESTER)!=0,g_GoatStudioReadOnlyMonitor,now_ms)) return;
+   g_GoatLastNoTickRunMs=now_ms;
+   g_GoatNoTickRun=true;
+   GoatTickBody();
+   g_GoatNoTickRun=false;
+  }
+void GoatNoTickCloseLog(const ulong ticket,const int op)
+  {
+   Print(StringFormat("GOAT no-tick close: ticket=%I64u op=%d magic=%d server_time=%s last_tick_age_ms=%I64u build_id=%s",
+      ticket,op,MAGIC1,TimeToString(TimeTradeServer(),TIME_DATE|TIME_SECONDS),GetTickCount64()-g_GoatLastTickMs,GOAT_BUILD_ID));
+  }
+// B49b:end F4
 void OnTimer(void)
   {
    GoatTimerBody();
@@ -6012,6 +6044,7 @@ void GoatTimerBody(void)
    }
    GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
    Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush(); // B49a (F1-lite): the restart record's realized P/L (at most every GOAT_SQ_FLUSH_MS)
+   GoatNoTickTimer(); // B49b (F4): exits without a tick (live trading charts only)
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)
@@ -6352,11 +6385,13 @@ void GoatTickBody()
   {
    if(GOATDeviceActivationOnly()) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return; //return; // returning for testing
+   if(!g_GoatNoTickRun) g_GoatLastTickMs=GetTickCount64(); // B49b (F4): when the last real tick arrived
    //if(!IsLicensed())    {Alert("Trial Expired"); return;}
    //if(!FastSpeed_Flag) OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,false);
    bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    tm_cur = TimeCurrent(); TimeCurrent(stm_cur);
+   if(g_GoatNoTickRun) {tm_cur=TimeTradeServer(); TimeToStruct(tm_cur,stm_cur);} // B49b (F4): no tick, so the session clock is the trade server's
    GoatRankTick(); // B44 item 5: blind export runs only (returns at once otherwise); measures, never trades
 //-------------------------------------------------------------------------
    if(IsNewDay())
@@ -6969,6 +7004,7 @@ void GoatTickBody()
     }
   //PartialClose();
    }
+   if(g_GoatNoTickRun) return; // B49b (F4): the no-tick timer runs only the per-second block above: never trails, signals or enters
 //-------------------------------------------------------------------------
    if(CheckTrailingLockTPNow())// && Active)
    {
@@ -7609,6 +7645,7 @@ void CloseAllPositions(int OP,int magic=0)
    //if(PositionGetInteger(POSITION_MAGIC) != magic && magic != 0)            continue;
      if(m_position.Magic() != magic && magic != 0)                            continue;
      if(m_position.PositionType() != OP && OP != OP_BUYSELL)                  continue;
+     if(g_GoatNoTickRun) GoatNoTickCloseLog(m_position.Ticket(),OP); // B49b (F4): every close attempt the no-tick timer makes is logged
 
      if(!m_trade.PositionClose(m_position.Ticket())) // close a position by the specified symbol
       {closeErrors++; GoatCloseFailureLog(m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 D4): a failed live close is logged (throttled), never silent

@@ -48,6 +48,7 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    if(identity=="[TesterInputs]|Fix_ClosePath") return value=="0"; // B49b (F3): an omitted fix flag runs Off
    if(identity=="[TesterInputs]|Max_Spread_Points") return value=="0"; // B49b (F6): an omitted pre-trade cap runs off
    if(identity=="[TesterInputs]|Min_Margin_Level_PC") return value!="" && StringToDouble(value)==0.0; // B49b (F6): off, however MT5 prints 0
+   if(identity=="[TesterInputs]|Fix_Clock") return value=="0"; // B49b (F4/R2): an omitted fix flag runs Off
    return false;
   }
 

@@ -3941,6 +3941,7 @@ bool g_GoatStudioWorkerDiagnosticPending=false;
 ulong g_GoatStudioWorkerDiagnosticDeadline=0;
 int OnInit()
   {
+   GoatNoTickForget(); // B49b (F4): a re-init (symbol, timeframe, inputs) keeps the EA's globals, never its last tick
    g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
    g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;
    if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&
@@ -4676,6 +4677,7 @@ int OnInit()
    //if(Mode_Operation!=Operation_Batch) return INIT_PARAMETERS_INCORRECT;
    GoatTraceInit(); // Evidence failure never changes trading decisions.
    OnTick(); Sleep(50);
+   GoatNoTickForget(); // B49b (F4): OnInit's own OnTick() call is not a tick
    ChartRedraw(); Sleep(50);
    return (INIT_SUCCEEDED);
   }
@@ -5995,6 +5997,108 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    return -1;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B49b:begin F4
+// F4, exits without a tick (goatai#2587 6433828681; Claude-Mac 6433854745 ruling 2: live-only, no input, a demo drill;
+// round 2, Claude-Mac 6463573729).
+// B49a runs the session end, the Friday close and the money and equity stops only inside OnTick's per-second block, so
+// a symbol that stops ticking inside an open session (a quiet Friday close, a feed gap) keeps its positions. On a live
+// trading chart, once no real tick has arrived for GOAT_NO_TICK_MS, the timer runs that block, and nothing else of
+// OnTick: no trailing, no signals, no entries (GoatTickBody returns right after it). The bias exits are not covered: the
+// bias wire is read only in the minute block, which the timer skips, and a timer run never handles a bias stop-out edge,
+// so it never arms a bias rescue or moves SL/TP on a stale quote (the next real tick handles the edge). It runs only when:
+// - a real OnTick event has arrived on this chart since OnInit (OnInit's own OnTick() call is not one) and the terminal
+//   is connected (GoatNoTickDue);
+// - its clock, the last real tick's TimeCurrent() plus the GetTickCount64() time elapsed since (monotonic and anchored to
+//   the broker's quotes, never the PC's clock), is still on that tick's server day: the day's start (IsNewDay, which the
+//   timer answers false) is never skipped, so the daily stops never read yesterday's start across midnight;
+// - the symbol's trade session is open at that clock (SymbolInfoSessionTrade): never over a weekend or a closed session,
+//   so the account equity moving off-session (crypto on the same account) never latches a stop at the Sunday gap;
+// - no market-closed refusal is backing it off (GOAT_NO_TICK_BACKOFF_MIN_MS, doubling to _MAX_MS; a real tick clears it).
+// At most once per GOAT_NO_TICK_MS; each ticket it tries to close is logged at most once a minute. Never in the tester, a
+// read-only monitor or the batch/dashboard modes, so tester parity holds by construction.
+#define GOAT_NO_TICK_MS 5000
+#define GOAT_NO_TICK_BACKOFF_MIN_MS 60000
+#define GOAT_NO_TICK_BACKOFF_MAX_MS 900000
+ulong    g_GoatLastTickMs=0,g_GoatLastNoTickRunMs=0,g_GoatNoTickBackoffUntilMs=0,g_GoatNoTickBackoffMs=0;
+datetime g_GoatLastTickTime=0;
+ulong    g_GoatNoTickLogTicket[16],g_GoatNoTickLogMs[16];
+void GoatNoTickStamp(void) // OnTick: a real tick event
+  {
+   g_GoatLastTickMs=GetTickCount64(); g_GoatLastTickTime=TimeCurrent();
+   g_GoatNoTickBackoffUntilMs=0; g_GoatNoTickBackoffMs=0;
+  }
+void GoatNoTickForget(void) // OnInit: a (re-)init has seen no tick yet, whatever an earlier symbol or timeframe saw
+  {
+   g_GoatLastTickMs=0; g_GoatLastTickTime=0;
+   g_GoatNoTickBackoffUntilMs=0; g_GoatNoTickBackoffMs=0;
+  }
+datetime GoatNoTickClock(const ulong now_ms)
+  {
+   return g_GoatLastTickTime+(datetime)((now_ms-g_GoatLastTickMs)/1000);
+  }
+bool GoatNoTickDue(const bool tester,const bool monitor,const bool connected,const ulong now_ms)
+  {
+   if(tester || monitor || !connected || g_GoatLastTickMs==0) return false; // the stamp sets and clears both
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return false;
+   if(now_ms<g_GoatNoTickBackoffUntilMs) return false;
+   return now_ms-g_GoatLastTickMs>=GOAT_NO_TICK_MS && now_ms-g_GoatLastNoTickRunMs>=GOAT_NO_TICK_MS;
+  }
+bool GoatNoTickSameDay(const datetime clock)
+  {
+   return (long)clock/86400==(long)g_GoatLastTickTime/86400;
+  }
+bool GoatNoTickSessionOpen(const string symbol,const datetime clock)
+  {
+   if(SymbolInfoInteger(symbol,SYMBOL_TRADE_MODE)==SYMBOL_TRADE_MODE_DISABLED) return false;
+   MqlDateTime s; TimeToStruct(clock,s);
+   long sec=s.hour*3600+s.min*60+s.sec;
+   datetime from,to;
+   for(uint i=0;SymbolInfoSessionTrade(symbol,(ENUM_DAY_OF_WEEK)s.day_of_week,i,from,to);i++)
+     {
+      long f=(long)from,t=(long)to;
+      if(f<t ? (sec>=f && sec<t) : (sec>=f || sec<t)) return true; // a session past midnight ends before it starts
+     }
+   return false;
+  }
+void GoatNoTickTimer(void)
+  {
+   ulong now_ms=GetTickCount64();
+   if(!GoatNoTickDue(MQLInfoInteger(MQL_TESTER)!=0,g_GoatStudioReadOnlyMonitor,TerminalInfoInteger(TERMINAL_CONNECTED)!=0,now_ms)) return;
+   datetime clock=GoatNoTickClock(now_ms);
+   if(!GoatNoTickSameDay(clock) || !GoatNoTickSessionOpen(_Symbol,clock)) return;
+   g_GoatLastNoTickRunMs=now_ms;
+   g_GoatNoTickRun=true;
+   GoatTickBody();
+   g_GoatNoTickRun=false;
+  }
+// A close the market refuses backs the timer off; one refusal per back-off window counts, however many tickets it tried.
+void GoatNoTickRefused(const uint retcode)
+  {
+   if(retcode!=TRADE_RETCODE_MARKET_CLOSED && retcode!=TRADE_RETCODE_TRADE_DISABLED) return;
+   ulong now_ms=GetTickCount64();
+   if(now_ms<g_GoatNoTickBackoffUntilMs) return;
+   ulong next=g_GoatNoTickBackoffMs*2;
+   if(next<GOAT_NO_TICK_BACKOFF_MIN_MS) next=GOAT_NO_TICK_BACKOFF_MIN_MS;
+   if(next>GOAT_NO_TICK_BACKOFF_MAX_MS) next=GOAT_NO_TICK_BACKOFF_MAX_MS;
+   g_GoatNoTickBackoffMs=next; g_GoatNoTickBackoffUntilMs=now_ms+next;
+  }
+// Once a minute per ticket; a 17th ticket inside its minute shares the slots' silence.
+void GoatNoTickCloseLog(const ulong ticket,const int op)
+  {
+   ulong now_ms=GetTickCount64();
+   int slot=-1,spare=-1;
+   for(int i=0;i<16 && slot<0;i++)
+     {
+      if(g_GoatNoTickLogTicket[i]==ticket) slot=i;
+      else if(spare<0 && (g_GoatNoTickLogTicket[i]==0 || now_ms-g_GoatNoTickLogMs[i]>=60000)) spare=i;
+     }
+   if(slot<0) {if(spare<0) return; slot=spare; g_GoatNoTickLogTicket[slot]=ticket; g_GoatNoTickLogMs[slot]=0;}
+   if(g_GoatNoTickLogMs[slot]!=0 && now_ms-g_GoatNoTickLogMs[slot]<60000) return;
+   g_GoatNoTickLogMs[slot]=now_ms;
+   Print(StringFormat("GOAT no-tick close: ticket=%I64u op=%d magic=%d clock=%s last_tick_age_ms=%I64u build_id=%s",
+      ticket,op,MAGIC1,TimeToString(GoatNoTickClock(g_GoatLastNoTickRunMs),TIME_DATE|TIME_SECONDS),now_ms-g_GoatLastTickMs,GOAT_BUILD_ID));
+  }
+// B49b:end F4
 void OnTimer(void)
   {
    GoatTimerBody();
@@ -6012,6 +6116,7 @@ void GoatTimerBody(void)
    }
    GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
    Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush(); // B49a (F1-lite): the restart record's realized P/L (at most every GOAT_SQ_FLUSH_MS)
+   GoatNoTickTimer(); // B49b (F4): exits without a tick (live trading charts only)
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)
@@ -6344,6 +6449,7 @@ void HandleBiasExitSell(const int sells)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
   {
+   GoatNoTickStamp(); // B49b (F4): a real tick event (OnInit's own OnTick() call is forgotten right after it)
    GoatTickBody();
    GoatTraceBoundary();
   }
@@ -6357,6 +6463,7 @@ void GoatTickBody()
    bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    tm_cur = TimeCurrent(); TimeCurrent(stm_cur);
+   if(g_GoatNoTickRun) {tm_cur=GoatNoTickClock(g_GoatLastNoTickRunMs); TimeToStruct(tm_cur,stm_cur);} // B49b (F4): no tick, so the clock is the last tick's plus the time since
    GoatRankTick(); // B44 item 5: blind export runs only (returns at once otherwise); measures, never trades
 //-------------------------------------------------------------------------
    if(IsNewDay())
@@ -6402,7 +6509,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    /* tick-by-tick: remember the lowest equity seen since the last bar-open */
    static double MinuteLowEquity = DBL_MAX;
-   MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));
+   if(!g_GoatNoTickRun) MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY)); // B49b (F4): real ticks only
 //-------------------------------------------------------------------------
    if(IsNewMinute())
    {
@@ -6915,6 +7022,7 @@ void GoatTickBody()
      if(Trades==0 && LastStopoutTime!=0 && (TimeCurrent()>(LastStopoutTime+Mode_Restart*60*60)) ) StopOut_Flag = false;
     }
 //-------
+    if(!g_GoatNoTickRun) { // B49b (F4): a timer run never handles a bias edge (no rescue, no SL/TP on a stale quote); the next real tick does
     // Direction-specific Bias StopOut handling - Buy
     static bool Last_StopOut_Flag_B = false;
     if(StopOut_Flag_B && !Last_StopOut_Flag_B)
@@ -6930,6 +7038,7 @@ void GoatTickBody()
      HandleBiasExitSell(Sells);
     }
     Last_StopOut_Flag_S = StopOut_Flag_S;
+    } // B49b (F4)
 //-------
     if(AccountInfoDouble(ACCOUNT_EQUITY) > MaxEquity)
     {
@@ -6969,6 +7078,7 @@ void GoatTickBody()
     }
   //PartialClose();
    }
+   if(g_GoatNoTickRun) return; // B49b (F4): the no-tick timer runs only the per-second block above: never trails, signals or enters
 //-------------------------------------------------------------------------
    if(CheckTrailingLockTPNow())// && Active)
    {
@@ -7609,9 +7719,11 @@ void CloseAllPositions(int OP,int magic=0)
    //if(PositionGetInteger(POSITION_MAGIC) != magic && magic != 0)            continue;
      if(m_position.Magic() != magic && magic != 0)                            continue;
      if(m_position.PositionType() != OP && OP != OP_BUYSELL)                  continue;
+     if(g_GoatNoTickRun) GoatNoTickCloseLog(m_position.Ticket(),OP); // B49b (F4): the no-tick timer's close attempts are logged, once a minute per ticket
 
      if(!m_trade.PositionClose(m_position.Ticket())) // close a position by the specified symbol
       {closeErrors++; GoatCloseFailureLog(m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 D4): a failed live close is logged (throttled), never silent
+     if(g_GoatNoTickRun) GoatNoTickRefused(m_trade.ResultRetcode()); // B49b (F4): a market-closed refusal backs the no-tick timer off
      closed++;
     }
    }

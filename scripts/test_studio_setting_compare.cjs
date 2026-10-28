@@ -75,6 +75,9 @@ compare(w,a+'\nMax_Spread_Points=30\n',false,'Max_Spread_Points');
 compare(w,a+'\nMin_Margin_Level_PC=0\n',true);
 compare(w,a+'\nMin_Margin_Level_PC=0.00\n',true);
 compare(w,a+'\nMin_Margin_Level_PC=150.0\n',false,'Min_Margin_Level_PC');
+// B49b (F4/R2): Fix_Clock, the fix-flag rule.
+compare(w,a+'\nFix_Clock=0\n',true);
+compare(w,a+'\nFix_Clock=1\n',false,'Fix_Clock');
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

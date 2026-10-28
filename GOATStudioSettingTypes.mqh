@@ -16,6 +16,7 @@ string GoatStudioSettingType(const string key)
    if(key=="Fix_ClosePath") return "int"; // B49b (F3): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
    if(key=="Max_Spread_Points") return "int"; // B49b (F6): an appended int sinput (never an optimization axis)
    if(key=="Min_Margin_Level_PC") return "double"; // B49b (F6): an appended double sinput (never an optimization axis)
+   if(key=="Fix_Clock") return "int"; // B49b (F4/R2): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
    return "";
   }
 string GoatStudioOptimizationNames()

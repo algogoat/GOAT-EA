@@ -588,6 +588,7 @@ if(Gate_Recheck!=Gate_Legacy) FileWrite(FileSET_handle,"Gate_Recheck="+(string)(
 if(Fix_ClosePath!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_ClosePath="+(string)(int)Fix_ClosePath); // B49b (F3): recorded only when on
 if(Max_Spread_Points!=0) FileWrite(FileSET_handle,"Max_Spread_Points="+(string)Max_Spread_Points); // B49b (F6): recorded only when set
 if(Min_Margin_Level_PC!=0.0) FileWrite(FileSET_handle,"Min_Margin_Level_PC="+(string)Min_Margin_Level_PC); // B49b (F6): recorded only when set
+if(Fix_Clock!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_Clock="+(string)(int)Fix_Clock); // B49b (F4/R2): recorded only when on
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -819,6 +820,14 @@ sinput   ENUM_GOAT_FIX           Fix_ClosePath                 =                
 // under-state the margin (OrderCalcMargin prices the order alone), so the floor is a guard, not a guarantee.
 sinput   int                     Max_Spread_Points             =                             0;       // Pre-trade: maximum spread in points (0 = off)
 sinput   double                  Min_Margin_Level_PC           =                             0;       // Pre-trade: minimum margin level % after the order (0 = off)
+// F4 (R2): B49a's IsNewSecond/IsNewMinute/IsNewDay compare one clock field (the second, the minute, the day of the
+// month), so a tick exactly 60 s, an hour or a month later reads as "not new" and skips that block: in the tester's
+// one-minute bars the per-second session/stop-out block misses ticks a whole minute apart. On compares the full
+// timestamp (tm_cur, tm_cur/60, tm_cur/86400). It covers only those three, OnTick's per-second, minute and day blocks:
+// the signal, sequence and trailing samplers (CheckNewSecond/2/3, CheckNewMinute/2/3, the sampling class's Check()) keep
+// B49a's one-field compare either way, so On never changes when signals, sequences or trailing are sampled. The no-tick
+// timer itself (F4) is live-only and has no input.
+sinput   ENUM_GOAT_FIX           Fix_Clock                     =                   GoatFix_Off;       // Fix: OnTick's second/minute/day blocks from the full time
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
@@ -929,6 +938,7 @@ MqlDateTime    stm_cur;
 double   bid,ask;
 long     Hour_Start[7],Hour_End[7],Minute_Start[7],Minute_End[7];
 datetime tm_cur,LastTradeTime,LastStopoutTime,DStartTime;
+bool     g_GoatNoTickRun=false;   // B49b (F4): true while the no-tick timer runs OnTick's per-second block (GoatNoTickTimer)
 uint     LastRetCode,Shift_Sig;
 long     LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket; // B49a: 64-bit; an int wraps negative above INT_MAX (scripts/test_ticket_width.cjs)
 int      LastTradeCountBuy=0,LastTradeCountSell=0; // B49a: split from the ticket line, unchanged
@@ -1579,6 +1589,8 @@ bool IsNewBar3(ENUM_TIMEFRAMES TF_Period)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool IsNewSecond()
   {
+   if(g_GoatNoTickRun) return true; // B49b (F4): the no-tick timer runs the per-second block, leaving the tick's clock state as it was
+   if(Fix_Clock==GoatFix_On) {static long lastSecondTime=-1; long curSecondTime=(long)tm_cur; if(curSecondTime==lastSecondTime) return false; lastSecondTime=curSecondTime; return true;} // B49b (F4/R2): the full timestamp
    static int lastSecond;
    int curSecond = stm_cur.sec;
    if(lastSecond != curSecond)
@@ -1591,6 +1603,8 @@ bool IsNewSecond()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool IsNewMinute()
   {
+   if(g_GoatNoTickRun) return false; // B49b (F4): the no-tick timer runs only the per-second block
+   if(Fix_Clock==GoatFix_On) {static long lastMinuteTime=-1; long curMinuteTime=(long)tm_cur/60; if(curMinuteTime==lastMinuteTime) return false; lastMinuteTime=curMinuteTime; return true;} // B49b (F4/R2): the full timestamp
    static int lastMinute;
    int curMinute = stm_cur.min;
    if(lastMinute != curMinute)
@@ -1615,6 +1629,8 @@ bool IsNewMinute2()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool IsNewDay()
   {
+   if(g_GoatNoTickRun) return false; // B49b (F4): the no-tick timer runs only the per-second block
+   if(Fix_Clock==GoatFix_On) {static long lastDayTime=-1; long curDayTime=(long)tm_cur/86400; if(curDayTime==lastDayTime) return false; lastDayTime=curDayTime; return true;} // B49b (F4/R2): the full timestamp
    static int lastDay;
    int curDay = stm_cur.day;
    if(lastDay != curDay)

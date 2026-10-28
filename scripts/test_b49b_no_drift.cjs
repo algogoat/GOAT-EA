@@ -48,6 +48,15 @@ const REMOVED={
   'if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>=MaxSP)  ObjectSetText("05","Spread Filter Active, Sp="  +(string)SymbolInfoInteger(Symbol(),SYMBOL_SPREAD),Font_Size,"NULL",clrMagenta);',   // PR-6 (Mac #281 P3): the label shows the effective cap
   'DashboardPortfolioCommandIdApplied=command_id;','DashboardPortfolioCommandIdApplied=command_id;','close_errors++;','close_errors++;',   // PR-3b (both close commands, both bus helpers) (F3 DASH-04): applied only once flat; a failed bus close is logged
   'MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));',   // PR-4 (F4, Mac GOAT-EA#282 P3): the minute's low equity counts real ticks only
+  'if(!Adopted && !PersistFailed) {ManageOnlyLogged=false; return false;}',   // PR-2 (F1 full): manage-only and the state file's write freeze adds; the log names why
+  'Print("GOAT restart: add_frozen=",(Adopted ? "manage_only" : "record_unwritten")," side=",(dir==OP_BUY ? "BUY" : "SELL"),',
+  'if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}',   // PR-2: Add_Level, the signal block, the panel (live: manage-only)
+  'if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}',
+  'if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}',
+  'if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED; ExpertRemove();}',   // PR-2: OnInit's expiry
+  'if(LicenseKey==LICENSE_VALID)//||LicenseKey!=0)',   // PR-2: an outage or a refusal inits manage-only
+  'static bool Last_StopOut_Flag_B = false;','if(StopOut_Flag_B && !Last_StopOut_Flag_B)','Last_StopOut_Flag_B = StopOut_Flag_B;',   // PR-2: the bias stop-out edges become globals (the state file keeps them)
+  'static bool Last_StopOut_Flag_S = false;','if(StopOut_Flag_S && !Last_StopOut_Flag_S)','Last_StopOut_Flag_S = StopOut_Flag_S;',
  ],
  'Dashboard.mqh':[
   'if(!m_risk_policy_armed || m_risk_policy_breached) return;','if(m_portfolio_command_pending) return;',   // PR-3b (F3 RISK-01): a breach is followed until flat

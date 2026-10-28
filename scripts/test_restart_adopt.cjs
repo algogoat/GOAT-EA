@@ -131,6 +131,8 @@ function sequence(t,{dir=0,virtual=false}={}){
   Distances:[],LotsRaw:[],LotsNorm:[],LotsCum:[],StartLots:0,PeakLots:0,PeakCumLots:0,ScaleFactor:0,
   g_goat_start_distances_logged:[false,false],ArrayInitialize:(a,v)=>{a.fill(v);},MathFloor:Math.floor,MathAbs:Math.abs,DBL_MAX:Number.MAX_VALUE,
   Fix_ClosePath:0,GoatFix_Off:0,GoatFix_On:1,Trailing:false,   // B49b PR-3 (F3): UpdateLockTPSL's scoped never-loosen (section 16)
+  // B49b PR-2 (F1 full): ManageOnlyFrozen also reads manage-only and the state file's write state (test_b49b_f1.cjs runs them).
+  g_GoatManageOnly:0,GOAT_MANAGE_NONE:0,g_GoatStateFailed:false,GoatManageOnlyReason:()=>'none',GuardRealStarted:false,
  };
  vm.createContext(c);
  vm.runInContext(METHODS.map(([n,a,s])=>fn(n,a,bodyOf(main,s))).join(''),c);

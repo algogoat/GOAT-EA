@@ -91,7 +91,7 @@ class PortedRuleTests(RuleCase):
     def test_smart_rescue_with_fixed_lots_is_refused_with_the_ea_alert(self):
         message = self.refused('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', Mode_Bias_Exit='1', Mode_Lots='0', Risk='500.0')
         self.assertEqual(message, EA_INIT_CODE + ': the EA refuses this SET at initialization. Rule '
-                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4473) fails for '
+                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4730) fails for '
                          'Mode_Bias_Exit=1 (BiasExit_SmartRescue), Mode_Lots=0 (FixedLots). EA alert: '
                          '"Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0."')
         self.passes(Mode_Bias_Exit='1', Mode_Lots='2', Risk='500.0')
@@ -107,7 +107,7 @@ class PortedRuleTests(RuleCase):
         self.passes(Mode_Lots='0', Max_Seq_Trades='1')
 
     def test_rrr_derivations_feed_the_lp_tp_rule_as_in_the_ea(self):
-        # SL/LP mode derives LP = SL*RRR = 0.5, which line 4519 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
+        # SL/LP mode derives LP = SL*RRR = 0.5, which line 4776 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
         self.refused('LP_AND_TP_BOTH_DISABLED', Mode_RRR='2', RRR='0.05', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         self.passes(Mode_RRR='2', RRR='2.0', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         # SL/TP mode derives TP = SL*RRR when TP is zero.
@@ -167,7 +167,7 @@ class OptimizationRangeTests(RuleCase):
 
     def test_too_many_combinations_is_refused_with_a_clear_message(self):
         message = self.refused_unchecked(Grid_Size='10.0||1.0||1.0||' + str(MAX_COMBINATIONS + 1) + '.0||Y')
-        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:4516) cannot be checked: the optimization ranges of Grid_Size '
+        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:4773) cannot be checked: the optimization ranges of Grid_Size '
                       'give more than 10,000 combinations', message)
         message = self.refused_unchecked(Lock_Profit_Size='10.0||1.0||1.0||200.0||Y', TP_Pips='2.0||1.0||1.0||100.0||Y')
         self.assertIn('LP_AND_TP_BOTH_DISABLED', message)
@@ -210,7 +210,7 @@ class DataDownloadTests(RuleCase):
         for value, label in (('1', 'Download_News'), ('2', 'Download_Bias'), ('3', 'Download_NewsBias')):
             with self.subTest(label=label):
                 message = self.refused('DATA_DOWNLOAD_MODE_REMOVES_EA', Mode_Download=value)
-                self.assertIn('(GOAT V1.49.mq5:4071,4088) fails for Mode_Download=%s (%s)' % (value, label), message)
+                self.assertIn('(GOAT V1.49.mq5:4328,4345) fails for Mode_Download=%s (%s)' % (value, label), message)
                 self.assertIn('EA alert: "News History download is not allowed in this mode / Bias History download is '
                               'not allowed in this mode"', message)
                 self.assertIn('use Download_Disabled', message)
@@ -221,13 +221,13 @@ AI_ON = dict(Mode_Bias='2', Bias_Protocol='2')           # the header defaults: 
 
 
 class TesterInitRuleTests(RuleCase):
-    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:3973, refused in the tester only."""
+    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:4230, refused in the tester only."""
     def refused_in_tester(self, **changes):
         with self.assertRaises(ValueError) as caught:
             check_tester_init(self.values(**changes), self.schema)
         message = str(caught.exception)
         self.assertTrue(message.startswith(TESTER_INIT_CODE + ': '), message)
-        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:3973)', message)
+        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:4230)', message)
         self.assertIn('EA alert: "Live Control Tower bias is unavailable in tester, optimization, and forward contexts. '
                       'Select BiasProtocol_LegacyRecorded or disable AI bias."', message)
         return message
@@ -404,13 +404,14 @@ class InventoryTests(unittest.TestCase):
                          'OnInit refusal/removal lines and the EA_INIT_RULES/TESTER_INIT_RULES/NOT_PORTED tables differ')
         # B49b (F7 SIG-01) adds six indicator-handle INIT_FAILED returns (NOT_PORTED: indicator runtime).
         # B49b (F6) adds the RiskperSeq single-trade INIT_PARAMETERS_INCORRECT (NOT_PORTED: check_risk_sizing decides it).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (58, 8, 62))
+        # B49b (F1 full) adds the live manage-only INIT_FAILED after adoption (NOT_PORTED: licence and expiry, live only).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (59, 8, 63))
         self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 27)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (22, 1, 39))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (22, 1, 40))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
-        self.assertEqual(sorted(self.removals - set(self.returns)), [3961, 4071, 4088, 4363])
+        self.assertEqual(sorted(self.removals - set(self.returns)), [4218, 4328, 4345, 4620])
 
     def test_each_listed_line_still_carries_its_condition_text(self):
         for kind, name, lines, anchor in self.entries():

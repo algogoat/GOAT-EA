@@ -53,7 +53,6 @@ function trimmer(b49a){
  vm.createContext(c);
  const src=b49a?fn('SortAndTrimExports',['keepTop','minARF','minSR','expArr'],bodyOf(testerB49a,SIG_B49A))
   :fn('GoatExportRankSetting',['value'],bodyOf(tester,'int GoatExportRankSetting(const string value)'))
-   +fn('GoatExportRankScore',['r','rank'],bodyOf(tester,'double GoatExportRankScore(const ExportRecord &r,const int rank)'))
    +fn('GoatExportPasses',['r','minARF','minSR'],bodyOf(tester,'bool   GoatExportPasses(const ExportRecord &r,const double minARF,const double minSR)'))
    +fn('GoatExportBefore',['a','b','minARF','minSR','rank'],bodyOf(tester,'bool   GoatExportBefore(const ExportRecord &a,const ExportRecord &b,const double minARF,const double minSR,const int rank)'))
    +fn('SortAndTrimExports',['keepTop','minARF','minSR','expArr','rank=GOAT_EXPORT_RANK_ARFxSR'],bodyOf(tester,SIG));

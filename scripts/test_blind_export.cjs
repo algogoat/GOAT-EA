@@ -195,7 +195,7 @@ const midnight=t=>t-t%DAY;
  assert.match(store,/expArr\[n\]\.arf      = \(BlindExport \? rank_arf : FetchMetric\(exports\[0\],"ARF"\)\);/);
  const tester=norm(fs.readFileSync(path.join(ROOT,'Tester.mqh'),'utf8'));
  // B49b (F8 OPT-01): passing rows first, then ExportRank's key; ARFxSR (the default) is the stored ARF x SR.
- assert.match(unit(tester,'double GoatExportRankScore(const ExportRecord &r,const int rank)'),/rank==GOAT_EXPORT_RANK_PF \? r\.pf : r\.arf\*r\.sr/,'the trim ranks on the stored (fit+FWD when blind) ARF x SR');
+ assert.match(unit(tester,'bool   GoatExportBefore(const ExportRecord &a,const ExportRecord &b,const double minARF,const double minSR,const int rank)'),/rank==GOAT_EXPORT_RANK_PF \? a\.pf>b\.pf : a\.arf\*a\.sr>b\.arf\*b\.sr/,'the trim ranks on the stored (fit+FWD when blind) ARF x SR');
  ok();}
 // FetchMetric (Tester.mqh), converted: the exporter reads a file name's metrics with it.
 const tester=norm(fs.readFileSync(path.join(ROOT,'Tester.mqh'),'utf8'));

@@ -698,14 +698,13 @@ int GoatExportRankSetting(const string value)
    if(value=="PF") return GOAT_EXPORT_RANK_PF;
    return -1;
   }
-double GoatExportRankScore(const ExportRecord &r,const int rank) {return (rank==GOAT_EXPORT_RANK_PF ? r.pf : r.arf*r.sr);}
 bool   GoatExportPasses(const ExportRecord &r,const double minARF,const double minSR) {return (r.arf>=minARF && r.sr>=minSR);}
 // a ranks before b: a passing row before a failing one, then the higher score.
 bool   GoatExportBefore(const ExportRecord &a,const ExportRecord &b,const double minARF,const double minSR,const int rank)
   {
    bool pass_a=GoatExportPasses(a,minARF,minSR),pass_b=GoatExportPasses(b,minARF,minSR);
    if(pass_a!=pass_b) return pass_a;
-   return (GoatExportRankScore(a,rank)>GoatExportRankScore(b,rank));
+   return (rank==GOAT_EXPORT_RANK_PF ? a.pf>b.pf : a.arf*a.sr>b.arf*b.sr);
   }
 //-------------------------------------------------------------------------
 //  keepTop   – desired maximum records to keep

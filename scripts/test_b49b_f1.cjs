@@ -29,9 +29,10 @@ function bodyOf(text,signature){
  let i=blank.indexOf('{',a),depth=1,j=i+1;for(;depth&&j<blank.length;j++){if(blank[j]==='{')depth++;if(blank[j]==='}')depth--;}
  return text.slice(i+1,j-1);
 }
-const TYPE='(?:const\\s+)?(?:string|int|uint|long|ulong|bool|double|datetime)';
+const TYPE='(?:const\\s+)?(?:string|int|uint|long|ulong|bool|double|datetime|uchar)';
 const js=text=>text.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'')
  .replace(/^\s*static\s+bool\s+removing=false;\s*$/m,'')                    // GoatManageOnlyTimer's static lives in the context
+ .replace(/^\s*static\s+long\s+serial=0;\s*$/m,'')                          // so do the writers' .pending serials
  .replace(/\(long\)(\w+)\/86400/g,'Math.floor($1/86400)')                    // MQL long division
  .replace(/StringReplace\((\w+(?:\[\w+\])?),("(?:\\.|[^"])*"),("(?:\\.|[^"])*")\);/g,'$1=$1.split($2).join($3);') // by reference
  .replace(/GoatSetupRead\(([^,]+\)),(\w+)\)/g,'GoatSetupReadRef($1,v=>$2=v)')
@@ -58,13 +59,29 @@ const SIG={
  flush:'void GoatStateFlush(const bool force=false)',read:'bool GoatStateRead(string &keys[],string &values[])',restore:'void GoatStateRestore()',
  day:'void GoatStateDayRestore()',why:'string GoatManageOnlyWhy()',announce:'void GoatManageOnlyAnnounce()',
  after:'int GoatManageOnlyAfterAdopt()',timer:'void GoatManageOnlyTimer()',
+ transient:'bool GoatLicenceTransient(const int key)',write:'bool GoatStateWrite(const string path,const string body)',prompt:'void GoatManageOnlyPrompt()',
+ sendStatus:'void DashboardBusSendStatus(const string status)',
  seqText:'   string StateText()',seqRestore:'   void StateRestore(const string &keys[],const string &values[])',
  frozen:'   bool ManageOnlyFrozen(const int level)',persistLive:'   bool PersistLive()',init:'   void Init(int OP,bool v)',reset:'   void ResetSequenceRiskState()',
 };
 const FLAGS=fn('GoatManageOnlyLive',[],bodyOf(main,SIG.live))+fn('GoatManageOnlyReason',[],bodyOf(main,SIG.reason))
  +fn('GoatExpiryManageOnly',[],bodyOf(main,SIG.expiry))+fn('GoatLicenceManageOnly',['key'],bodyOf(main,SIG.licence))
- +fn('GoatStateValue',['keys','values','key'],bodyOf(main,SIG.value));
-const K={OP_BUY:0,OP_SELL:1,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,Operation_Standard:0,Operation_Report:5,Operation_Batch:6,Operation_Dash:7,
+ +fn('GoatLicenceTransient',['key'],bodyOf(main,SIG.transient))+fn('GoatStateValue',['keys','values','key'],bodyOf(main,SIG.value));
+// The MQL file API (Common files), modelled on the terminal: FILE_TXT writes "\r\n" for each "\n" and FileWriteString
+// returns what it wrote (Claude-Mac #284 P1); FILE_BIN writes the bytes given. A file appears at FileOpen, as on MT5.
+const FILE_TXT=16;
+const fileApi=t=>({INVALID_HANDLE:-1,FILE_READ:1,FILE_WRITE:2,FILE_BIN:4,FILE_TXT,FILE_ANSI:32,FILE_SHARE_READ:64,FILE_REWRITE:1,WHOLE_ARRAY:-1,CP_UTF8:65001,
+ ChartID:()=>131,GetTickCount64:()=>t.now,ResetLastError:()=>{t.err=0;},GetLastError:()=>t.err,StringLen:s=>s.length,
+ FileIsExist:p=>t.files.has(p),
+ FileOpen:(p,flags)=>{if(p.endsWith('.pending'))t.writes=(t.writes||0)+1;if(t.failOpen){t.err=5004;return -1;}t.handles.push({p,flags,data:''});t.files.set(p,'');return t.handles.length;},
+ FileWriteArray:(h,bytes,start,count)=>{if(t.failWrite){t.err=5020;return 0;}t.handles[h-1].data+=Buffer.from(bytes.slice(start,start+count)).toString('utf8');return count;},
+ FileWriteString:(h,s)=>{const o=t.handles[h-1];const w=(o.flags&FILE_TXT)?s.replace(/\n/g,'\r\n'):s;o.data+=w;return w.length;},
+ FileFlush:()=>{},FileClose:h=>{const o=t.handles[h-1];t.files.set(o.p,o.data);},
+ FileMove:(a,af,b)=>{if(t.failMove){t.err=5021;return false;}t.files.set(b,t.files.get(a));t.files.delete(a);return true;},
+ FileDelete:p=>{t.files.delete(p);t.deleted.push(p);return true;},
+ StringToCharArray:(s,arr)=>{arr.length=0;arr.push(...Buffer.from(s,'utf8'),0);return arr.length;}});
+const pending=files=>[...files.keys()].filter(k=>k.endsWith('.pending'));
+const K={OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,Operation_Standard:0,Operation_Report:5,Operation_Batch:6,Operation_Dash:7,
  GOAT_MANAGE_NONE:NONE,GOAT_MANAGE_LICENCE_DOWN:DOWN,GOAT_MANAGE_LICENCE_REFUSED:REFUSED,GOAT_MANAGE_EXPIRED:EXPIRED,GOAT_MANAGE_CREDENTIAL:CRED,
  GOAT_LICENCE_RETRY_MS:RETRY_MS,INIT_SUCCEEDED:0,INIT_FAILED:1,GOAT_BUILD_ID:'B49b-test',
  GOAT_STATE_VERSION:VERSION,GOAT_SQ_FLUSH_MS:FLUSH_MS,LICENSE_VALID:VALID,FILE_COMMON:4096,ACCOUNT_LOGIN:'login',ACCOUNT_NAME:'name',ACCOUNT_SERVER:'server',
@@ -86,7 +103,8 @@ function flags({tester=false,mode=0,Mode='',state=NONE}={}){
  for(const o of [{tester:true},{mode:5},{mode:6},{mode:7},{Mode:'EXPORT'}]) assert.equal(flags(o).GoatManageOnlyLive(),false,JSON.stringify(o));
  // VerifyLicense's answers.
  const WORD={[DOWN]:'licence_unavailable',[REFUSED]:'licence_refused',[CRED]:'credential_rejected'};
- for(const [key,want] of [[-1,DOWN],[-2,DOWN],[500,DOWN],[503,DOWN],[1001,DOWN],[1003,DOWN],[400,REFUSED],[402,REFUSED],[200,REFUSED],[401,CRED],[403,CRED]]){
+ // 408 and 429 are an outage too: GOATLicenseInitRetry.mqh retries them as transient (Claude-Mac #284 P2-2).
+ for(const [key,want] of [[-1,DOWN],[-2,DOWN],[500,DOWN],[503,DOWN],[1001,DOWN],[1003,DOWN],[408,DOWN],[429,DOWN],[400,REFUSED],[402,REFUSED],[404,REFUSED],[200,REFUSED],[401,CRED],[403,CRED]]){
   const c=flags();c.t.now=7777;assert.equal(c.GoatLicenceManageOnly(key),true,'key '+key);
   assert.equal(c.g_GoatManageOnly,want,'key '+key);assert.equal(c.g_GoatLicenceRetriedMs,7777,'the retry clock starts at init');
   assert.match(c.t.logs.at(-1),new RegExp('^GOAT manage-only: reason='+WORD[want]+' licence_status='+key+' new_trades=refused'));
@@ -103,10 +121,11 @@ function flags({tester=false,mode=0,Mode='',state=NONE}={}){
  assert.deepEqual([NONE,DOWN,REFUSED,EXPIRED,CRED].map(s=>flags({state:s}).GoatManageOnlyReason()),['none','licence_unavailable','licence_refused','expired','credential_rejected']);
  ok();}
 {// DashboardEntryAllowed: every start path passes through it (Add_Level's virtual->real hand-off and the signal block).
- const run=(state,{cid=false}={})=>{const c={g_GoatManageOnly:state,GOAT_MANAGE_NONE:NONE,MAGIC1:1,g_GoatStudioMonitorRunPath:'',Symbol:()=>'EURUSD',
+ const run=(state,{cid=false,op=0}={})=>{const c={g_GoatManageOnly:state,GOAT_MANAGE_NONE:NONE,MAGIC1:1,g_GoatStudioMonitorRunPath:'',Symbol:()=>'EURUSD',
   GoatCidGuardRefuses:()=>cid,GoatStagedChildMayOpen:()=>true,DashboardTradeAllowed:()=>true,DashboardExposureConflict:()=>false};
-  vm.createContext(c);vm.runInContext(fn('DashboardEntryAllowed',['op'],bodyOf(main,SIG.entry)),c);return c.DashboardEntryAllowed(0);};
- assert.equal(run(NONE),true);for(const s of [DOWN,REFUSED,EXPIRED,CRED]) assert.equal(run(s),false,'manage-only '+s+' opens nothing');
+  vm.createContext(c);vm.runInContext(fn('DashboardEntryAllowed',['op'],bodyOf(main,SIG.entry)),c);return c.DashboardEntryAllowed(op);};
+ // Both sides (Claude-Mac #284 P3: a sell-side refusal was untested).
+ for(const op of [0,1]){assert.equal(run(NONE,{op}),true);for(const s of [DOWN,REFUSED,EXPIRED,CRED]) assert.equal(run(s,{op}),false,'manage-only '+s+' opens nothing, side '+op);}
  assert.equal(run(NONE,{cid:true}),false,'B46 still refuses');
  const body=bodyOf(main,SIG.entry).split('\n').filter(l=>l.trim());
  assert.match(body[0],/GoatCidGuardRefuses\(true\)\) return false; \/\/ B46/,'B46 stays the first refusal');
@@ -134,21 +153,21 @@ function sequence(ea,{dir=0,virtual=false,active=true,traded=true,adopted=true,m
 }
 // ---------------------------------------------------------------- the EA: globals, the state file, the licence service
 function ea({tester=false,mode=0,state=NONE,files=new Map(),licence=[]}={}){
- const t={tester,logs:[],alerts:[],now:100000,files,writes:0,failWrite:false,unreadable:false,licence:[...licence],verifies:0,removed:0,sleeps:[],
-  prompts:[],hidden:0,statuses:[],activations:[],activationOk:true};
- const c={...K,...common(t),t,Mode_Operation:mode,Mode:'',g_GoatManageOnly:state,g_GoatLicenceRetriedMs:0,g_GoatStateFailed:false,
+ const t={tester,logs:[],alerts:[],now:100000,files,writes:0,failWrite:false,failMove:false,failOpen:false,unreadable:false,licence:[...licence],verifies:0,removed:0,sleeps:[],
+  prompts:[],hidden:0,statuses:[],activations:[],activationOk:true,handles:[],deleted:[],err:0,folders:[],positions:0,counted:[]};
+ const c={...K,...common(t),...fileApi(t),t,Mode_Operation:mode,g_GoatStateWriteError:0,serial:0,g_GoatManageOnlyHeldLogged:false,
+  FindNumberOfPositions:(op,magic)=>{t.counted.push([op,magic]);return t.positions;},Mode:'',g_GoatManageOnly:state,g_GoatLicenceRetriedMs:0,g_GoatStateFailed:false,
   g_GoatLastStopOutB:false,g_GoatLastStopOutS:false,g_GoatStateLast:'',g_GoatStateWrittenMs:0,g_GoatStateDay:0,g_GoatDayRestorePending:false,
   g_GoatDayKeys:[],g_GoatDayValues:[],removing:false,StopOut_Flag:false,DStartEquity:10000,DStartLocalLoss:99999,DStartTime:0,LastStopoutTime:0,
   tm_cur:1792054800+3600,AccountInfoInteger:k=>k==='login'?907113355:0,AccountInfoString:k=>k,
-  FolderCreate:()=>true,FileIsExist:p=>t.files.has(p),
-  GoatSetupWrite:(p,body)=>{t.writes++;if(t.failWrite)return false;t.files.set(p,body);return true;},
+  FolderCreate:p=>{t.folders.push(p);return true;},
   GoatSetupReadRef:(p,set)=>{if(t.unreadable||!t.files.has(p))return false;set(t.files.get(p));return true;},
-  GetLastError:()=>5004,Sleep:ms=>t.sleeps.push(ms),ExpertRemove:()=>{t.removed++;},
+  Sleep:ms=>t.sleeps.push(ms),ExpertRemove:()=>{t.removed++;},
   VerifyLicense:()=>{t.verifies++;return t.licence.length?t.licence.shift():503;},
   g_GoatManageOnlyAnnounced:'',g_GoatManageOnlyStatusMs:0,ShowPrompt:(...a)=>t.prompts.push(a),HidePrompt:()=>{t.hidden++;},
   DashboardBusSendStatus:s=>t.statuses.push(s),GOATDeviceActivationBegin:(login,build,replace)=>{t.activations.push([login,build,replace]);return t.activationOk;}};
  vm.createContext(c);
- vm.runInContext(FLAGS+['path','stateLive','text','read','restore','day','why','announce','after','timer'].map(k=>{
+ vm.runInContext(FLAGS+['path','stateLive','text','write','read','restore','day','why','prompt','announce','after','timer'].map(k=>{
   const name=SIG[k].match(/\s(\w+)\(/)[1],args=(SIG[k].match(/\((.*)\)/)[1].match(/(\w+)(?:\[\])?(?:=\w+)?(?=,|$)/g)||[]).map(a=>a.replace('[]',''));
   return fn(name,args,bodyOf(main,SIG[k]));}).join('')+fn('GoatStateFlush',['force=false'],bodyOf(main,SIG.flush)),c);
  c.Seq_Buy=sequence(c,{dir:0});c.Seq_Sell=sequence(c,{dir:1,active:false,traded:false,adopted:false,matched:false});
@@ -188,6 +207,17 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
   a.g_GoatManageOnly=NONE;a.g_GoatStateFailed=false;s.ManageOnlyFrozen(4);set();
   assert.equal(s.ManageOnlyFrozen(4),true,why);assert.match(a.t.logs.at(-1),new RegExp('^GOAT restart: add_frozen='+why+' side=BUY'),why);}
  a.g_GoatManageOnly=NONE;a.g_GoatStateFailed=false;assert.equal(s.ManageOnlyFrozen(4),false,'adds resume when both clear');
+ // Claude-Mac #284 P3: a real sequence's FIRST level (Level_Count 0, a direct start) is refused too. Add_Level's own
+ // refusal prefix runs here, up to its sizing block ("reached" = it would go on to size and open).
+ const body=bodyOf(main,'   bool Add_Level(double Level_New)'),cut=body.indexOf('    if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)');
+ assert.ok(cut>0);
+ const f=sequence(a,{adopted:false});Object.assign(f,{Level_Count:0,TimeCurrent:()=>1,GoatCidGuardAddFrozen:()=>false});
+ vm.runInContext(fn('AddLevelPrefix',['Level_New'],body.slice(0,cut)+'    return "reached";\n'),f);
+ assert.equal(f.AddLevelPrefix(1.1),'reached','not manage-only: the first level goes on');
+ for(const [set,why] of [[()=>{a.g_GoatManageOnly=DOWN;},'licence_unavailable'],[()=>{a.g_GoatManageOnly=CRED;},'credential_rejected'],[()=>{a.g_GoatStateFailed=true;},'state_unwritten']]){
+  a.g_GoatManageOnly=NONE;a.g_GoatStateFailed=false;f.AddLevelPrefix(1.1);set();
+  assert.equal(f.AddLevelPrefix(1.1),false,'first level, '+why);assert.match(a.t.logs.at(-1),new RegExp('add_frozen='+why+' side=BUY .* level=1 '),why);}
+ a.g_GoatManageOnly=NONE;a.g_GoatStateFailed=false;
  ok();}
 {// Init: a live re-init (an input change) of a running real sequence keeps retrace, rescue and realized P/L (GOAT-EA#266 P3).
  const run=o=>{const a=ea(o.ea);const s=sequence(a,{adopted:false,active:o.active!==false,virtual:!!o.virtual});
@@ -205,6 +235,8 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  Object.assign(a,{StopOut_Flag:true,DStartEquity:10250.5,DStartLocalLoss:-12.25,DStartTime:1792051200,LastStopoutTime:1792054000,g_GoatLastStopOutB:true});
  Object.assign(a.Seq_Buy,{Level_Retrace:1.0877,Retrace_Triggered:true,Trailing:true});
  a.GoatStateFlush();assert.equal(a.t.writes,1);const body=files.get(PATH);
+ assert.deepEqual(a.t.folders,['GOAT','GOAT\\State','GOAT\\State\\907113355'],'each folder level, as the CID claim (Claude-Mac #284 P3)');
+ assert.deepEqual(pending(files),[],'no .pending left');assert.equal(body,a.GoatStateText(),'the file is exactly the text: no "\\r" added');
  assert.ok(body.startsWith('version=1\nlogin=907113355\nmagic=1843920117\nsymbol=EURUSD\nday='+a.g_GoatStateDay+'\nstopout=1\ndstart_equity=10250.50\n'),body);
  assert.match(body,/\nB\.level_retrace=1\.08770000\n/);assert.doesNotMatch(body,/\nS\./,'no section for the idle sell');
  // A change waits for GOAT_SQ_FLUSH_MS unless forced; unchanged text is never rewritten, forced or not.
@@ -213,9 +245,17 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  a.t.now+=FLUSH_MS;a.GoatStateFlush();a.GoatStateFlush(true);assert.equal(a.t.writes,2,'unchanged');
  a.Seq_Buy.Retrace_Triggered=false;a.GoatStateFlush(true);assert.equal(a.t.writes,3,'forced');a.Seq_Buy.Retrace_Triggered=true;
  // A failed write freezes adds (said once) until a write succeeds.
+ const lastGood=files.get(PATH);
  a.t.failWrite=true;a.Seq_Buy.Trailing=true;a.GoatStateFlush(true);a.GoatStateFlush(true);
  assert.equal(a.g_GoatStateFailed,true);assert.equal(a.t.alerts.filter(x=>/GOAT state file not written/.test(x)).length,1);
+ assert.match(a.t.alerts.find(x=>/not written/.test(x)),/, error 5020\)/,'the write error, kept past the cleanup');
+ assert.deepEqual(pending(files),[],'a failed write leaves no .pending (Claude-Mac #284 P1)');assert.equal(files.get(PATH),lastGood,'the last good file stays');
  a.t.failWrite=false;a.GoatStateFlush(true);assert.equal(a.g_GoatStateFailed,false);assert.match(a.t.logs.at(-1),/written again/);
+ // A failed move (and a failed open) leaves no .pending either, and the last good file stands.
+ const good=files.get(PATH);
+ for(const [flag,err] of [['failMove',5021],['failOpen',5004]]){a.t[flag]=true;a.Seq_Buy.Trailing=!a.Seq_Buy.Trailing;a.GoatStateFlush(true);
+  assert.deepEqual([a.g_GoatStateFailed,a.g_GoatStateWriteError,pending(files),files.get(PATH)],[true,err,[],good],flag);
+  a.t[flag]=false;a.Seq_Buy.Trailing=!a.Seq_Buy.Trailing;a.GoatStateFlush(true);assert.equal(a.g_GoatStateFailed,false,flag+': recovered');}
  // The restart: a fresh EA over the same files; the matched buy takes its section back; the day waits for the first tick.
  const b=ea({files});b.Seq_Buy=sequence(b,{dir:0});b.GoatStateRestore();
  assert.deepEqual([b.Seq_Buy.Level_Retrace,b.Seq_Buy.Retrace_Triggered,b.Seq_Buy.Trailing],[1.0877,true,true]);
@@ -242,6 +282,41 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  // The tester, a batch, the dashboard: never read or written.
  for(const o of [{tester:true},{mode:6},{mode:7}]){const d=ea({...o,files});d.g_GoatStateDay=5;d.GoatStateFlush(true);d.GoatStateRestore();
   assert.deepEqual([d.t.writes,d.g_GoatDayRestorePending],[0,false],JSON.stringify(o));}
+ ok();}
+
+{// Claude-Mac #284 P1: why the state file has its own writer. B49a's GoatSetupWrite (FILE_TXT|FILE_ANSI, written ==
+ // StringLen) refuses any multi-line LF text, since TXT mode writes "\r\n" for each "\n", and leaves its .pending
+ // behind; its single-line JSON callers are fine. GoatStateWrite (FILE_BIN, exact UTF-8 bytes) writes the text as is.
+ // Both run here from source on the modelled file API; the real-terminal bytes are the probe's (goatai#2587 6479771092).
+ const setupSrc=clean(fs.readFileSync(path.join(ROOT,'GOATSetupControl.mqh'),'utf8'));
+ const t={now:5000,files:new Map(),handles:[],deleted:[],err:0};
+ const c={...fileApi(t),IntegerToString:v=>String(v),FILE_COMMON:4096,serial:0,g_GoatStateWriteError:0};
+ vm.createContext(c);
+ vm.runInContext(fn('GoatSetupWrite',['path','body'],bodyOf(setupSrc,'bool GoatSetupWrite(const string path,const string body)'))
+  +fn('GoatStateWrite',['path','body'],bodyOf(main,SIG.write)),c);
+ const a=ea();a.GoatStateDayRestore();a.Seq_Sell=sequence(a,{dir:1});
+ Object.assign(a.Seq_Sell,{ClosePendingReason:'Day/Weekend Close',ClosePendingTried:1792058400,BiasRescueActive:true,Trailing:true});
+ const text=a.GoatStateText();
+ assert.ok(text.split('\n').length>20 && /\nS\.close_reason=/.test(text),'both sides\' sections: '+text.split('\n').length+' lines');
+ assert.ok(Buffer.byteLength(text)<2048,'well under GoatSetupRead\'s 4096-byte cap: '+Buffer.byteLength(text));
+ assert.equal(c.GoatSetupWrite('X\\setup.txt',text),false,'B49a\'s writer refuses the multi-line text');
+ assert.equal(pending(t.files).length,1,'and leaves its .pending (B49a behaviour, untouched)');
+ const json='{"schema":1,"id":"r","result":"ok"}';
+ assert.equal(c.GoatSetupWrite('X\\receipt.json',json),true);assert.equal(t.files.get('X\\receipt.json'),json,'its single-line JSON is unchanged');
+ t.files=new Map();
+ assert.equal(c.GoatStateWrite('X\\state.txt',text),true);assert.equal(t.files.get('X\\state.txt'),text,'the state writer: exact bytes');
+ assert.deepEqual(pending(t.files),[]);
+ const accented='symbol=DAX40€\n';assert.equal(c.GoatStateWrite('X\\utf8.txt',accented),true);assert.equal(t.files.get('X\\utf8.txt'),accented,'UTF-8 bytes counted, not characters');
+ // Another writer's .pending with this exact name is never truncated.
+ t.files.set('X\\state.txt.131.5000.'+(c.serial+1)+'.pending','theirs');
+ assert.deepEqual([c.GoatStateWrite('X\\state.txt','a=1\n'),c.g_GoatStateWriteError,t.files.get('X\\state.txt.131.5000.'+c.serial+'.pending')],[false,-1,'theirs']);
+ assert.deepEqual([c.GoatStateWrite('X\\empty.txt',''),c.g_GoatStateWriteError],[false,-2],'nothing to write');
+ // The mode is binary: the model's FileWriteArray cannot tell (the real terminal's bytes are the probe's), so it is pinned.
+ assert.match(bodyOf(main,SIG.write),/int h=FileOpen\(temporary,FILE_WRITE\|FILE_BIN\|FILE_COMMON\);/);
+ assert.doesNotMatch(bodyOf(main,SIG.write),/FILE_TXT|FILE_ANSI|FileWriteString/);
+ // GoatStateFlush writes through GoatStateWrite only; GoatSetupWrite keeps only its B49a callers.
+ assert.match(bodyOf(main,SIG.flush),/if\(GoatStateWrite\(GoatStatePath\(\),text\)\)/);assert.doesNotMatch(bodyOf(main,SIG.flush),/GoatSetupWrite/);
+ assert.equal(main.split('GoatSetupWrite(').length-1,0,'the entrypoint never calls GoatSetupWrite');
  ok();}
 
 // ---------------------------------------------------------------- 5. OnInit after adoption, and the timer
@@ -285,7 +360,34 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  for(const s of [EXPIRED,REFUSED,CRED]){const a=ea({state:s});holding(a,true);a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'holding');
   a.Seq_Sell.Active=true;a.Seq_Buy.Active=false;a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'either side holds');
   a.Seq_Sell.Active=false;a.GoatManageOnlyTimer();assert.equal(a.t.removed,1,'flat: removed');assert.equal(a.t.verifies,0,'no licence call');}
+ // Claude-Mac #284 P2-1: no sequence active but positions of this magic still open on the symbol (a failed close whose
+ // sequence ended anyway): never removed, said once; removed once those positions are gone.
+ for(const s of [EXPIRED,REFUSED,CRED]){const a=ea({state:s});holding(a,false);a.t.positions=2;
+  a.GoatManageOnlyTimer();a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'positions open: not removed');
+  assert.deepEqual(a.t.counted.at(-1),[2,1843920117],'both directions, this magic (FindNumberOfPositions on _Symbol)');
+  assert.equal(a.t.logs.filter(l=>/^GOAT manage-only: not removed: 2 position\(s\) of magic 1843920117 are still open on EURUSD/.test(l)).length,1,'said once');
+  a.t.positions=0;a.GoatManageOnlyTimer();assert.equal(a.t.removed,1,'flat: removed');}
+ // Claude-Mac #284 P2-2: a 408 or 429 from the recovering service is still an outage, never a refusal; and the retry
+ // puts the manage-only prompt back over VerifyLicense's "re-attach" prompt (P3).
+ for(const key of [408,429,503,-1]){const a=ea({state:DOWN,licence:[key]});holding(a,false);a.GoatManageOnlyAfterAdopt();
+  a.VerifyLicense=()=>{a.t.verifies++;a.t.prompts.push(['Can\'t reach goatedge.ai']);return key;};
+  a.t.now+=RETRY_MS;a.GoatManageOnlyTimer();
+  assert.deepEqual([a.g_GoatManageOnly,a.t.removed,a.t.verifies],[DOWN,0,1],'key '+key);
+  assert.equal(a.t.prompts.at(-1)[0],'GOAT is managing only','key '+key+': the manage-only prompt is shown again');}
  {const a=ea();holding(a,false);a.GoatManageOnlyTimer();assert.deepEqual([a.t.removed,a.t.verifies],[0,0],'not manage-only: nothing');}
+ ok();}
+
+{// Claude-Mac #284 P3: a manage-only row stays "Managing only" through every ack and heartbeat. DashboardBusSendStatus
+ // sends it in place of any other status (the heartbeat's "Active"/"Paused", an ack's "Paused"/"Active", a guard
+ // status) while manage-only; Offline (deinit) and Close Failed still show; otherwise B49a's exactly.
+ const send=(state,status)=>{const sent=[];const c={...K,g_GoatManageOnly:state,Mode_Operation:0,Operation_Batch:6,Operation_Dash:7,
+  MQLInfoInteger:()=>0,GlobalVariableCheck:()=>true,GlobalVariableGet:()=>555,ChartID:()=>131,Symbol:()=>'EURUSD',GOAT_EVENT_CHILD_STATUS:9,
+  EventChartCustom:(cid,ev,magic,chart,text)=>{sent.push([cid,ev,magic,chart,text]);return true;}};
+  vm.createContext(c);vm.runInContext(fn('DashboardBusSendStatus',['status'],bodyOf(main,SIG.sendStatus)),c);c.DashboardBusSendStatus(status);return sent;};
+ for(const status of ['Active','Paused','Inactive','Asset Buy: blocked','Deploying','Linked']){
+  assert.deepEqual(send(NONE,status),[[555,9,1843920117,131,'EURUSD|'+status]],'not manage-only: '+status);
+  for(const s of [DOWN,REFUSED,EXPIRED,CRED]) assert.deepEqual(send(s,status),[[555,9,1843920117,131,'EURUSD|Managing only']],status+' while manage-only '+s);}
+ for(const status of ['Offline','Close Failed']) assert.deepEqual(send(DOWN,status),[[555,9,1843920117,131,'EURUSD|'+status]],status+' still shows');
  ok();}
 
 // ---------------------------------------------------------------- 6. where it sits

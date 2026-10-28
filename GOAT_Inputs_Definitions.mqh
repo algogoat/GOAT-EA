@@ -823,8 +823,11 @@ sinput   double                  Min_Margin_Level_PC           =                
 // F4 (R2): B49a's IsNewSecond/IsNewMinute/IsNewDay compare one clock field (the second, the minute, the day of the
 // month), so a tick exactly 60 s, an hour or a month later reads as "not new" and skips that block: in the tester's
 // one-minute bars the per-second session/stop-out block misses ticks a whole minute apart. On compares the full
-// timestamp (tm_cur, tm_cur/60, tm_cur/86400). The no-tick timer itself (F4) is live-only and has no input.
-sinput   ENUM_GOAT_FIX           Fix_Clock                     =                   GoatFix_Off;       // Fix: new second/minute/day from the full time
+// timestamp (tm_cur, tm_cur/60, tm_cur/86400). It covers only those three, OnTick's per-second, minute and day blocks:
+// the signal, sequence and trailing samplers (CheckNewSecond/2/3, CheckNewMinute/2/3, the sampling class's Check()) keep
+// B49a's one-field compare either way, so On never changes when signals, sequences or trailing are sampled. The no-tick
+// timer itself (F4) is live-only and has no input.
+sinput   ENUM_GOAT_FIX           Fix_Clock                     =                   GoatFix_Off;       // Fix: OnTick's second/minute/day blocks from the full time
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

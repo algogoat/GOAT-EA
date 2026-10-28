@@ -3729,6 +3729,7 @@ int    g_GoatExportRank=GOAT_EXPORT_RANK_ARFxSR;   // set from EA_Desc's rank=pf
 int    g_GoatExporterRank=GOAT_EXPORT_RANK_ARFxSR; // the exporter's ExportRank (StartExporter), for the stamp read-back
 bool   g_GoatFwdClosed=false;                      // R16: the FWD window's end equity is its next day's open
 long   g_GoatCsvLastMinute=-1;                     // R17: the minute of the equity CSV's last row
+string g_GoatCsvLastValues="";                    // R17: its balance and equity columns, as written
 string GoatExportFormatLine(void)
   {
    return "; EXPORT format:"+IntegerToString(GOAT_EXPORT_FORMAT)+" rank:"+(g_GoatExportRank==GOAT_EXPORT_RANK_PF ? "pf" : "arf_sr");
@@ -3767,16 +3768,15 @@ void GoatCloseOpenWindows(void)
    if(days_FWD>0 && !g_GoatFwdClosed)             {eq_FWD_end=final_equity; g_GoatFwdClosed=true;}
   }
 // R17: the equity CSV writes a row only on a minute whose equity or price moved enough, so its curve could stop before
-// the evidence end. One final row at the test's end (balance, equity), unless that minute already has a row.
+// the evidence end. One final row at the test's end (balance, equity), unless the last row already says exactly that
+// for that minute (Claude-Mac 6470355579: a shared minute whose equity changed still gets the final row).
 void GoatEquityCsvFinalRow(void)
   {
    if(FileCSV_handle==INVALID_HANDLE) return;
-   if((long)TimeCurrent()/60==g_GoatCsvLastMinute) return;
-   FileWrite(FileCSV_handle,TimeToString(TimeCurrent(),TIME_DATE|TIME_MINUTES)
-                           ,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)
-                           ,DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)
-                           ,0.0);
-   g_GoatCsvLastMinute=(long)TimeCurrent()/60;
+   string csv_balance=DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2),csv_equity=DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2);
+   if((long)TimeCurrent()/60==g_GoatCsvLastMinute && csv_balance+"\t"+csv_equity==g_GoatCsvLastValues) return;
+   FileWrite(FileCSV_handle,TimeToString(TimeCurrent(),TIME_DATE|TIME_MINUTES),csv_balance,csv_equity,0.0);
+   g_GoatCsvLastMinute=(long)TimeCurrent()/60; g_GoatCsvLastValues=csv_balance+"\t"+csv_equity;
   }
 // B49b:end f8-export
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -5783,7 +5783,7 @@ bool StartExporter(bool reportMode)
     bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key,EA_Name,Server))!=0;//Print(AdjustLots);
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;//Print(InclBackOOS);
     int    ExportRank  = GoatExportRankSetting(FetchExportSetting("ExportRank",Key,EA_Name,Server)); // B49b (F8): the trim's ranking key
-    if(ExportRank<0) {LogOrPrint(reportMode,"❌ ExportRank in the export settings must be ARFxSR or PF. No exports were run.",Key,EA_Name,Server); return false;} // B49b (F8)
+    if(ExportRank<0) {LogOrPrint(reportMode,"❌ ExportRank in the export settings must be ARFxSR or PF; the export cycle did not start.",Key,EA_Name,Server); return false;} // B49b (F8)
     g_GoatExporterRank=ExportRank; // B49b (F8): RunAndStoreSet reads each PF export's stamp back
     const int EXPORT_START_ATTEMPTS = 3;
     const int EXPORT_ERROR_ABORTS   = 2;
@@ -5816,7 +5816,7 @@ bool StartExporter(bool reportMode)
      while(!MTTESTER::IsReady())
      {
       if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
-      if(GetTickCount64()>readyDeadline) {LogOrPrint(reportMode,"DEINIT: ❌ The Strategy Tester was not ready "+IntegerToString(GOAT_TESTER_READY_WAIT_MS/1000)+" s after the top-set check. No exports were run.",Key,EA_Name,Server); return false;} // B49b (F8 R21)
+      if(GetTickCount64()>readyDeadline) {LogOrPrint(reportMode,"DEINIT: ❌ The Strategy Tester was not ready "+IntegerToString(GOAT_TESTER_READY_WAIT_MS/1000)+" s after the top-set check, so the export cycle stopped.",Key,EA_Name,Server); return false;} // B49b (F8 R21)
       Sleep(1000);
      }
     }
@@ -6570,6 +6570,7 @@ void GoatTickBody()
     else if(TimeCurrent()>=dt_Fwrd_OOS && dt_Fwrd_OOS!=0)
     {
      if(days_FOOS==0 && days_IS>0) eq_IS_end = DStartEquity; // B49b (F8 R16): SAMPLE closes at the FOOS open, its last day included
+     if(days_FOOS==0 && days_IS==0 && days_BOOS>0) eq_BOOS_end = DStartEquity; // B49b (F8 R16, Mac 6470355579): BOOS straight into FOOS closes at the FOOS open
      days_FOOS++;
      if(eq_FOOS_start==0) eq_FOOS_start = DStartEquity;
      //eq_FOOS_end = DStartEquity; // fetch realtime
@@ -6612,7 +6613,7 @@ void GoatTickBody()
                                ,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)
                                ,DoubleToString(MinuteLowEquity,2)
                                ,0.0);//(AccountInfoDouble(ACCOUNT_MARGIN)/AccountInfoDouble(ACCOUNT_EQUITY))*100.0;
-       g_GoatCsvLastMinute=(long)TimeCurrent()/60; // B49b (F8 R17): the final row never repeats this minute
+       g_GoatCsvLastMinute=(long)TimeCurrent()/60; g_GoatCsvLastValues=DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+"\t"+DoubleToString(MinuteLowEquity,2); // B49b (F8 R17): the final row never repeats this row
        LastBid=bid; LastAsk=ask;
        LastEquity=AccountInfoDouble(ACCOUNT_EQUITY); LastBalance=AccountInfoDouble(ACCOUNT_BALANCE);
       }

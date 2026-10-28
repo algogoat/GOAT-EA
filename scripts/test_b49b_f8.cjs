@@ -75,6 +75,9 @@ const passes=(r,a,s)=>r.arf>=a&&r.sr>=s;
  const a=trim(true,rows,2,0.2,2.5),b=trim(false,rows,2,0.2,2.5,RANK_ARFxSR);
  assert.deepEqual(a.kept,[0],'B49a keeps the failing row');assert.deepEqual(a.deleted,['c1','s1'],'B49a deletes the passing row from disk');
  assert.deepEqual(b.kept,[1],'B49b keeps the passing row');assert.deepEqual(b.deleted,['c0','s0'],'and deletes the failing one');
+ // Ties keep the earlier row, as B49a's strict > did (Claude-Mac 6470355579: a >= mutant must die).
+ for(const rank of [RANK_ARFxSR,RANK_PF]){const tie=trim(false,[rec(0,1,3,2),rec(1,0.2,2.5,0.5),rec(2,1,3,2)],1,0.2,2.5,rank);assert.deepEqual(tie.kept,[0],'tie: the earlier row ('+rank+')');}
+ const tieA=trim(true,[rec(0,1,3,2),rec(1,0.2,2.5,0.5),rec(2,1,3,2)],1,0.2,2.5);assert.deepEqual(tieA.kept,[0],'B49a too');
  // A row exactly at both bars passes, as B49a's >= (and the EA's own store comparison) has it.
  const bar=trim(false,[rec(0,0.2,2.5,1),rec(1,0.19,9,1)],2,0.2,2.5,RANK_ARFxSR);
  assert.deepEqual(bar.kept,[0],'at the bar: passing');assert.match(bar.log,/Passing=1 Kept=1/);
@@ -117,7 +120,7 @@ const passes=(r,a,s)=>r.arf>=a&&r.sr>=s;
  const c=trimmer(false);
  for(const [v,want] of [['',RANK_ARFxSR],['ARFxSR',RANK_ARFxSR],['PF',RANK_PF],['pf',-1],['ARF',-1],[' PF',-1],['1',-1]]) assert.equal(c.GoatExportRankSetting(v),want,'ExportRank='+JSON.stringify(v));
  const exporter=bodyOf(main,'bool StartExporter(bool reportMode)');
- const refuse=exporter.indexOf('if(ExportRank<0) {LogOrPrint(reportMode,"❌ ExportRank in the export settings must be ARFxSR or PF. No exports were run.",Key,EA_Name,Server); return false;}');
+ const refuse=exporter.indexOf('if(ExportRank<0) {LogOrPrint(reportMode,"❌ ExportRank in the export settings must be ARFxSR or PF; the export cycle did not start.",Key,EA_Name,Server); return false;}');
  assert.ok(refuse>0&&refuse<exporter.indexOf('RunAndStoreSet('),'an unknown ExportRank refuses before any tester run');
  assert.match(exporter,/int    ExportRank  = GoatExportRankSetting\(FetchExportSetting\("ExportRank",Key,EA_Name,Server\)\);/);
  assert.match(exporter,/fwdRangeMeta\+\(BlindExport \? ",blind=1" : ""\)\+\(ExportRank==GOAT_EXPORT_RANK_PF \? ",rank=pf" : ""\)\+"\}\\n"/,'rank=pf rides in the export run meta only for PF');
@@ -197,6 +200,9 @@ function windows(text,{days,boos,foos,fwdStart,fwdEnd,equity,finalEquity,tickAt=
  assert.equal(noFoos.SAMPLE,fin-equity[10],'no FOOS: SAMPLE to the end');assert.equal(noFoos.FWD,equity[20]-equity[15],'FWD closed at day 20\'s open');
  const noBoos=windows(main,{days:25,boos:0,foos:30,fwdStart:20,fwdEnd:22,equity,finalEquity:fin});
  assert.equal(noBoos.BOOS,0,'no BOOS: no BOOS P/L');assert.equal(noBoos.SAMPLE,fin-equity[0]);assert.equal(noBoos.FWD,equity[23]-equity[20]);
+ // Claude-Mac 6470355579: BOOS straight into FOOS (no SAMPLE day) closes at the FOOS open.
+ const boosFoos=windows(main,{days:25,boos:10,foos:10,fwdStart:0,fwdEnd:0,equity,finalEquity:fin});
+ assert.equal(boosFoos.days_IS,0);assert.equal(boosFoos.BOOS,equity[10]-equity[0],'BOOS: day 0 open to the FOOS open');
  const noFwd=windows(main,{days:25,boos:10,foos:30,fwdStart:0,fwdEnd:0,equity,finalEquity:fin});
  assert.equal(noFwd.days_FWD,0);assert.equal(noFwd.FWD,0);
  ok();}
@@ -213,20 +219,22 @@ function windows(text,{days,boos,foos,fwdStart,fwdEnd,equity,finalEquity,tickAt=
  ok();}
 
 // ---- 5. R17: the equity CSV's final row ----
-{const mk=(last)=>{const c={rows:[],FileCSV_handle:7,INVALID_HANDLE:-1,g_GoatCsvLastMinute:last,now:1000*60+30,ACCOUNT_BALANCE:1,ACCOUNT_EQUITY:2,TIME_DATE:1,TIME_MINUTES:2,
+{const mk=(last,values='')=>{const c={rows:[],FileCSV_handle:7,INVALID_HANDLE:-1,g_GoatCsvLastMinute:last,g_GoatCsvLastValues:values,now:1000*60+30,ACCOUNT_BALANCE:1,ACCOUNT_EQUITY:2,TIME_DATE:1,TIME_MINUTES:2,
   TimeCurrent:()=>c.now,TimeToString:t=>'T'+t,DoubleToString:(v,d)=>Number(v).toFixed(d),AccountInfoDouble:k=>k===1?1000:987.65,FileWrite:(h,...a)=>c.rows.push([h,...a])};
   vm.createContext(c);vm.runInContext(fn('GoatEquityCsvFinalRow',[],bodyOf(main,'void GoatEquityCsvFinalRow(void)')),c);return c;};
- const c=mk(999);c.GoatEquityCsvFinalRow();
+ const c=mk(999,'1000.00\t990.00');c.GoatEquityCsvFinalRow();
  assert.deepEqual(c.rows,[[7,'T60030','1000.00','987.65',0]],'one row: time, balance, equity, deposit load as the minute rows');
- assert.equal(c.g_GoatCsvLastMinute,1000);c.GoatEquityCsvFinalRow();assert.equal(c.rows.length,1,'never twice for one minute');
- const d=mk(1000);d.GoatEquityCsvFinalRow();assert.deepEqual(d.rows,[],'the last minute already has a row');
+ assert.equal(c.g_GoatCsvLastMinute,1000);c.GoatEquityCsvFinalRow();assert.equal(c.rows.length,1,'never twice for one state');
+ const d=mk(1000,'1000.00\t987.65');d.GoatEquityCsvFinalRow();assert.deepEqual(d.rows,[],'the last row already says this, this minute');
+ // Claude-Mac 6470355579: a shared minute whose equity (or balance) changed still gets the final row.
+ const g=mk(1000,'1000.00\t990.00');g.GoatEquityCsvFinalRow();assert.deepEqual(g.rows,[[7,'T60030','1000.00','987.65',0]],'same minute, equity changed');
+ const h=mk(1000,'999.00\t987.65');h.GoatEquityCsvFinalRow();assert.equal(h.rows.length,1,'same minute, balance changed');
  const e=mk(-1);e.FileCSV_handle=-1;e.GoatEquityCsvFinalRow();assert.deepEqual(e.rows,[],'no file, no row');
  const onTester=bodyOf(main,'double OnTester()');
  assert.match(onTester,/if\(FileCSV_handle != INVALID_HANDLE\) \{GoatEquityCsvFinalRow\(\); FileClose\(FileCSV_handle\); FileCSV_handle=INVALID_HANDLE;\}/,'written before the close');
  const tick=bodyOf(main,'void GoatTickBody()');
- assert.match(tick,/,0\.0\);\/\/\(AccountInfoDouble\(ACCOUNT_MARGIN\)\/AccountInfoDouble\(ACCOUNT_EQUITY\)\)\*100\.0;\n\s*g_GoatCsvLastMinute=\(long\)TimeCurrent\(\)\/60;/,'every minute row records its minute');
+ assert.match(tick,/,0\.0\);\/\/\(AccountInfoDouble\(ACCOUNT_MARGIN\)\/AccountInfoDouble\(ACCOUNT_EQUITY\)\)\*100\.0;\n\s*g_GoatCsvLastMinute=\(long\)TimeCurrent\(\)\/60; g_GoatCsvLastValues=DoubleToString\(AccountInfoDouble\(ACCOUNT_BALANCE\),2\)\+"\\t"\+DoubleToString\(MinuteLowEquity,2\);/,'every minute row records its minute and the values it wrote');
  ok();}
-
 // ---- 6. R21: the bounded tester wait ----
 {const exporter=bodyOf(main,'bool StartExporter(bool reportMode)');
  assert.equal(define(main,'GOAT_TESTER_READY_WAIT_MS'),600000);

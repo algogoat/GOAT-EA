@@ -80,7 +80,7 @@ for(const type of [CMD.GOAT_DASH_CMD_PORTFOLIO_CLOSE,CMD.GOAT_DASH_CMD_CLOSE_SCO
   assert.deepEqual([b.closes,b.acks[1][1],b.open,b.DashboardPortfolioCommandIdApplied],[2,ACK.GOAT_DASH_ACK_APPLIED,0,ID],label+': retried, flat, applied');
   b.now++;b.DashboardBusApplyCommand(ID,type,0,EXP);
   assert.deepEqual([b.closes,b.acks[2][1]],[2,ACK.GOAT_DASH_ACK_APPLIED],label+': applied re-acks without closing');}
- {// B49b: a close that keeps failing is tried at most 6 times in the command's 30 s, then EXPIRED.
+ {// B49b: a close that keeps failing is tried at most 7 times in the command's 30 s (at 0, 5, ..., 30 s), then EXPIRED.
   const b=child(main,{refuse:99});
   for(let s=0;s<=35;s++){b.DashboardBusApplyCommand(ID,type,0,EXP);b.now++;}
   assert.equal(b.closes,7,label+': 7 tries (0, 5, ..., 30 s)');
@@ -94,17 +94,20 @@ ok();
 // ---- 2. The dashboard: a risk breach ----
 const BREACH={GOAT_DASH_CMD_CLOSE_SCOPE:3,GOAT_DASH_CMD_TRADE_PERMISSIONS:4,GOAT_DASH_CMD_EXPOSURE_POLICY:5,GOAT_DASH_CMD_PORTFOLIO_PAUSE:1,GOAT_RISK_BREACH_NONE:0,GOAT_RISK_BREACH_LOW_EQUITY:1,GOAT_RISK_BREACH_RUNNING_LOSS:2,GOAT_RISK_BREACH_DAILY_LOSS:3,GOAT_RISK_BREACH_EQUITY_TARGET:4,GOAT_RISK_BREACH_DAILY_TARGET:5};
 // Linked child charts (magic and symbol) and the account's positions; SendPortfolioCommand reaches every linked chart.
+// `charts` is the terminal's open charts (ChartSymbol: "" for a chart that is gone); both rows' charts are open.
 function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,'GBPUSD']],runningLoss=600}={}){
- const c={...BREACH,GOAT_DASH_CMD_PORTFOLIO_CLOSE:2,GOAT_PORTFOLIO_RUN_PAUSED:2,now:5000,audits:[],cmdAudits:[],sends:[],
+ const c={...BREACH,GOAT_DASH_CMD_PORTFOLIO_CLOSE:2,GOAT_PORTFOLIO_RUN_PAUSED:2,now:5000,audits:[],cmdAudits:[],sends:[],saves:[],charts:{101:'EURUSD',102:'GBPUSD'},
   m_risk_policy_armed:true,m_risk_policy_breached:false,m_risk_policy_breach_code:0,m_risk_policy_breach_time:0,
   m_risk_breach_last_send:0,m_risk_breach_follow_ended:true,m_risk_breach_unreachable_logged:false,m_policy_unsynced_type:0,m_policy_resync_due:false,m_agent_setup_quiet:false,m_portfolio_command_type:0,m_exposure_policy_mode:0,resyncs:[],m_portfolio_command_pending:pending,m_portfolio_run_state:0,
   m_risk_low_equity_stop:0,m_risk_running_loss_limit:500,m_risk_daily_loss_limit:0,m_risk_equity_target:0,m_risk_daily_target_limit:0,
   Port_RunningLoss:runningLoss,Port_DailyLoss:0,Port_DailyTarget:0,positions:positions.slice(),
   g_sets:[{magic:77,sym:'EURUSD',cid:linked?101:0},{magic:78,sym:'GBPUSD',cid:linked?102:0}],
   AccountInfoDouble:()=>10000,ACCOUNT_EQUITY:0,POSITION_MAGIC:1,POSITION_SYMBOL:2,
-  GlobalVariableSet:()=>true,GoatPortfolioGVName:n=>n,SaveRiskPolicyState:()=>{},PrintFormat:()=>{},UpdateHeaderStateButtons:()=>{},
+  GlobalVariableSet:()=>true,GoatPortfolioGVName:n=>n,PrintFormat:()=>{},UpdateHeaderStateButtons:()=>{},
   RiskBreachText:code=>'breach'+code,IntegerToString:String,ArraySize:a=>a.length,PositionsTotal:null};
  c.TimeCurrent=()=>c.now;
+ c.ChartSymbol=id=>c.charts[id]||'';
+ c.SaveRiskPolicyState=()=>c.saves.push({resyncDue:c.m_policy_resync_due,followEnded:c.m_risk_breach_follow_ended});
  c.AppendRiskPolicyAudit=(stage,reason,detail)=>c.audits.push(stage);
  c.AppendPortfolioCommandAudit=stage=>c.cmdAudits.push(stage);
  c.SendPortfolioCommand=(type,value,label)=>{if(!c.g_sets.some(s=>s.cid>0))return false;c.sends.push([c.now,label]);c.m_portfolio_command_pending=true;c.m_portfolio_command_type=type;return true;};
@@ -118,6 +121,8 @@ function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,
  if(text.includes('void CGOATDashboard::FollowRiskBreachClose(void)'))
   code+=fn('FollowRiskBreachClose',[],bodyOf(text,'void CGOATDashboard::FollowRiskBreachClose(void)'))
    +fn('LinkedOpenPositions',['reachable'],bodyOf(text,'int CGOATDashboard::LinkedOpenPositions(const bool reachable)'))
+   +(text.includes('bool CGOATDashboard::RowChartLive(const int idx) const')
+     ?fn('RowChartLive',['idx'],bodyOf(text,'bool CGOATDashboard::RowChartLive(const int idx) const')):'')
    +fn('ResyncUnsyncedPolicy',[],bodyOf(text,'void CGOATDashboard::ResyncUnsyncedPolicy(void)'))
    +fn('SendPortfolioPauseCommand',['pause'],bodyOf(text,'bool CGOATDashboard::SendPortfolioPauseCommand(const bool pause)'))
    +fn('RiskPolicyButtonText',[],bodyOf(text,'string RiskPolicyButtonText(void) const'));
@@ -177,7 +182,7 @@ function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,
  for(let s=0;s<300;s++){o.now++;o.EvaluateRiskPolicy();}assert.deepEqual([o.sends.length,o.audits],[0,[]]);
  ok();}
 {// Resume Portfolio does not clear the latched breach: a person who resumed (an equity target reached, a new day) is
- // trading on purpose, so the follow-up never closes a resumed portfolio. RESUMED once; pausing again resumes the follow.
+ // trading on purpose, so the follow-up never closes a resumed portfolio. RESUMED once; pausing again later never restarts it.
  const b=dashboard(dash);b.EvaluateRiskPolicy();b.m_portfolio_command_pending=false;
  b.m_portfolio_run_state=0;   // Resume Portfolio (GOAT_PORTFOLIO_RUN_ACTIVE)
  for(let s=0;s<300;s++){b.now++;b.EvaluateRiskPolicy();}
@@ -229,18 +234,62 @@ function dashboard(text,{pending=false,linked=true,positions=[[77,'EURUSD'],[78,
  // Re-arming asks for the resend too (ArmRiskPolicyFromHeader is a dialog; its line is checked in place).
  assert.match(bodyOf(dash,'bool CGOATDashboard::ArmRiskPolicyFromHeader(void)'),/if\(m_policy_unsynced_type!=0\) m_policy_resync_due=true;/);
  ok();}
-{// LoadRiskPolicyState: FollowEnded missing (a breach an older build saved) loads as ended; 0 loads as followed.
+{// LoadRiskPolicyState: FollowEnded missing (a breach an older build saved) loads as ended; 0 loads as followed only
+ // for the breach it was saved with (FollowBreachTime == BreachTime).
  const load=gv=>{const c={m_risk_policy_armed:false,m_risk_policy_breached:false,m_risk_policy_breach_code:0,m_risk_policy_breach_time:0,
   m_risk_running_loss_limit:0,m_risk_daily_loss_limit:0,m_risk_daily_target_limit:0,m_risk_low_equity_stop:0,m_risk_equity_target:0,
-  m_risk_breach_follow_ended:false,m_policy_unsynced_type:0,GoatPortfolioGVName:n=>n,GlobalVariableCheck:n=>n in gv,GlobalVariableGet:n=>gv[n]};
+  m_risk_breach_follow_ended:false,m_policy_unsynced_type:0,m_policy_resync_due:false,GoatPortfolioGVName:n=>n,GlobalVariableCheck:n=>n in gv,GlobalVariableGet:n=>gv[n]};
   vm.createContext(c);vm.runInContext(fn('LoadRiskPolicyState',[],bodyOf(dash,'void CGOATDashboard::LoadRiskPolicyState(void)')),c);c.LoadRiskPolicyState();return c;};
- const base={DashboardRisk_Breached:1,DashboardRisk_BreachCode:2};
+ const base={DashboardRisk_Breached:1,DashboardRisk_BreachCode:2,DashboardRisk_BreachTime:7000};
  assert.equal(load(base).m_risk_breach_follow_ended,true,'no FollowEnded: never followed');
- assert.equal(load({...base,DashboardRisk_FollowEnded:0}).m_risk_breach_follow_ended,false,'FollowEnded=0: followed');
- assert.equal(load({...base,DashboardRisk_FollowEnded:1}).m_risk_breach_follow_ended,true,'FollowEnded=1: ended');
+ assert.equal(load({...base,DashboardRisk_FollowBreachTime:7000}).m_risk_breach_follow_ended,true,'no FollowEnded (deleted by hand), whatever the breach time: never followed');
+ assert.equal(load({...base,DashboardRisk_FollowEnded:0,DashboardRisk_FollowBreachTime:7000}).m_risk_breach_follow_ended,false,'FollowEnded=0 for this breach: followed');
+ assert.equal(load({...base,DashboardRisk_FollowEnded:1,DashboardRisk_FollowBreachTime:7000}).m_risk_breach_follow_ended,true,'FollowEnded=1: ended');
+ // Tidy P3 (Claude-Mac 6440859442): this build saved FollowEnded=0, an older build then ran (it never writes FollowEnded)
+ // and saved its own breach; after the upgrade the leftover 0 must not make that breach followed.
+ assert.equal(load({...base,DashboardRisk_FollowEnded:0,DashboardRisk_FollowBreachTime:6000}).m_risk_breach_follow_ended,true,'a leftover FollowEnded=0 from another breach: ended');
+ assert.equal(load({...base,DashboardRisk_FollowEnded:0}).m_risk_breach_follow_ended,true,'FollowEnded=0 with no breach time: ended');
  assert.equal(load({...base,DashboardRisk_FollowEnded:0,DashboardRisk_Unsynced:4}).m_policy_unsynced_type,4,'unsynced restored');
- assert.match(bodyOf(dash,'void CGOATDashboard::SaveRiskPolicyState(void)'),/GlobalVariableSet\(GoatPortfolioGVName\(prefix\+"FollowEnded"\),\(m_risk_breach_follow_ended \? 1\.0 : 0\.0\)\)/,'saved');
- assert.match(bodyOf(dash,'void CGOATDashboard::SaveRiskPolicyState(void)'),/GlobalVariableSet\(GoatPortfolioGVName\(prefix\+"Unsynced"\),\(double\)m_policy_unsynced_type\)/,'unsynced saved');
+ assert.equal(load({...base,DashboardRisk_ResyncDue:1}).m_policy_resync_due,true,'a resync request restored');
+ assert.equal(load({...base,DashboardRisk_ResyncDue:0}).m_policy_resync_due,false);assert.equal(load(base).m_policy_resync_due,false);
+ const save=bodyOf(dash,'void CGOATDashboard::SaveRiskPolicyState(void)');
+ assert.match(save,/GlobalVariableSet\(GoatPortfolioGVName\(prefix\+"FollowEnded"\),\(m_risk_breach_follow_ended \? 1\.0 : 0\.0\)\)/,'saved');
+ assert.match(save,/GlobalVariableSet\(GoatPortfolioGVName\(prefix\+"Unsynced"\),\(double\)m_policy_unsynced_type\)/,'unsynced saved');
+ assert.match(save,/GlobalVariableSet\(GoatPortfolioGVName\(prefix\+"FollowBreachTime"\),\(double\)m_risk_policy_breach_time\)/,'the latch\'s breach saved');
+ assert.match(save,/GlobalVariableSet\(GoatPortfolioGVName\(prefix\+"ResyncDue"\),\(m_policy_resync_due \? 1\.0 : 0\.0\)\)/,'the resync request saved');
+ ok();}
+{// Codex #280 4388805415: a row whose chart was closed keeps its cid. Only a chart that still exists with the row's
+ // symbol is reachable: a closed chart, or an id now showing another symbol, is UNREACHABLE once and never resent to.
+ for(const [label,gone] of [['closed',c=>{delete c.charts[102];}],['another symbol',c=>{c.charts[102]='USDJPY';}]]){
+  const b=dashboard(dash);gone(b);b.EvaluateRiskPolicy();b.m_portfolio_command_pending=false;
+  b.now+=61;b.EvaluateRiskPolicy();assert.deepEqual(b.audits.slice(-2),['UNREACHABLE','RETRY'],label+': the live row is resent to');
+  b.m_portfolio_command_pending=false;b.positions=[[78,'GBPUSD']];      // only the orphan holds a position
+  const sent=b.sends.length;for(let s=0;s<600;s++){b.now++;b.EvaluateRiskPolicy();}
+  assert.deepEqual([b.sends.length-sent,b.audits.filter(x=>x==='UNREACHABLE').length,b.audits.includes('FLAT'),b.m_portfolio_command_pending],[0,1,false,false],label+': never resent to');
+  b.positions=[];b.now++;b.EvaluateRiskPolicy();assert.equal(b.audits.at(-1),'FLAT',label);
+ }
+ // Both charts open: every position is reachable, no UNREACHABLE.
+ const l=dashboard(dash);l.EvaluateRiskPolicy();l.m_portfolio_command_pending=false;l.now+=61;l.EvaluateRiskPolicy();
+ assert.deepEqual(l.audits,['BREACH','ACTION','RETRY']);
+ ok();}
+{// Tidy P3s (Claude-Mac 6440859442) on the resync request.
+ // A Resume request's resync is saved with it (a dashboard restart before the resend keeps it).
+ const r=dashboard(dash,{pending:true});r.m_portfolio_command_type=4;r.EvaluateRiskPolicy();r.m_portfolio_command_pending=false;
+ r.saves.length=0;r.SendPortfolioPauseCommand(false);
+ assert.ok(r.saves.some(s=>s.resyncDue),'the resync request is saved');
+ // A new breach clears a resync asked before it: nothing is resynced during its follow-up, only after the next Resume or re-arm.
+ const n=dashboard(dash,{pending:true});n.m_policy_unsynced_type=4;n.m_policy_resync_due=true;   // a re-arm asked it; a command kept it back
+ n.EvaluateRiskPolicy();assert.deepEqual([n.m_risk_policy_breached,n.m_policy_resync_due],[true,false]);
+ assert.equal(n.saves.at(-1).resyncDue,false,'saved cleared');
+ for(let s=0;s<300;s++){n.now++;n.m_portfolio_command_pending=false;n.EvaluateRiskPolicy();}
+ assert.deepEqual(n.resyncs,[],'no resync during the new breach\'s follow-up');
+ n.m_portfolio_command_pending=false;n.SendPortfolioPauseCommand(false);n.m_portfolio_command_pending=false;n.now++;n.EvaluateRiskPolicy();
+ assert.equal(n.resyncs.length,1,'resent after the next Resume');
+ // Disarm and re-arm (dialogs; their lines are checked in place): each asks for the resync BEFORE its SaveRiskPolicyState.
+ const arm=bodyOf(dash,'bool CGOATDashboard::ArmRiskPolicyFromHeader(void)');
+ assert.equal([...arm.matchAll(/if\(m_policy_unsynced_type!=0\) m_policy_resync_due=true;[^\n]*\n\s*SaveRiskPolicyState\(\);/g)].length,2,'disarm and re-arm, each saved');
+ const disarm=arm.slice(arm.indexOf('if(all_disabled)'),arm.indexOf('AppendRiskPolicyAudit("DISARM"'));
+ assert.match(disarm,/m_policy_resync_due=true;/,'disarm asks for the resync');
  ok();}
 
 console.log(JSON.stringify({passed,test:'b49b_f3b',b49aCompared:true}));

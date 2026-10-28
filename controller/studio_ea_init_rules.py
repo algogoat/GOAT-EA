@@ -74,7 +74,7 @@ def _mql_split_count(text, separator):
 
 
 def _bad_session(text):
-    # GOAT V1.49.mq5:4097-4102. parts/hm are declared `string parts[2], hm[2]`; the documented StringSplit
+    # GOAT V1.49.mq5:4162-4167. parts/hm are declared `string parts[2], hm[2]`; the documented StringSplit
     # count is mirrored (see the PR inventory for the static-array caveat).
     if _mql_split_count(text, '-') != 2:
         return True
@@ -136,7 +136,7 @@ def _mql_time(value):
 
 
 def _export_dates(desc):
-    """(is EXPORT, {name: datetime|0|None}) as OnInit lines 4009-4038 read them from EA_Desc."""
+    """(is EXPORT, {name: datetime|0|None}) as OnInit lines 4073-4103 read them from EA_Desc."""
     pairs = _desc_keys(desc)
     mode = ''
     for name, value in pairs:
@@ -175,7 +175,7 @@ def _fwd_end_before_start(start, end):
     return _set(start) and _set(end) and end < start
 
 
-# ---- the lot/exit/RRR chain (GOAT V1.49.mq5:4181-4197, 4447-4521) --------------------------------------------
+# ---- the lot/exit/RRR chain (GOAT V1.49.mq5:4246-4262, 4512-4586) --------------------------------------------
 def _risk_per_seq(v):
     return v['Mode_Lots'] == v.choice('Mode_Lots', 'RiskperSeq')
 
@@ -189,32 +189,32 @@ def _rrr_on(v):
 
 
 def _tp_size(v):
-    return v['TP_Pips'] * v['Lock_Profit_Size']          # TP_Pips_ = TP_Pips*LP_Size_ (line 4186)
+    return v['TP_Pips'] * v['Lock_Profit_Size']          # TP_Pips_ = TP_Pips*LP_Size_ (line 4251)
 
 
 def _lp_tp_both_disabled(v):
-    """Line 4521 after the RRR block may have derived TP, SL or LP, and lines 4519-4520 zero sizes under 1."""
+    """Line 4586 after the RRR block may have derived TP, SL or LP, and lines 4584-4585 zero sizes under 1."""
     lp = v['Lock_Profit_Size']
     tp = v['TP_Pips'] * lp
     if _rrr_on(v):
         rrr = v['RRR']
         if rrr <= 0:
-            return False                                  # refused earlier (4479/4480); 4521 is not reached
+            return False                                  # refused earlier (4544/4545); 4586 is not reached
         sl = v['SL_Pips']
         if v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP'):
             if sl != 0:
                 if tp != 0:
-                    return False                          # refused at 4485
+                    return False                          # refused at 4550
                 tp = sl * rrr
             elif tp == 0:
-                return False                              # refused at 4491
+                return False                              # refused at 4556
         elif v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP'):
             if sl != 0:
                 if lp != 0:
-                    return False                          # refused at 4498
+                    return False                          # refused at 4563
                 lp = sl * rrr
             elif lp == 0:
-                return False                              # refused at 4504
+                return False                              # refused at 4569
     if -1.0 < lp < 1.0:
         lp = 0
     if -1.0 < tp < 1.0:
@@ -228,7 +228,7 @@ def _rule(rule_id, lines, anchor, inputs, enums, condition, alert, predicate, no
 
 
 def _download_removes_ea(v):
-    """OnInit lines 4056-4089: a News download removes the EA at 4071 (unless NewsBias), any Bias download at 4045."""
+    """OnInit lines 4121-4154: a News download removes the EA at 4136 (unless NewsBias), any Bias download at 4110."""
     mode = v['Mode_Download']
     news = mode in (v.choice('Mode_Download', 'Download_News'), v.choice('Mode_Download', 'Download_NewsBias'))
     bias = mode in (v.choice('Mode_Download', 'Download_Bias'), v.choice('Mode_Download', 'Download_NewsBias'))
@@ -236,7 +236,7 @@ def _download_removes_ea(v):
 
 
 def _tester_control_tower_bias(v):
-    """OnInit 3970: test context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias() (GOATAIWireV2.mqh:640);
+    """OnInit 4034: test context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias() (GOATAIWireV2.mqh:640);
     the DemoRaw protocol only exists, and only counts, when the build defines GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED,
     which the schema shows by declaring that enum label."""
     if v['Mode_Bias'] == v.choice('Mode_Bias', 'Bias_Disabled'):
@@ -252,92 +252,92 @@ RRR_CHAIN = ('Mode_RRR', 'RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size')
 
 # In OnInit order: the first rule that fails is the one the EA reports.
 EA_INIT_RULES = (
-    _rule('EXPORT_FOOS_NOT_AFTER_BOOS', [4043], 'dt_Fwrd_OOS<=dt_Back_OOS', ['EA_Desc'], {},
+    _rule('EXPORT_FOOS_NOT_AFTER_BOOS', [4108], 'dt_Fwrd_OOS<=dt_Back_OOS', ['EA_Desc'], {},
           'EA_Desc @{mode=EXPORT}: dt_BOOS_end!=0 && dt_FOOS_start!=0 && dt_FOOS_start<=dt_BOOS_end',
           'EXPORT: dt_FOOS_start:<date> must be after dt_BOOS_end',
           _export_rule('dt_BOOS_end', 'dt_FOOS_start', _foos_not_after_boos)),
-    _rule('EXPORT_FWD_HALF_GIVEN', [4044], '(dt_FWD_start!=0 || dt_FWD_end!=0) && (dt_FWD_start==0 || dt_FWD_end==0)',
+    _rule('EXPORT_FWD_HALF_GIVEN', [4109], '(dt_FWD_start!=0 || dt_FWD_end!=0) && (dt_FWD_start==0 || dt_FWD_end==0)',
           ['EA_Desc'], {}, 'EA_Desc @{mode=EXPORT}: exactly one of dt_FWD_start/dt_FWD_end set',
           'EXPORT: dt_FWD_start and dt_FWD_end must both be provided',
           _export_rule('dt_FWD_start', 'dt_FWD_end', _fwd_half_given)),
-    _rule('EXPORT_FWD_END_BEFORE_START', [4045], 'dt_FWD_end<dt_FWD_start', ['EA_Desc'], {},
+    _rule('EXPORT_FWD_END_BEFORE_START', [4110], 'dt_FWD_end<dt_FWD_start', ['EA_Desc'], {},
           'EA_Desc @{mode=EXPORT}: dt_FWD_start!=0 && dt_FWD_end!=0 && dt_FWD_end<dt_FWD_start',
           'EXPORT: dt_FWD_end:<date> must be after dt_FWD_start',
           _export_rule('dt_FWD_start', 'dt_FWD_end', _fwd_end_before_start)),
-    _rule('DATA_DOWNLOAD_MODE_REMOVES_EA', [4071, 4088], 'History download is not allowed in this mode', ['Mode_Download'],
+    _rule('DATA_DOWNLOAD_MODE_REMOVES_EA', [4136, 4153], 'History download is not allowed in this mode', ['Mode_Download'],
           {'Mode_Download': ['Download_Disabled', 'Download_News', 'Download_Bias', 'Download_NewsBias']},
           'Mode_Download in (Download_News, Download_Bias, Download_NewsBias): ExpertRemove() in OnInit',
           'News History download is not allowed in this mode / Bias History download is not allowed in this mode',
           _download_removes_ea,
           note=('In the tester the EA prints that and removes itself; on a live chart it downloads the data files and '
-                'then removes itself (ExpertRemove, GOAT V1.49.mq5:4071/4088). Mode_Download is the "Data Download '
+                'then removes itself (ExpertRemove, GOAT V1.49.mq5:4136/4153). Mode_Download is the "Data Download '
                 'Mode for Backtest" data tool, never a strategy setting: use Download_Disabled.')),
-    _rule('SESSION_FORMAT', [4097, 4099, 4102], 'Session format must be HH:MM-HH:MM', SESSION_INPUTS, {},
+    _rule('SESSION_FORMAT', [4162, 4164, 4167], 'Session format must be HH:MM-HH:MM', SESSION_INPUTS, {},
           'Active_Time_ASIA/EU/US: StringSplit(s,\'-\')!=2, or either half StringSplit(h,\':\')!=2',
           'Session format must be HH:MM-HH:MM', lambda v: any(_bad_session(v[name]) for name in SESSION_INPUTS)),
-    _rule('RISK_PER_SEQUENCE_RISK_TOO_LOW', [4451], 'Mode_Lots == RiskperSeq && Risk<10', ['Mode_Lots', 'Risk'],
+    _rule('RISK_PER_SEQUENCE_RISK_TOO_LOW', [4516], 'Mode_Lots == RiskperSeq && Risk<10', ['Mode_Lots', 'Risk'],
           {'Mode_Lots': ['RiskperSeq']}, 'Mode_Lots==RiskperSeq && Risk<10',
           'Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low.',
           lambda v: _risk_per_seq(v) and v['Risk'] < 10),
-    _rule('MLPS_HARD_CLOSE_RISK_TOO_LOW', [4453], 'Sequence_MLPS_Hard_Close && Risk<10.0',
+    _rule('MLPS_HARD_CLOSE_RISK_TOO_LOW', [4518], 'Sequence_MLPS_Hard_Close && Risk<10.0',
           ['Sequence_MLPS_Hard_Close', 'Risk'], {}, 'Sequence_MLPS_Hard_Close && Risk<10.0',
           'Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10.',
           lambda v: v['Sequence_MLPS_Hard_Close'] and v['Risk'] < 10.0),
-    _rule('SMART_PEAK_RISK_TOO_LOW', [4459], 'Smart Peak requires Risk/MLPS amount of at least 10',
+    _rule('SMART_PEAK_RISK_TOO_LOW', [4524], 'Smart Peak requires Risk/MLPS amount of at least 10',
           ['Mode_Lots_Prog', 'Risk'], {'Mode_Lots_Prog': ['Lots_Prog_PeakSmart']},
           'Mode_Lots_Prog==Lots_Prog_PeakSmart && Risk<10.0',
           'Initialization Failed: Smart Peak requires Risk/MLPS amount of at least 10.',
           lambda v: _peak_smart(v) and v['Risk'] < 10.0),
-    _rule('SMART_PEAK_PERCENT_RANGE', [4464],
+    _rule('SMART_PEAK_PERCENT_RANGE', [4529],
           'Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0',
           ['Mode_Lots_Prog', 'Peak_Smart_Release_PC', 'Peak_Smart_Max_Close_PC'], {'Mode_Lots_Prog': ['Lots_Prog_PeakSmart']},
           'Mode_Lots_Prog==Lots_Prog_PeakSmart && (Peak_Smart_Release_PC or Peak_Smart_Max_Close_PC outside 0..100)',
           'Initialization Failed: Smart Peak inputs must use 0-100 percent ranges.',
           lambda v: _peak_smart(v) and (v['Peak_Smart_Release_PC'] < 0.0 or v['Peak_Smart_Release_PC'] > 100.0
                                         or v['Peak_Smart_Max_Close_PC'] < 0.0 or v['Peak_Smart_Max_Close_PC'] > 100.0)),
-    _rule('SMART_RESCUE_MAX_ADDS_BELOW_MINUS_ONE', [4467], 'Bias_Exit_Max_Exposure_Adds<-1',
+    _rule('SMART_RESCUE_MAX_ADDS_BELOW_MINUS_ONE', [4532], 'Bias_Exit_Max_Exposure_Adds<-1',
           ['Bias_Exit_Max_Exposure_Adds'], {}, 'Bias_Exit_Max_Exposure_Adds<-1',
           'Initialization Failed: Smart Rescue max positive adds cannot be less than -1.',
           lambda v: v['Bias_Exit_Max_Exposure_Adds'] < -1),
-    _rule('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', [4473], 'Mode_Lots!=RiskperSeq || Risk<=0.0',
+    _rule('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', [4538], 'Mode_Lots!=RiskperSeq || Risk<=0.0',
           ['Mode_Bias_Exit', 'Mode_Lots', 'Risk'],
           {'Mode_Bias_Exit': ['BiasExit_SmartRescue'], 'Mode_Lots': ['RiskperSeq']},
           'Mode_Bias_Exit==BiasExit_SmartRescue && (Mode_Lots!=RiskperSeq || Risk<=0.0)',
           'Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0.',
           lambda v: v['Mode_Bias_Exit'] == v.choice('Mode_Bias_Exit', 'BiasExit_SmartRescue')
           and (not _risk_per_seq(v) or v['Risk'] <= 0.0)),
-    _rule('RRR_NEGATIVE', [4479], 'if(RRR<0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
+    _rule('RRR_NEGATIVE', [4544], 'if(RRR<0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
           'Mode_RRR!=RRR_Disabled && RRR<0', 'Initialization Failed: Risk/Reward ratio cannot be negative',
           lambda v: _rrr_on(v) and v['RRR'] < 0),
-    _rule('RRR_ZERO', [4480], 'if(RRR==0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
+    _rule('RRR_ZERO', [4545], 'if(RRR==0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
           'Mode_RRR!=RRR_Disabled && RRR==0', 'Initialization Failed: Risk/Reward ratio is enabled but RRR=0',
           lambda v: _rrr_on(v) and v['RRR'] == 0),
-    _rule('RRR_SL_TP_BOTH_SET', [4485], 'Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
+    _rule('RRR_SL_TP_BOTH_SET', [4550], 'Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
           ['Mode_RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_TP']},
           'Mode_RRR==RRR_SL_TP && SL_Pips!=0 && TP_Pips*Lock_Profit_Size!=0',
           'Initialization Failed: Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP') and v['SL_Pips'] != 0 and _tp_size(v) != 0),
-    _rule('RRR_SL_TP_BOTH_ZERO', [4491], 'Risk/Reward mode is SL/TP, but both TP and SL are zero',
+    _rule('RRR_SL_TP_BOTH_ZERO', [4556], 'Risk/Reward mode is SL/TP, but both TP and SL are zero',
           ['Mode_RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_TP']},
           'Mode_RRR==RRR_SL_TP && SL_Pips==0 && TP_Pips*Lock_Profit_Size==0',
           'Initialization Failed: Risk/Reward mode is SL/TP, but both TP and SL are zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP') and v['SL_Pips'] == 0 and _tp_size(v) == 0),
-    _rule('RRR_SL_LP_BOTH_SET', [4498], 'Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
+    _rule('RRR_SL_LP_BOTH_SET', [4563], 'Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
           ['Mode_RRR', 'SL_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_LP']},
           'Mode_RRR==RRR_SL_LP && SL_Pips!=0 && Lock_Profit_Size!=0',
           'Initialization Failed: Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP') and v['SL_Pips'] != 0 and v['Lock_Profit_Size'] != 0),
-    _rule('RRR_SL_LP_BOTH_ZERO', [4504], 'Risk/Reward mode is SL/LP, but both LP and SL are zero',
+    _rule('RRR_SL_LP_BOTH_ZERO', [4569], 'Risk/Reward mode is SL/LP, but both LP and SL are zero',
           ['Mode_RRR', 'SL_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_LP']},
           'Mode_RRR==RRR_SL_LP && SL_Pips==0 && Lock_Profit_Size==0',
           'Initialization Failed: Risk/Reward mode is SL/LP, but both LP and SL are zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP') and v['SL_Pips'] == 0 and v['Lock_Profit_Size'] == 0),
-    _rule('GRID_SIZE_TOO_SMALL', [4516], 'Grid_Size >-0.5 && Grid_Size <0.5', ['Grid_Size'], {},
+    _rule('GRID_SIZE_TOO_SMALL', [4581], 'Grid_Size >-0.5 && Grid_Size <0.5', ['Grid_Size'], {},
           'Grid_Size>-0.5 && Grid_Size<0.5', 'Initialization Failed: Pip Gap Size too small or zero',
           lambda v: -0.5 < v['Grid_Size'] < 0.5),
-    _rule('LP_AND_TP_BOTH_DISABLED', [4521], 'LP_Size_  ==0   && TP_Pips_  ==0', RRR_CHAIN,
+    _rule('LP_AND_TP_BOTH_DISABLED', [4586], 'LP_Size_  ==0   && TP_Pips_  ==0', RRR_CHAIN,
           {'Mode_RRR': ['RRR_Disabled', 'RRR_SL_TP', 'RRR_SL_LP']},
-          'after the RRR block and the |x|<1 -> 0 normalisation of lines 4519-4520: LP_Size_==0 && TP_Pips_==0',
+          'after the RRR block and the |x|<1 -> 0 normalisation of lines 4584-4585: LP_Size_==0 && TP_Pips_==0',
           'Initialization Failed: Both LP and TP cannot be zero/disabled.', _lp_tp_both_disabled),
 )
 
@@ -345,7 +345,7 @@ EA_INIT_RULES = (
 # chart and still refused in every tester pass, so validate-set (live and tester SETs alike) does not apply these;
 # batch prepare (studio_batch.prepare_batch) does, before anything is staged.
 TESTER_INIT_RULES = (
-    _rule('TESTER_CONTROL_TOWER_BIAS', [3973], 'Live Control Tower bias is unavailable in tester',
+    _rule('TESTER_CONTROL_TOWER_BIAS', [4037], 'Live Control Tower bias is unavailable in tester',
           ['Mode_Bias', 'Bias_Protocol'],
           {'Mode_Bias': ['Bias_Disabled'], 'Bias_Protocol': ['BiasProtocol_ControlTowerV2']},
           '(MQL_TESTER || MQL_OPTIMIZATION || MQL_FORWARD) && Mode_Bias!=Bias_Disabled && Bias_Protocol is '
@@ -359,60 +359,60 @@ _STUDIO_SINPUTS = ('Studio_ReadOnlyMonitor/Studio_MonitorRunPath are sinputs dec
                    'input header, so they are not in the controller schema; validate_strategy refuses a SET that '
                    'names them (unknown input) and the EA default (false) never fires this rule')
 NOT_PORTED = (
-    dict(lines=(3948,), anchor='StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0', condition='read-only monitor run path outside GOAT\\', reason=_STUDIO_SINPUTS),
-    dict(lines=(3950,), anchor='Read-only Studio requires chart operation mode Optimization Studio',
+    dict(lines=(4012,), anchor='StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0', condition='read-only monitor run path outside GOAT\\', reason=_STUDIO_SINPUTS),
+    dict(lines=(4014,), anchor='Read-only Studio requires chart operation mode Optimization Studio',
          condition='Studio_ReadOnlyMonitor && (Mode_Operation!=Operation_Batch || MQL_TESTER)', reason=_STUDIO_SINPUTS + '; also run context (tester)'),
-    dict(lines=(3961,), anchor='Name Mismatch: The Bot/EA cannot be renamed',
+    dict(lines=(4025,), anchor='Name Mismatch: The Bot/EA cannot be renamed',
          condition='EA file renamed (EA_Name != Key+" V"+version): Alert then ExpertRemove()',
          reason='build identity (the .ex5 file name), not an input value'),
-    dict(lines=(3978,), anchor='Legacy recorded bias is historical/test-only',
+    dict(lines=(4042,), anchor='Legacy recorded bias is historical/test-only',
          condition='Bias_Protocol==BiasProtocol_LegacyRecorded && live chart', reason='run context: valid in the tester, refused live'),
-    dict(lines=(3986,), anchor='Demo raw AI bias is restricted to demo accounts',
+    dict(lines=(4050,), anchor='Demo raw AI bias is restricted to demo accounts',
          condition='Mode_Bias!=Bias_Disabled && DemoRaw protocol && live && account is not demo', reason='account trade mode'),
-    dict(lines=(3995,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID)',
+    dict(lines=(4059,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID)',
          condition='live, no credential, device activation cannot begin', reason='account login and credential state'),
-    dict(lines=(4005,), anchor='GOAT AI wire v2 checksum self-test failed', condition='AI wire v2 self-test fails', reason='build/runtime self-test'),
-    dict(lines=(4041,), anchor='dt_Back_OOS<TimeCurrent()', condition='EXPORT && dt_BOOS_end before the test start',
+    dict(lines=(4069,), anchor='GOAT AI wire v2 checksum self-test failed', condition='AI wire v2 self-test fails', reason='build/runtime self-test'),
+    dict(lines=(4106,), anchor='dt_Back_OOS<TimeCurrent()', condition='EXPORT && dt_BOOS_end before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4042,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
+    dict(lines=(4107,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4054,), anchor='TimeCurrent()>Expiry', condition='build expired', reason='current time vs build expiry'),
-    dict(lines=(4216,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
+    dict(lines=(4119,), anchor='TimeCurrent()>Expiry', condition='build expired', reason='current time vs build expiry'),
+    dict(lines=(4281,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
          reason='run context (live chart)'),
-    dict(lines=(4230, 4234, 4235, 4237), anchor='Operation_Report',
+    dict(lines=(4295, 4299, 4300, 4302), anchor='Operation_Report',
          condition='live, licensed, Mode_Operation==Operation_Report: report dialog then always INIT_FAILED',
          reason='run context (live chart + license); the report tool ends init by design'),
-    dict(lines=(4244,), anchor='Allow DLL imports for GOAT', condition='Studio/Dashboard without DLL imports', reason='terminal setting'),
-    dict(lines=(4301,), anchor='Tester GUI creation Failed', condition='Studio GUI creation fails', reason='chart/GUI runtime'),
-    dict(lines=(4322,), anchor='Dashboard resume refused: saved state and first chart are required', condition='dashboard resume without saved state', reason='chart and saved dashboard state'),
-    dict(lines=(4339,), anchor='Wrong Chart Position', condition='dashboard not on the first chart, user declines', reason='chart layout and user choice'),
-    dict(lines=(4362, 4363), anchor='Dashboard Launch Cancelled',
-         condition='user cancels dashboard resume prompt (4363: unreachable ExpertRemove after the return)', reason='user choice'),
-    dict(lines=(4373,), anchor='No valid .set files found', condition='dashboard finds no SETs/config', reason='files on disk'),
-    dict(lines=(4381,), anchor='Dashboard GUI creation Failed', condition='dashboard GUI creation fails', reason='chart/GUI runtime'),
-    dict(lines=(4431,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true)',
+    dict(lines=(4309,), anchor='Allow DLL imports for GOAT', condition='Studio/Dashboard without DLL imports', reason='terminal setting'),
+    dict(lines=(4366,), anchor='Tester GUI creation Failed', condition='Studio GUI creation fails', reason='chart/GUI runtime'),
+    dict(lines=(4387,), anchor='Dashboard resume refused: saved state and first chart are required', condition='dashboard resume without saved state', reason='chart and saved dashboard state'),
+    dict(lines=(4404,), anchor='Wrong Chart Position', condition='dashboard not on the first chart, user declines', reason='chart layout and user choice'),
+    dict(lines=(4427, 4428), anchor='Dashboard Launch Cancelled',
+         condition='user cancels dashboard resume prompt (4428: unreachable ExpertRemove after the return)', reason='user choice'),
+    dict(lines=(4438,), anchor='No valid .set files found', condition='dashboard finds no SETs/config', reason='files on disk'),
+    dict(lines=(4446,), anchor='Dashboard GUI creation Failed', condition='dashboard GUI creation fails', reason='chart/GUI runtime'),
+    dict(lines=(4496,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true)',
          condition='credential rejected and replacement cannot begin', reason='license service response'),
-    dict(lines=(4437,), anchor='GOAT license service is temporarily unavailable', condition='license service unavailable', reason='license service response'),
-    dict(lines=(4442,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
+    dict(lines=(4502,), anchor='GOAT license service is temporarily unavailable', condition='license service unavailable', reason='license service response'),
+    dict(lines=(4507,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
     # B49b (F6): the EA now refuses what validate_strategy already refused, so it is decided before these rules run.
-    dict(lines=(4452,), anchor='Mode_Lots == RiskperSeq && Max_Seq_Trades<=1', condition='Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
+    dict(lines=(4517,), anchor='Mode_Lots == RiskperSeq && Max_Seq_Trades<=1', condition='Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
          reason='decided first by studio_strategy_settings.check_risk_sizing (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), over every '
                 'reachable value, before check_ea_init runs'),
-    dict(lines=(4561,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4569,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4626,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4634,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
     # B49b (F7 SIG-01): every enabled signal indicator's handle, as ATR's.
-    dict(lines=(4582,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4583,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4584,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4585,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4586,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
+    dict(lines=(4647,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4648,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4649,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4650,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4651,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
          reason='symbol/indicator runtime (the indicator file)'),
-    dict(lines=(4587,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(4650,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4652,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(4715,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4651,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4659,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4664,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4716,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4724,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4729,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

@@ -106,6 +106,7 @@ function chart(acct,mode,text=main){
   g_GoatStudioReadOnlyMonitor:false,GOATDeviceActivationOnly:()=>false,GoatDirectionGuardDeal:()=>{},
   open:{buy:0,sell:0},FindNumberOfPositions:(op)=>op===0?g.open.buy:g.open.sell,LastTradeCountBuy:0,LastTradeCountSell:0,
   MQLInfoInteger:()=>0,DashboardBusRollClosedBuckets:()=>{},dt_Back_OOS:0,dt_Fwrd_OOS:0,dt_FWD_start:0,dt_FWD_end:0,
+  GoatFwdDay:()=>false,   // B49b (F8 R16, test_b49b_f8.cjs): no FWD window here (dt_FWD_* are 0), as B49a's comparison
   trd_BOOS:0,trd_FOOS:0,trd_IS:0,trd_FWD:0,
   DStartTime:DAY0,PL_Total:0,DStartLocalLoss:0};
  vm.createContext(g);

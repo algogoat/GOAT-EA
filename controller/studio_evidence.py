@@ -132,6 +132,52 @@ def parse_header(text):
     return windows
 
 
+# B49b (F8; goatai#2587 6433828681, Claude-Mac 6433854745 ruling 3, 6443122557): from B49b every export says which export
+# format wrote it, on one more stamp line after the B44 one: '; EXPORT format:2 rank:arf_sr|pf'. Format 2 exports were
+# written with the F8 fixes (the trim keeps only passing rows, mismatched forward rows are rejected, the BOOS / SAMPLE /
+# FWD P/L include each window's last day, the equity CSV has a final row), so they are a new evidence segment. A SET
+# without the line is format 1 (every build before B49b, which ranked its trim on ARF x SR). Format 1 and format 2
+# exports never pool: a reader that combines exports calls require_one_export_format.
+EXPORT_FORMAT_PREFIX = '; EXPORT format'
+_EXPORT_FORMAT = re.compile(r'; EXPORT format:(\d+) rank:(arf_sr|pf)')
+STAMPED_EXPORT_FORMATS = (2,)
+MIXED_EXPORT_FORMAT = 'MIXED_EXPORT_FORMAT'
+
+
+def parse_export_format(text):
+    """``{'format': n, 'rank': 'arf_sr'|'pf'}`` from a SET header; format 1 (arf_sr) without the stamp line.
+
+    Fails closed: a stamp line that does not parse, names a format this controller does not know, or repeats,
+    raises ValueError, so an export is never read as the wrong segment."""
+    found = []
+    for line in text.splitlines():
+        line = line.lstrip('﻿').strip()
+        if not line.startswith(EXPORT_FORMAT_PREFIX):
+            continue
+        match = _EXPORT_FORMAT.fullmatch(line)
+        if not match:
+            raise ValueError('Unreadable export-format stamp in SET header: ' + line[:80])
+        found.append(dict(format=int(match[1]), rank=match[2]))
+    if len(found) > 1:
+        raise ValueError('Duplicate export-format stamp in SET header')
+    if not found:
+        return dict(format=1, rank='arf_sr')
+    if found[0]['format'] not in STAMPED_EXPORT_FORMATS:
+        raise ValueError('Unknown export format %d in SET header (this controller reads 1 and %s)'
+                         % (found[0]['format'], ', '.join(map(str, STAMPED_EXPORT_FORMATS))))
+    return found[0]
+
+
+def require_one_export_format(exports):
+    """The one export format of ``exports`` (read_export results), or None when empty. Exports of different formats
+    are different evidence segments and never pool: a mix raises ValueError (MIXED_EXPORT_FORMAT)."""
+    formats = sorted({export['export_format'] for export in exports})
+    if len(formats) > 1:
+        counts = ', '.join('format %d: %d' % (f, sum(1 for e in exports if e['export_format'] == f)) for f in formats)
+        raise ValueError(MIXED_EXPORT_FORMAT + ': exports of different export formats never pool (' + counts + ')')
+    return formats[0] if formats else None
+
+
 def parse_stem(stem, symbol=None):
     """``<EA name> <SYMBOL>,<PERIOD>_Trds=.._Prf=.._DD=.._PF=.._SR=.._ARF=..`` (EA names contain spaces).
 
@@ -278,6 +324,7 @@ def read_export(set_path, *, runs=None):
     if info['axes']:
         raise ValueError('Exported SET still has optimization axes; catch-up needs frozen values')
     windows = parse_header(text)
+    export_format = parse_export_format(text)
     problems = []
     capture = None
     if paths['goatseq'].is_dir():
@@ -347,7 +394,8 @@ def read_export(set_path, *, runs=None):
                 **(dict(archived_set_path=str(paths['set'])) if moved else {}),
                 values_sha256=info['canonical_sha256'], alias=alias, member=member,
                 ea_name=named and named['ea_name'], symbol=named and named['symbol'], period=named and named['period'],
-                metrics=metrics, windows=windows, csv_path=str(paths['csv']) if paths['csv'].is_file() else None,
+                metrics=metrics, windows=windows, export_format=export_format['format'], export_rank=export_format['rank'],
+                csv_path=str(paths['csv']) if paths['csv'].is_file() else None,
                 csv_last_date=csv_end, capture=capture,
                 evidence_start=start and start.isoformat(), evidence_end=end and end.isoformat(), evidence_end_source=source,
                 requested_end=requested_end and requested_end.isoformat(),

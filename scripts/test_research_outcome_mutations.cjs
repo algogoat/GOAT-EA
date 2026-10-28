@@ -40,10 +40,13 @@ const mutations=[
   ['unreadable forward rows accepted','XmlProcessor.mqh',R`if(forward_matched!=kept || forward_mismatches!=0 || forward_malformed!=0) return "";`,R`if(forward_matched!=kept || forward_mismatches!=0) return "";`,outcome],
   ['qualifying score classified','XmlProcessor.mqh',R`if(min_score<=0 || best_score<0 || !(best_score<min_score)) return "";`,R`if(min_score<=0 || best_score<0) return "";`,outcome],
   ['best combined score never recorded','XmlProcessor.mqh',R`bestCombinedScore=(ArraySize(Rows)>0 ? Rows[0].Score : 0.0);`,'',outcome],
-  ['back-result mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++;
-               LogOrPrint(reportMode,"❌ Back result mismatch`,R`LogOrPrint(reportMode,"❌ Back result mismatch`,outcome],
-  ['inputs mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++;
-               LogOrPrint(reportMode,"❌ Inputs mismatch`,R`LogOrPrint(reportMode,"❌ Inputs mismatch`,outcome],
+  // B49b (F8 OPT-04): the count's line also marks the row now; the mutant drops only the count.
+  ['back-result mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++; Rows[bPos].forward_mismatch=true; // B49b (F8 OPT-04)
+               LogOrPrint(reportMode,"❌ Back result mismatch`,R`Rows[bPos].forward_mismatch=true; // B49b (F8 OPT-04)
+               LogOrPrint(reportMode,"❌ Back result mismatch`,outcome],
+  ['inputs mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++; Rows[bPos].forward_mismatch=true; // B49b (F8 OPT-04)
+               LogOrPrint(reportMode,"❌ Inputs mismatch`,R`Rows[bPos].forward_mismatch=true; // B49b (F8 OPT-04)
+               LogOrPrint(reportMode,"❌ Inputs mismatch`,outcome],
   ['forward row loops forever at EOF','XmlProcessor.mqh',R`if(FileIsEnding(hForward)) {forwardMalformed++; break;}   // truncated report: never loop at EOF`,'',outcome],
   // Codex P1: every score cell, back and forward, must parse strictly.
   ['forward profit cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(profitCell)) forwardMalformed++;`,'',outcome],

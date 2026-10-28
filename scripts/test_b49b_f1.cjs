@@ -41,10 +41,13 @@ const js=text=>text.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'')
  .replace(new RegExp('\\b'+TYPE+'\\s+(?=\\w)','g'),'let ')
  .replace(/\((?:long|int|uint|ulong|double|datetime)\)/g,'');
 const fn=(name,args,body)=>'function '+name+'('+args.join(',')+'){'+js(body)+'}\n';
-const define=name=>{const m=main.match(new RegExp('^#define '+name+'\\s+(\\d+)\\s*$','m'));assert.ok(m,'missing #define '+name);return Number(m[1]);};
+const define=name=>{const m=main.match(new RegExp('^#define '+name+'\\s+(\\d+)\\s*(?://.*)?$','m'));assert.ok(m,'missing #define '+name);return Number(m[1]);};
 const NONE=define('GOAT_MANAGE_NONE'),DOWN=define('GOAT_MANAGE_LICENCE_DOWN'),REFUSED=define('GOAT_MANAGE_LICENCE_REFUSED'),EXPIRED=define('GOAT_MANAGE_EXPIRED');
+const CRED=define('GOAT_MANAGE_CREDENTIAL');
 const RETRY_MS=define('GOAT_LICENCE_RETRY_MS'),VERSION=define('GOAT_STATE_VERSION'),FLUSH_MS=define('GOAT_SQ_FLUSH_MS');
-assert.deepEqual([NONE,DOWN,REFUSED,EXPIRED,RETRY_MS,VERSION,FLUSH_MS],[0,1,2,3,300000,1,5000]);
+assert.deepEqual([NONE,DOWN,REFUSED,EXPIRED,CRED,RETRY_MS,VERSION,FLUSH_MS],[0,1,2,3,4,300000,1,5000]);
+// test_b49b_f1_mutations.cjs points GOAT_EA_DASH at a mutated Dashboard.mqh.
+const dash=clean(fs.readFileSync(process.env.GOAT_EA_DASH||path.join(ROOT,'Dashboard.mqh'),'utf8'));
 const VALID=Number((clean(fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'),'utf8')).match(/^#define LICENSE_VALID\s+(\d+)/m)||[])[1]);
 assert.equal(VALID,1505);
 
@@ -53,7 +56,8 @@ const SIG={
  licence:'bool GoatLicenceManageOnly(const int key)',value:'string GoatStateValue(const string &keys[],const string &values[],const string key)',
  entry:'bool DashboardEntryAllowed(const int op)',path:'string GoatStatePath()',stateLive:'bool GoatStateLive()',text:'string GoatStateText()',
  flush:'void GoatStateFlush(const bool force=false)',read:'bool GoatStateRead(string &keys[],string &values[])',restore:'void GoatStateRestore()',
- day:'void GoatStateDayRestore()',after:'bool GoatManageOnlyAfterAdopt()',timer:'void GoatManageOnlyTimer()',
+ day:'void GoatStateDayRestore()',why:'string GoatManageOnlyWhy()',announce:'void GoatManageOnlyAnnounce()',
+ after:'int GoatManageOnlyAfterAdopt()',timer:'void GoatManageOnlyTimer()',
  seqText:'   string StateText()',seqRestore:'   void StateRestore(const string &keys[],const string &values[])',
  frozen:'   bool ManageOnlyFrozen(const int level)',persistLive:'   bool PersistLive()',init:'   void Init(int OP,bool v)',reset:'   void ResetSequenceRiskState()',
 };
@@ -61,7 +65,8 @@ const FLAGS=fn('GoatManageOnlyLive',[],bodyOf(main,SIG.live))+fn('GoatManageOnly
  +fn('GoatExpiryManageOnly',[],bodyOf(main,SIG.expiry))+fn('GoatLicenceManageOnly',['key'],bodyOf(main,SIG.licence))
  +fn('GoatStateValue',['keys','values','key'],bodyOf(main,SIG.value));
 const K={OP_BUY:0,OP_SELL:1,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,Operation_Standard:0,Operation_Report:5,Operation_Batch:6,Operation_Dash:7,
- GOAT_MANAGE_NONE:NONE,GOAT_MANAGE_LICENCE_DOWN:DOWN,GOAT_MANAGE_LICENCE_REFUSED:REFUSED,GOAT_MANAGE_EXPIRED:EXPIRED,GOAT_LICENCE_RETRY_MS:RETRY_MS,
+ GOAT_MANAGE_NONE:NONE,GOAT_MANAGE_LICENCE_DOWN:DOWN,GOAT_MANAGE_LICENCE_REFUSED:REFUSED,GOAT_MANAGE_EXPIRED:EXPIRED,GOAT_MANAGE_CREDENTIAL:CRED,
+ GOAT_LICENCE_RETRY_MS:RETRY_MS,INIT_SUCCEEDED:0,INIT_FAILED:1,GOAT_BUILD_ID:'B49b-test',
  GOAT_STATE_VERSION:VERSION,GOAT_SQ_FLUSH_MS:FLUSH_MS,LICENSE_VALID:VALID,FILE_COMMON:4096,ACCOUNT_LOGIN:'login',ACCOUNT_NAME:'name',ACCOUNT_SERVER:'server',
  TIME_DATE:1,URL_Web:'https://goatedge.ai',Expiry:1798675200,MAGIC1:1843920117,_Symbol:'EURUSD',_Digits:5};
 const common=t=>({IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),StringToDouble:s=>Number(s)||0,
@@ -80,27 +85,28 @@ function flags({tester=false,mode=0,Mode='',state=NONE}={}){
  assert.equal(flags().GoatManageOnlyLive(),true);
  for(const o of [{tester:true},{mode:5},{mode:6},{mode:7},{Mode:'EXPORT'}]) assert.equal(flags(o).GoatManageOnlyLive(),false,JSON.stringify(o));
  // VerifyLicense's answers.
- for(const [key,want] of [[-1,DOWN],[-2,DOWN],[500,DOWN],[503,DOWN],[1001,DOWN],[1003,DOWN],[400,REFUSED],[402,REFUSED],[200,REFUSED]]){
+ const WORD={[DOWN]:'licence_unavailable',[REFUSED]:'licence_refused',[CRED]:'credential_rejected'};
+ for(const [key,want] of [[-1,DOWN],[-2,DOWN],[500,DOWN],[503,DOWN],[1001,DOWN],[1003,DOWN],[400,REFUSED],[402,REFUSED],[200,REFUSED],[401,CRED],[403,CRED]]){
   const c=flags();c.t.now=7777;assert.equal(c.GoatLicenceManageOnly(key),true,'key '+key);
   assert.equal(c.g_GoatManageOnly,want,'key '+key);assert.equal(c.g_GoatLicenceRetriedMs,7777,'the retry clock starts at init');
-  assert.match(c.t.logs.at(-1),new RegExp('^GOAT manage-only: reason='+(want===DOWN?'licence_unavailable':'licence_refused')+' licence_status='+key+' new_trades=refused'));
+  assert.match(c.t.logs.at(-1),new RegExp('^GOAT manage-only: reason='+WORD[want]+' licence_status='+key+' new_trades=refused'));
  }
- for(const key of [VALID,401,403,0]){const c=flags();assert.equal(c.GoatLicenceManageOnly(key),false,'key '+key);assert.equal(c.g_GoatManageOnly,NONE);}
+ for(const key of [VALID,0]){const c=flags();assert.equal(c.GoatLicenceManageOnly(key),false,'key '+key);assert.equal(c.g_GoatManageOnly,NONE);}
  for(const o of [{tester:true},{mode:5},{mode:7}]){const c=flags(o);assert.equal(c.GoatLicenceManageOnly(503),false);assert.equal(c.g_GoatManageOnly,NONE,'B49a INIT_FAILED stays off the trading chart');}
  // An expired build stays expired when the licence is also down: a licence that comes back never lifts expiry.
- {const c=flags({state:EXPIRED});assert.equal(c.GoatLicenceManageOnly(503),true);assert.equal(c.g_GoatManageOnly,EXPIRED);}
+ for(const key of [503,403]){const c=flags({state:EXPIRED});assert.equal(c.GoatLicenceManageOnly(key),true);assert.equal(c.g_GoatManageOnly,EXPIRED,'key '+key);}
  // GoatExpiryManageOnly: live, once; the tester keeps B49a's expiry.
  {const c=flags();assert.equal(c.GoatExpiryManageOnly(),true);assert.equal(c.GoatExpiryManageOnly(),true);assert.equal(c.g_GoatManageOnly,EXPIRED);
   assert.equal(c.t.logs.filter(l=>/reason=expired/.test(l)).length,1,'said once');}
  {const c=flags({state:DOWN});c.GoatExpiryManageOnly();assert.equal(c.g_GoatManageOnly,EXPIRED,'expiry outranks an outage');}
  {const c=flags({tester:true});assert.equal(c.GoatExpiryManageOnly(),false);assert.equal(c.g_GoatManageOnly,NONE);}
- assert.deepEqual([NONE,DOWN,REFUSED,EXPIRED].map(s=>flags({state:s}).GoatManageOnlyReason()),['none','licence_unavailable','licence_refused','expired']);
+ assert.deepEqual([NONE,DOWN,REFUSED,EXPIRED,CRED].map(s=>flags({state:s}).GoatManageOnlyReason()),['none','licence_unavailable','licence_refused','expired','credential_rejected']);
  ok();}
 {// DashboardEntryAllowed: every start path passes through it (Add_Level's virtual->real hand-off and the signal block).
  const run=(state,{cid=false}={})=>{const c={g_GoatManageOnly:state,GOAT_MANAGE_NONE:NONE,MAGIC1:1,g_GoatStudioMonitorRunPath:'',Symbol:()=>'EURUSD',
   GoatCidGuardRefuses:()=>cid,GoatStagedChildMayOpen:()=>true,DashboardTradeAllowed:()=>true,DashboardExposureConflict:()=>false};
   vm.createContext(c);vm.runInContext(fn('DashboardEntryAllowed',['op'],bodyOf(main,SIG.entry)),c);return c.DashboardEntryAllowed(0);};
- assert.equal(run(NONE),true);for(const s of [DOWN,REFUSED,EXPIRED]) assert.equal(run(s),false,'manage-only '+s+' opens nothing');
+ assert.equal(run(NONE),true);for(const s of [DOWN,REFUSED,EXPIRED,CRED]) assert.equal(run(s),false,'manage-only '+s+' opens nothing');
  assert.equal(run(NONE,{cid:true}),false,'B46 still refuses');
  const body=bodyOf(main,SIG.entry).split('\n').filter(l=>l.trim());
  assert.match(body[0],/GoatCidGuardRefuses\(true\)\) return false; \/\/ B46/,'B46 stays the first refusal');
@@ -128,7 +134,8 @@ function sequence(ea,{dir=0,virtual=false,active=true,traded=true,adopted=true,m
 }
 // ---------------------------------------------------------------- the EA: globals, the state file, the licence service
 function ea({tester=false,mode=0,state=NONE,files=new Map(),licence=[]}={}){
- const t={tester,logs:[],alerts:[],now:100000,files,writes:0,failWrite:false,unreadable:false,licence:[...licence],verifies:0,removed:0,sleeps:[]};
+ const t={tester,logs:[],alerts:[],now:100000,files,writes:0,failWrite:false,unreadable:false,licence:[...licence],verifies:0,removed:0,sleeps:[],
+  prompts:[],hidden:0,statuses:[],activations:[],activationOk:true};
  const c={...K,...common(t),t,Mode_Operation:mode,Mode:'',g_GoatManageOnly:state,g_GoatLicenceRetriedMs:0,g_GoatStateFailed:false,
   g_GoatLastStopOutB:false,g_GoatLastStopOutS:false,g_GoatStateLast:'',g_GoatStateWrittenMs:0,g_GoatStateDay:0,g_GoatDayRestorePending:false,
   g_GoatDayKeys:[],g_GoatDayValues:[],removing:false,StopOut_Flag:false,DStartEquity:10000,DStartLocalLoss:99999,DStartTime:0,LastStopoutTime:0,
@@ -137,9 +144,11 @@ function ea({tester=false,mode=0,state=NONE,files=new Map(),licence=[]}={}){
   GoatSetupWrite:(p,body)=>{t.writes++;if(t.failWrite)return false;t.files.set(p,body);return true;},
   GoatSetupReadRef:(p,set)=>{if(t.unreadable||!t.files.has(p))return false;set(t.files.get(p));return true;},
   GetLastError:()=>5004,Sleep:ms=>t.sleeps.push(ms),ExpertRemove:()=>{t.removed++;},
-  VerifyLicense:()=>{t.verifies++;return t.licence.length?t.licence.shift():503;}};
+  VerifyLicense:()=>{t.verifies++;return t.licence.length?t.licence.shift():503;},
+  g_GoatManageOnlyAnnounced:'',g_GoatManageOnlyStatusMs:0,ShowPrompt:(...a)=>t.prompts.push(a),HidePrompt:()=>{t.hidden++;},
+  DashboardBusSendStatus:s=>t.statuses.push(s),GOATDeviceActivationBegin:(login,build,replace)=>{t.activations.push([login,build,replace]);return t.activationOk;}};
  vm.createContext(c);
- vm.runInContext(FLAGS+['path','stateLive','text','read','restore','day','after','timer'].map(k=>{
+ vm.runInContext(FLAGS+['path','stateLive','text','read','restore','day','why','announce','after','timer'].map(k=>{
   const name=SIG[k].match(/\s(\w+)\(/)[1],args=(SIG[k].match(/\((.*)\)/)[1].match(/(\w+)(?:\[\])?(?:=\w+)?(?=,|$)/g)||[]).map(a=>a.replace('[]',''));
   return fn(name,args,bodyOf(main,SIG[k]));}).join('')+fn('GoatStateFlush',['force=false'],bodyOf(main,SIG.flush)),c);
  c.Seq_Buy=sequence(c,{dir:0});c.Seq_Sell=sequence(c,{dir:1,active:false,traded:false,adopted:false,matched:false});
@@ -237,12 +246,28 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
 
 // ---------------------------------------------------------------- 5. OnInit after adoption, and the timer
 {const holding=(a,h)=>{a.Seq_Buy.Active=h;a.Seq_Sell.Active=false;};
- {const a=ea();assert.equal(a.GoatManageOnlyAfterAdopt(),true);assert.deepEqual(a.t.alerts,[]);}
- {const a=ea({state:EXPIRED});holding(a,false);assert.equal(a.GoatManageOnlyAfterAdopt(),false,'expired and flat: INIT_FAILED');assert.match(a.t.alerts[0],/^This version expired on D1798675200\. Go to /);}
- {const a=ea({state:EXPIRED});holding(a,true);assert.equal(a.GoatManageOnlyAfterAdopt(),true);assert.match(a.t.alerts[0],/expired .* GOAT manages its open positions .* it stops once they are closed\.$/);}
- {const a=ea({state:REFUSED});holding(a,false);assert.equal(a.GoatManageOnlyAfterAdopt(),false);assert.deepEqual(a.t.sleeps,[20000],'B49a: the refused licence waits 20 s');}
- {const a=ea({state:REFUSED});holding(a,true);assert.equal(a.GoatManageOnlyAfterAdopt(),true);assert.match(a.t.alerts[0],/refused this account\. GOAT manages/);}
- for(const h of [false,true]){const a=ea({state:DOWN});holding(a,h);assert.equal(a.GoatManageOnlyAfterAdopt(),true,'an outage stays and retries');assert.match(a.t.alerts[0],/can't be reached .* until the licence is verified\.$/);}
+ const GOON=-1;
+ {const a=ea();assert.equal(a.GoatManageOnlyAfterAdopt(),GOON);assert.deepEqual([a.t.alerts,a.t.prompts,a.t.statuses],[[],[],[]]);}
+ {const a=ea({state:EXPIRED});holding(a,false);assert.equal(a.GoatManageOnlyAfterAdopt(),1,'expired and flat: INIT_FAILED');assert.match(a.t.alerts[0],/^This version expired on D1798675200\. Go to /);}
+ {const a=ea({state:EXPIRED});holding(a,true);assert.equal(a.GoatManageOnlyAfterAdopt(),GOON);assert.match(a.t.alerts[0],/expired .* GOAT manages its open positions .* it stops once they are closed\.$/);}
+ {const a=ea({state:REFUSED});holding(a,false);assert.equal(a.GoatManageOnlyAfterAdopt(),1);assert.deepEqual(a.t.sleeps,[20000],'B49a: the refused licence waits 20 s');}
+ {const a=ea({state:REFUSED});holding(a,true);assert.equal(a.GoatManageOnlyAfterAdopt(),GOON);assert.match(a.t.alerts[0],/refused this account\. GOAT manages/);}
+ for(const h of [false,true]){const a=ea({state:DOWN});holding(a,h);assert.equal(a.GoatManageOnlyAfterAdopt(),GOON,'an outage stays and retries');assert.match(a.t.alerts[0],/can't be reached .* until the licence is verified\.$/);}
+ // A rejected credential (401/403): with an open basket, manage-only (Claude-Mac 6475450194); with none, B49a's secure
+ // replacement, unchanged (INIT_SUCCEEDED in activation-only mode, INIT_FAILED when it cannot begin).
+ {const a=ea({state:CRED});holding(a,true);assert.equal(a.GoatManageOnlyAfterAdopt(),GOON);assert.equal(a.g_GoatManageOnly,CRED);
+  assert.match(a.t.alerts[0],/^The GOAT sign-in for this MT5 account was rejected .* it stops once they are closed\.$/);assert.deepEqual(a.t.activations,[]);}
+ for(const okBegin of [true,false]){const a=ea({state:CRED});a.t.activationOk=okBegin;holding(a,false);
+  assert.equal(a.GoatManageOnlyAfterAdopt(),okBegin?0:1);assert.deepEqual(a.t.activations,[[907113355,'B49b-test',true]]);
+  assert.equal(a.g_GoatManageOnly,NONE);assert.match(a.t.logs.at(-1),/^Stored GOAT user credential was rejected\. Starting secure replacement/);assert.deepEqual(a.t.alerts,[]);}
+ // The announcement: once per reason (an Alert and the chart prompt), the dashboard row "Managing only" every minute.
+ {const a=ea({state:EXPIRED});holding(a,true);a.GoatManageOnlyAfterAdopt();
+  assert.deepEqual([a.t.alerts.length,a.t.prompts.length,a.t.statuses],[1,1,['Managing only']]);assert.equal(a.t.prompts[0][0],'GOAT is managing only');
+  a.t.now+=59999;a.GoatManageOnlyTimer();assert.deepEqual([a.t.alerts.length,a.t.statuses.length],[1,1],'not within the minute');
+  a.t.now+=1;a.GoatManageOnlyTimer();assert.deepEqual([a.t.alerts.length,a.t.statuses],[1,['Managing only','Managing only']],'resent, never re-alerted');}
+ {const a=ea({state:DOWN,licence:[VALID]});holding(a,true);a.GoatManageOnlyAfterAdopt();a.t.now+=RETRY_MS;a.GoatManageOnlyTimer();
+  assert.deepEqual([a.g_GoatManageOnly,a.t.hidden,a.t.statuses.at(-1)],[NONE,1,'Linked'],'the end: the prompt goes, the row is Linked again');
+  const sent=a.t.statuses.length;a.t.now+=60000;a.GoatManageOnlyTimer();assert.deepEqual([a.t.hidden,a.t.statuses.length],[1,sent],'said once');}
  // The outage retry: one attempt every GOAT_LICENCE_RETRY_MS; a valid licence ends manage-only.
  {const a=ea({state:DOWN,licence:[503,VALID]});holding(a,true);a.g_GoatLicenceRetriedMs=a.t.now;
   a.t.now+=RETRY_MS-1;a.GoatManageOnlyTimer();assert.equal(a.t.verifies,0);
@@ -251,10 +276,13 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
   a.t.now+=RETRY_MS;a.GoatManageOnlyTimer();assert.deepEqual([a.t.verifies,a.g_GoatManageOnly,a.t.removed],[2,NONE,0]);}
  // Flat while the outage lasts: it keeps retrying, never removes itself.
  {const a=ea({state:DOWN,licence:[-1]});holding(a,false);a.t.now+=RETRY_MS;a.GoatManageOnlyTimer();assert.deepEqual([a.g_GoatManageOnly,a.t.removed],[DOWN,0]);}
- // The service answers with a refusal: licence_refused; once flat the EA stops, once.
- {const a=ea({state:DOWN,licence:[403]});holding(a,true);a.t.now+=RETRY_MS;a.GoatManageOnlyTimer();assert.deepEqual([a.g_GoatManageOnly,a.t.removed],[REFUSED,0]);
-  holding(a,false);a.GoatManageOnlyTimer();a.GoatManageOnlyTimer();assert.equal(a.t.removed,1);assert.match(a.t.alerts.at(-1),/refused this account\. No positions are left to manage/);}
- for(const s of [EXPIRED,REFUSED]){const a=ea({state:s});holding(a,true);a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'holding');
+ // The service answers with a refusal: credential_rejected (401/403) or licence_refused, said; once flat the EA stops, once.
+ for(const [key,want,re] of [[403,CRED,/sign-in for this MT5 account was rejected/],[402,REFUSED,/refused this account/]]){
+  const a=ea({state:DOWN,licence:[key]});holding(a,true);a.t.now+=RETRY_MS;a.GoatManageOnlyTimer();assert.deepEqual([a.g_GoatManageOnly,a.t.removed],[want,0]);
+  assert.match(a.t.alerts.at(-1),re,'the new reason is announced');
+  holding(a,false);a.GoatManageOnlyTimer();a.GoatManageOnlyTimer();assert.equal(a.t.removed,1);
+  assert.match(a.t.alerts.at(-1),new RegExp(re.source+'.*\\. No positions are left to manage, so GOAT stops on this chart\\.$'));}
+ for(const s of [EXPIRED,REFUSED,CRED]){const a=ea({state:s});holding(a,true);a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'holding');
   a.Seq_Sell.Active=true;a.Seq_Buy.Active=false;a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'either side holds');
   a.Seq_Sell.Active=false;a.GoatManageOnlyTimer();assert.equal(a.t.removed,1,'flat: removed');assert.equal(a.t.verifies,0,'no licence call');}
  {const a=ea();holding(a,false);a.GoatManageOnlyTimer();assert.deepEqual([a.t.removed,a.t.verifies],[0,0],'not manage-only: nothing');}
@@ -273,8 +301,16 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  // OnInit: the restore right after adoption; the manage-only check after the magic block, before the export setup.
  const init=bodyOf(main,'int OnInit()');
  assert.match(init,/Seq_Buy\.AdoptOpenPositions\(\); Seq_Sell\.AdoptOpenPositions\(\);[^\n]*\n     GoatStateRestore\(\);/);
- assert.match(init,/    GlobalVariablesFlush\(\);\n   \}\n   if\(!GoatManageOnlyAfterAdopt\(\)\) return INIT_FAILED;[^\n]*\n\/\/-+\n \/\/if\(Mode_Operation==Operation_Export\)\n   if\(Mode=="EXPORT"\)/);
+ assert.match(init,/    GlobalVariablesFlush\(\);\n   \}\n   int manage_only_init=GoatManageOnlyAfterAdopt\(\);[^\n]*\n   if\(manage_only_init==INIT_FAILED\) return INIT_FAILED;[^\n]*\n   if\(manage_only_init==INIT_SUCCEEDED\) return INIT_SUCCEEDED;[^\n]*\n\/\/-+\n \/\/if\(Mode_Operation==Operation_Export\)\n   if\(Mode=="EXPORT"\)/);
  assert.ok(init.indexOf('GoatLicenceManageOnly(LicenseKey)')<init.indexOf('GoatManageOnlyAfterAdopt()'),'the licence answer comes first');
+ // Re-derived at every init (Claude-Mac 6475450194): the first thing OnInit does after the no-tick reset, before the expiry check.
+ assert.match(init,/^\s*GoatNoTickForget\(\);[^\n]*\n   g_GoatManageOnly=GOAT_MANAGE_NONE; g_GoatLicenceRetriedMs=0;/);
+ assert.ok(init.indexOf('g_GoatManageOnly=GOAT_MANAGE_NONE;')<init.indexOf('TimeCurrent()>Expiry'),'reset before the expiry check');
+ // The dashboard: a "Managing only" row shows so (after a stale heartbeat, ahead of every policy label) and is never active.
+ const display=bodyOf(dash,'string DisplayStatusForRow(const int idx,const datetime now) const');
+ assert.match(display,/return "Update delayed";\n      if\(g_sets\[idx\]\.status=="Managing only"\) return "Managing only";[^\n]*\n      if\(g_sets\[idx\]\.policy_paused\) return "Paused";/);
+ assert.match(dash,/\n      if\(row_status=="Active" \|\| row_status=="Linked"\) active_count\+\+;\n/,'only Active/Linked rows count as active');
+ assert.match(dash,/if\(status=="Managing only"\)\s+return clrOrangeRed;/);
  // OnTick: the day restore right after the new-day block's resets; the bias edges are globals, no statics.
  assert.match(main,/   if\(IsNewDay\(\)\)\n   \{\n    days\+\+;\n[\s\S]{0,200}?    LastStopoutTime=0;\n    StopOut_Flag = false;\n    DStartLocalLoss = 99999;\n[\s\S]{0,160}?    DStartEquity=AccountInfoDouble\(ACCOUNT_EQUITY\);\n    if\(GoatStateLive\(\)\) GoatStateDayRestore\(\);/);
  assert.doesNotMatch(main,/static bool Last_StopOut_Flag_[BS]/);

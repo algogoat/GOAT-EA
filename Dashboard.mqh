@@ -479,6 +479,7 @@ private:
       if(status=="Buy Only" || status=="Sell Only" || status=="Asset Filter" || status=="Ccy Filter") return clrCornflowerBlue;
       if(status=="Syncing" || status=="Closing") return clrCornflowerBlue;
       if(status=="Offline")                    return clrDarkGray;
+   if(status=="Managing only")              return clrOrangeRed; // B49b (F1): manage-only (licence or expiry)
       if(status=="Deploying")                  return clrCornflowerBlue;
       return C'146,7,1,255';
    }
@@ -543,6 +544,7 @@ private:
          if(!acked) return "Syncing";
       }
       if(g_sets[idx].magic>0 && g_sets[idx].heartbeat_ts>0 && (now-g_sets[idx].heartbeat_ts)>60) return "Update delayed";
+      if(g_sets[idx].status=="Managing only") return "Managing only"; // B49b (F1): a manage-only child shows so, ahead of the policy labels, and is never counted active
       if(g_sets[idx].policy_paused) return "Paused";
       if(g_sets[idx].trade_allow_mask!=(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL))
          return CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask);

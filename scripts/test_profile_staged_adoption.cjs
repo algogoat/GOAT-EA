@@ -290,8 +290,9 @@ function run(src=readSources()){
    .replace(/GlobalVariableGet\((GoatChildGVName\([^)]*\)|\w+),(\w+)\)/g,'GlobalVariableGet($1,v=>$2=v)');
   const entry=bodyOf(src.main,'bool DashboardEntryAllowed(const int op)');
   const B41_ENTRY='\n   if(!DashboardTradeAllowed(op)) return false;\n   if(DashboardExposureConflict(op)) return false;\n   return true;\n  ';
-  // B46: the CID guard (test_cid_guard.cjs) is the other line added, ahead of this gate.
-  assert.equal(entry.replace(/\n   if\(GoatCidGuardRefuses\(true\)\) return false;[^\n]*/,'').replace(/\n   if\(!GoatStagedChildMayOpen\(g_GoatStudioMonitorRunPath,MAGIC1,Symbol\(\)\)\) return false;[^\n]*/,''),B41_ENTRY,'the gate and the B46 CID guard are the only lines added to DashboardEntryAllowed');
+  // B46: the CID guard (test_cid_guard.cjs) is the other line added, ahead of this gate; B49b F1's manage-only refusal
+  // (test_b49b_f1.cjs) follows it.
+  assert.equal(entry.replace(/\n   if\(GoatCidGuardRefuses\(true\)\) return false;[^\n]*/,'').replace(/\n   if\(g_GoatManageOnly!=GOAT_MANAGE_NONE\) return false;[^\n]*/,'').replace(/\n   if\(!GoatStagedChildMayOpen\(g_GoatStudioMonitorRunPath,MAGIC1,Symbol\(\)\)\) return false;[^\n]*/,''),B41_ENTRY,'the gate and the B46 CID guard are the only lines added to DashboardEntryAllowed');
   const signal=bodyOf(src.main,'void SignalEntryTrigger()');
   const promote=region(src.main,'     if(Virtual && Level_Count==Delay_Trade','     // Locking levels');
   const manage=region(src.main,'    if(Seq_Buy.Active)\n    {\n     if(buyMlpsExit)','//--------\n    if(Seq_Sell.Active)');
@@ -314,7 +315,7 @@ function run(src=readSources()){
     // B44 item 4: the AI gate log is Print-only (test_ai_gate_log.cjs); here it only has to exist.
     GoatGateActiveMask:()=>0,GoatGateLog:()=>{},
     // B46: the CID guard is tested in test_cid_guard.cjs; here no CID record is missing or duplicated.
-    GoatCidGuardRefuses:()=>false,
+    GoatCidGuardRefuses:()=>false,g_GoatManageOnly:0,GOAT_MANAGE_NONE:0,   // B49b PR-2 (F1 full): not manage-only (test_b49b_f1.cjs covers it)
     Seq_Buy:seq('buy'),Seq_Sell:seq('sell'),Seq_Buy_Virtual:seq('vbuy'),Seq_Sell_Virtual:seq('vsell')};
    vm.createContext(c);vm.runInContext(gateCode,c);
    vm.runInContext('function DashboardEntryAllowed(op){'+js(entry)+'}',c);

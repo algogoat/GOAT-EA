@@ -671,14 +671,16 @@ bool DashboardExposureConflict(const int op)
 //---------------------- B49b (F1 full; split goatai#2587 6433828681 row 2, design 6474780229): manage-only.
 // A licence outage, a refused licence or an expired build on a live chart manages the positions the EA already holds
 // (closes, stops, MLPS, the session and Friday closes, trailing, Lock/TP/SL) and never opens or adds, instead of
-// INIT_FAILED or ExpertRemove with a basket open. An outage re-verifies from the timer and clears on success; a refused
-// licence or an expired build removes the EA once nothing is left to manage. The tester, an optimization, a batch and
+// INIT_FAILED or ExpertRemove with a basket open. An outage re-verifies from the timer and clears on success; a rejected
+// credential (401/403), another refused licence or an expired build removes the EA once nothing is left to manage.
+// Re-derived at every OnInit from the licence and expiry state, never carried over (Claude-Mac 6475450194). The tester, an optimization, a batch and
 // the dashboard keep B49a's paths, and so does every mode but the trading chart (GoatManageOnlyLive: a licence outage
 // never unlocks the report or export tools). No input.
 #define GOAT_MANAGE_NONE             0
 #define GOAT_MANAGE_LICENCE_DOWN     1
 #define GOAT_MANAGE_LICENCE_REFUSED  2
 #define GOAT_MANAGE_EXPIRED          3
+#define GOAT_MANAGE_CREDENTIAL       4   // 401/403 with an open basket (Claude-Mac 6475450194); none open: B49a's reactivation
 #define GOAT_LICENCE_RETRY_MS        300000
 int    g_GoatManageOnly=GOAT_MANAGE_NONE;
 uint   g_GoatLicenceRetriedMs=0;
@@ -694,6 +696,7 @@ string GoatManageOnlyReason()
    if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN)    return "licence_unavailable";
    if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) return "licence_refused";
    if(g_GoatManageOnly==GOAT_MANAGE_EXPIRED)         return "expired";
+   if(g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)      return "credential_rejected";
    return "none";
   }
 // An expired build: on a live chart, manage-only (said once) and true; otherwise false, and B49a's expiry path runs.
@@ -707,13 +710,14 @@ bool GoatExpiryManageOnly()
      }
    return true;
   }
-// VerifyLicense's answer at OnInit. On the trading chart, an outage (<0, >=500) or a refusal other than 401/403 (those
-// start reactivation, unchanged) becomes manage-only and true, so init goes on to adopt; false otherwise (0 = never
-// checked). An expired build stays expired: a licence that comes back never lifts it.
+// VerifyLicense's answer at OnInit. On the trading chart, anything but a valid licence becomes manage-only and true, so
+// init goes on to adopt: an outage (<0, >=500), a rejected credential (401/403; with nothing open, OnInit then runs
+// B49a's reactivation: GoatManageOnlyAfterAdopt) or another refusal. False otherwise (0 = never checked). An expired
+// build stays expired: a licence that comes back never lifts it.
 bool GoatLicenceManageOnly(const int key)
   {
-   if(!GoatManageOnlyLive() || key==0 || key==LICENSE_VALID || key==401 || key==403) return false;
-   if(g_GoatManageOnly!=GOAT_MANAGE_EXPIRED) g_GoatManageOnly=((key<0 || key>=500) ? GOAT_MANAGE_LICENCE_DOWN : GOAT_MANAGE_LICENCE_REFUSED);
+   if(!GoatManageOnlyLive() || key==0 || key==LICENSE_VALID) return false;
+   if(g_GoatManageOnly!=GOAT_MANAGE_EXPIRED) g_GoatManageOnly=((key==401 || key==403) ? GOAT_MANAGE_CREDENTIAL : (key<0 || key>=500) ? GOAT_MANAGE_LICENCE_DOWN : GOAT_MANAGE_LICENCE_REFUSED);
    g_GoatLicenceRetriedMs=GetTickCount();
    Print("GOAT manage-only: reason=",GoatManageOnlyReason()," licence_status=",IntegerToString(key)," new_trades=refused adds=frozen closes_stops_mlps=continue");
    return true;
@@ -4155,42 +4159,82 @@ void GoatStateDayRestore()
    Print("GOAT state: today's day state restored stopout=",v[1]," dstart_equity=",v[2]," dstart_local_loss=",v[3],
          " last_stopout_time=",v[5]," bias_edges=",v[6],v[7]);
   }
-// OnInit after adoption: a refused licence or an expired build with nothing to manage keeps B49a's outcome (the expiry
-// alert; the refused licence's 20 s wait) and INIT_FAILED. Otherwise the chart runs manage-only and says why.
-bool GoatManageOnlyAfterAdopt()
+// Says manage-only loudly, once per reason: an Alert, a prompt on the chart and the dashboard row "Managing only" (never
+// counted as active: Dashboard.mqh counts only Active/Linked rows). The row is sent again every minute, since a
+// dashboard command ack rewrites it. When manage-only ends, the prompt goes and the row is Linked again.
+string g_GoatManageOnlyAnnounced="";
+uint   g_GoatManageOnlyStatusMs=0;
+string GoatManageOnlyWhy()
   {
-   if(g_GoatManageOnly==GOAT_MANAGE_NONE) return true;
-   bool holding=(Seq_Buy.Active || Seq_Sell.Active);
-   if(!holding && g_GoatManageOnly==GOAT_MANAGE_EXPIRED) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return false;}
-   if(!holding && g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) {Sleep(20000); return false;}
-   string why=(g_GoatManageOnly==GOAT_MANAGE_EXPIRED ? "This version expired on "+TimeToString(Expiry,TIME_DATE)+" (download the latest from "+URL_Web+")"
-              : g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED ? "The GOAT licence check refused this account"
-              : "The GOAT licence service can't be reached (retried every 5 minutes)");
-   Alert(why+". GOAT manages its open positions (closes, stops, MLPS) and opens nothing new"
-         +(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN ? " until the licence is verified." : "; it stops once they are closed."));
-   return true;
+   if(g_GoatManageOnly==GOAT_MANAGE_EXPIRED)         return "This version expired on "+TimeToString(Expiry,TIME_DATE)+" (download the latest from "+URL_Web+")";
+   if(g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)      return "The GOAT sign-in for this MT5 account was rejected (re-attach GOAT to renew it)";
+   if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) return "The GOAT licence check refused this account";
+   return "The GOAT licence service can't be reached (retried every 5 minutes)";
   }
-// From the timer: an outage re-verifies every GOAT_LICENCE_RETRY_MS (one attempt: no init retries, so the timer waits
-// at most the request timeout) and ends manage-only on success; any other answer from the service becomes
-// licence_refused. A refused licence or an expired build removes the EA once nothing is left to manage.
+void GoatManageOnlyAnnounce()
+  {
+   if(g_GoatManageOnly==GOAT_MANAGE_NONE)
+     {
+      if(g_GoatManageOnlyAnnounced!="") {g_GoatManageOnlyAnnounced=""; HidePrompt(); DashboardBusSendStatus("Linked");}
+      return;
+     }
+   if(GoatManageOnlyReason()!=g_GoatManageOnlyAnnounced)
+     {
+      g_GoatManageOnlyAnnounced=GoatManageOnlyReason();
+      Print("GOAT manage-only: announced reason=",g_GoatManageOnlyAnnounced," buy_active=",(Seq_Buy.Active ? "1" : "0")," sell_active=",(Seq_Sell.Active ? "1" : "0"));
+      Alert(GoatManageOnlyWhy()+". GOAT manages its open positions (closes, stops, MLPS) and opens nothing new"
+            +(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN ? " until the licence is verified." : "; it stops once they are closed."));
+      ShowPrompt("GOAT is managing only",GoatManageOnlyWhy(),"Open positions are managed; nothing new opens.",URL_Web);
+      g_GoatManageOnlyStatusMs=0;
+     }
+   if(g_GoatManageOnlyStatusMs!=0 && GetTickCount()-g_GoatManageOnlyStatusMs<60000) return;
+   g_GoatManageOnlyStatusMs=GetTickCount();
+   if(g_GoatManageOnlyStatusMs==0) g_GoatManageOnlyStatusMs=1;
+   DashboardBusSendStatus("Managing only");
+  }
+// OnInit after adoption: -1 when init goes on. With nothing to manage, B49a's outcome stands: an expired build alerts
+// and fails, a refused licence waits 20 s and fails, a rejected credential starts B49a's secure replacement
+// (activation-only mode). Otherwise the chart runs manage-only and says why.
+int GoatManageOnlyAfterAdopt()
+  {
+   if(g_GoatManageOnly==GOAT_MANAGE_NONE) return -1;
+   bool holding=(Seq_Buy.Active || Seq_Sell.Active);
+   if(!holding && g_GoatManageOnly==GOAT_MANAGE_EXPIRED) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED;}
+   if(!holding && g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) {Sleep(20000); return INIT_FAILED;}
+   if(!holding && g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)
+     {
+      g_GoatManageOnly=GOAT_MANAGE_NONE;
+      Print("Stored GOAT user credential was rejected. Starting secure replacement for this MT5 account.");
+      if(!GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true)) return INIT_FAILED;
+      return INIT_SUCCEEDED;
+     }
+   GoatManageOnlyAnnounce();
+   return -1;
+  }
+// From the timer: announces manage-only; an outage re-verifies every GOAT_LICENCE_RETRY_MS (one attempt: no init
+// retries, so the timer waits at most the request timeout) and ends manage-only on success; any other answer from the
+// service becomes credential_rejected (401/403) or licence_refused. Every reason but an outage removes the EA once
+// nothing is left to manage.
 void GoatManageOnlyTimer()
   {
    static bool removing=false;
-   if(g_GoatManageOnly==GOAT_MANAGE_NONE || removing) return;
+   if(removing) return;
+   GoatManageOnlyAnnounce();
+   if(g_GoatManageOnly==GOAT_MANAGE_NONE) return;
    if(g_GoatManageOnly==GOAT_MANAGE_LICENCE_DOWN)
      {
       if(GetTickCount()-g_GoatLicenceRetriedMs<GOAT_LICENCE_RETRY_MS) return;
       g_GoatLicenceRetriedMs=GetTickCount();
       int key=VerifyLicense(AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_NAME),AccountInfoString(ACCOUNT_SERVER));
-      if(key==LICENSE_VALID) {g_GoatManageOnly=GOAT_MANAGE_NONE; Print("GOAT manage-only: ended (licence verified); new trades and adds resume"); return;}
+      if(key==LICENSE_VALID) {g_GoatManageOnly=GOAT_MANAGE_NONE; Print("GOAT manage-only: ended (licence verified); new trades and adds resume"); GoatManageOnlyAnnounce(); return;}
       if(key<0 || key>=500) return;
-      g_GoatManageOnly=GOAT_MANAGE_LICENCE_REFUSED;
-      Print("GOAT manage-only: reason=licence_refused licence_status=",IntegerToString(key));
+      g_GoatManageOnly=((key==401 || key==403) ? GOAT_MANAGE_CREDENTIAL : GOAT_MANAGE_LICENCE_REFUSED);
+      Print("GOAT manage-only: reason=",GoatManageOnlyReason()," licence_status=",IntegerToString(key));
+      GoatManageOnlyAnnounce();
      }
    if(Seq_Buy.Active || Seq_Sell.Active) return;
    removing=true;
-   Alert((g_GoatManageOnly==GOAT_MANAGE_EXPIRED ? "This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version"
-         : "The GOAT licence check refused this account")+". No positions are left to manage, so GOAT stops on this chart.");
+   Alert(GoatManageOnlyWhy()+". No positions are left to manage, so GOAT stops on this chart.");
    ExpertRemove();
   }
 // B49b:end f1-full-state
@@ -4199,6 +4243,7 @@ ulong g_GoatStudioWorkerDiagnosticDeadline=0;
 int OnInit()
   {
    GoatNoTickForget(); // B49b (F4): a re-init (symbol, timeframe, inputs) keeps the EA's globals, never its last tick
+   g_GoatManageOnly=GOAT_MANAGE_NONE; g_GoatLicenceRetriedMs=0; // B49b (F1): manage-only is re-derived below from the licence and expiry, never carried over a re-init
    g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
    g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;
    if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&
@@ -4901,7 +4946,9 @@ int OnInit()
      }
     GlobalVariablesFlush();
    }
-   if(!GoatManageOnlyAfterAdopt()) return INIT_FAILED; // B49b (F1): a refused licence or an expired build with nothing open keeps B49a's INIT_FAILED
+   int manage_only_init=GoatManageOnlyAfterAdopt(); // B49b (F1): -1 = init goes on (manage-only announced when a basket is held)
+   if(manage_only_init==INIT_FAILED) return INIT_FAILED; // B49b (F1): a refused licence or an expired build with nothing open keeps B49a's INIT_FAILED
+   if(manage_only_init==INIT_SUCCEEDED) return INIT_SUCCEEDED; // B49b (F1): a rejected credential with nothing open keeps B49a's secure replacement
 //-------------------------------------------------------------------------
  //if(Mode_Operation==Operation_Export)
    if(Mode=="EXPORT")

@@ -3,7 +3,7 @@
 // Equivalent, not listed: dropping GoatStateDayRestore's "pending=false" (IsNewDay fires once per server day, and a
 // later day's section is refused by the day check anyway).
 'use strict';
-const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawn}=require('node:child_process');
 const ROOT=path.join(__dirname,'..');
 const F1=path.join(__dirname,'test_b49b_f1.cjs');
 const MAIN=fs.readFileSync(path.join(ROOT,'GOAT V1.49.mq5'),'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');
@@ -152,22 +152,34 @@ const MUTANTS=[
  ['a managing-only row counts as active','      if(row_status=="Active" || row_status=="Linked") active_count++;','      if(row_status=="Active" || row_status=="Linked" || row_status=="Managing only") active_count++;','dash'],
 ];
 const DASH=fs.readFileSync(path.join(ROOT,'Dashboard.mqh'),'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');
+// B49b tidy (#285 CI): the mutants run in parallel, one test process per core, so the step fits the controller job's 45 min
+// on a 4-core runner (serially, 127 mutants ran past it). Each mutant still gets its own scratch copy and its own process;
+// a mutant is killed when its run fails, times out (status null, as spawnSync reported) or crashes.
 function runOn(mainText,dashText=DASH){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-f1-'));
- try{
-  const file=path.join(dir,'GOAT V1.49.mq5'),dashFile=path.join(dir,'Dashboard.mqh');
-  fs.writeFileSync(file,'﻿'+mainText.replace(/\n/g,'\r\n'),'utf8');fs.writeFileSync(dashFile,dashText.replace(/\n/g,'\r\n'),'utf8');
-  return spawnSync(process.execPath,[F1],{cwd:ROOT,env:{...process.env,GOAT_EA_MAIN:file,GOAT_EA_DASH:dashFile},encoding:'utf8',timeout:120000});
- }finally{fs.rmSync(dir,{recursive:true,force:true});}
+ const file=path.join(dir,'GOAT V1.49.mq5'),dashFile=path.join(dir,'Dashboard.mqh');
+ fs.writeFileSync(file,'\uFEFF'+mainText.replace(/\n/g,'\r\n'),'utf8');fs.writeFileSync(dashFile,dashText.replace(/\n/g,'\r\n'),'utf8');
+ return new Promise(resolve=>{
+  const child=spawn(process.execPath,[F1],{cwd:ROOT,env:{...process.env,GOAT_EA_MAIN:file,GOAT_EA_DASH:dashFile},stdio:['ignore','ignore','pipe']});
+  let stderr='';child.stderr.setEncoding('utf8');child.stderr.on('data',d=>{stderr+=d;});
+  const timer=setTimeout(()=>child.kill(),120000);
+  const done=status=>{clearTimeout(timer);fs.rmSync(dir,{recursive:true,force:true});resolve({status,stderr});};
+  child.on('error',()=>done(null));child.on('close',code=>done(code));
+ });
 }
-{const r=runOn(MAIN);assert.equal(r.status,0,'the unmutated test_b49b_f1.cjs passes on the scratch entrypoint: '+r.stderr);}
-let killed=0;
-for(const [label,from,to,target] of MUTANTS){
- const text=target==='dash'?DASH:MAIN;
- const n=text.split(from).length-1;
- assert.equal(n,1,`mutant "${label}": its anchor must occur exactly once in ${target==='dash'?'Dashboard.mqh':'GOAT V1.49.mq5'} (found ${n})`);
- const r=target==='dash'?runOn(MAIN,text.replace(from,()=>to)):runOn(text.replace(from,()=>to));
- assert.notEqual(r.status,0,`mutant survived: ${label}`);
- killed++;
-}
-console.log(JSON.stringify({mutants:MUTANTS.length,killed}));
+(async()=>{
+ {const r=await runOn(MAIN);assert.equal(r.status,0,'the unmutated test_b49b_f1.cjs passes on the scratch entrypoint: '+r.stderr);}
+ // Every anchor is checked before any mutant runs.
+ const jobs=MUTANTS.map(([label,from,to,target])=>{
+  const text=target==='dash'?DASH:MAIN;
+  const n=text.split(from).length-1;
+  assert.equal(n,1,`mutant "${label}": its anchor must occur exactly once in ${target==='dash'?'Dashboard.mqh':'GOAT V1.49.mq5'} (found ${n})`);
+  return target==='dash'?{label,main:MAIN,dash:text.replace(from,()=>to)}:{label,main:text.replace(from,()=>to),dash:DASH};
+ });
+ const width=Math.max(1,Math.min(jobs.length,typeof os.availableParallelism==='function'?os.availableParallelism():os.cpus().length));
+ const results=new Array(jobs.length);let next=0;
+ await Promise.all(Array.from({length:width},async()=>{while(next<jobs.length){const i=next++;results[i]=await runOn(jobs[i].main,jobs[i].dash);}}));
+ let killed=0;
+ jobs.forEach((job,i)=>{assert.notEqual(results[i].status,0,`mutant survived: ${job.label}`);killed++;});
+ console.log(JSON.stringify({mutants:MUTANTS.length,killed}));
+})().catch(error=>{console.error(error);process.exitCode=1;});

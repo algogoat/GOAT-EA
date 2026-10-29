@@ -223,9 +223,9 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
    // B50:end b50-audit
    // B51:begin b51-audit
    // B51 (B50-beta): the same rule for the B50-beta inputs, appended at the end of the inputs.
-   string b51_names[5]={"Random_Direction","Random_Seed","Single_BE_ATR","Single_Trail_Start_ATR","Single_Trail_ATR"};
-   string b51_values[5]={"false","1","0.0","0.0","0.0"};
-   for(int b51_n=0;b51_n<5;b51_n++)
+   string b51_names[6]={"Random_Direction","Random_Seed","Single_Flat_Only","Single_BE_ATR","Single_Trail_Start_ATR","Single_Trail_ATR"};
+   string b51_values[6]={"false","1","false","0.0","0.0","0.0"};
+   for(int b51_n=0;b51_n<6;b51_n++)
    {
       bool b51_found=false;
       for(int i=0;i<ArraySize(names);i++) if(names[i]==b51_names[b51_n]) b51_found=true;

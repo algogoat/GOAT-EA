@@ -31,9 +31,9 @@ const REMOVED={
  ],
 };
 // The B50-beta-1 inputs, appended at the very end in this order (beta-1a, then beta-1b).
-const NEW_INPUTS=['Random_Direction','Random_Seed','Single_BE_ATR','Single_Trail_Start_ATR','Single_Trail_ATR'];
-const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_BE_ATR:['input','double','0.0'],
- Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0']};
+const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only','Single_BE_ATR','Single_Trail_Start_ATR','Single_Trail_ATR'];
+const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false'],
+ Single_BE_ATR:['input','double','0.0'],Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0']};
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

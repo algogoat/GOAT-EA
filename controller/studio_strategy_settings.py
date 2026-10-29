@@ -75,7 +75,7 @@ def numeric(value, definition, *, step=False):
 B50_INPUTS = ('Engine_Mode', 'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite',
               'Single_Time_Stop_Bars', 'Single_Time_Stop_TF', 'Clock_Mode', 'Server_Clock_Model', 'Server_UTC_Offset',
               'NY_Session', 'Rollover_Block_Minutes')
-B51_INPUTS = ('Random_Direction', 'Random_Seed', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR')
+B51_INPUTS = ('Random_Direction', 'Random_Seed', 'Single_Flat_Only', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR')
 APPENDED_INPUTS = ('Ledger_Mode',) + B50_INPUTS + B51_INPUTS
 APPENDED_GROUPS = (B50_INPUTS, B51_INPUTS)
 

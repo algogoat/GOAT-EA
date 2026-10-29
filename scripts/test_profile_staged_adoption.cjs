@@ -363,7 +363,7 @@ function run(src=readSources()){
   // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger, B51's random-direction
   // single entry (GoatSingleRandomEntry, test_b51_random.cjs) and the promotion.
   {const callers=src.main.split('\n').filter(l=>/DashboardEntryAllowed\(/.test(l)&&!/^bool DashboardEntryAllowed/.test(l)).map(l=>l.trim().slice(0,40));
-   assert.equal(callers.length,9);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
+   assert.equal(callers.length,7);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
    for(const unit of ['void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('GoatStagedChildMayOpen'),unit);
    ok();}
   // Dashboard side: the marker is written only after the child's ack of the dispatched exposure policy.

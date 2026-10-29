@@ -72,6 +72,7 @@ class AppendedInputTests(unittest.TestCase):
         # B51 (B50-beta-1a, docs/b50/B50_ALPHA_DESIGN.md section 8): appended at the very end of the header; every default
         # reproduces B50-alpha, and each is the default the tester report pins for an omitted input.
         expected = {'Random_Direction': ('bool', 'sinput', 'false'), 'Random_Seed': ('int', 'input', '1'),
+                    'Single_Flat_Only': ('bool', 'sinput', 'false'),
                     'Single_BE_ATR': ('double', 'input', '0.0'), 'Single_Trail_Start_ATR': ('double', 'input', '0.0'),
                     'Single_Trail_ATR': ('double', 'input', '0.0')}
         self.assertEqual(B51_INPUTS, tuple(expected))
@@ -89,7 +90,9 @@ class AppendedInputTests(unittest.TestCase):
         alpha = {k: v for k, v in self.full.items() if k not in B51_INPUTS}
         self.assertEqual(validate_strategy(dict(alpha), self.schema)['values'], alpha)
         bench = dict(self.old, Engine_Mode='1', Single_SL_ATR='1.5', Mode_Bias_Exit='0', Random_Direction='true',
-                     Random_Seed='1||1||1||50||Y')
+                     Single_Flat_Only='true', Random_Seed='1||1||1||50||Y')
+        with self.assertRaisesRegex(ValueError, 'RANDOM_DIRECTION_WITHOUT_FLAT_ONLY'):
+            validate_strategy(dict(bench, Single_Flat_Only='false'), self.schema)
         self.assertEqual(validate_strategy(bench, self.schema)['values'], bench)
         with self.assertRaisesRegex(ValueError, 'RANDOM_DIRECTION_WITHOUT_SINGLE'):
             validate_strategy(dict(bench, Engine_Mode='0'), self.schema)

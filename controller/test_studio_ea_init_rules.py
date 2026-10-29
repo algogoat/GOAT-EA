@@ -90,6 +90,9 @@ class PortedRuleTests(RuleCase):
         'RANDOM_DIRECTION_WITHOUT_SINGLE': (dict(Random_Direction='true', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0'),
                                             dict(Random_Direction='true', Engine_Mode='0')),
         'RANDOM_SEED_NEGATIVE': (dict(Random_Seed='0'), dict(Random_Seed='-1')),
+        'RANDOM_DIRECTION_ONE_DIRECTION': (dict(Random_Direction='false', Mode_Trade='1'),
+                                           dict(Random_Direction='true', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0',
+                                                Mode_Trade='0||0||1||2||Y')),
     }
 
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
@@ -118,7 +121,7 @@ class PortedRuleTests(RuleCase):
         alpha = copy.deepcopy(SCHEMAS['1.49'])
         for name in ('Random_Direction', 'Random_Seed'):
             del alpha['inputs'][name]
-        b51 = {'RANDOM_DIRECTION_WITHOUT_SINGLE', 'RANDOM_SEED_NEGATIVE'}
+        b51 = {'RANDOM_DIRECTION_WITHOUT_SINGLE', 'RANDOM_SEED_NEGATIVE', 'RANDOM_DIRECTION_ONE_DIRECTION'}
         self.assertEqual({rule['id'] for rule in applicable_rules(alpha)}, {rule['id'] for rule in EA_INIT_RULES} - b51)
         for lost in ('Random_Direction', 'Random_Seed'):
             with self.subTest(lost=lost):
@@ -466,11 +469,11 @@ class InventoryTests(unittest.TestCase):
                          'OnInit refusal/removal lines and the EA_INIT_RULES/TESTER_INIT_RULES/NOT_PORTED tables differ')
         # B50 (A0) added eleven: seven input refusals (ported), the pre-2007 test start of the New York clock (a tester
         # rule, GOAT-EA#273 P3), the netting account and two indicator handles (not ported).
-        # B51 (beta-1a) added three: two input refusals (ported) and the benchmark on a live chart (not ported).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (65, 8, 69))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 36)
+        # B51 (beta-1a) added four: three input refusals (ported) and the benchmark on a live chart (not ported).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (66, 8, 70))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 37)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (31, 2, 36))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (32, 2, 36))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [3833, 3943, 3960, 4235])

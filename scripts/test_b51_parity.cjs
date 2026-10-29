@@ -6,7 +6,7 @@
 // runs both on the same fixtures: every OrderSend, PositionModify, close and broker SL/TP fill must be identical, in
 // order. Each fixture first proves it exercises what it names (a parity of nothing proves nothing).
 // Fixtures: the grid's (an ATR-mode grid, Delay_Trade virtual entries, CumPartial, PeakSmart, SmartRescue, the day-end
-// and Friday close, News_Close) and the single's (a stop, a TP in R, the opposite-signal exit and the time stop, a
+// and Friday close, the day-end pause with the Friday close and the reverse, News_Close, an adopted basket) and the single's (a stop, a TP in R, the opposite-signal exit and the time stop, a
 // Reverse_Seq sell, an adopted single after a live restart), each with FastSpeed_Flag true and false; also with a
 // non-default seed (the seed is read only when Random_Direction is on).
 // The WriteSet golden: a default SET written by this tree is B50-alpha's, byte for byte; each B50-beta input is
@@ -65,6 +65,14 @@ const FIXTURES={
  day_friday_close:{start:MON+3*DAY+20*H1,inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Action_Dayend:'Action_Close',Action_Friday:'Action_Close',Mode_Restart:'Restart_1'},indicator:atr,
   path:path(MON+3*DAY,[[20*H1,1.1000],[22*H1+40*60,1.0970],[DAY+2*H1,1.0990],[DAY+6*H1,1.0950],[DAY+13*H1,1.0960]]),
   expect:(t,w)=>has(t,'OrderSend',4)&&has(t,'PositionClose',4)&&w.logs.filter(l=>/Day\/Weekend Close/.test(l)).length>=2},
+ // GOAT-EA#269 P2 (as test_b50_parity): the day-end and Friday actions differ, so neither line masks the other.
+ dayend_pause_friday_close:{start:MON+3*DAY+20*H1,inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Action_Dayend:'Action_Pause',Action_Friday:'Action_Close'},indicator:atr,
+  path:path(MON+3*DAY,[[20*H1,1.1000],[22*H1+20*60,1.0975],[DAY+1*H1+20*60,1.0915],[DAY+6*H1,1.0905],[DAY+13*H1,1.0910]]),
+  expect:(t,w)=>{const paused=t.filter(x=>x.op==='OrderSend'&&x.time>MON+3*DAY+22*H1+35*60&&x.time<MON+4*DAY+H1+30*60);
+   return has(t,'OrderSend',4)&&paused.length===0&&has(t,'PositionClose',2)&&logged(w,/Day\/Weekend Close/);}},
+ dayend_close_friday_pause:{start:MON+3*DAY+20*H1,inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Action_Dayend:'Action_Close',Action_Friday:'Action_Pause',Mode_Restart:'Restart_1'},indicator:atr,
+  path:path(MON+3*DAY,[[20*H1,1.1000],[22*H1+40*60,1.0970],[DAY+2*H1,1.0990],[DAY+6*H1,1.0950],[DAY+13*H1,1.0930]]),
+  expect:(t,w)=>has(t,'OrderSend',4)&&w.logs.filter(l=>/Day\/Weekend Close/.test(l)).length>=2},
  news_close:{inputs:{...quiet,Delay_Trade:0,Delay_Trade_Live:0,Mode_News:'News_Close'},indicator:atr,
   news:t=>(t-MON)>=6*H1&&(t-MON)<7*H1,
   path:path(MON,[[2*H1,1.1000],[5*H1,1.0960],[9*H1,1.0990]]),
@@ -98,7 +106,23 @@ function adoptedSingle(){
   path:path(state.time-2*H1-600-7,[[2*H1+620,1.1005],[4*H1,1.1040],[5*H1,1.1040]]),
   expect:(t,w)=>w.alerts.some(a=>/adopted 1 open position/.test(a))&&has(t,'BrokerTake')};
 }
-const ALL=[...Object.entries(FIXTURES),['adopted_single',adoptedSingle()]];
+// The adopted grid basket (as test_b50_parity): a live chart opens a buy basket with B50-alpha's source, the terminal
+// restarts, and both sources adopt the same positions, deals and restart record, then run the same ticks.
+function adoptedBasket(){
+ const inputs={...quiet,Delay_Trade:0,Delay_Trade_Live:0,Grid_Size:-1.5,Lock_Profit_Size:-1.0,TP_Pips:3.0,TSL_Size:-0.4,
+  Mode_Lots:'RiskperSeq',Risk:500,Sequence_MLPS_Hard_Close:true};
+ const first=H.build(B50_ALPHA,{tester:false,fastSpeed:false,inputs,indicator:atr});
+ first.run(path(MON,[[2*H1,1.1000],[5*H1,1.0955]]));
+ assert.ok(first.w.positions.length>=3,'the basket before the restart');
+ const state={positions:JSON.parse(JSON.stringify(first.w.positions)),deals:JSON.parse(JSON.stringify(first.w.deals)),gv:[...first.w.gv],
+  next:[first.w.nextTicket,first.w.nextDeal],balance:first.w.balance,time:first.w.time,bid:first.w.bid};
+ return {tester:false,inputs,indicator:atr,start:state.time,bid:state.bid,
+  adopt:(ctx,w)=>{w.positions.push(...JSON.parse(JSON.stringify(state.positions)));w.deals.push(...JSON.parse(JSON.stringify(state.deals)));
+   for(const [k,v] of state.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=state.next;w.balance=state.balance;},
+  path:path(state.time-5*H1-7,[[5*H1+20,1.0955],[7*H1,1.0985],[9*H1,1.0900],[10*H1,1.0960]]),
+  expect:(t,w)=>w.alerts.some(a=>/adopted \d+ open position/.test(a))&&(has(t,'PositionClose')||has(t,'BrokerStop')||has(t,'BrokerTake'))};
+}
+const ALL=[...Object.entries(FIXTURES),['adopted_basket',adoptedBasket()],['adopted_single',adoptedSingle()]];
 const BETA_OFF={Random_Seed:1};   // this tree's B50-beta inputs, at their defaults (spelt out)
 function worldFor(source,fx,fastSpeed,extra={}){return H.build(source,{...fx,inputs:{...fx.inputs,...(source===undefined?extra:{})},fastSpeed,tester:fx.tester??true});}
 const runs={};

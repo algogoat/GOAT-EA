@@ -853,7 +853,13 @@ int      g_GoatNYStartMin=0,g_GoatNYEndMin=0;
 // names are what matter). Every default reproduces B50-alpha, and WriteSet writes each one only when it differs from it.
 input    group                   "====SINGLE EXITS / BENCHMARK (B50-beta)====";
 sinput   bool                    Random_Direction              =                         false;       // Single: random-direction benchmark (tester only)
-input    int                     Random_Seed                   =                             1;       // Benchmark seed: side = splitmix64(seed^signal-bar time)&1
+input    int                     Random_Seed                   =                             1;       // Benchmark seed: side = splitmix64(seed^episode bar^signal<<62)&1
+// B51 globals (beta-1a). g_GoatRandomEpisodeBar[signal]: the open time of the signal bar of the running episode's first
+// check (0 between episodes). g_GoatRandomSignal[side]: the signal of the episode that opened the single on that side.
+// g_GoatRandomGated: episodes consumed because the drawn side was gated.
+datetime g_GoatRandomEpisodeBar[2]={0,0};
+int      g_GoatRandomSignal[2]={0,1};
+int      g_GoatRandomGated=0;
 // B51:end b51-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

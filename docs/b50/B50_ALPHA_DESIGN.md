@@ -220,7 +220,7 @@ side, and nothing is consumed by it. (With both sides free, alpha's gates for it
 **The draw.** Made once per episode, never redrawn:
 
 ```
-state = (ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62)
+state = (ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62) XOR ((ulong)ordinal << 40)
 z = state + 0x9E3779B97F4A7C15                (mod 2^64)
 z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9      (mod 2^64)
 z = (z ^ (z >> 27)) * 0x94D049BB133111EB      (mod 2^64)
@@ -231,9 +231,33 @@ side = z & 1                                  (0 = buy, 1 = sell)
 One step of SplitMix64 (Vigna's `splitmix64.c`; its first output for the state 0 is `0xE220A8397B1DCDAF`). `bar` is
 the episode-start signal bar: the open time of `iTime(_Symbol, PERIOD_CURRENT, (int)Shift_Sig)` (the chart's closed
 bar) at the episode's first signal check, recorded in `SignalEntryTrigger` (`g_GoatRandomEpisodeBar[signal]`) and
-cleared on the signal's false edge. So an entry late in an episode still draws from the episode's first bar, a refused
-order is retried with the same draw, and a buy-signal and a sell-signal episode that start on the same bar draw
-independently (the signal bit). The same episode draws the same side in every tick model and on every replay.
+cleared on the signal's false edge. `ordinal` is the episode's ordinal among this signal's episodes recorded on that
+chart bar (0 for the first, then 1, 2, ...; reset when the bar changes; `GoatSingleRandomRecord`). Without it, two
+episodes of one signal inside one chart bar (an indicator timeframe finer than the chart) shared one draw, and under
+flat-only whether the later one could open depended on when the earlier single (of the same side) closed: the review's
+exp7 (H1 chart, a buy signal 5 minutes in every 10, an uptrend, SL 1.5 ATR, TP 2R, 20 seeds) gave a 0.656 sell share;
+with the ordinal it is 0.492 (`test_b51_random` section 14). A seed and a bar time stay below 2^32, so the ordinal
+(bits 40 up) and the signal (bit 62) never overlap them. So an entry late in an episode still draws from the episode's
+first bar, a refused order is retried with the same draw, and a buy-signal and a sell-signal episode, or two episodes of
+one signal, that start on the same bar draw independently. The same episode draws the same side in every tick model
+and on every replay.
+
+**Why the bar and the ordinal do not depend on the tick model.** An episode is recorded at a signal check
+(`CheckSignalNow`, `Signal_Sample_Period`), when the combined signal turns true. Every signal term reads closed bars
+only: `UpdateRSI` copies the RSI at shift `Shift_Sig` (1) and the one before it; `UpdateCurrentSignals` reads EMA, ADX,
+BB, MACD and RSI2 at shift `Shift_Sig`, refreshed on a new bar of each indicator's timeframe (`INTERVAL::CheckTF`), and
+the chart's closes at shifts 1 and 2. No term reads `bid`, `ask` or the forming bar, so the signal changes only when a
+bar closes, and an episode starts at the first signal check after that close. That check is tick-driven, but with the
+default M1 cadence (or Second, or Tick) it falls in the same minute, so on the same chart bar, in any tick model that
+has a tick in that minute (every model but "open prices only"). No path records an episode at a tick-level moment. The
+limits are the EA's own, not the benchmark's: a run with no tick for a whole indicator bar merges or drops episodes as
+alpha does, and "open prices only" sees the signal once per chart bar.
+
+**A refusal after the decision** (a known limit, review round 3 P3-C). `GoatSingleOpen` can still refuse after the
+eligibility decision and the draw: the CID freeze, the restart record's manage-only freeze, the direction guard, a
+sizing refusal or a failed order. As in alpha, the episode then stays armed and the next check tries again, with the
+same draw (the episode's bar and ordinal are fixed). For a refusal that depends on the side (the direction guard, a
+side-specific CID freeze), whether the episode finally trades can then depend on the side drawn.
 `MathRand` and `MathSrand` are never called. Each 64-bit constant is built from its two 32-bit halves.
 
 **Exits.** `GoatSingleSignalExits` reads, for a random single, the signal of the episode that opened it
@@ -258,7 +282,10 @@ and exits are the strategy's (with side-independent exits); no trade opens while
 reference's draws for each episode's first bar and signal, never forced. Fixtures: hourly, overlap (exp3), late
 moments, the opposite exit (exp1, and one where it fires), buy-then-sell and exp4 (flat-only skips only entries flags
 off made while a single ran; `Allow_Opposite_Seq` on and off), both sides' dashboard and virtual gates, an M5 chart,
-and exp5 (12 seeds, side-dependent exits: the sell share within 3 standard errors of 50%, divergent entries counted);
+exp5 (12 seeds, side-dependent exits: the sell share within 3 standard errors of 50%, divergent entries counted), an
+H1 chart with six episodes per bar (each with its ordinal's draw, the same under a second tick model, a failed bar read
+records nothing) and exp7 (20 seeds: the sell share within 3 standard errors of 50%), and the strategy's reversed
+flat-only lines (buy-first and sell-first pairs under `Reverse_Seq`);
 plus the SplitMix64 goldens, the tree's function equal to a BigInt reference (`scripts/b51_random_reference.cjs`,
 MQL's ulong rules), two tick models and a replay, no `MathRand`/`MathSrand`, and the refusals.
 `scripts/test_b51_parity.cjs`: the flags-off parity with B50-alpha on grid fixtures (with the adopted basket and both

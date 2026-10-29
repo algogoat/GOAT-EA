@@ -4482,7 +4482,7 @@ int OnInit()
    // B51 (beta-1a): the random-direction benchmark runs only with the single-trade engine, only in the strategy tester
    // (a coin-flip side never trades a live chart), only with a non-negative seed, both directions open and the flat-only
    // eligibility; Single_Flat_Only only with the single-trade engine.
-   g_GoatRandomEpisodeBar[0]=g_GoatRandomEpisodeBar[1]=0; g_GoatRandomSignal[0]=OP_BUY; g_GoatRandomSignal[1]=OP_SELL; // a live re-init keeps EA globals
+   g_GoatRandomEpisodeBar[0]=g_GoatRandomEpisodeBar[1]=0; g_GoatRandomOrdinalBar[0]=g_GoatRandomOrdinalBar[1]=0; g_GoatRandomOrdinal[0]=g_GoatRandomOrdinal[1]=0; g_GoatRandomSignal[0]=OP_BUY; g_GoatRandomSignal[1]=OP_SELL; // a live re-init keeps EA globals
    if(Random_Direction && Engine_Mode!=Engine_Single)   {Alert("Initialization Failed: Random_Direction needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
    if(Random_Seed<0)                                    {Alert("Initialization Failed: Random_Seed cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
    if(Random_Direction && Mode_Trade!=Long_and_Short)   {Alert("Initialization Failed: Random_Direction needs Mode_Trade=Long_and_Short (a coin flip needs both sides)."); return INIT_PARAMETERS_INCORRECT;}
@@ -7348,7 +7348,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
    {
-    if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0) g_GoatRandomEpisodeBar[OP_BUY]=iTime(_Symbol,PERIOD_CURRENT,(int)(Shift_Sig)); // B51 (beta-1a): the episode-start signal bar (the draw's)
+    if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0) GoatSingleRandomRecord(OP_BUY); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&Sequence_New_Bias_B)
     {
      int gate_active_b=GoatGateActiveMask();
@@ -7392,7 +7392,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
    {
-    if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_SELL]==0) g_GoatRandomEpisodeBar[OP_SELL]=iTime(_Symbol,PERIOD_CURRENT,(int)(Shift_Sig)); // B51 (beta-1a): the episode-start signal bar (the draw's)
+    if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_SELL]==0) GoatSingleRandomRecord(OP_SELL); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&Sequence_New_Bias_S)
     {
      int gate_active_s=GoatGateActiveMask();
@@ -7570,30 +7570,45 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
 //   during an overlap would always be against the running single (a counter-trend bias in a trend).
 // - The decision is made first, at alpha's moment for the signal (SignalEntryTrigger's Single branch, after the news and
 //   bias gates and the episode's arm flag) and before the draw, from those side-free conditions only; the draw cannot
-//   change it. Then the draw only picks the side: GoatSingleRandomSide(Random_Seed, episode-start bar, signal), where the
-//   episode-start bar is the open time of the signal bar (PERIOD_CURRENT at shift Shift_Sig) of the episode's first
-//   signal check (g_GoatRandomEpisodeBar, recorded in SignalEntryTrigger, cleared on the signal's false edge): one draw
-//   per episode, the same in every tick model, on every replay and on a retry after a refused order. Nothing is
-//   consumed by the draw.
+//   change it. Then the draw only picks the side: GoatSingleRandomSide(Random_Seed, episode-start bar, signal, ordinal),
+//   where the episode-start bar is the open time of the signal bar (PERIOD_CURRENT at shift Shift_Sig) of the episode's
+//   first signal check, and the ordinal counts this signal's episodes recorded on that chart bar (0, 1, ...; reset on a
+//   new bar), so two episodes of one signal inside one chart bar (an indicator timeframe finer than the chart) draw
+//   independently (GoatSingleRandomRecord, called from SignalEntryTrigger; g_GoatRandomEpisodeBar is cleared on the
+//   signal's false edge). One draw per episode, the same in every tick model, on every replay and on a retry after a
+//   refused order (a refusal after the decision, such as the CID freeze, the direction guard or a failed order, keeps
+//   the episode armed with that draw, as alpha keeps it armed). Nothing is consumed by the draw.
 // - The exits: the opposite-signal exit reads the opening episode's signal (GoatSingleSignalExits), as the strategy's
 //   single of that episode would. Entries can still diverge from the strategy's: the time stop is the same, but a stop
 //   or TP depends on the side, so a random single can end earlier or later and the occupancy that follows differs.
 // MathRand and MathSrand are never read or seeded here: OnInit's MathSrand(GetTickCount()) and the tester magic
 // (MathRand()+9) own that stream, and a benchmark must not perturb it or depend on it.
-// GoatSingleRandomSide(seed,bar,signal): 0 = buy, 1 = sell, the low bit of SplitMix64 (Steele, Lea and Flood 2014;
-// Vigna's splitmix64.c, whose first output for the state 0 is 0xE220A8397B1DCDAF) of the state
-// (ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62), so a buy-signal and a sell-signal episode starting on the same
-// bar draw independently: z=state+0x9E3779B97F4A7C15; z=(z^(z>>30))*0xBF58476D1CE4E5B9; z=(z^(z>>27))*0x94D049BB133111EB;
+// GoatSingleRandomSide(seed,bar,signal,ordinal): 0 = buy, 1 = sell, the low bit of SplitMix64 (Steele, Lea and Flood
+// 2014; Vigna's splitmix64.c, whose first output for the state 0 is 0xE220A8397B1DCDAF) of the state
+// (ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62) XOR ((ulong)ordinal << 40): a seed and a bar time stay below
+// 2^32, so the ordinal (bits 40+) and the signal (bit 62) never overlap them, and a buy-signal and a sell-signal
+// episode, or two episodes of one signal, starting on the same bar draw independently: z=state+0x9E3779B97F4A7C15; z=(z^(z>>30))*0xBF58476D1CE4E5B9; z=(z^(z>>27))*0x94D049BB133111EB;
 // z^=z>>31; side=z&1. Pure and stateless; ulong arithmetic wraps modulo 2^64. Each 64-bit constant is built from its
 // two 32-bit halves, so no literal exceeds the long range. OnInit refuses a negative seed (no sign-extension question).
-int GoatSingleRandomSide(const int seed,const datetime bar,const int signal)
+int GoatSingleRandomSide(const int seed,const datetime bar,const int signal,const int ordinal)
   {
-   ulong b51_z=((ulong)seed)^((ulong)bar)^(((ulong)signal)<<62);
+   ulong b51_z=((ulong)seed)^((ulong)bar)^(((ulong)signal)<<62)^(((ulong)ordinal)<<40);
    b51_z+=((((ulong)0x9E3779B9)<<32)|((ulong)0x7F4A7C15));
    b51_z=(b51_z^(b51_z>>30))*((((ulong)0xBF58476D)<<32)|((ulong)0x1CE4E5B9));
    b51_z=(b51_z^(b51_z>>27))*((((ulong)0x94D049BB)<<32)|((ulong)0x133111EB));
    b51_z^=(b51_z>>31);
    return (int)(b51_z&1);
+  }
+// GoatSingleRandomRecord(signal): an episode of this signal starts (its first signal check, driven by closed indicator
+// and chart bars): record its start bar, the chart's closed bar, and its ordinal among this signal's episodes recorded
+// on that bar (0 for the first; review of GOAT-EA#286 round 3, P1-A). A failed bar read records nothing.
+void GoatSingleRandomRecord(const int signal)
+  {
+   datetime b51_bar=iTime(_Symbol,PERIOD_CURRENT,(int)(Shift_Sig));
+   if(b51_bar<=0) return;
+   if(b51_bar==g_GoatRandomOrdinalBar[signal]) g_GoatRandomOrdinal[signal]++;
+   else {g_GoatRandomOrdinalBar[signal]=b51_bar; g_GoatRandomOrdinal[signal]=0;}
+   g_GoatRandomEpisodeBar[signal]=b51_bar;
   }
 // Single_Flat_Only's rule, the same for the strategy's single and the benchmark's: both sides free and permitted.
 bool GoatSingleBothFree()
@@ -7609,7 +7624,7 @@ void GoatSingleRandomEntry(const int signal)
    if(!GoatSingleBothFree()) return;                              // the decision, before the draw: both sides free (Single_Flat_Only)
    datetime b51_bar=g_GoatRandomEpisodeBar[signal];               // the episode-start signal bar, never the tick's time
    if(b51_bar<=0) {GoatSingleRefusal(signal,7,(signal==OP_BUY ? Seq_Buy.Desc : Seq_Sell.Desc),"random direction: no signal-bar time"); return;}
-   int  b51_side=GoatSingleRandomSide(Random_Seed,b51_bar,signal); // the draw only picks the side
+   int  b51_side=GoatSingleRandomSide(Random_Seed,b51_bar,signal,g_GoatRandomOrdinal[signal]); // the draw only picks the side
    bool b51_opened=false;
    if(b51_side==OP_BUY) b51_opened=GoatSingleOpen(Seq_Buy,ask);
    else                 b51_opened=GoatSingleOpen(Seq_Sell,bid);

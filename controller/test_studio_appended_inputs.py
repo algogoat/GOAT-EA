@@ -72,7 +72,9 @@ class AppendedInputTests(unittest.TestCase):
         # B51 (B50-beta-1a, docs/b50/B50_ALPHA_DESIGN.md section 8): appended at the very end of the header; every default
         # reproduces B50-alpha, and each is the default the tester report pins for an omitted input.
         expected = {'Random_Direction': ('bool', 'sinput', 'false'), 'Random_Seed': ('int', 'input', '1'),
-                    'Single_Flat_Only': ('bool', 'sinput', 'false')}
+                    'Single_Flat_Only': ('bool', 'sinput', 'false'),
+                    'Single_BE_ATR': ('double', 'input', '0.0'), 'Single_Trail_Start_ATR': ('double', 'input', '0.0'),
+                    'Single_Trail_ATR': ('double', 'input', '0.0')}
         self.assertEqual(B51_INPUTS, tuple(expected))
         self.assertEqual(APPENDED_INPUTS[-len(B51_INPUTS):], B51_INPUTS)
         self.assertEqual(list(self.schema['inputs'])[-len(B51_INPUTS):], list(B51_INPUTS))
@@ -82,7 +84,8 @@ class AppendedInputTests(unittest.TestCase):
                              (kind, declaration, default), name)
             self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), default, name)
         # Random_Seed is an axis (a seed sweep); Random_Direction is an sinput, never one.
-        self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']}, {'Random_Seed'})
+        self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']},
+                         {'Random_Seed', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'})
         # A B50-alpha SET (neither input) validates and keeps its own values; a benchmark SET validates too.
         alpha = {k: v for k, v in self.full.items() if k not in B51_INPUTS}
         self.assertEqual(validate_strategy(dict(alpha), self.schema)['values'], alpha)

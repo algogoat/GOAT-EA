@@ -4489,6 +4489,9 @@ int OnInit()
    if(Random_Direction && !Single_Flat_Only)            {Alert("Initialization Failed: Random_Direction needs Single_Flat_Only=true (the same eligibility for both arms)."); return INIT_PARAMETERS_INCORRECT;}
    if(Single_Flat_Only && Engine_Mode!=Engine_Single)   {Alert("Initialization Failed: Single_Flat_Only needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
    if(Random_Direction && !MQLInfoInteger(MQL_TESTER))  {Alert("Initialization Failed: Random_Direction is a strategy-tester benchmark; it never trades a live chart."); return INIT_FAILED;}
+   if(Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0) {Alert("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR cannot be negative."); return INIT_PARAMETERS_INCORRECT;} // B51 (beta-1b)
+   if(Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0)) {Alert("Initialization Failed: Single_Trail_Start_ATR needs Single_Trail_ATR > 0 (a trailing start without a distance)."); return INIT_PARAMETERS_INCORRECT;} // B51 (beta-1b)
+   if(Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0)) {Alert("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;} // B51 (beta-1b)
 // B51:end b51-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
@@ -6894,6 +6897,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    if(CheckTrailingLockTPNow())// && Active)
    {
+    GoatSingleModify(); // B51 (beta-1b): the single's break-even and trailing (TrailingStoploss never runs for a single: its lock is parked)
     if(Seq_Buy.Active && bid > Seq_Buy.Level_Lock)
     {
      if(Mode_Trail==Trail_Lock_Pro) {if(bid>Seq_Buy.Level_Lock+Seq_Buy.Size_TSL)    Seq_Buy.TrailingStoploss();}
@@ -7627,6 +7631,131 @@ void GoatSingleRandomEntry(const int signal)
    if(b51_opened) {g_GoatRandomSignal[b51_side]=signal; g_GoatSingleArmed[signal]=false;} // a refused order keeps the episode armed (alpha) and its draw
   }
 // B51:end b51-random
+// B51:begin b51-modify
+// B51 (beta-1b; docs/b50/B50_ALPHA_DESIGN.md section 8.2): the single's break-even and trailing, in their own function
+// (TrailingStoploss is untouched, and never runs for a single: GoatSingleOpen parks its lock). GoatSingleModify runs on
+// the trailing cadence (CheckTrailingLockTPNow), for the two single sequences only, and returns at once unless
+// Engine_Single and Single_BE_ATR or Single_Trail_ATR is on.
+// ATR is the entry's: GoatSingleOpen sets Size_SL = Single_SL_ATR x the closed bar's ATR, and the restart record freezes
+// Size_SL, so ATR = Size_SL / Single_SL_ATR, the same after a restart; ATR_Buf and GetSize's state are never touched.
+// - Break-even (Single_BE_ATR>0): once the price is Single_BE_ATR x ATR in the trade's favour (bid - open for a buy,
+//   open - ask for a sell), the SL goes to the entry price exactly (POSITION_PRICE_OPEN; no spread or commission added).
+// - Trailing (Single_Trail_ATR>0): once the price is Single_Trail_Start_ATR x ATR in favour, the SL trails
+//   Single_Trail_ATR x ATR behind the price (bid for a buy, ask for a sell).
+// The target is the better of the two, clamped to the nearest legal level max(STOPS_LEVEL, FREEZE_LEVEL, 1) points from
+// the price (as TrailingStoploss), and is sent only when it moves the SL in the trade's favour: a break-even move by any
+// amount of at least a point, a trailing move by at least the grid's minimum step (max(0.01% of the price, 5 points)).
+// The TP is sent unchanged. Both are read from the current price at each check (nothing latches), so a failed move is
+// retried only while its condition holds. A moved SL lives at the broker: a restart adopts the position with its
+// POSITION_SL, and UpdateLockTPSL never loosens an adopted stop (B49a F1-lite), so it carries on from there; an adopted
+// single without its frozen sizes keeps its broker SL/TP, as TrailingStoploss does.
+// A failed PositionModify (register row P-b49b-tsl-modify-failure-diagnose-backoff) logs one line: the ticket, bid, ask,
+// SYMBOL_TRADE_STOPS_LEVEL, SYMBOL_TRADE_FREEZE_LEVEL, the current SL and TP, the requested SL, the return code and the
+// consecutive count. From the GOAT_SINGLE_MODIFY_FAIL_LIMIT-th consecutive failure on a ticket it backs off 1 s, 5 s,
+// 30 s, then 60 s steady: inside a wait there is no attempt and no line, and each failed attempt from the limit on
+// logs its one line with the next wait (one line per back-off step, never one per tick). One success clears the count
+// and logs the recovery; each ticket keeps its own count and wait; a stuck ticket keeps logging once a minute.
+#define GOAT_SINGLE_MODIFY_FAIL_LIMIT  5   // consecutive failed modifies on one ticket before it backs off
+#define GOAT_SINGLE_BACKOFF_1_S        1   // the first wait (seconds)
+#define GOAT_SINGLE_BACKOFF_2_S        5   // the second
+#define GOAT_SINGLE_BACKOFF_3_S       30   // the third
+#define GOAT_SINGLE_BACKOFF_STEADY_S  60   // every later wait, for as long as the ticket keeps failing
+#define GOAT_SINGLE_MODIFY_SLOTS       8   // failing tickets tracked at once (a ticket whose position is gone frees its slot)
+// Send one SL move for ticket tk (its current SL and TP given), under the ticket's failure count and back-off. True when
+// the broker accepted it.
+bool GoatSingleModifySend(SEQUENCE &s,const ulong tk,const double sl,const double cur_sl,const double cur_tp)
+  {
+   static ulong    b51_tk[GOAT_SINGLE_MODIFY_SLOTS];
+   static int      b51_fails[GOAT_SINGLE_MODIFY_SLOTS];
+   static datetime b51_next[GOAT_SINGLE_MODIFY_SLOTS];
+   int b51_k=-1;
+   for(int j=0;j<GOAT_SINGLE_MODIFY_SLOTS;j++) if(b51_tk[j]==tk) b51_k=j;
+   datetime b51_now=TimeCurrent();
+   if(b51_k>=0 && b51_now<b51_next[b51_k]) return false;   // backing off: no attempt, no line
+   CTrade b51_trade;
+   if(Ledger_Mode==Ledger_PositionJoin) b51_trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
+   TSLmodifieds++;                                          // the run's trailing counters (TSL_Modified, TSLs) count a single's moves too
+   if(b51_trade.PositionModify(tk,sl,cur_tp))
+     {
+      if(b51_k>=0)
+        {
+         Print(s.Desc,": Single SL modify recovered: ticket=",IntegerToString((long)tk)," after ",IntegerToString(b51_fails[b51_k]),
+               " consecutive failures, sl=",DoubleToString(sl,_Digits));
+         b51_tk[b51_k]=0; b51_fails[b51_k]=0; b51_next[b51_k]=0;
+        }
+      return true;
+     }
+   TSLmodifyErrors++;
+   if(b51_k<0) // a newly failing ticket takes a free slot: an empty one, or one whose position is gone
+      for(int j=0;j<GOAT_SINGLE_MODIFY_SLOTS && b51_k<0;j++)
+         if(b51_tk[j]==0 || !PositionSelectByTicket(b51_tk[j])) {b51_k=j; b51_tk[j]=tk; b51_fails[j]=0; b51_next[j]=0;}
+   int b51_count=(b51_k>=0 ? ++b51_fails[b51_k] : 1);
+   string b51_line=s.Desc+": Single SL modify failed: ticket="+IntegerToString((long)tk)
+                   +" bid="+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_BID),_Digits)+" ask="+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_ASK),_Digits)
+                   +" stops_level="+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL))
+                   +" freeze_level="+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL))
+                   +" sl="+DoubleToString(cur_sl,_Digits)+" tp="+DoubleToString(cur_tp,_Digits)+" requested_sl="+DoubleToString(sl,_Digits)
+                   +" retcode="+IntegerToString((int)b51_trade.ResultRetcode())+" consecutive="+IntegerToString(b51_count);
+   if(b51_k<0) b51_line+=" (untracked: every back-off slot holds a live failing ticket)";
+   else if(b51_count>=GOAT_SINGLE_MODIFY_FAIL_LIMIT)
+     {
+      int b51_step=b51_count-GOAT_SINGLE_MODIFY_FAIL_LIMIT;
+      int b51_wait=(b51_step==0 ? GOAT_SINGLE_BACKOFF_1_S : (b51_step==1 ? GOAT_SINGLE_BACKOFF_2_S : (b51_step==2 ? GOAT_SINGLE_BACKOFF_3_S : GOAT_SINGLE_BACKOFF_STEADY_S)));
+      b51_next[b51_k]=b51_now+b51_wait;
+      b51_line+=" backoff="+IntegerToString(b51_wait)+"s";
+     }
+   Print(b51_line);
+   return false;
+  }
+// The break-even and trailing of one single sequence (every live level; a single has one).
+void GoatSingleModifySequence(SEQUENCE &s)
+  {
+   if(s.Virtual || !s.Active || !s.Traded) return;
+   if(s.Adopted && !s.AdoptSizes) return;                    // as TrailingStoploss: no frozen sizes, the broker SL/TP stay
+   if(!MathIsValidNumber(s.Size_SL) || !(s.Size_SL>0.0) || s.Size_SL==1234.5) return;
+   double b51_atr=s.Size_SL/Single_SL_ATR;                   // the entry's ATR (see above)
+   bool   b51_buy=(s.dir==OP_BUY);
+   double b51_px=(b51_buy ? bid : ask);
+   double b51_eps=_Point*0.001;                              // normalized prices compared without their binary rounding
+   int    b51_lvl=(int)MathMax((long)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL),(long)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL));
+   b51_lvl=MathMax(b51_lvl,1);                               // at least 1 point, as TrailingStoploss
+   double b51_legal=(b51_buy ? NormalizeDouble(bid-b51_lvl*_Point,_Digits) : NormalizeDouble(ask+b51_lvl*_Point,_Digits));
+   double b51_min_step=MathMax(0.0001*b51_px,5*_Point);      // TrailingStoploss's minimum step
+   for(int i=0;i<s.Level_Count;i++)
+     {
+      ulong b51_tk=(ulong)s.TradeLevels[i].ticket;
+      if(b51_tk==0 || !PositionSelectByTicket(b51_tk)) continue;
+      double b51_open=PositionGetDouble(POSITION_PRICE_OPEN);
+      double b51_sl=PositionGetDouble(POSITION_SL),b51_tp=PositionGetDouble(POSITION_TP);
+      double b51_favour=(b51_buy ? b51_px-b51_open : b51_open-b51_px);
+      bool   b51_be=(Single_BE_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-b51_eps);
+      bool   b51_trail=(Single_Trail_ATR>0.0 && b51_favour>=Single_Trail_Start_ATR*b51_atr-b51_eps);
+      if(!b51_be && !b51_trail) continue;
+      double b51_target=b51_open;
+      if(b51_trail)
+        {
+         double b51_t=NormalizeDouble(b51_buy ? b51_px-Single_Trail_ATR*b51_atr : b51_px+Single_Trail_ATR*b51_atr,_Digits);
+         if(!b51_be || (b51_buy ? b51_t>b51_target : b51_t<b51_target)) b51_target=b51_t;
+        }
+      b51_target=NormalizeDouble(b51_target,_Digits);
+      if(b51_buy ? b51_target>b51_legal : b51_target<b51_legal) b51_target=b51_legal; // the nearest legal level
+      // Only in the trade's favour: by at least a point, and by at least the minimum step unless it is the move to the
+      // entry itself (break-even is the entry, or the closest legal level: a clamped break-even moves by the minimum
+      // step like the trailing, so it never sends a modify a second while the price creeps up; review of GOAT-EA#287 P3-9).
+      double b51_gain=(b51_sl==0.0 ? DBL_MAX : (b51_buy ? b51_target-b51_sl : b51_sl-b51_target));
+      bool   b51_be_move=(b51_be && MathAbs(b51_target-b51_open)<b51_eps && (b51_sl==0.0 || (b51_buy ? b51_sl<b51_open-b51_eps : b51_sl>b51_open+b51_eps)));
+      if(b51_gain<_Point-b51_eps) continue;
+      if(!b51_be_move && b51_gain<b51_min_step-b51_eps) continue;
+      if(GoatSingleModifySend(s,b51_tk,b51_target,b51_sl,b51_tp)) {s.TradeLevels[i].sl=b51_target; s.Level_SL=b51_target;}
+     }
+  }
+void GoatSingleModify()
+  {
+   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || (!(Single_BE_ATR>0.0) && !(Single_Trail_ATR>0.0))) return;
+   GoatSingleModifySequence(Seq_Buy);
+   GoatSingleModifySequence(Seq_Sell);
+  }
+// B51:end b51-modify
 void CloseAllPositions(int OP,int magic=0)
   {
    CTrade m_trade;

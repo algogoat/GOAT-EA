@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_sha256": "2042534684062e0c3895f87b3ba7dc8b23ce1042e9a3ef471c0a96ae59a98c42",
+  "source_sha256": "6d80587c470f2234d4ff84fc90000e697311622ab78abd84bbda9def4ddc7998",
   "defines": {
     "GOAT_VERSION_LABEL": "\"1.49\"",
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
@@ -1303,6 +1303,30 @@
       "declaration": "sinput",
       "default_expression": "false",
       "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Single_BE_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Single_Trail_Start_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Single_Trail_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
       "enum_choices": null,
       "dependency_audited": false
     }

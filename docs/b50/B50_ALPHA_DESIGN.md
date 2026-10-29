@@ -186,6 +186,9 @@ closed.
 |1|Random_Direction|sinput bool|false|1a|no|Random-direction benchmark (Engine_Single, tester only)|
 |2|Random_Seed|input int|1|1a|yes|Benchmark seed (a seed sweep is an optimization over it)|
 |3|Single_Flat_Only|sinput bool|false|1a|no|A single opens only while both sides are free (required by 1)|
+|4|Single_BE_ATR|input double|0.0|1b|yes|Break-even after N ATR in favour (0 = off)|
+|5|Single_Trail_Start_ATR|input double|0.0|1b|yes|Trailing starts after N ATR in favour (needs 6 > 0)|
+|6|Single_Trail_ATR|input double|0.0|1b|yes|Trailing distance in ATR (0 = off)|
 
 ### 8.1 beta-1a: the random-direction benchmark
 
@@ -287,3 +290,74 @@ plus the SplitMix64 goldens, the tree's function equal to a BigInt reference (`s
 MQL's ulong rules), two tick models and a replay, no `MathRand`/`MathSrand`, and the refusals.
 `scripts/test_b51_parity.cjs`: the flags-off parity with B50-alpha on grid fixtures (with the adopted basket and both
 day-end/Friday mixes) and single fixtures (a hedging pair among them), and the WriteSet golden.
+
+### 8.2 beta-1b: break-even and trailing for singles
+
+**Where.** A new `GoatSingleModify()` (block `b51-modify`), called as the first statement of the tick's trailing block
+(`if(CheckTrailingLockTPNow())`, so on `Trailing_Sample_Period`, default every second). It returns at once unless
+`Engine_Single` and `Single_BE_ATR>0` or `Single_Trail_ATR>0`, and it manages `Seq_Buy` and `Seq_Sell` only (real,
+active, traded). `TrailingStoploss` is byte-untouched (a test compares it with B50-alpha's) and never runs for a single,
+whose lock is parked.
+
+**ATR.** The entry's: `GoatSingleOpen` sets `Size_SL = Single_SL_ATR × ATR(closed bar)`, and the restart record freezes
+`Size_SL`, so `ATR = Size_SL / Single_SL_ATR`, identical after a restart, with no new persisted field and no read of
+`ATR_Buf` or `GetSize`. (Known limit: a restart with a different `Single_SL_ATR` in the SET would rescale it; the SET a
+chart restarts with is the one it ran.)
+
+**Rules.**
+- Break-even: once `favour >= Single_BE_ATR × ATR` (favour = bid − open for a buy, open − ask for a sell), the target is
+  the entry price exactly (`POSITION_PRICE_OPEN`; no spread or commission added, the default the ruling allowed).
+- Trailing: once `favour >= Single_Trail_Start_ATR × ATR`, the target is `price ∓ Single_Trail_ATR × ATR` (bid for a
+  buy, ask for a sell). With both on, the better of the two.
+- The target is clamped to the nearest legal level, `max(STOPS_LEVEL, FREEZE_LEVEL, 1) × _Point` from the price, as the
+  grid's trailing does: break-even is the entry, or the closest legal level to it. A target is sent only if it moves
+  the SL in the trade's favour by at least the grid's minimum step (`max(0.01% of price, 5 points)`), with one waiver:
+  the move to the entry itself (an unclamped break-even, the SL still on the wrong side of the entry) goes by any amount
+  of at least a point. So a clamped break-even, after its first move, steps like the trailing and never sends a modify
+  every second while the price creeps up (review of GOAT-EA#287, P3-9). The TP is sent unchanged.
+  `TradeLevels[i].sl` and `Level_SL` follow a successful move; every attempt counts in `TSLmodifieds` and every failure
+  in `TSLmodifyErrors`, so the run's end-of-test lines (`TSL_Modified`, `TSLs`) include a single's moves (P3-10).
+- Thresholds compare normalized prices with a 0.001-point tolerance, so "at the threshold" means at it, never a point
+  early; a fractional threshold needs the next whole point.
+- Nothing latches: both are read from the current price at each check, so a failed move is retried only while its
+  condition holds (a latched break-even would, after a reversal, be clamped to just under the price, which is not
+  break-even).
+
+**Failure handling (register row P-b49b-tsl-modify-failure-diagnose-backoff), from day one.** `GoatSingleModifySend`:
+- every failed `PositionModify` logs one line: `ticket, bid, ask, stops_level, freeze_level, sl, tp, requested_sl,
+  retcode, consecutive`;
+- from the `GOAT_SINGLE_MODIFY_FAIL_LIMIT` (5)-th consecutive failure on a ticket, it waits `GOAT_SINGLE_BACKOFF_1_S`
+  (1 s), `_2_S` (5 s), `_3_S` (30 s), then `_STEADY_S` (60 s) for as long as it fails. Inside a wait there is no attempt
+  and no line; each attempt from the limit on logs its one line with `backoff=Ns` (one line per back-off step, never one
+  per tick). A stuck ticket keeps logging once a minute;
+- one success clears the count and logs `recovered ... after N consecutive failures`;
+- state is per ticket (`GOAT_SINGLE_MODIFY_SLOTS` = 8 slots, static in the function; a slot whose position is gone is
+  reused), so two tickets back off independently. The clock is `TimeCurrent()` (deterministic in the tester).
+
+**MLPS, the broker SL and restart adoption.** The moved SL lives at the broker, so a broker SL fill ends the single
+through `OnTradeTransaction` exactly as alpha's stop does (tested: the next episode opens and trails on its own). MLPS
+code is untouched. Alpha persists the single's stop size (`SL` in the restart record), never its current SL. On a live
+restart, `AdoptOpenPositions` reads `POSITION_SL` into the level, and `UpdateLockTPSL` (the only place that re-derives
+`entry − Size_SL`) keeps the tighter of the broker SL and the derived one for an adopted basket (B49a F1-lite), so a
+break-even or trailed SL is never loosened; `GoatSingleModify` then carries on from it with the frozen ATR. An adopted
+single without its frozen sizes is left alone (as `TrailingStoploss` does). `UpdateLockTPSL` runs once per single, at
+its open (tested), because a single never adds, never partial-closes (its `Level_Retrace` stays 0) and SmartRescue is
+refused. Known limit: a future change that calls `UpdateLockTPSL` on a running, non-adopted single would reset its SL to
+`entry − Size_SL`; `test_b51_modify.cjs` pins the single call.
+
+**OnInit** (all INIT_PARAMETERS_INCORRECT, ported): a negative `Single_BE_ATR`, `Single_Trail_Start_ATR` or
+`Single_Trail_ATR` (`SINGLE_BE_TRAIL_NEGATIVE`); `Single_Trail_Start_ATR>0` with `Single_Trail_ATR==0`, a trailing start
+without a distance (`SINGLE_TRAIL_START_WITHOUT_DISTANCE`; review P3-10, reversing the earlier acceptance); any of the
+three above 0 with `Engine_Grid` (`SINGLE_EXITS_WITHOUT_SINGLE`; P3-10). The later refusal lines are regenerated with
+the rules.
+
+**Tests.** `scripts/test_b51_modify.cjs` (17) + `test_b51_modify_mutations.cjs` (55 mutants, the review's included):
+break-even at the threshold and not a point before, the entry exactly, the TP kept, sell; trailing start, distance,
+monotonic for buy and sell, the minimum step; the legal clamp with stops and freeze levels for the buy and for the sell
+(SL >= ask + 50 points with a spread), no step back when the clamp falls below the current SL; a clamped break-even
+then steps, and the move to the entry goes at once; the entry ATR; flags off identical to B50-alpha; the three OnInit
+refusals; every log field; the back-off schedule and line count; success clears the count; two tickets independent;
+ten failing tickets in turn (slot reuse); a stuck ticket logs once a minute; the TSL counters; the live restart;
+`UpdateLockTPSL` once; the broker stop ends the single. Equivalent mutants, not listed: dropping the early return when
+both inputs are 0, the runtime grid-engine check (OnInit refuses the combination), and the one-point check (every
+remaining move is the waived move to the entry, whose gain is positive, or one of at least the minimum step).

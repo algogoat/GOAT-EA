@@ -75,6 +75,18 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(single,0,50,2,child+b50.replace('Engine_Mode=0','Engine_Mode=1').replace('Single_SL_ATR=0.0','Single_SL_ATR=1.50')+tail,expert),true,'Single SET and child');passed++;
  assert.equal(api.GoatChildAuditMaps(single,0,50,2,child+b50+tail,expert),false,'Single SET, grid child');passed++;
  assert.equal(api.GoatChildAuditMaps(single,0,50,2,child+tail,expert),false,'Single SET, a B49a child without the inputs');passed++;}
+// B51 (B50-beta-1a): a B51 child also carries the B50-beta inputs at the end, which WriteSet writes only when they differ
+// from their defaults: a SET without them maps only to a child holding the defaults (no benchmark, seed 1).
+{const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'
+  +'Single_Time_Stop_TF=0\nClock_Mode=0\nServer_Clock_Model=0\nServer_UTC_Offset=2\nNY_Session=09:30-16:00\nRollover_Block_Minutes=0\n';
+ const b51='Random_Direction=false\nRandom_Seed=1\n';
+ const child=head+inputs+declared+'BlindExport=false\nLedger_Mode=0\n'+b50;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b51+tail,expert),true,'B49a SET, B51 child at the defaults');passed++;
+ for(const [from,to] of [['Random_Direction=false','Random_Direction=true'],['Random_Seed=1','Random_Seed=2']]){
+  assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b51.replace(from,to)+tail,expert),false,'B49a SET, child at '+to);passed++;
+ }
+ assert.equal(api.GoatChildAuditMaps(original+'Random_Seed=7\n',0,50,2,child+b51.replace('Random_Seed=1','Random_Seed=7')+tail,expert),true,'a seed SET and its child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Random_Seed=7\n',0,50,2,child+tail,expert),false,'a seed SET, a B50-alpha child without the input');passed++;}
 // Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.

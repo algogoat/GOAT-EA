@@ -603,6 +603,11 @@ if(Server_UTC_Offset!=2)                  FileWrite(FileSET_handle,"Server_UTC_O
 if(NY_Session!="09:30-16:00")              FileWrite(FileSET_handle,"NY_Session="+NY_Session);
 if(Rollover_Block_Minutes!=0)             FileWrite(FileSET_handle,"Rollover_Block_Minutes="+(string)Rollover_Block_Minutes);
 // B50:end b50-writeset
+// B51:begin b51-writeset
+// B51 (beta-1a): likewise for the B50-beta inputs, so a default SET stays B50-alpha's bytes.
+if(Random_Direction)                      FileWrite(FileSET_handle,"Random_Direction="+(string)Random_Direction);
+if(Random_Seed!=1)                        FileWrite(FileSET_handle,"Random_Seed="+(string)Random_Seed);
+// B51:end b51-writeset
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -842,6 +847,14 @@ bool     g_GoatSingleArmed[2]={true,true};
 bool     g_GoatEntryBlocked=false;
 int      g_GoatNYStartMin=0,g_GoatNYEndMin=0;
 // B50:end b50-inputs
+// B51:begin b51-inputs
+// B51 (B50-beta; docs/b50/B50_ALPHA_DESIGN.md section 8): the single's break-even and trailing and the random-direction
+// benchmark, appended at the very end of the inputs (B49b's inputs slot in between B50-alpha's and these on merge;
+// names are what matter). Every default reproduces B50-alpha, and WriteSet writes each one only when it differs from it.
+input    group                   "====SINGLE EXITS / BENCHMARK (B50-beta)====";
+sinput   bool                    Random_Direction              =                         false;       // Single: random-direction benchmark (tester only)
+input    int                     Random_Seed                   =                             1;       // Benchmark seed: side = splitmix64(seed^signal-bar time)&1
+// B51:end b51-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label

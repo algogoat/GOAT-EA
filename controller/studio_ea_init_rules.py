@@ -30,7 +30,7 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 import re
 
-from studio_strategy_settings import B50_INPUTS, numeric
+from studio_strategy_settings import APPENDED_GROUPS, numeric
 
 EA_SOURCE = 'GOAT V1.49.mq5'
 EA_INIT_CODE = 'EA_INIT_REFUSED'
@@ -392,6 +392,15 @@ EA_INIT_RULES = (
           'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
           'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
           lambda v: _bad_ny_session(v['NY_Session'])),
+    # B51 (beta-1a): the random-direction benchmark (GOAT V1.49.mq5:4481-4487). A schema without these appended inputs
+    # (B50-alpha and earlier) belongs to a build without the rules (applicable_rules, APPENDED_GROUPS).
+    _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [4484], 'Random_Direction && Engine_Mode!=Engine_Single',
+          ['Random_Direction', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
+          'Random_Direction && Engine_Mode!=Engine_Single',
+          'Initialization Failed: Random_Direction needs the single-trade engine (Engine_Mode=Engine_Single).',
+          lambda v: bool(v['Random_Direction']) and not _single(v)),
+    _rule('RANDOM_SEED_NEGATIVE', [4485], 'Random_Seed<0', ['Random_Seed'], {}, 'Random_Seed<0',
+          'Initialization Failed: Random_Seed cannot be negative.', lambda v: v['Random_Seed'] < 0),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -467,11 +476,14 @@ NOT_PORTED = (
          reason='symbol/indicator runtime'),
     dict(lines=(4478,), anchor='iMA-on-ATR failed (single-trade engine)', condition='Engine_Single: iMA-on-ATR handle invalid',
          reason='symbol/indicator runtime'),
-    dict(lines=(4551,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
+    dict(lines=(4486,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
+         reason='run context (live chart)'),
+    dict(lines=(4558,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4552,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4560,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4565,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4559,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4567,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4572,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 
@@ -556,7 +568,9 @@ def applicable_rules(schema, table=EA_INIT_RULES):
         missing = [name for name in rule['inputs'] if name not in inputs]
         # B50 (A0): a schema that declares none of B50's inputs is a build without them, so without their rules (V1.48,
         # B49a). One that declares some but lost one a rule reads fails closed below, like any other lost input.
-        if missing and all(name in B50_INPUTS for name in missing) and not any(name in inputs for name in B50_INPUTS):
+        # B51 (beta-1a): the same per appended group (APPENDED_GROUPS), so a B50-alpha schema skips B51's rules.
+        absent = {name for group in APPENDED_GROUPS if not any(name in inputs for name in group) for name in group}
+        if missing and all(name in absent for name in missing):
             continue
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
                   for label in wanted if label not in (inputs[name].get('enum_choices') or {})]

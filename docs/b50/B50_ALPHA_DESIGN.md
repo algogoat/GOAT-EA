@@ -163,3 +163,78 @@ A0's edits in main:
 7. Only A0 touches OnInit or any line above it. A0 regenerates the init-rule anchors once.
 8. Input order: the B50-alpha inputs (items 1–12 above) are appended right after `Ledger_Mode`. B49b's inputs come after them.
 9. The compile gate (MetaEditor, 0 errors and 0 warnings) runs on Release's PC for every PR head. The Mac builders run the node/python suites plus mutants.
+
+## 8. B50-beta-1 (B51): binding rulings and the choices made
+
+Rulings: Claude-Mac, goatai#2587 comment 6501903173. Research-only, tester-only code. With every new input at its
+default, the build trades exactly as B50-alpha (`V1.49-BETA17-50`, source `32df4eb`, EX5 `8364a371`). Every changed line
+carries the marker `B51` or sits in a `// B51:begin` ... `// B51:end` block; `scripts/test_b51_no_drift.cjs` guards the
+tree against B50-alpha, and `scripts/test_b50_no_drift.cjs` now proves B50-alpha's own commit.
+
+**Build identity.** Unchanged here (`V1.49-BETA17-50`, marker `B50`). As A4 (#278) did for B50, the assembly PR stamps the
+build: proposed `V1.49-BETA17-51`, marker `B51` (the marker the lines already carry).
+
+**Inputs.** One new group, `input group "====SINGLE EXITS / BENCHMARK (B50-beta)===="`, appended at the very end of the
+inputs (after B50-alpha's). B49b's inputs slot in between B50-alpha's and these when the lines merge; names are what
+matter. Append-only: no existing input moves or changes. `WriteSet` writes each one only when it differs from its default,
+so a default SET is B50-alpha's bytes (`scripts/test_b51_parity.cjs`). The controller lists them as their own appended
+group (`B51_INPUTS`, `APPENDED_GROUPS`): a B50-alpha schema carries none of their rules, a B51 schema that lost one fails
+closed.
+
+| # | Name | Type | Default | PR | Axis | Meaning |
+|---|---|---|---|---|---|---|
+|1|Random_Direction|sinput bool|false|1a|no|Random-direction benchmark (Engine_Single, tester only)|
+|2|Random_Seed|input int|1|1a|yes|Benchmark seed (a seed sweep is an optimization over it)|
+
+### 8.1 beta-1a: the random-direction benchmark
+
+**The side.** Only when `Engine_Mode==Engine_Single && Random_Direction`. The side of a single is
+`GoatSingleRandomSide(Random_Seed, bar)`, where `bar` is the open time of the signal bar, the chart bar the signals are
+read from: `iTime(_Symbol, PERIOD_CURRENT, Shift_Sig)` (shift 1, the closed bar). The function is pure and stateless:
+
+```
+state = (ulong)seed XOR (ulong)bar
+z = state + 0x9E3779B97F4A7C15                (mod 2^64)
+z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9      (mod 2^64)
+z = (z ^ (z >> 27)) * 0x94D049BB133111EB      (mod 2^64)
+z = z ^ (z >> 31)
+side = z & 1                                  (0 = buy, 1 = sell)
+```
+
+That is one step of SplitMix64 (Vigna's `splitmix64.c`; its first output for the state 0 is `0xE220A8397B1DCDAF`, which
+the test asserts). Each 64-bit constant is built from its two 32-bit halves, so no literal exceeds the long range. The
+same bar gives the same side in every tick model and on every replay. `MathRand` and `MathSrand` are never called:
+`MathSrand(GetTickCount())` and the tester magic (`MathRand()+9`) own that stream.
+
+**What does not change.** The signal timing and every gate on `SignalEntryTrigger`'s path (news, bias, the clock's entry
+block, `Sequence_New_*`, the gate log), the sizing (`GoatSingleOpen`), and the exits.
+
+**The arm flag, `Reverse_Seq` and `Allow_Opposite_Seq` (the choice made).** `SignalEntryTrigger` gains one line before
+each `if(Reverse_Seq)`: `if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(signal); else`. So:
+- the episode stays the signal's: `g_GoatSingleArmed[signal]` (the signal's own direction) is checked, consumed by the
+  open, and re-armed on the signal's false edge, exactly as in alpha;
+- `Reverse_Seq` does not change the side: a reversed coin flip is still a coin flip, so the benchmark of a reversed
+  strategy and of the plain one are the same benchmark. It still decides the opposite-signal exit's mapping
+  (`GoatSingleSignalExits` is unchanged), so a random single exits by the same rule, as a function of its side and the
+  signals, as the strategy's single;
+- the drawn side's own gates are the ones its alpha branch reads: `DashboardEntryAllowed(side)`, no virtual or real
+  sequence on that side, `Mode_Trade`, and `Allow_Opposite_Seq || !other.Traded`. A flip that is gated, or refused by
+  `GoatSingleOpen`, leaves the episode armed, so it is tried again on the next signal check; on the next bar that is a
+  new flip. Consequence: with `Mode_Trade` Long or Short, the benchmark's entries are a subset of the strategy's moments
+  (the gated flips wait for a permitted one), and in a range mode where both signals are true on the same check, the
+  second episode can draw the side the first one holds and then waits, as alpha's second episode waits for its side.
+
+**OnInit refusals** (block `b51-init`, after `b50-init`): `Random_Direction` without `Engine_Single`
+(INIT_PARAMETERS_INCORRECT); a negative `Random_Seed` (INIT_PARAMETERS_INCORRECT; so no question of how MQL
+sign-extends a negative int into a ulong); `Random_Direction` outside the strategy tester (INIT_FAILED: a coin-flip side
+never trades a live chart). The first two are ported to the controller's `EA_INIT_RULES`; the third is `NOT_PORTED`
+(run context). Inserting the block moved the four later OnInit refusal lines by 7; their anchors in
+`controller/studio_ea_init_rules.py` were regenerated once.
+
+**Tests.** `scripts/test_b51_random.cjs` (+ `test_b51_random_mutations.cjs`): the published SplitMix64 outputs; fixed
+golden sequences for seeds 1 and 2; the tree's function, evaluated with MQL's ulong rules by
+`scripts/b51_random_reference.cjs` (the tick harness does not model ulong), equal to a JavaScript BigInt reference on a
+seeded sweep; on the converted tick path, every side equal to the reference for its signal bar, under two tick models
+and on a replay; the same entry times, lots, stops and exits as the flags-off run; no `MathRand`/`MathSrand` call; the
+signal's arm flag; `Reverse_Seq`; the drawn side's gates; flags off identical to B50-alpha; the three refusals.
+`scripts/test_b51_parity.cjs`: the flags-off parity with B50-alpha on grid and single fixtures, and the WriteSet golden.

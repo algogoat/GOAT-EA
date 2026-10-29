@@ -359,9 +359,10 @@ function run(src=readSources()){
     GetSize:()=>0.001,GRID_VALID:1,Sequence_Pause_News:false,Sequence_Pause_Bias_B:false,DashboardPortfolioPaused:false,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,ask:1.09});
    vm.runInContext('(function(){'+js(manage)+'})()',w.c);
    assert.deepEqual(w.opened,['buy'],'an existing sequence keeps adding levels');assert.deepEqual(w.gateCalls,[],'management never consults the gate');ok();}
-  // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger and the promotion.
+  // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger, B51's random-direction
+  // single entry (GoatSingleRandomEntry, test_b51_random.cjs) and the promotion.
   {const callers=src.main.split('\n').filter(l=>/DashboardEntryAllowed\(/.test(l)&&!/^bool DashboardEntryAllowed/.test(l)).map(l=>l.trim().slice(0,40));
-   assert.equal(callers.length,6);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
+   assert.equal(callers.length,8);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
    for(const unit of ['void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('GoatStagedChildMayOpen'),unit);
    ok();}
   // Dashboard side: the marker is written only after the child's ack of the dispatched exposure policy.

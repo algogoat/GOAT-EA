@@ -185,22 +185,36 @@ closed.
 |---|---|---|---|---|---|---|
 |1|Random_Direction|sinput bool|false|1a|no|Random-direction benchmark (Engine_Single, tester only)|
 |2|Random_Seed|input int|1|1a|yes|Benchmark seed (a seed sweep is an optimization over it)|
+|3|Single_Flat_Only|sinput bool|false|1a|no|A single opens only while both sides are free (required by 1)|
 
 ### 8.1 beta-1a: the random-direction benchmark
 
-Revised after the review of GOAT-EA#286 (P1-1, P1-2, P2-3, P2-4, P3-5; coordinator rulings). The first version let a
-gated draw stay armed and draw again on every bar: with `Allow_Opposite_Seq` on it hedged the running single (sides
-0101..., late entries), and its opposite-signal exit read the side, so an against-signal single died in about 60 s.
+Revised twice after review (GOAT-EA#286; coordinator rulings). The first version let a gated draw stay armed and draw
+again on every bar (it hedged the running single, sides 0101..., late entries), and its opposite exit read the side.
+The second consumed an episode whose drawn side was gated, which made whether an episode trades depend on the draw:
+during an overlap only the side opposite the running single could open, so in a trend the benchmark over-selected
+counter-trend trades (exp5: 59.9% sells over 611 trades), and it could open at moments the strategy never trades
+(exp6). Both are replaced by the ruling below.
 
-**The moment.** Only when `Engine_Mode==Engine_Single && Random_Direction`. `SignalEntryTrigger` hands each signal
-episode (after the signal's news and bias gates) to `GoatSingleRandomEntry(signal)`, which opens only when B50-alpha's
-own branch would open for that signal: alpha's gates for alpha's trade side T of the signal (T = signal, or its
-opposite under `Reverse_Seq`): the arm flag, `DashboardEntryAllowed(T)`, no virtual sequence on T, no running single of
-this signal (alpha's `!Seq_T.Active`), and `Allow_Opposite_Seq` or no running single of the other signal (alpha's
-`!Seq_other.Traded`). A running single counts for the signal of the episode that opened it (`g_GoatRandomSignal`), not
-for its side, so these are alpha's gates whatever side the coin gave, and the benchmark's moments are alpha's.
+**The comparison.** The strategy is `Engine_Single`, `Single_Flat_Only=true`, `Random_Direction=false`; the benchmark
+is the same SET with `Random_Direction=true`. Both arms run the same eligibility rule, the same signal timing, the same
+sizing (`GoatSingleOpen`) and the same exits; only the side is drawn. `Random_Direction=true` without
+`Single_Flat_Only=true` is an OnInit refusal.
 
-**The draw.** Made once per episode, at that moment, never redrawn:
+**Eligibility: `Single_Flat_Only`** (sinput bool, default false; `GoatSingleBothFree`). A single may open only while
+both sides are free: no running single and no virtual sequence on either side, and the dashboard permits both sides
+(`DashboardEntryAllowed(OP_BUY)` and `(OP_SELL)`). It applies to alpha's own Single path: a marked line before each of
+alpha's four Single branches in `SignalEntryTrigger` skips the branch while both sides are not free (the episode stays
+armed, as with any of alpha's gates). With `Single_Flat_Only=false` that line is never true, so flags off is B50-alpha
+byte for byte (`test_b51_parity`, `test_b51_random` section 11). `Single_Flat_Only` with `Engine_Grid` is refused.
+
+**The decision before the draw.** The benchmark's `GoatSingleRandomEntry(signal)` runs where alpha's Single branch runs
+for the signal (after the signal's news and bias gates), checks the episode's arm flag and `GoatSingleBothFree()`, and
+only then draws. Neither check reads the draw, so the draw cannot decide whether the episode trades; it only picks the
+side, and nothing is consumed by it. (With both sides free, alpha's gates for its trade side, including
+`Allow_Opposite_Seq`, hold trivially, and `Mode_Trade` is `Long_and_Short` by OnInit.)
+
+**The draw.** Made once per episode, never redrawn:
 
 ```
 state = (ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62)
@@ -212,39 +226,37 @@ side = z & 1                                  (0 = buy, 1 = sell)
 ```
 
 One step of SplitMix64 (Vigna's `splitmix64.c`; its first output for the state 0 is `0xE220A8397B1DCDAF`). `bar` is
-the episode-start signal bar: the open time of `iTime(_Symbol, PERIOD_CURRENT, Shift_Sig)` (the chart's closed bar) at
-the episode's first signal check, recorded in `SignalEntryTrigger` (`g_GoatRandomEpisodeBar[signal]`) and cleared on the
-signal's false edge. So a moment late in an episode (alpha's single of the last episode ended inside it) still draws from
-the episode's first bar, a refused order is retried with the same draw, and a buy-signal and a sell-signal episode that
-start on the same bar draw independently (the signal bit). The same episode draws the same side in every tick model and
-on every replay. `MathRand` and `MathSrand` are never called. Each 64-bit constant is built from its two 32-bit halves.
+the episode-start signal bar: the open time of `iTime(_Symbol, PERIOD_CURRENT, (int)Shift_Sig)` (the chart's closed
+bar) at the episode's first signal check, recorded in `SignalEntryTrigger` (`g_GoatRandomEpisodeBar[signal]`) and
+cleared on the signal's false edge. So an entry late in an episode still draws from the episode's first bar, a refused
+order is retried with the same draw, and a buy-signal and a sell-signal episode that start on the same bar draw
+independently (the signal bit). The same episode draws the same side in every tick model and on every replay.
+`MathRand` and `MathSrand` are never called. Each 64-bit constant is built from its two 32-bit halves.
 
-**The drawn side's own gates.** `DashboardEntryAllowed(side)`, no virtual and no running sequence on that side
-(alpha's `Allow_Opposite_Seq` gate above already implies the other side's). If they block it, the episode is consumed
-with no trade, counted (`g_GoatRandomGated`) and logged `B51 random: drawn side gated (signal, drawn, bar, count)`:
-no redraw, no waiting. With `Allow_Opposite_Seq` on, that happens when a sell-signal episode draws the side a running
-buy-signal single holds (alpha hedges there). So the benchmark's entry moments are a subset of alpha's, and its trade
-count is at most alpha's, on the same market path while exits match. Caveat: an exit that depends on the side (the
-stop, the TP) can end a random single earlier or later than alpha's, and the moments that follow can then differ.
+**Exits.** `GoatSingleSignalExits` reads, for a random single, the signal of the episode that opened it
+(`g_GoatRandomSignal`): it exits when the other signal reads true and its own reads false, as the strategy's single of
+that episode would. The time stop is the single's own (by bars). `Reverse_Seq` does not change the side.
 
-**Exits.** `GoatSingleSignalExits` reads, for a random single, the signal of the episode that opened it: it exits when
-the other signal reads true and its own reads false, exactly when alpha's single of that episode would. The time stop
-is the single's own (by bars). `Reverse_Seq` does not change the side (a reversed coin flip is still a coin flip); it
-only decides alpha's trade side T for the gates above.
+**Divergence (the documented limit).** The two arms' entries are the same while their exits happen at the same times
+(time stops, opposite-signal exits): then occupancy, and so eligibility, is the same. A stop or TP depends on the side,
+so a random single can end earlier or later than the strategy's, and the occupancy that follows differs; entries can
+then diverge. `test_b51_random` counts them (exp5: an uptrend with SL 1.5 ATR and TP 2R over 12 seeds).
 
-**OnInit refusals** (block `b51-init`, after `b50-init`; it also resets the B51 globals for a live re-init):
-`Random_Direction` without `Engine_Single`; a negative `Random_Seed` (no question of how MQL sign-extends a negative int
-into a ulong); `Random_Direction` with `Mode_Trade` other than `Long_and_Short` (a coin flip needs both sides; review
-P2-3) (each INIT_PARAMETERS_INCORRECT, ported to `EA_INIT_RULES`); `Random_Direction` outside the strategy tester
+**OnInit refusals** (block `b51-init`, after `b50-init`; it also resets the B51 globals for a live re-init), each
+INIT_PARAMETERS_INCORRECT and ported to `EA_INIT_RULES` unless noted: `Random_Direction` without `Engine_Single`; a
+negative `Random_Seed`; `Random_Direction` with `Mode_Trade` other than `Long_and_Short`; `Random_Direction` without
+`Single_Flat_Only`; `Single_Flat_Only` without `Engine_Single`; `Random_Direction` outside the strategy tester
 (INIT_FAILED, `NOT_PORTED`: run context). The later OnInit refusal anchors in `controller/studio_ea_init_rules.py` are
 regenerated with the block.
 
-**Tests.** `scripts/test_b51_random.cjs` (+ `test_b51_random_mutations.cjs`) compares the benchmark, the tree's
-flags-off run and B50-alpha on the same ticks, on the hourly, overlap (the review's exp3), late-moment, opposite-exit
-(exp1, and one where the opposite signal comes), buy-then-sell (`Allow_Opposite_Seq` on and off) and M5-chart fixtures:
-entry moments are alpha's (or a subset by exactly the gated episodes, each counted and logged), exits are alpha's, the
-sides are the reference's draws for each episode's first bar and signal, never forced; plus the SplitMix64 goldens, the
-tree's function equal to a BigInt reference (`scripts/b51_random_reference.cjs`, MQL's ulong rules), two tick models
-and a replay, no `MathRand`/`MathSrand`, the drawn side's gates, flags off identical to B50-alpha, and the refusals.
+**Tests.** `scripts/test_b51_random.cjs` (+ `test_b51_random_mutations.cjs`) runs every fixture as the benchmark, the
+flat-only strategy, the tree flags off and B50-alpha on the same ticks: flags off is B50-alpha; the benchmark's entries
+and exits are the strategy's (with side-independent exits); no trade opens while another single runs; the sides are the
+reference's draws for each episode's first bar and signal, never forced. Fixtures: hourly, overlap (exp3), late
+moments, the opposite exit (exp1, and one where it fires), buy-then-sell and exp4 (flat-only skips only entries flags
+off made while a single ran; `Allow_Opposite_Seq` on and off), both sides' dashboard and virtual gates, an M5 chart,
+and exp5 (12 seeds, side-dependent exits: the sell share within 3 standard errors of 50%, divergent entries counted);
+plus the SplitMix64 goldens, the tree's function equal to a BigInt reference (`scripts/b51_random_reference.cjs`,
+MQL's ulong rules), two tick models and a replay, no `MathRand`/`MathSrand`, and the refusals.
 `scripts/test_b51_parity.cjs`: the flags-off parity with B50-alpha on grid fixtures (with the adopted basket and both
-day-end/Friday mixes) and single fixtures, and the WriteSet golden.
+day-end/Friday mixes) and single fixtures (a hedging pair among them), and the WriteSet golden.

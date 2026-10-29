@@ -392,20 +392,30 @@ EA_INIT_RULES = (
           'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
           'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
           lambda v: _bad_ny_session(v['NY_Session'])),
-    # B51 (beta-1a): the random-direction benchmark (GOAT V1.49.mq5:4481-4489). A schema without these appended inputs
+    # B51 (beta-1a): the random-direction benchmark (GOAT V1.49.mq5:4481-4492). A schema without these appended inputs
     # (B50-alpha and earlier) belongs to a build without the rules (applicable_rules, APPENDED_GROUPS).
-    _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [4485], 'Random_Direction && Engine_Mode!=Engine_Single',
+    _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [4486], 'Random_Direction && Engine_Mode!=Engine_Single',
           ['Random_Direction', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
           'Random_Direction && Engine_Mode!=Engine_Single',
           'Initialization Failed: Random_Direction needs the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: bool(v['Random_Direction']) and not _single(v)),
-    _rule('RANDOM_SEED_NEGATIVE', [4486], 'Random_Seed<0', ['Random_Seed'], {}, 'Random_Seed<0',
+    _rule('RANDOM_SEED_NEGATIVE', [4487], 'Random_Seed<0', ['Random_Seed'], {}, 'Random_Seed<0',
           'Initialization Failed: Random_Seed cannot be negative.', lambda v: v['Random_Seed'] < 0),
-    _rule('RANDOM_DIRECTION_ONE_DIRECTION', [4487], 'Random_Direction && Mode_Trade!=Long_and_Short',
+    _rule('RANDOM_DIRECTION_ONE_DIRECTION', [4488], 'Random_Direction && Mode_Trade!=Long_and_Short',
           ['Random_Direction', 'Mode_Trade'], {'Mode_Trade': ['Long_and_Short']},
           'Random_Direction && Mode_Trade!=Long_and_Short (review of GOAT-EA#286, P2-3)',
           'Initialization Failed: Random_Direction needs Mode_Trade=Long_and_Short (a coin flip needs both sides).',
           lambda v: bool(v['Random_Direction']) and v['Mode_Trade'] != v.choice('Mode_Trade', 'Long_and_Short')),
+    _rule('RANDOM_DIRECTION_WITHOUT_FLAT_ONLY', [4489], 'Random_Direction && !Single_Flat_Only',
+          ['Random_Direction', 'Single_Flat_Only'], {},
+          'Random_Direction && !Single_Flat_Only (re-review of GOAT-EA#286: the same eligibility for both arms)',
+          'Initialization Failed: Random_Direction needs Single_Flat_Only=true (the same eligibility for both arms).',
+          lambda v: bool(v['Random_Direction']) and not v['Single_Flat_Only']),
+    _rule('SINGLE_FLAT_ONLY_WITHOUT_SINGLE', [4490], 'Single_Flat_Only && Engine_Mode!=Engine_Single',
+          ['Single_Flat_Only', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
+          'Single_Flat_Only && Engine_Mode!=Engine_Single',
+          'Initialization Failed: Single_Flat_Only needs the single-trade engine (Engine_Mode=Engine_Single).',
+          lambda v: bool(v['Single_Flat_Only']) and not _single(v)),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -482,13 +492,13 @@ NOT_PORTED = (
     dict(lines=(4478,), anchor='iMA-on-ATR failed (single-trade engine)', condition='Engine_Single: iMA-on-ATR handle invalid',
          reason='symbol/indicator runtime'),
     # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
-    dict(lines=(4488,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
+    dict(lines=(4491,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
          reason='run context (live chart)'),
-    dict(lines=(4560,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4563,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4561,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4569,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4574,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4564,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4572,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4577,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

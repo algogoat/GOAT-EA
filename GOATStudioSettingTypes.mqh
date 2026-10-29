@@ -20,6 +20,7 @@ string GoatStudioSettingType(const string key)
    if(key=="NY_Session") return "string";
    // B50:end b50-types
    if(key=="Random_Direction") return "bool"; // B51 (beta-1a): the benchmark switch, an sinput (never an optimization axis)
+   if(key=="Single_Flat_Only") return "bool"; // B51 (beta-1a): the flat-only eligibility, an sinput (never an optimization axis)
    if(key=="Random_Seed") return "int";       // B51 (beta-1a): the benchmark seed, an optimization axis (a seed sweep)
    return "";
   }
@@ -49,6 +50,7 @@ string GoatStudioAppendedDefault(const string key)
    if(key=="NY_Session") return "09:30-16:00";
    if(key=="Random_Direction") return "false"; // B51 (beta-1a): the B50-beta inputs; their defaults reproduce B50-alpha
    if(key=="Random_Seed") return "1";          // B51 (beta-1a)
+   if(key=="Single_Flat_Only") return "false"; // B51 (beta-1a)
    return "";
   }
 // B50:end b50-defaults

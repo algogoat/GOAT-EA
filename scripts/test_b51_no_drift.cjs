@@ -31,8 +31,8 @@ const REMOVED={
  ],
 };
 // The B50-beta-1 inputs, appended at the very end in this order (beta-1a).
-const NEW_INPUTS=['Random_Direction','Random_Seed'];
-const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1']};
+const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only'];
+const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false']};
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

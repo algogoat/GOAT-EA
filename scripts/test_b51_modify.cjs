@@ -10,7 +10,8 @@
 // - trailing starts at Single_Trail_Start_ATR x ATR, trails Single_Trail_ATR x ATR behind the price, and the SL only
 //   ever moves in the trade's favour (buy and sell); every SL is legal (max(STOPS_LEVEL, FREEZE_LEVEL, 1) points);
 // - the entry's ATR is used (Size_SL / Single_SL_ATR), never the forming bar's;
-// - flags off (all three 0), and with the grid engine, the tree trades exactly as B50-alpha (32df4eb);
+// - flags off (all three 0) the tree trades exactly as B50-alpha (32df4eb); a trailing start without a distance and
+//   any of the three with the grid engine are OnInit refusals;
 // - a failed modify logs one line with the ticket, bid, ask, stops and freeze levels, the current SL and TP, the
 //   requested SL, the return code and the consecutive count; from the 5th consecutive failure it backs off 1 s, 5 s,
 //   30 s, then 60 s steady, one line per attempt and none inside a wait; one success clears the count; two tickets back
@@ -18,7 +19,8 @@
 // - a moved SL survives a live restart (adoption keeps the broker SL; the trailing carries on from it), and an adopted
 //   single without its frozen sizes is left alone; UpdateLockTPSL runs once per single (at its open);
 // - the trailed stop ends the single through the broker (the sequence ends, the next episode opens);
-// - OnInit refuses a negative distance; a start without a distance never trails.
+// - OnInit refuses a negative distance; the sell's clamp, a clamped break-even's minimum step, nine failing tickets in
+//   turn (slot reuse) and the run's TSL counters (review of GOAT-EA#287).
 // scripts/test_b51_modify_mutations.cjs runs this file on mutated entrypoints (GOAT_EA_MAIN): each must fail it.
 // What it does not prove: compile cleanliness or a real broker's modify rules. The MetaEditor compile and a native run do.
 'use strict';
@@ -128,6 +130,37 @@ const TRAIL={Single_Trail_Start_ATR:2,Single_Trail_ATR:0.5};
  ok();
 }
 
+// 3b. The sell's clamp (review P2-7): stops 30, freeze 50 and a spread of 10 points: every SL >= ask + 50 points.
+{
+ const W=world({inputs:{Single_BE_ATR:0.3,...TRAIL},rsi:80});const q=opened(W,1);
+ W.w.stopsLevel=30;W.w.freezeLevel=50;
+ const path=ticks([[0,1.1000],[60,1.09950],[120,1.09950],[400,1.0955],[500,1.0955]]);
+ const askAt=new Map(path.map(([t,b])=>[t,Number((Number(b.toFixed(5))+0.0001).toFixed(5))]));
+ W.run(path);
+ const m=mods(W);assert.ok(m.length>=3,'the sell is managed ('+m.length+')');
+ for(const x of m) assert.ok(x.sl>=askAt.get(x.time)+50*PT-1e-9,'at least the freeze level above the ask: '+x.sl+' vs '+askAt.get(x.time));
+ assert.ok(near(m[0].sl,Number((askAt.get(m[0].time)+50*PT).toFixed(5))),'break-even clamped to ask + 50 points');
+ assert.ok(m[0].sl>q.open,'above the entry: the legal part of the move');
+ let prev=q.sl;for(const x of m){assert.ok(x.sl<prev,'the sell SL only moves down');prev=x.sl;}
+ ok();
+}
+
+// 3c. A clamped break-even then moves by the minimum step (review P3-9): no modify a second while the price creeps up;
+//     the move to the entry itself, once legal, goes at once (break-even is the entry, or the closest legal level).
+{
+ const W=world({inputs:{Single_BE_ATR:0.3}});const p=opened(W);
+ W.w.stopsLevel=50;
+ // 1.10050: clamped to 1.10000. Then a point a second up to 1.10059: each legal level only 1..9 points better.
+ W.run(ticks([[0,1.10050],[30,1.10050]]));assert.equal(mods(W).length,1);assert.ok(near(mods(W)[0].sl,1.10000));
+ W.run(ticks([[30,1.10050],[39,1.10059],[60,1.10059]]));
+ assert.equal(mods(W).length,1,'no sub-step move of a clamped break-even (9 points < the 11-point minimum step)');
+ // 1.10060: the entry (1.10010) is legal: the last 10 points go at once, to the entry exactly.
+ W.run(ticks([[60,1.10060],[90,1.10060]]));
+ assert.equal(mods(W).length,2,'the move to the entry itself');assert.equal(mods(W)[1].sl,p.open);
+ W.run(ticks([[90,1.10200],[150,1.10200]]));assert.equal(mods(W).length,2,'break-even done (no trailing): nothing more');
+ ok();
+}
+
 // 4. The entry's ATR: the forming bar's (0.0030) would put break-even at 300 points; it fires at 100.
 {
  const W=world({inputs:{Single_BE_ATR:1}});opened(W);
@@ -136,22 +169,23 @@ const TRAIL={Single_Trail_Start_ATR:2,Single_Trail_ATR:0.5};
  ok();
 }
 
-// 5. Flags off: the three inputs at 0 (and a start without a distance) never modify; the tree trades as B50-alpha.
+// 5. Flags off: the three inputs at 0 never modify; the tree trades as B50-alpha. A trailing start without a distance,
+//    and any of the three with the grid engine, are OnInit refusals (review of GOAT-EA#287, P3-10).
 {
  const path=[...OPEN,...ticks([[0,1.1000],[600,1.1060],[900,1.1010],[1200,1.1060]],5)];
- for(const [label,inputs] of [['all off',{}],['a start without a distance',{Single_Trail_Start_ATR:1}],['TP in R',{Single_TP_R:4}]]){
-  const tree=world({inputs}),alpha=H.build(B50_ALPHA,{inputs:{...BASE,...Object.fromEntries(Object.entries(inputs).filter(([k])=>!/^Single_(BE|Trail)/.test(k)))},indicator:indicator(25)});
+ for(const [label,inputs] of [['all off',{}],['TP in R',{Single_TP_R:4}]]){
+  const tree=world({inputs}),alpha=H.build(B50_ALPHA,{inputs:{...BASE,...inputs},indicator:indicator(25)});
   tree.run(path);alpha.run(path);
   assert.equal(mods(tree).length,0,label+': no modify');
   assert.deepEqual(tree.w.trace,alpha.w.trace,label+': as B50-alpha');
  }
- // The grid engine ignores them.
- const gridIn={...BASE,Engine_Mode:'Engine_Grid',Delay_Trade:0,Delay_Trade_Live:0,Grid_Size:-1.5,Lock_Profit_Size:-1.0,TP_Pips:3.0,TSL_Size:-0.4,SL_Pips:-6.0};
- const gpath=[...OPEN,...ticks([[0,1.1000],[3000,1.0960],[6000,1.1040],[7000,1.1040]],20)];
- const g=world({inputs:{...gridIn,Single_SL_ATR:6,Single_BE_ATR:1,...TRAIL}}),ga=H.build(B50_ALPHA,{inputs:gridIn,indicator:indicator(25)});
- g.run(gpath);ga.run(gpath);assert.ok(mods(ga).length>=3,'the grid trails');
- assert.ok(ga.ctx.Seq_Buy.Size_SL>0||ga.w.trace.some(x=>x.op==='OrderSend'&&x.sl>0),'the grid carries a stop (a single modify would move it)');
- assert.deepEqual(g.w.trace,ga.w.trace,'the grid engine: as B50-alpha whatever the single inputs');
+ const refused=inputs=>{try{world({inputs});return null;}catch(e){assert.ok(e.initCode!==undefined,e.message);return e.initCode;}};
+ assert.equal(refused({Single_Trail_Start_ATR:1}),2,'a trailing start without a distance is refused');
+ assert.equal(refused({Single_Trail_Start_ATR:1,Single_Trail_ATR:0.5}),null,'with a distance it passes');
+ assert.equal(refused({Single_Trail_Start_ATR:0,Single_Trail_ATR:0.5}),null,'a distance without a start passes (trails from the entry)');
+ for(const k of ['Single_BE_ATR','Single_Trail_ATR']) assert.equal(refused({Engine_Mode:'Engine_Grid',[k]:1,Single_Trail_ATR:1}),2,k+' with the grid engine is refused');
+ assert.equal(refused({Engine_Mode:'Engine_Grid',Single_Trail_Start_ATR:1,Single_Trail_ATR:1}),2);
+ assert.equal(refused({Engine_Mode:'Engine_Grid'}),null,'the grid engine with the three at 0 passes');
  ok();
 }
 
@@ -227,6 +261,37 @@ function schedule(start,until){const t=[];let at=start,n=0;while(at<=until){t.pu
  Y.run(ticks([[0,1.1000],[300,1.1000]]));
  assert.equal(mods(Y).filter(x=>x.ticket!==yb).length,1,'the sell moves at once and once');
  assert.deepEqual(mods(Y).filter(x=>x.ticket===yb).map(x=>x.time-T0),schedule(0,299),'the buy backs off alone');
+ ok();
+}
+
+// 9b. Nine failing tickets one after the other (review P3-8): a ticket whose position is gone frees its slot, so the
+//     9th and later ones still get their own count and back-off (8 slots), never "untracked".
+{
+ const rsi=t=>((t-T0)%H1)<40*60?25:50;   // an episode every hour; the single's 30-bar time stop ends it
+ const W=world({inputs:{Single_BE_ATR:1,Single_Time_Stop_Bars:30,Single_Time_Stop_TF:'TF_Cur'},rsi});W.run(OPEN);reject(W);
+ const path=[];for(let h=0;h<11;h++)path.push(...ticks([[h*H1,1.1000],[h*H1+120,1.10110],[h*H1+2400,1.10110],[h*H1+3600,1.1000]]));
+ W.run(path);
+ const tickets=[...new Set(fails(W).map(l=>field(l,'ticket')))];
+ assert.ok(tickets.length>=10,'ten tickets fail in turn ('+tickets.length+')');
+ for(const tk of tickets){
+  const l=fails(W).filter(x=>field(x,'ticket')===tk);
+  assert.ok(l.length>=6,'ticket '+tk+' fails long enough to back off');
+  assert.equal(field(l[0],'consecutive'),'1','ticket '+tk+' starts its own count');
+  assert.equal(field(l[4],'backoff'),'1s','ticket '+tk+' backs off from its 5th failure');
+  assert.ok(!l.some(x=>/untracked/.test(x)),'ticket '+tk+' is tracked');
+ }
+ ok();
+}
+
+// 9c. The run's trailing counters count a single's moves (TSL_Modified, TSLs at the end of a run): attempts and errors.
+{
+ const W=world({inputs:{Single_BE_ATR:1,...TRAIL}});opened(W);
+ const [m0,e0]=[W.ctx.TSLmodifieds,W.ctx.TSLmodifyErrors];
+ let n=0;W.w.rejectModify=()=>(++n<=2);
+ W.run(ticks([[0,1.10110],[30,1.10110],[300,1.1045],[400,1.1045]]));
+ assert.equal(W.ctx.TSLmodifieds-m0,mods(W).length,'every attempt is counted');
+ assert.equal(W.ctx.TSLmodifyErrors-e0,2,'every failure is counted');
+ assert.ok(mods(W).length>=5);
  ok();
 }
 

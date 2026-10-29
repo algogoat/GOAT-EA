@@ -255,11 +255,13 @@ const M=1843920117,O=907113355,Y=1210448821;   // this chart's magic, an orphane
   for(const banned of ['OrderSend','PositionClose','PositionModify','OrderDelete','CTrade','Add_Level','End_Sequence','CloseAllPositions','ExpertRemove','Seq_'])
    assert.ok(!body.includes(banned),'GoatCidGuard '+name+' must not call '+banned);
  // DashboardEntryAllowed is the gate of every new sequence and of every virtual-to-real promotion, and of nothing else:
- // four SignalEntryTrigger starts, the two sides of B51's random-direction single (GoatSingleRandomEntry, a new
- // sequence too) and the two promotions in SEQUENCE::Add_Level.
+ // four SignalEntryTrigger starts, the two drawn sides of B51's random-direction single (GoatSingleRandomEntry, a new
+ // sequence too; its alpha gate asks DashboardEntryAllowed(b51_t)) and the two promotions in SEQUENCE::Add_Level.
  const calls=main.replace(/\/\/.*$/gm,'').split('\n').filter(l=>/DashboardEntryAllowed\(OP_(BUY|SELL)\)/.test(l)).map(l=>l.trim());
  assert.equal(calls.length,8);
- assert.equal(calls.filter(l=>/Seq_(Buy|Sell)(_Virtual)?\.Active/.test(l)&&/Mode_Trade/.test(l)).length,6,'SignalEntryTrigger and GoatSingleRandomEntry: new real or virtual sequences');
+ assert.equal(calls.filter(l=>/Seq_(Buy|Sell)(_Virtual)?\.Active/.test(l)&&/Mode_Trade/.test(l)).length,4,'SignalEntryTrigger: new real or virtual sequences');
+ assert.equal(calls.filter(l=>/!Seq_(Buy|Sell)_Virtual\.Active && !Seq_(Buy|Sell)\.Active\)/.test(l)).length,2,'GoatSingleRandomEntry: the drawn side');
+ assert.equal((main.match(/DashboardEntryAllowed\(b51_t\)/g)||[]).length,1,'GoatSingleRandomEntry: alpha\'s gate for its trade side');
  assert.equal(calls.filter(l=>/MustCheck_(Buy|Sell)\s*&&\s*DashboardEntryAllowed/.test(l)).length,2,'Add_Level: virtual-to-real promotion');
  const SIGNAL=bodyOf(main,'void SignalEntryTrigger()');assert.equal((SIGNAL.match(/DashboardEntryAllowed\(/g)||[]).length,4);
  // The guard is consulted at the entry gate (forced) and by the panel line (throttled); the status by the dashboard row.

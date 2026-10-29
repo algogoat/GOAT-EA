@@ -3,7 +3,10 @@
 // edits GOAT V1.49.mq5 in memory; test_b51_modify.cjs, run on the mutated entrypoint (GOAT_EA_MAIN, read by
 // scripts/b50_tick_harness.cjs), must then fail on an assertion. The first group is the ruling's four (the back-off
 // removed, a log field dropped, an SL that can move against the trade, break-even or trailing firing with its input at
-// 0); the rest guard the other rules the test proves.
+// 0); the rest guard the other rules the test proves. Equivalent mutants are not listed: dropping the early return
+// when both inputs are 0, the grid-engine check in GoatSingleModify (OnInit refuses the three inputs with the grid
+// engine, review P3-10) and the one-point check (every remaining move is a waived move to the entry, whose gain is
+// positive, or one of at least the minimum step).
 'use strict';
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),TEST=path.join(__dirname,'test_b51_modify.cjs');
@@ -32,15 +35,13 @@ const MUTANTS=[
  ['the return code is dropped','+" retcode="+IntegerToString((int)b51_trade.ResultRetcode())','+""'],
  ['the consecutive count is dropped','+" consecutive="+IntegerToString(b51_count);','+"";'],
  // An SL that can move against the trade, or outside the legal band.
- ['a move against the trade is allowed','      if(b51_gain<_Point-b51_eps) continue;\n','\n'],
- ['break-even ignores the current SL (always a break-even move)','      bool   b51_be_move=(b51_be && (b51_sl==0.0 || (b51_buy ? b51_sl<b51_open-b51_eps : b51_sl>b51_open+b51_eps)));','      bool   b51_be_move=b51_be;'],
+ ['break-even ignores the current SL (always a break-even move)','      bool   b51_be_move=(b51_be && MathAbs(b51_target-b51_open)<b51_eps && (b51_sl==0.0 || (b51_buy ? b51_sl<b51_open-b51_eps : b51_sl>b51_open+b51_eps)));','      bool   b51_be_move=b51_be;'],
  ['the clamp is removed','      if(b51_buy ? b51_target>b51_legal : b51_target<b51_legal) b51_target=b51_legal; // the nearest legal level\n','\n'],
  ['the freeze level is not in the clamp','   int    b51_lvl=(int)MathMax((long)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL),(long)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL));','   int    b51_lvl=(int)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL);'],
  ['the sell trails on the wrong side','b51_px+Single_Trail_ATR*b51_atr,_Digits);','b51_px-Single_Trail_ATR*b51_atr,_Digits);'],
  // Firing with an input at 0.
  ['break-even fires with Single_BE_ATR=0','      bool   b51_be=(Single_BE_ATR>0.0 && b51_favour','      bool   b51_be=(Single_BE_ATR>=0.0 && b51_favour'],
  ['trailing fires with Single_Trail_ATR=0','      bool   b51_trail=(Single_Trail_ATR>0.0 && b51_favour','      bool   b51_trail=(Single_Trail_ATR>=0.0 && b51_favour'],
- ['the grid engine runs the single modify','   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) ||','   if(!(Single_SL_ATR>0.0) ||'],
  // The thresholds and targets.
  ['break-even fires a point early','b51_be=(Single_BE_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-b51_eps);','b51_be=(Single_BE_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-_Point*1.001);'],
  ['break-even fires a point late','b51_be=(Single_BE_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-b51_eps);','b51_be=(Single_BE_ATR>0.0 && b51_favour>Single_BE_ATR*b51_atr+b51_eps);'],
@@ -61,6 +62,19 @@ const MUTANTS=[
  ['Level_SL does not follow','{s.TradeLevels[i].sl=b51_target; s.Level_SL=b51_target;}','{s.TradeLevels[i].sl=b51_target;}'],
  ['only the buy sequence is managed','   GoatSingleModifySequence(Seq_Sell);\n','\n'],
  ['the call site is dropped','    GoatSingleModify(); // B51 (beta-1b)','    ; // B51 (beta-1b)'],
+ // The review's (GOAT-EA#287) mutants, and its P3-9/P3-10 rules.
+ ['the sell clamp reads the bid (reviewer)','NormalizeDouble(ask+b51_lvl*_Point,_Digits)','NormalizeDouble(bid+b51_lvl*_Point,_Digits)'],
+ ['the sell favour reads the bid (reviewer)','   double b51_px=(b51_buy ? bid : ask);','   double b51_px=bid;'],
+ ['a stale slot is never reused (reviewer)','if(b51_tk[j]==0 || !PositionSelectByTicket(b51_tk[j]))','if(b51_tk[j]==0)'],
+ ['the wait ends a second late (reviewer)','if(b51_k>=0 && b51_now<b51_next[b51_k]) return false;','if(b51_k>=0 && b51_now<=b51_next[b51_k]) return false;'],
+ ['the move to the entry waits for the minimum step (reviewer)','      if(!b51_be_move && b51_gain<b51_min_step-b51_eps) continue;','      if(b51_gain<b51_min_step-b51_eps) continue;'],
+ ['no tolerance on the break-even threshold (reviewer)','b51_favour>=Single_BE_ATR*b51_atr-b51_eps);','b51_favour>=Single_BE_ATR*b51_atr);'],
+ ['a clamped break-even moves by any point (P3-9)','      bool   b51_be_move=(b51_be && MathAbs(b51_target-b51_open)<b51_eps && (','      bool   b51_be_move=(b51_be && ('],
+ ['attempts are not counted (P3-10)','   TSLmodifieds++;                                          // the run','   ;                                          // the run'],
+ ['failures are not counted (P3-10)','   TSLmodifyErrors++;\n','\n'],
+ ['a trailing start without a distance passes OnInit (P3-10)','   if(Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0)) {','   if(false) {'],
+ ['the grid engine with break-even passes OnInit (P3-10)','   if(Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 ||','   if(false && (Single_BE_ATR>0.0 ||'],
+ ['the grid engine with trailing passes OnInit (P3-10)','|| Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0)) {Alert("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need','|| Single_Trail_Start_ATR>0.0)) {Alert("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need'],
  ['OnInit accepts a negative distance','   if(Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0) {','   if(false) {'],
 ];
 function runOn(mainText){

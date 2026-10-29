@@ -40,6 +40,7 @@ function model(source=SIGNAL,{tester=false,state=null,v2=true,mode='Bias_Opens',
   Reverse_Seq:reverse,Mode_Trade:0,Delay_Trade:0,Allow_Opposite_Seq:true,bid:1.1,ask:1.2,MAGIC1:1342177,LastBuySignal:false,LastSellSignal:false,
   DashboardEntryAllowed:()=>true,MathAbs:Math.abs,...ENUMS,
   Engine_Mode:0,Engine_Grid:0,Engine_Single:1,g_GoatSingleArmed:[true,true],   // B50 (A1): the grid engine; the single's branches are test_b50_single.cjs's
+  Random_Direction:false,g_GoatRandomEpisodeBar:[0,0],   // B51 (beta-1a): no benchmark (test_b51_random.cjs)
   Mode_Bias:ENUMS[mode],Bias_Protocol:102,
   EnumToString:v=>v===c.Bias_Protocol?'BiasProtocol_ControlTowerV2DemoRaw':v===c.Mode_Bias?mode:String(v),
   GOATUsingControlTowerBias:()=>v2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,MQLInfoInteger:k=>(k===1&&tester)?1:0,

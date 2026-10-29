@@ -185,6 +185,9 @@ closed.
 |---|---|---|---|---|---|---|
 |1|Random_Direction|sinput bool|false|1a|no|Random-direction benchmark (Engine_Single, tester only)|
 |2|Random_Seed|input int|1|1a|yes|Benchmark seed (a seed sweep is an optimization over it)|
+|3|Single_BE_ATR|input double|0.0|1b|yes|Break-even after N ATR in favour (0 = off)|
+|4|Single_Trail_Start_ATR|input double|0.0|1b|yes|Trailing starts after N ATR in favour (read only when 5 > 0)|
+|5|Single_Trail_ATR|input double|0.0|1b|yes|Trailing distance in ATR (0 = off)|
 
 ### 8.1 beta-1a: the random-direction benchmark
 
@@ -238,3 +241,65 @@ seeded sweep; on the converted tick path, every side equal to the reference for 
 and on a replay; the same entry times, lots, stops and exits as the flags-off run; no `MathRand`/`MathSrand` call; the
 signal's arm flag; `Reverse_Seq`; the drawn side's gates; flags off identical to B50-alpha; the three refusals.
 `scripts/test_b51_parity.cjs`: the flags-off parity with B50-alpha on grid and single fixtures, and the WriteSet golden.
+
+### 8.2 beta-1b: break-even and trailing for singles
+
+**Where.** A new `GoatSingleModify()` (block `b51-modify`), called as the first statement of the tick's trailing block
+(`if(CheckTrailingLockTPNow())`, so on `Trailing_Sample_Period`, default every second). It returns at once unless
+`Engine_Single` and `Single_BE_ATR>0` or `Single_Trail_ATR>0`, and it manages `Seq_Buy` and `Seq_Sell` only (real,
+active, traded). `TrailingStoploss` is byte-untouched (a test compares it with B50-alpha's) and never runs for a single,
+whose lock is parked.
+
+**ATR.** The entry's: `GoatSingleOpen` sets `Size_SL = Single_SL_ATR × ATR(closed bar)`, and the restart record freezes
+`Size_SL`, so `ATR = Size_SL / Single_SL_ATR`, identical after a restart, with no new persisted field and no read of
+`ATR_Buf` or `GetSize`. (Known limit: a restart with a different `Single_SL_ATR` in the SET would rescale it; the SET a
+chart restarts with is the one it ran.)
+
+**Rules.**
+- Break-even: once `favour >= Single_BE_ATR × ATR` (favour = bid − open for a buy, open − ask for a sell), the target is
+  the entry price exactly (`POSITION_PRICE_OPEN`; no spread or commission added, the default the ruling allowed).
+- Trailing: once `favour >= Single_Trail_Start_ATR × ATR`, the target is `price ∓ Single_Trail_ATR × ATR` (bid for a
+  buy, ask for a sell). With both on, the better of the two.
+- The target is clamped to the nearest legal level, `max(STOPS_LEVEL, FREEZE_LEVEL, 1) × _Point` from the price, as the
+  grid's trailing does. It is sent only if it moves the SL in the trade's favour: by at least a point for a break-even
+  move (SL still on the wrong side of the entry), by at least the grid's minimum step (`max(0.01% of price, 5 points)`)
+  for a trailing move. The TP is sent unchanged. `TradeLevels[i].sl` and `Level_SL` follow a successful move.
+- Thresholds compare normalized prices with a 0.001-point tolerance, so "at the threshold" means at it, never a point
+  early; a fractional threshold needs the next whole point.
+- Nothing latches: both are read from the current price at each check, so a failed move is retried only while its
+  condition holds (a latched break-even would, after a reversal, be clamped to just under the price, which is not
+  break-even).
+
+**Failure handling (register row P-b49b-tsl-modify-failure-diagnose-backoff), from day one.** `GoatSingleModifySend`:
+- every failed `PositionModify` logs one line: `ticket, bid, ask, stops_level, freeze_level, sl, tp, requested_sl,
+  retcode, consecutive`;
+- from the `GOAT_SINGLE_MODIFY_FAIL_LIMIT` (5)-th consecutive failure on a ticket, it waits `GOAT_SINGLE_BACKOFF_1_S`
+  (1 s), `_2_S` (5 s), `_3_S` (30 s), then `_STEADY_S` (60 s) for as long as it fails. Inside a wait there is no attempt
+  and no line; each attempt from the limit on logs its one line with `backoff=Ns` (one line per back-off step, never one
+  per tick). A stuck ticket keeps logging once a minute;
+- one success clears the count and logs `recovered ... after N consecutive failures`;
+- state is per ticket (`GOAT_SINGLE_MODIFY_SLOTS` = 8 slots, static in the function; a slot whose position is gone is
+  reused), so two tickets back off independently. The clock is `TimeCurrent()` (deterministic in the tester).
+
+**MLPS, the broker SL and restart adoption.** The moved SL lives at the broker, so a broker SL fill ends the single
+through `OnTradeTransaction` exactly as alpha's stop does (tested: the next episode opens and trails on its own). MLPS
+code is untouched. Alpha persists the single's stop size (`SL` in the restart record), never its current SL. On a live
+restart, `AdoptOpenPositions` reads `POSITION_SL` into the level, and `UpdateLockTPSL` (the only place that re-derives
+`entry − Size_SL`) keeps the tighter of the broker SL and the derived one for an adopted basket (B49a F1-lite), so a
+break-even or trailed SL is never loosened; `GoatSingleModify` then carries on from it with the frozen ATR. An adopted
+single without its frozen sizes is left alone (as `TrailingStoploss` does). `UpdateLockTPSL` runs once per single, at
+its open (tested), because a single never adds, never partial-closes (its `Level_Retrace` stays 0) and SmartRescue is
+refused. Known limit: a future change that calls `UpdateLockTPSL` on a running, non-adopted single would reset its SL to
+`entry − Size_SL`; `test_b51_modify.cjs` pins the single call.
+
+**OnInit.** A negative `Single_BE_ATR`, `Single_Trail_Start_ATR` or `Single_Trail_ATR` is refused (ported:
+`SINGLE_BE_TRAIL_NEGATIVE`); the four later refusal lines move by one more, regenerated with the rule.
+
+**Tests.** `scripts/test_b51_modify.cjs` (13) + `test_b51_modify_mutations.cjs` (45 mutants): break-even at the
+threshold and not a point before, the entry exactly, the TP kept, sell; trailing start, distance, monotonic for buy and
+sell, the minimum step; the legal clamp with stops and freeze levels (and no step back when the clamp falls below the
+current SL); the entry ATR; flags off and the grid engine identical to B50-alpha; every log field; the back-off
+schedule and line count; success clears the count; two tickets independent; a stuck ticket logs once a minute; the
+live restart; `UpdateLockTPSL` once; the broker stop ends the single; the OnInit refusal. One mutant class is
+equivalent and not listed: dropping the early return when both inputs are 0 changes nothing observable (each rule
+checks its own input).

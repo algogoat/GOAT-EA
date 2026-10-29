@@ -607,6 +607,9 @@ if(Rollover_Block_Minutes!=0)             FileWrite(FileSET_handle,"Rollover_Blo
 // B51 (beta-1a): likewise for the B50-beta inputs, so a default SET stays B50-alpha's bytes.
 if(Random_Direction)                      FileWrite(FileSET_handle,"Random_Direction="+(string)Random_Direction);
 if(Random_Seed!=1)                        FileWrite(FileSET_handle,"Random_Seed="+(string)Random_Seed);
+if(Single_BE_ATR!=0.0)                    FileWrite(FileSET_handle,"Single_BE_ATR="+(string)Single_BE_ATR);
+if(Single_Trail_Start_ATR!=0.0)           FileWrite(FileSET_handle,"Single_Trail_Start_ATR="+(string)Single_Trail_Start_ATR);
+if(Single_Trail_ATR!=0.0)                 FileWrite(FileSET_handle,"Single_Trail_ATR="+(string)Single_Trail_ATR);
 // B51:end b51-writeset
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
@@ -854,6 +857,9 @@ int      g_GoatNYStartMin=0,g_GoatNYEndMin=0;
 input    group                   "====SINGLE EXITS / BENCHMARK (B50-beta)====";
 sinput   bool                    Random_Direction              =                         false;       // Single: random-direction benchmark (tester only)
 input    int                     Random_Seed                   =                             1;       // Benchmark seed: side = splitmix64(seed^signal-bar time)&1
+input    double                  Single_BE_ATR                 =                           0.0;       // Single: stop to entry after N ATR in favour (0 = off)
+input    double                  Single_Trail_Start_ATR        =                           0.0;       // Single: trailing starts after N ATR in favour
+input    double                  Single_Trail_ATR              =                           0.0;       // Single: trailing distance in ATR (0 = off)
 // B51:end b51-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

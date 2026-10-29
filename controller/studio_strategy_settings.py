@@ -69,12 +69,13 @@ def numeric(value, definition, *, step=False):
 # accepts it in the readback only at that default (GOATStudioSettingCompare.mqh, GoatStudioFixedInternal).
 # B50 (A0, docs/b50/B50_ALPHA_DESIGN.md section 2) appends twelve more after Ledger_Mode: the single-trade engine and the
 # New York clock. Their defaults (Engine_Grid, Clock_Server, no single-trade setting, no rollover block) reproduce B49a.
-# B51 (B50-beta-1, section 8) appends its own at the very end: the random-direction benchmark (beta-1a). Their defaults
-# (no benchmark, seed 1) reproduce B50-alpha. Each group is a build generation: a schema declares all of it or none.
+# B51 (B50-beta-1, section 8) appends its own at the very end: the random-direction benchmark (beta-1a) and the single's
+# break-even and trailing (beta-1b). Their defaults (no benchmark, seed 1, no break-even, no trailing) reproduce
+# B50-alpha. Each group is a build generation: a schema declares all of it or none.
 B50_INPUTS = ('Engine_Mode', 'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite',
               'Single_Time_Stop_Bars', 'Single_Time_Stop_TF', 'Clock_Mode', 'Server_Clock_Model', 'Server_UTC_Offset',
               'NY_Session', 'Rollover_Block_Minutes')
-B51_INPUTS = ('Random_Direction', 'Random_Seed')
+B51_INPUTS = ('Random_Direction', 'Random_Seed', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR')
 APPENDED_INPUTS = ('Ledger_Mode',) + B50_INPUTS + B51_INPUTS
 APPENDED_GROUPS = (B50_INPUTS, B51_INPUTS)
 

@@ -223,10 +223,10 @@ function dailyFixture(mode,text=main){
 
 // 6. The EA's closes carry MAGIC1 under PositionJoin only: every CTrade is followed by the marked line.
 {const trades=[...main.matchAll(/^([ \t]*)CTrade\s+(\w+);\n(.*)$/gm)];
- assert.equal(trades.length,8,'the 8 CTrade instances of B47');
+ assert.equal(trades.length,9,'the 8 CTrade instances of B47, and B51\'s single modify (GoatSingleModifySend, beta-1b)');
  for(const [,indent,name,next] of trades)
   assert.equal(next,indent+'if(Ledger_Mode==Ledger_PositionJoin) '+name+'.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA\'s closes carry MAGIC1');
- assert.equal((main.match(/SetExpertMagicNumber\(/g)||[]).length,8);
+ assert.equal((main.match(/SetExpertMagicNumber\(/g)||[]).length,9);
  assert.equal((mainB47.match(/SetExpertMagicNumber\(/g)||[]).length,0,'B47 never set a magic');
  ok();}
 

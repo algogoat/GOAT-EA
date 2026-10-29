@@ -392,7 +392,7 @@ EA_INIT_RULES = (
           'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
           'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
           lambda v: _bad_ny_session(v['NY_Session'])),
-    # B51 (beta-1a): the random-direction benchmark (GOAT V1.49.mq5:4481-4487). A schema without these appended inputs
+    # B51 (beta-1a, beta-1b): the random-direction benchmark and the single's break-even and trailing (GOAT V1.49.mq5:4481-4488). A schema without these appended inputs
     # (B50-alpha and earlier) belongs to a build without the rules (applicable_rules, APPENDED_GROUPS).
     _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [4484], 'Random_Direction && Engine_Mode!=Engine_Single',
           ['Random_Direction', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
@@ -401,6 +401,11 @@ EA_INIT_RULES = (
           lambda v: bool(v['Random_Direction']) and not _single(v)),
     _rule('RANDOM_SEED_NEGATIVE', [4485], 'Random_Seed<0', ['Random_Seed'], {}, 'Random_Seed<0',
           'Initialization Failed: Random_Seed cannot be negative.', lambda v: v['Random_Seed'] < 0),
+    _rule('SINGLE_BE_TRAIL_NEGATIVE', [4487], 'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
+          ['Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'], {},
+          'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
+          'Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR cannot be negative.',
+          lambda v: v['Single_BE_ATR'] < 0.0 or v['Single_Trail_Start_ATR'] < 0.0 or v['Single_Trail_ATR'] < 0.0),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -479,11 +484,11 @@ NOT_PORTED = (
     # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
     dict(lines=(4486,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
          reason='run context (live chart)'),
-    dict(lines=(4558,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4559,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4559,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4567,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4572,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4560,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4568,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4573,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

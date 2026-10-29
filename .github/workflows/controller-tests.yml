@@ -28,6 +28,7 @@ concurrency:
 #           test_ledger_join, test_ledger_join_mutations, test_restart_adopt, test_restart_adopt_mutations,
 #           test_b49b_f7, test_b49b_f7_mutations, test_b49b_f5, test_b49b_f5_mutations, test_b49b_f3,
 #           test_b49b_f3_mutations, test_b49b_f3b, test_b49b_f3b_mutations, test_b49b_f6, test_b49b_f6_mutations, test_b49b_f4, test_b49b_f4_mutations, test_b49b_f8, test_b49b_f8_mutations,
+#           test_b49b_f1, test_b49b_f1_mutations,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -180,6 +181,10 @@ jobs:
         run: node scripts/test_b49b_f8.cjs
       - name: B49b F8 mutations
         run: node scripts/test_b49b_f8_mutations.cjs
+      - name: B49b F1 full (manage-only on a licence outage, refusal or expiry; the state file; the day state)
+        run: node scripts/test_b49b_f1.cjs
+      - name: B49b F1 full mutations
+        run: node scripts/test_b49b_f1_mutations.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness

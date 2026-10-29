@@ -223,6 +223,7 @@ function perSecond({clock,noTick=true,lastTick=clock,equity=10000,minLevel=0,bia
  const base={Hour_Start:[8,8,8,8,8,8,8],Minute_Start:[0,0,0,0,0,0,0],Hour_End:[21,21,21,21,21,21,21],Minute_End:[0,0,0,0,0,0,0],
   InActive:false,Active:true,Sequence_Pause_Close:false,Trade_Friday:true,Trade_December:true,FastSpeed_Flag:true,MAGIC1:7,_Symbol:'EURUSD',
   POSITION_TYPE_BUY:0,POSITION_TYPE_SELL:1,OP_BUYSELL:2,StopOut_Flag:false,StopOut_Flag_B:biasB,StopOut_Flag_S:false,LastStopoutTime:0,Mode_Restart:0,
+  g_GoatLastStopOutB:false,g_GoatLastStopOutS:false,   // the bias edges (B49b F1 globals, OnTick statics before), false at start
   DStartLocalLoss:0,DStartTime:0,DStartEquity:10000,MaxEquity:10000,DDs_PC:[0],DDs_Actual:[0],CurrentDD:0,CurrentDDD:0,
   MaxLossLocal:0,MaxLossGlobal:0,MaxDailyLossLocal:0,MaxDailyProfitLocal:0,MinLevelEquity:minLevel,MaxLevelEquity:0,
   Action_Close:1,Action_Pause:2,Action_Dayend:0,Action_Friday:1,Key:'K',g_GoatNoTickRun:noTick,

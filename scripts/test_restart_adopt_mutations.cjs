@@ -50,7 +50,7 @@ const MUTANTS=[
  // Not a mutant: GoatSizeNeedsAtr's GRID_VALID rule is defence in depth. Without it GRID_VALID reads GRID_MIN and
  // GRID_MAX through GetSize, which answer the sentinel themselves, so the result is the sentinel or a pips clamp.
  // Manage-only.
- ['manage-only does not freeze adds','    if(!Adopted && !PersistFailed) {ManageOnlyLogged=false; return false;}','    {ManageOnlyLogged=false; return false;}'],
+ ['manage-only does not freeze adds','    if(!Adopted && !PersistFailed && !g_GoatStateFailed && g_GoatManageOnly==GOAT_MANAGE_NONE) {ManageOnlyLogged=false; return false;}','    {ManageOnlyLogged=false; return false;}'],
  ['the freeze logs every add','    if(!ManageOnlyLogged)\n','    if(true)\n'],
  ['Add_Level does not consult manage-only','    if(!Virtual && ManageOnlyFrozen(Level_Count+1)) return false;','    if(false) return false;'],
  ['the stops guard is gone','    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP\n    Level_Lock','    Level_Lock'],

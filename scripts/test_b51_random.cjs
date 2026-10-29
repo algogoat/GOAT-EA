@@ -14,10 +14,11 @@
 // - exp5: an uptrend with SL 1.5 ATR and TP 2R over 12 seeds (side-dependent exits);
 // - an M5 chart (the signal bar is the chart's).
 // Proves:
-// - the side is splitmix64((ulong)seed ^ (ulong)episode-start signal bar ^ ((ulong)signal << 62)) & 1: SplitMix64's
+// - the side is splitmix64((ulong)seed ^ (ulong)bar ^ ((ulong)signal << 62) ^ ((ulong)ordinal << 40)) & 1: SplitMix64's
 //   published outputs, golden sequences for fixed seeds and both signals, the tree's function equal to the reference;
-// - one draw per episode, from the episode's first signal bar (PERIOD_CURRENT, shift 1): the same under two tick models
-//   and on a replay; never the tick's time, the forming bar or another timeframe;
+// - one draw per episode, from the episode's first signal bar (PERIOD_CURRENT, shift 1) and its ordinal among the
+//   signal's episodes on that bar: the same under two tick models and on a replay; never the tick's time, the forming
+//   bar or another timeframe; several episodes in one H1 bar draw independently (exp7: the sell share stays fair);
 // - B's entries are S's (no divergent entry while the exits do not depend on the side; counted under exp5), and its
 //   exits are S's; no trade ever opens while another single runs; the sides are the draws', never forced: in the exp5
 //   uptrend the sell share stays within 3 standard errors of 50%;
@@ -46,6 +47,7 @@ const byRsi=f=>(name,buffer,shift,w)=>name==='ATR_MA'?atr(shift):(name==='RSI'?f
 const hourly=(value=25)=>byRsi(t=>(t%H1)<40*M1?value:50);
 const overlap=byRsi(t=>(t%(20*M1))<10*M1?25:50);                                     // exp3
 const pairs=byRsi(t=>{const m=(t%(40*M1))/M1;return m<5?25:(m<10?80:50);});          // a buy, then a sell episode
+const pairsSellFirst=byRsi(t=>{const m=(t%(40*M1))/M1;return m<5?80:(m<10?25:50);});   // a sell, then a buy episode
 const exp4=byRsi(t=>{const m=(t%(40*M1))/M1;return m<10?25:(m>=20&&m<30?80:50);});   // exp4/exp5: buy 0-10, sell 20-30
 const opposite=byRsi(t=>{const m=(t%H1)/M1;return m<10?25:(m<15?80:50);});           // a buy episode, then the opposite signal
 const BASE={EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70,
@@ -106,8 +108,13 @@ function compare(label,{inputs={},indicator,path,wx,divergent=0}){
  assert.equal(R.splitmix64(0n),0xE220A8397B1DCDAFn,'SplitMix64, state 0 (splitmix64.c first output)');
  assert.equal(R.splitmix64(0x9E3779B97F4A7C15n),0x6E789E6AA1B965F4n,'SplitMix64, the second output (state = gamma)');
  const mql=R.mqlRandomSide();
- assert.equal(mql(0,0,0).z,0xE220A8397B1DCDAFn,'the tree\'s GoatSingleRandomSide is SplitMix64 (state 0)');
+ assert.equal(mql(0,0,0,0).z,0xE220A8397B1DCDAFn,'the tree\'s GoatSingleRandomSide is SplitMix64 (state 0)');
  assert.equal(R.state(5,7,1),(5n^7n)|(1n<<62n),'the state: seed ^ bar ^ signal << 62');
+ assert.equal(R.state(5,7,1,3),(5n^7n)|(1n<<62n)|(3n<<40n),'... ^ ordinal << 40');
+ const ordGolden=[0,1,2,3,4,5].map(o=>R.referenceSide(1,MON,0,o)).join('');
+ assert.equal(ordGolden,'001000','the golden of six episodes of one signal on one bar');
+ assert.equal([0,1,2,3,4,5].map(o=>mql(1,MON,0,o).side).join(''),ordGolden);
+ for(let k=0;k<500;k++){const o=k%7,b=MON+3600*k;assert.equal(mql(k,b,k%2,o).side,R.referenceSide(k,b,k%2,o));assert.equal(mql(k,b,k%2,o).z,R.splitmix64(R.state(k,b,k%2,o)));}
  const seq=(f,seed,start,step,n,signal)=>Array.from({length:n},(_,k)=>f(seed,start+k*step,signal)).join('');
  const GOLDEN={
   's1 M1 buy':[1,MON,M1,64,0,'0000000101010110000001000000000010111000110110011101011001000100'],
@@ -172,8 +179,11 @@ const HOURLY=compare('hourly',{indicator:hourly(),path:DAY2}),RUN=HOURLY.B;
  const block=main.slice(main.indexOf('// B51:begin b51-random'),main.indexOf('// B51:end b51-random'));
  assert.ok(block.length>1000,'the B51 random block');
  const code=block.split('\n').filter(l=>!/^\s*\/\//.test(l)).join('\n').replace(/\/\/[^\n]*/g,'');
- for(const banned of ['MathRand','MathSrand','TimeCurrent','TimeLocal','TimeGMT','TimeTradeServer','GetTickCount','GetMicrosecondCount','iTime'])
-  assert.ok(!code.includes(banned),'the benchmark reads no '+banned+' (the episode bar is recorded in SignalEntryTrigger)');
+ for(const banned of ['MathRand','MathSrand','TimeCurrent','TimeLocal','TimeGMT','TimeTradeServer','GetTickCount','GetMicrosecondCount'])
+  assert.ok(!code.includes(banned),'the benchmark reads no '+banned);
+ const rec=code.slice(code.indexOf('void GoatSingleRandomRecord'),code.indexOf('bool GoatSingleBothFree'));
+ assert.equal((code.match(/iTime\(/g)||[]).length,1,'one bar read in the block');
+ assert.ok(rec.includes('iTime(_Symbol,PERIOD_CURRENT,(int)(Shift_Sig))'),'... in GoatSingleRandomRecord: the chart\'s closed bar');
  const entry=code.slice(code.indexOf('void GoatSingleRandomEntry'));
  assert.ok(entry.indexOf('GoatSingleBothFree()')>0&&entry.indexOf('GoatSingleBothFree()')<entry.indexOf('GoatSingleRandomSide('),'the eligibility is decided before the draw');
  assert.ok(!/b51_side[^;]*\.Active|Active[^;]*b51_side/.test(entry),'and nothing after the draw reads a side\'s occupancy');
@@ -226,8 +236,10 @@ const HOURLY=compare('hourly',{indicator:hourly(),path:DAY2}),RUN=HOURLY.B;
 
 // 8. A buy then a sell episode (pairs, exp4). Flags off, alpha hedges (the second episode opens while the first single
 //    runs); flat-only skips exactly those entries, in both arms, so no trade opens while the other holds a position.
-for(const [label,ind,n] of [['pairs',pairs,120],['exp4',exp4,null]]){
- const {S,O,B}=compare(label,{indicator:ind,path:DAY2});
+// Reverse_Seq too (review round 3, P2-B): the strategy's reversed branches carry their own flat-only lines.
+for(const [label,ind,n,rev] of [['pairs',pairs,120,false],['exp4',exp4,null,false],['pairs, Reverse_Seq',pairs,120,true],['exp4, Reverse_Seq',exp4,null,true],
+ ['pairs (sell first)',pairsSellFirst,120,false],['pairs (sell first), Reverse_Seq',pairsSellFirst,120,true]]){
+ const {S,O,B}=compare(label,{inputs:rev?{Reverse_Seq:true}:{},indicator:ind,path:DAY2});
  if(n) assert.equal(sends(O).length,n,label+': alpha hedges every cycle');
  const held=heldAtOpen(O);assert.ok(held.length>=20,label+': flags off opens while a single runs ('+held.length+')');
  const oT=new Set(sends(O).map(x=>x.time)),sT=new Set(sends(S).map(x=>x.time));
@@ -236,7 +248,9 @@ for(const [label,ind,n] of [['pairs',pairs,120],['exp4',exp4,null]]){
  assert.ok(skipped.length>=20&&skipped.every(t=>held.includes(t)),label+': it skips only entries flags off made while a single ran ('+skipped.length+')');
  const second=sends(B).filter(x=>(x.time-MON)%(40*M1)>=5*M1);
  assert.equal(second.length,0,label+': no second-episode trade at all (none opens while the other arm holds a position)');
- const offA=compare(label+', Allow_Opposite_Seq off',{inputs:{Allow_Opposite_Seq:false},indicator:ind,path:DAY2});
+ const firstSignal=ind===pairsSellFirst?1:0;   // the signal of each cycle's first episode
+ if(rev) assert.ok(sends(S).every(x=>x.type===1-firstSignal),label+': the reversed strategy trades against its first signal');
+ const offA=compare(label+', Allow_Opposite_Seq off',{inputs:{Allow_Opposite_Seq:false,...(rev?{Reverse_Seq:true}:{})},indicator:ind,path:DAY2});
  assert.deepEqual(sends(offA.S).map(x=>x.time),sends(offA.O).map(x=>x.time),label+', Allow off: alpha already refuses them');
 }
 ok();
@@ -335,6 +349,50 @@ ok();
  assert.ok(Math.abs(share-0.5)<=3*se,'sell share '+share.toFixed(3)+' within 3 SE ('+se.toFixed(3)+') of 50% over '+n+' trades');
  assert.ok(divergent<n,'divergent entries are counted: '+divergent+' of '+n+' (the strategy made '+strategy+')');
  console.log(JSON.stringify({exp5:{trades:n,sellShare:Number(share.toFixed(4)),se:Number(se.toFixed(4)),divergentEntries:divergent,strategyTrades:strategy}}));
+ ok();
+}
+
+// 14. Several episodes of one signal inside one chart bar (an H1 chart, a buy signal 5 minutes in every 10: six
+//     episodes per bar; review round 3, P1-A). Each draws with its ordinal on the bar: independent draws, the
+//     reference's, reset on each new bar. Then exp7 (the same on an uptrend with SL 1.5 ATR and TP 2R, 20 seeds): the
+//     sell share stays within 3 standard errors of 50% (one draw per bar gave 0.656).
+const toggling=byRsi(t=>(t%(10*M1))<5*M1?25:50);
+{
+ const wx={period:16385},inputs={Single_Time_Stop_Bars:3,Single_Time_Stop_TF:'TF_M1'};
+ const {B}=compare('H1 chart, toggling',{inputs,indicator:toggling,path:DAY2,wx});
+ const ep=episodes(DAY2,toggling).filter(([,s])=>s===0);
+ const ordinals=new Map();const ordOf=new Map();
+ for(const [t] of ep){const b=barOf(t,3600);const o=ordinals.has(b)?ordinals.get(b)+1:0;ordinals.set(b,o);ordOf.set(t,[b,o]);}
+ assert.equal(sends(B).length,ep.length,'every episode opens');
+ const exp=sends(B).map(x=>{const e=ep.filter(([t])=>t<=x.time).at(-1);const [b,o]=ordOf.get(e[0]);return R.referenceSide(1,b,0,o);});
+ assert.equal(sideString(B),exp.join(''),'each episode\'s draw: its H1 bar and its ordinal on that bar');
+ assert.ok(Math.max(...ordinals.values())===5,'six episodes per bar (ordinals 0-5)');
+ const perBar=new Map();for(const x of sends(B)){const b=barOf(x.time,3600);perBar.set(b,(perBar.get(b)||'')+x.type);}
+ assert.ok([...perBar.values()].filter(v=>/0/.test(v)&&/1/.test(v)).length>=20,'same-bar episodes take both sides');
+ const noOrd=sends(B).map(x=>{const e=ep.filter(([t])=>t<=x.time).at(-1);return R.referenceSide(1,barOf(e[0],3600),0,0);}).join('');
+ assert.notEqual(sideString(B),noOrd,'not one draw per bar');
+ // A failed bar read at an episode's first check records nothing: the next check records it, with the next ordinal.
+ const X=world({inputs:{...RANDOM,...inputs},indicator:toggling,world:wx});const iTime=X.ctx.iTime;
+ X.ctx.iTime=(sym,tf,sh)=>{const m=(X.w.time-MON)%3600;return (tf===0&&m>=600&&m<660)?0:iTime(sym,tf,sh);};
+ X.run(DAY2);
+ const second=sends(X).filter(x=>(x.time-MON)%3600>=600&&(x.time-MON)%3600<1200);
+ assert.ok(second.length>=30,'the second episode of each bar opens a minute late ('+second.length+')');
+ for(const x of second) assert.equal(x.type,R.referenceSide(1,barOf(x.time,3600),0,1),'... with ordinal 1 at '+(x.time-MON)/M1);
+ // The ordinals come from the signal checks, which follow closed bars: a second tick model counts them the same way.
+ const F=world({inputs:{...RANDOM,...inputs},indicator:toggling,world:wx});F.run(session(3,1));
+ assert.deepEqual(sends(F).map(x=>barOf(x.time)),sends(B).map(x=>barOf(x.time)),'the same entry minutes under a second tick model');
+ assert.equal(sideString(F),sideString(B),'and the same draws (the same ordinals)');
+ const RATE=0.0020/1200,path=flat(2*H1-10*M1,22*H1,20,7,1.1000,RATE);
+ let n=0,sells=0;
+ for(let seed=1;seed<=20;seed++){
+  const W=world({inputs:{...RANDOM,Random_Seed:seed,Single_TP_R:2,Single_Time_Stop_Bars:0},indicator:toggling,world:wx});W.run(path);
+  assert.deepEqual(heldAtOpen(W),[],'exp7 seed '+seed+': flat only');
+  n+=sends(W).length;sells+=sends(W).filter(x=>x.type===1).length;
+ }
+ const share=sells/n,se=Math.sqrt(0.25/n);
+ assert.ok(n>=300,'exp7: enough trades ('+n+')');
+ assert.ok(Math.abs(share-0.5)<=3*se,'exp7: sell share '+share.toFixed(3)+' within 3 SE ('+se.toFixed(3)+') of 50% over '+n+' trades');
+ console.log(JSON.stringify({exp7:{trades:n,sellShare:Number(share.toFixed(4)),se:Number(se.toFixed(4))}}));
  ok();
 }
 

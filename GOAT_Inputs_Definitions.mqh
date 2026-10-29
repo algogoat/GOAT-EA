@@ -859,6 +859,8 @@ sinput   bool                    Single_Flat_Only              =                
 // B51 globals (beta-1a). g_GoatRandomEpisodeBar[signal]: the open time of the signal bar of the running episode's first
 // check (0 between episodes). g_GoatRandomSignal[side]: the signal of the episode that opened the single on that side.
 datetime g_GoatRandomEpisodeBar[2]={0,0};
+datetime g_GoatRandomOrdinalBar[2]={0,0};   // the chart bar of the signal's last recorded episode
+int      g_GoatRandomOrdinal[2]={0,0};      // that episode's ordinal among the signal's episodes on that bar (0, 1, ...)
 int      g_GoatRandomSignal[2]={0,1};
 // B51:end b51-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";

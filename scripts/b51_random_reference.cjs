@@ -8,7 +8,7 @@
 // - mqlRandomSide(source): GoatSingleRandomSide as the source in front of it writes it (the working tree, or the mutated
 //   entrypoint in GOAT_EA_MAIN), evaluated with MQL's ulong rules on BigInt: every ulong operation wraps modulo 2^64,
 //   (int) keeps the low 32 bits. It reads only the function's own text, and refuses (an assertion) any token outside
-//   the pure arithmetic the function may contain: its three parameters, its one local, integer literals, casts to ulong
+//   the pure arithmetic the function may contain: its four parameters, its one local, integer literals, casts to ulong
 //   and int, and the operators ^ | & + * << >> ( ). A MathRand read, a time read or a global read is refused, so it can
 //   never hide behind the reference. The tests install it in the harness in place of the converted function.
 'use strict';
@@ -26,10 +26,11 @@ function splitmix64(state){
 }
 // The documented side: 0 buy, 1 sell, the low bit of splitmix64((ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62)),
 // bar being the episode-start signal bar and signal the episode's (0 buy, 1 sell).
-const state=(seed,bar,signal=0)=>U(seed)^U(bar)^((U(signal)<<62n)&M64);
-const referenceSide=(seed,bar,signal=0)=>Number(splitmix64(state(seed,bar,signal))&1n);
+// ordinal: the episode's ordinal among the signal's episodes recorded on that chart bar (0 for the first).
+const state=(seed,bar,signal=0,ordinal=0)=>U(seed)^U(bar)^((U(signal)<<62n)&M64)^((U(ordinal)<<40n)&M64);
+const referenceSide=(seed,bar,signal=0,ordinal=0)=>Number(splitmix64(state(seed,bar,signal,ordinal))&1n);
 
-const SIGNATURE='int GoatSingleRandomSide(const int seed,const datetime bar,const int signal)';
+const SIGNATURE='int GoatSingleRandomSide(const int seed,const datetime bar,const int signal,const int ordinal)';
 function functionText(main){
  const at=main.indexOf(SIGNATURE);
  assert.ok(at>=0,'GoatSingleRandomSide is defined with its signature: '+SIGNATURE);
@@ -38,7 +39,7 @@ function functionText(main){
  for(;end<main.length;end++){if(main[end]==='{')d++;if(main[end]==='}'){d--;if(!d)break;}}
  return main.slice(open+1,end);
 }
-const PARAMS=['seed','bar','signal'],LOCAL='b51_z';
+const PARAMS=['seed','bar','signal','ordinal'],LOCAL='b51_z';
 // A tiny evaluator for the function body: statements `ulong z=e;`, `z=e;`, `z op= e;` (op in + ^ | & *), `return e;`.
 function compileSide(body){
  const toks=H.tokenize(body.replace(/\/\/[^\n]*/g,''));
@@ -93,9 +94,9 @@ function compileSide(body){
   return {set:(env)=>{env[LOCAL]=U(f(op==='='?0n:env[LOCAL],e(env)));}};
  });
  assert.ok(prog.length>0&&prog.at(-1).ret,'GoatSingleRandomSide ends with its return');
- // run(seed,bar,signal) -> {side (the int it returns), z (the local before the return)}
- return (seed,bar,signal=0)=>{
-  const env={seed:BigInt.asIntN(32,BigInt(seed)),bar:U(bar),signal:BigInt.asIntN(32,BigInt(signal))};
+ // run(seed,bar,signal,ordinal) -> {side (the int it returns), z (the local before the return)}
+ return (seed,bar,signal=0,ordinal=0)=>{
+  const env={seed:BigInt.asIntN(32,BigInt(seed)),bar:U(bar),signal:BigInt.asIntN(32,BigInt(signal)),ordinal:BigInt.asIntN(32,BigInt(ordinal))};
   for(const p of prog){if(p.ret){const v=p.ret(env);return {side:Number(BigInt.asIntN(32,v)),z:env[LOCAL]};}p.set(env);}
   assert.fail('GoatSingleRandomSide returns');
  };
@@ -103,6 +104,6 @@ function compileSide(body){
 // The source's GoatSingleRandomSide (undefined: the working tree, or GOAT_EA_MAIN), with MQL ulong semantics.
 function mqlRandomSide(main=H.readSource(undefined,H.MAIN)){return compileSide(functionText(main));}
 // Install it in a harness world in place of the converted (double-precision) function.
-function install(W,main){const run=mqlRandomSide(main);W.ctx.GoatSingleRandomSide=(seed,bar,signal)=>run(seed,bar,signal).side;return run;}
+function install(W,main){const run=mqlRandomSide(main);W.ctx.GoatSingleRandomSide=(seed,bar,signal,ordinal)=>run(seed,bar,signal,ordinal).side;return run;}
 
 module.exports={splitmix64,state,referenceSide,mqlRandomSide,install,functionText,M64};

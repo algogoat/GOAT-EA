@@ -168,6 +168,22 @@ const killed=[];
  }
  ok();}
 
+// Single_Flat_Only on (its one behaviour change, on the hedging pair fixture, plain and reversed, buy-first and
+// sell-first): the tree opens nothing while a single runs, and opens only where flags off opens.
+{const fx=FIXTURES.single_pairs;
+ const sellFirst=(name,b,shift,w)=>{if(name==='ATR_MA')return shift===1?0.0010:0.0030;if(name!=='RSI')return undefined;const m=((w.time-MON)%2400)/60;return m<5?80:(m<10?25:50);};
+ for(const [indicator,rev] of [[fx.indicator,false],[fx.indicator,true],[sellFirst,false],[sellFirst,true]]){
+  const inputs={...fx.inputs,Reverse_Seq:rev};
+  const off=H.build(undefined,{inputs,indicator,tester:true,fastSpeed:true}),on=H.build(undefined,{inputs:{...inputs,Single_Flat_Only:true},indicator,tester:true,fastSpeed:true});
+  off.run(fx.path);on.run(fx.path);
+  const held=W=>{let n=0;const out=[];for(const x of W.w.trace){if(x.op==='OrderSend'){if(n>0)out.push(x.time);n++;}if(/^(PositionClose|BrokerStop|BrokerTake)$/.test(x.op))n--;}return out;};
+  assert.ok(held(off).length>=5,'flags off hedges (reverse '+rev+')');
+  assert.deepEqual(held(on),[],'Single_Flat_Only: nothing opens while a single runs (reverse '+rev+')');
+  const offT=new Set(off.w.trace.filter(x=>x.op==='OrderSend').map(x=>x.time));
+  assert.ok(on.w.trace.filter(x=>x.op==='OrderSend').every(x=>offT.has(x.time)),'and only where flags off opens (reverse '+rev+')');
+ }
+ ok();}
+
 // WriteSet golden: a default SET written by this tree is B50-alpha's, line for line; each B50-beta input differing from
 // its default adds exactly one line, after B50-alpha's, in the form the Studio and the controller read back.
 function writeSet(source,inputs={}){

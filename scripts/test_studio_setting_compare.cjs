@@ -71,10 +71,10 @@ for(const [from,to,key] of [['Engine_Mode=0','Engine_Mode=1','Engine_Mode'],['Si
  compare(w,a+'\nLedger_Mode=0'+b50Defaults.replace(from,to),false,key);
 // B51 (B50-beta-1a): the B50-beta inputs, appended at the end, likewise: the defaults (the seed as a dormant N tuple) are
 // accepted; a benchmark run or another seed the SET never asked for, or an active seed axis, is refused.
-const b51Defaults='Random_Direction=false\nRandom_Seed=1||1||1||10||N\n';
+const b51Defaults='Random_Direction=false\nRandom_Seed=1||1||1||10||N\nSingle_Flat_Only=false\n';
 compare(w,a+'\nLedger_Mode=0'+b50Defaults+b51Defaults,true);
 for(const [from,to,key] of [['Random_Direction=false','Random_Direction=true','Random_Direction'],['Random_Seed=1||1||1||10||N','Random_Seed=2','Random_Seed'],
- ['Random_Seed=1||1||1||10||N','Random_Seed=1||1||1||10||Y','Random_Seed']])
+ ['Random_Seed=1||1||1||10||N','Random_Seed=1||1||1||10||Y','Random_Seed'],['Single_Flat_Only=false','Single_Flat_Only=true','Single_Flat_Only']])
  compare(w,a+'\nLedger_Mode=0'+b50Defaults+b51Defaults.replace(from,to),false,key);
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');

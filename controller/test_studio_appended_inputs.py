@@ -9,8 +9,8 @@ import json
 from pathlib import Path
 import unittest
 
-from studio_strategy_settings import (APPENDED_INPUTS, appended_default, complete_appended_inputs, read_values,
-                                      validate_strategy)
+from studio_strategy_settings import (APPENDED_INPUTS, B50_INPUTS, B51_INPUTS, appended_default, complete_appended_inputs,
+                                      read_values, validate_strategy)
 from studio_input_readback import explicit_paste_inputs, verify_input_readback
 import studio_tester_report as tester_report
 from campaign_ledger import sha
@@ -51,7 +51,8 @@ class AppendedInputTests(unittest.TestCase):
                     'Server_Clock_Model': ('ENUM_SERVER_CLOCK_MODEL', 'sinput', '0'),
                     'Server_UTC_Offset': ('int', 'sinput', '2'), 'NY_Session': ('string', 'input', '09:30-16:00'),
                     'Rollover_Block_Minutes': ('int', 'input', '0')}
-        self.assertEqual(APPENDED_INPUTS[1:], tuple(expected))
+        self.assertEqual(B50_INPUTS, tuple(expected))
+        self.assertEqual(APPENDED_INPUTS[1:1+len(B50_INPUTS)], B50_INPUTS)
         for name, (kind, declaration, default) in expected.items():
             definition = self.schema['inputs'][name]
             self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
@@ -66,6 +67,41 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']},
                          {'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite', 'Single_Time_Stop_Bars',
                           'Single_Time_Stop_TF', 'Rollover_Block_Minutes'})
+
+    def test_the_b51_inputs_come_last_and_default_to_b50_alpha(self):
+        # B51 (B50-beta-1a, docs/b50/B50_ALPHA_DESIGN.md section 8): appended at the very end of the header; every default
+        # reproduces B50-alpha, and each is the default the tester report pins for an omitted input.
+        expected = {'Random_Direction': ('bool', 'sinput', 'false'), 'Random_Seed': ('int', 'input', '1'),
+                    'Single_Flat_Only': ('bool', 'sinput', 'false')}
+        self.assertEqual(B51_INPUTS, tuple(expected))
+        self.assertEqual(APPENDED_INPUTS[-len(B51_INPUTS):], B51_INPUTS)
+        self.assertEqual(list(self.schema['inputs'])[-len(B51_INPUTS):], list(B51_INPUTS))
+        for name, (kind, declaration, default) in expected.items():
+            definition = self.schema['inputs'][name]
+            self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
+                             (kind, declaration, default), name)
+            self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), default, name)
+        # Random_Seed is an axis (a seed sweep); Random_Direction is an sinput, never one.
+        self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']}, {'Random_Seed'})
+        # A B50-alpha SET (neither input) validates and keeps its own values; a benchmark SET validates too.
+        alpha = {k: v for k, v in self.full.items() if k not in B51_INPUTS}
+        self.assertEqual(validate_strategy(dict(alpha), self.schema)['values'], alpha)
+        bench = dict(self.old, Engine_Mode='1', Single_SL_ATR='1.5', Mode_Bias_Exit='0', Random_Direction='true',
+                     Single_Flat_Only='true', Random_Seed='1||1||1||50||Y')
+        with self.assertRaisesRegex(ValueError, 'RANDOM_DIRECTION_WITHOUT_FLAT_ONLY'):
+            validate_strategy(dict(bench, Single_Flat_Only='false'), self.schema)
+        self.assertEqual(validate_strategy(bench, self.schema)['values'], bench)
+        with self.assertRaisesRegex(ValueError, 'RANDOM_DIRECTION_WITHOUT_SINGLE'):
+            validate_strategy(dict(bench, Engine_Mode='0'), self.schema)
+        with self.assertRaisesRegex(ValueError, 'RANDOM_SEED_NEGATIVE'):
+            validate_strategy(dict(bench, Random_Seed='5||-5||1||10||Y'), self.schema)
+        with self.assertRaisesRegex(ValueError, 'Random_Direction: Input not exposed for optimization'):
+            validate_strategy(dict(bench, Random_Direction='false||false||1||true||Y'), self.schema)
+        # The readback wants the defaults for a SET that omits them.
+        observed = complete_appended_inputs(dict(self.full), self.schema)
+        self.assertEqual((observed['Random_Direction'], observed['Random_Seed']), ('false', '1'))
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Random_Direction'):
+            verify_input_readback(dict(self.old), dict(observed, Random_Direction='true'), self.schema)
 
     def test_a_b49a_set_may_choose_the_single_engine_and_its_axes(self):
         # The fixture runs Smart Rescue, which the single engine refuses (Claude-Mac ruling 4): hard close instead.

@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,8 +39,20 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # CHANGED and ADDED files, every changed line marked (scripts/test_b50_no_drift.cjs), and every source hashes to
         # the identity. The compile closure is B49a's plus ADDED.
         self.assertEqual(sorted(identity['consolidates']), ['B50.0', 'B50.0b', 'B50.1', 'B50.2', 'B50.3'])
+        # B51 in progress (claude-mac/b50-beta1a, -beta1b): the tree is B50 plus marked B51 lines in the files
+        # scripts/test_b51_no_drift.cjs lists, and every other B50 source is byte-identical (proven there, against B50's
+        # commit). Those files carry B51's lines by design, so each is checked where it hashes to B50's identity: B50's
+        # own commit (32df4eb, checked out with CRLF as .gitattributes does). The B51 assembly binds the tree to its own.
+        b51_guard = (ROOT / 'scripts/test_b51_no_drift.cjs').read_text(encoding='utf-8')
+        b51_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b51_guard, re.M)[1].replace("'", '"') + ']'))
+        self.assertTrue({'GOAT V1.49.mq5', 'GOAT_Inputs_Definitions.mqh'} <= b51_changed)
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b51_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                blob = subprocess.run(['git', 'show', '32df4eb:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+                blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B50 commit)')
         b49a = json.loads((RETAINED_B49A / 'identity.json').read_text(encoding='utf-8'))
         b50_guard = (ROOT / 'scripts/test_b50_no_drift.cjs').read_text(encoding='utf-8')
         b50_list = lambda name: json.loads('[' + re.search(r"^const " + name + r"=\[([^\]]*)\]", b50_guard, re.M)[1].replace("'", '"') + ']')

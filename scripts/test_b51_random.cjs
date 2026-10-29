@@ -18,7 +18,8 @@
 //   published outputs, golden sequences for fixed seeds and both signals, the tree's function equal to the reference;
 // - one draw per episode, from the episode's first signal bar (PERIOD_CURRENT, shift 1) and its ordinal among the
 //   signal's episodes on that bar: the same under two tick models and on a replay; never the tick's time, the forming
-//   bar or another timeframe; several episodes in one H1 bar draw independently (exp7: the sell share stays fair);
+//   bar or another timeframe; several episodes in one H1 bar draw independently, each with its own signal's ordinal
+//   (exp7 and its sell twin exp7s: the sell share stays fair);
 // - B's entries are S's (no divergent entry while the exits do not depend on the side; counted under exp5), and its
 //   exits are S's; no trade ever opens while another single runs; the sides are the draws', never forced: in the exp5
 //   uptrend the sell share stays within 3 standard errors of 50%;
@@ -393,6 +394,40 @@ const toggling=byRsi(t=>(t%(10*M1))<5*M1?25:50);
  assert.ok(n>=300,'exp7: enough trades ('+n+')');
  assert.ok(Math.abs(share-0.5)<=3*se,'exp7: sell share '+share.toFixed(3)+' within 3 SE ('+se.toFixed(3)+') of 50% over '+n+' trades');
  console.log(JSON.stringify({exp7:{trades:n,sellShare:Number(share.toFixed(4)),se:Number(se.toFixed(4))}}));
+ ok();
+}
+
+// 15. The ordinal is kept per signal (review round 4, P2-A): the sell-signal twin of section 14 (a sell signal 5
+//     minutes in every 10 on an H1 chart), then both signals toggling inside each bar (a buy episode, then a sell one,
+//     every 10 minutes: six of each per bar). Each episode draws with its own signal's ordinal on the bar; then exp7s
+//     (the sell twin on the uptrend, 20 seeds): the sell share stays within 3 standard errors of 50% (an ordinal shared
+//     across signals gave 0.652).
+{
+ const wx={period:16385},inputs={Single_Time_Stop_Bars:2,Single_Time_Stop_TF:'TF_M1'};
+ const drawsOf=(W,indicator)=>{const ep=episodes(DAY2,indicator),count=new Map(),key=new Map();
+  for(const [t,sig] of ep){const b=barOf(t,3600),k=b+':'+sig,o=count.has(k)?count.get(k)+1:0;count.set(k,o);key.set(t+':'+sig,[b,o]);}
+  return sends(W).map(x=>{const e=ep.filter(([t])=>t<=x.time).at(-1);const [b,o]=key.get(e[0]+':'+e[1]);return {side:R.referenceSide(1,b,e[1],o),sig:e[1],o};});};
+ const sellToggling=byRsi(t=>(t%(10*M1))<5*M1?80:50);
+ const S=compare('H1 chart, sell toggling',{inputs,indicator:sellToggling,path:DAY2,wx}).B;
+ const sd=drawsOf(S,sellToggling);
+ assert.equal(sends(S).length,episodes(DAY2,sellToggling).length,'every sell episode opens');
+ assert.ok(sd.every(d=>d.sig===1)&&Math.max(...sd.map(d=>d.o))===5,'six sell episodes per bar (ordinals 0-5)');
+ assert.equal(sideString(S),sd.map(d=>d.side).join(''),'each sell episode\'s draw: its bar, the sell signal and its own ordinal');
+ const both=byRsi(t=>{const m=(t%(10*M1))/M1;return m<3?25:(m>=5&&m<8?80:50);});
+ const Bb=compare('H1 chart, both signals toggling',{inputs,indicator:both,path:DAY2,wx}).B;
+ const bd=drawsOf(Bb,both);
+ assert.ok(bd.some(d=>d.sig===0&&d.o===5)&&bd.some(d=>d.sig===1&&d.o===5),'six episodes of each signal per bar');
+ assert.equal(sideString(Bb),bd.map(d=>d.side).join(''),'each episode draws with its own signal\'s ordinal');
+ const RATE=0.0020/1200,path=flat(2*H1-10*M1,22*H1,20,7,1.1000,RATE);
+ let n=0,sells=0;
+ for(let seed=1;seed<=20;seed++){
+  const W=world({inputs:{...RANDOM,Random_Seed:seed,Single_TP_R:2,Single_Time_Stop_Bars:0},indicator:sellToggling,world:wx});W.run(path);
+  n+=sends(W).length;sells+=sends(W).filter(x=>x.type===1).length;
+ }
+ const share=sells/n,se=Math.sqrt(0.25/n);
+ assert.ok(n>=300,'exp7s: enough trades ('+n+')');
+ assert.ok(Math.abs(share-0.5)<=3*se,'exp7s: sell share '+share.toFixed(3)+' within 3 SE ('+se.toFixed(3)+') of 50% over '+n+' trades');
+ console.log(JSON.stringify({exp7s:{trades:n,sellShare:Number(share.toFixed(4)),se:Number(se.toFixed(4))}}));
  ok();
 }
 

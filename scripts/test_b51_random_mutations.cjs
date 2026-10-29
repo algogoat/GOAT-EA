@@ -30,6 +30,8 @@ const MUTANTS=[
  // Review round 3, P1-A: the ordinal of an episode on its chart bar.
  ['the ordinal is dropped from the state','^(((ulong)ordinal)<<40);',';'],
  ['the ordinal is not passed (always 0)','GoatSingleRandomSide(Random_Seed,b51_bar,signal,g_GoatRandomOrdinal[signal]);','GoatSingleRandomSide(Random_Seed,b51_bar,signal,0);'],
+ ['the ordinal is shared across signals (review round 4, P2-A)','GoatSingleRandomSide(Random_Seed,b51_bar,signal,g_GoatRandomOrdinal[signal]);','GoatSingleRandomSide(Random_Seed,b51_bar,signal,g_GoatRandomOrdinal[0]);'],
+ ['the sell signal counts on the buy signal\'s ordinal','   if(b51_bar==g_GoatRandomOrdinalBar[signal]) g_GoatRandomOrdinal[signal]++;\n   else {g_GoatRandomOrdinalBar[signal]=b51_bar; g_GoatRandomOrdinal[signal]=0;}','   if(b51_bar==g_GoatRandomOrdinalBar[0]) g_GoatRandomOrdinal[0]++;\n   else {g_GoatRandomOrdinalBar[0]=b51_bar; g_GoatRandomOrdinal[0]=0;}'],
  ['the ordinal is not reset on a new bar','   else {g_GoatRandomOrdinalBar[signal]=b51_bar; g_GoatRandomOrdinal[signal]=0;}','   else {g_GoatRandomOrdinalBar[signal]=b51_bar;}'],
  ['the ordinal never counts up','   if(b51_bar==g_GoatRandomOrdinalBar[signal]) g_GoatRandomOrdinal[signal]++;','   if(b51_bar==g_GoatRandomOrdinalBar[signal]) ;'],
  ['the ordinal shift collapses onto the seed bits','^(((ulong)ordinal)<<40);','^(((ulong)ordinal)<<0);'],

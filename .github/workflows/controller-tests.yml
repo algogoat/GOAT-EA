@@ -63,8 +63,11 @@ jobs:
     runs-on: windows-2022
     # Setup, fast fixtures and the full unittest suite: ~8-10 min (unittest alone 7 min on a slow runner).
     # B49b: its in-job mutation suites (F7, then F5 and F3) took a 27-min job past 30 (GOAT-EA#270 run 40462891356 was
-    # cancelled in the unittest step), so the job has 45.
-    timeout-minutes: 45
+    # cancelled in the unittest step), so the job had 45. B49b tidy (GOAT-EA#285): on the slower runners of 10-29 the steps
+    # before the F1 mutations took 27-29 min (18 on #284's run), the F1 mutations ran past the cap (run 40805681829), and the
+    # full unittest suite after them takes ~12 min, so the job has 70. The cap only stops a runaway: a normal run bills its
+    # actual minutes.
+    timeout-minutes: 70
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"

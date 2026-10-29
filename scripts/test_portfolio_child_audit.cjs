@@ -79,10 +79,10 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
 // from their defaults: a SET without them maps only to a child holding the defaults (no benchmark, seed 1).
 {const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'
   +'Single_Time_Stop_TF=0\nClock_Mode=0\nServer_Clock_Model=0\nServer_UTC_Offset=2\nNY_Session=09:30-16:00\nRollover_Block_Minutes=0\n';
- const b51='Random_Direction=false\nRandom_Seed=1\nSingle_BE_ATR=0.0\nSingle_Trail_Start_ATR=0\nSingle_Trail_ATR=0.00\n';   // beta-1b: three more
+ const b51='Random_Direction=false\nRandom_Seed=1\nSingle_Flat_Only=false\nSingle_BE_ATR=0.0\nSingle_Trail_Start_ATR=0\nSingle_Trail_ATR=0.00\n';   // beta-1b: three more
  const child=head+inputs+declared+'BlindExport=false\nLedger_Mode=0\n'+b50;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b51+tail,expert),true,'B49a SET, B51 child at the defaults');passed++;
- for(const [from,to] of [['Random_Direction=false','Random_Direction=true'],['Random_Seed=1','Random_Seed=2'],['Single_BE_ATR=0.0','Single_BE_ATR=1.0'],
+ for(const [from,to] of [['Random_Direction=false','Random_Direction=true'],['Random_Seed=1','Random_Seed=2'],['Single_Flat_Only=false','Single_Flat_Only=true'],['Single_BE_ATR=0.0','Single_BE_ATR=1.0'],
   ['Single_Trail_Start_ATR=0','Single_Trail_Start_ATR=2'],['Single_Trail_ATR=0.00','Single_Trail_ATR=0.5']]){
   assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b51.replace(from,to)+tail,expert),false,'B49a SET, child at '+to);passed++;
  }

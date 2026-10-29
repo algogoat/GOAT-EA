@@ -181,6 +181,7 @@ public:
      long   last_ack_id;
      int    last_ack_status,ack_closed,ack_errors,ack_remaining,trade_allow_mask,target_trade_allow_mask,exposure_policy_mode,target_exposure_policy_mode,target_close_scope;
      bool   policy_paused;
+     bool   manage_only;   // B49b (F1): the child last said "Managing only" (Claude-Mac #284 APPROVE item 5)
     SetFileRecord()
       {
        path=name=sym=strat=news_label=bias_label=risk_lots_label="";
@@ -203,6 +204,7 @@ public:
         target_exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
         target_close_scope=GOAT_CLOSE_SCOPE_ALL;
         policy_paused=false;
+        manage_only=false;   // B49b (F1)
        }
    };
    SetFileRecord g_sets[];
@@ -545,7 +547,10 @@ private:
          if(!acked) return "Syncing";
       }
       if(g_sets[idx].magic>0 && g_sets[idx].heartbeat_ts>0 && (now-g_sets[idx].heartbeat_ts)>60) return "Update delayed";
-      if(g_sets[idx].status=="Managing only") return "Managing only"; // B49b (F1): a manage-only child shows so, ahead of the policy labels, and is never counted active
+      // B49b (F1): a manage-only child shows so, ahead of the policy labels, and is never counted active; a command's outcome still shows.
+      // B49b (F1): from the row's flag, not its status, which the dashboard's own command writes replace (Claude-Mac #284 APPROVE item 5).
+      string row_status=g_sets[idx].status; // B49b (F1)
+      if(g_sets[idx].manage_only && row_status!="No Ack" && row_status!="Command Failed" && row_status!="Close Failed" && row_status!="Closed") return "Managing only"; // B49b (F1)
       if(g_sets[idx].policy_paused) return "Paused";
       if(g_sets[idx].trade_allow_mask!=(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL))
          return CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask);
@@ -1216,6 +1221,10 @@ bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const doub
             if(!magic_match && !cid_match) continue;
 
             g_sets[idx].status=status;
+            // B49b (F1): only the child sets or clears manage-only. While manage-only it sends only Offline and Close Failed besides,
+            // B49b (F1): and a failed close leaves it manage-only.
+            if(status=="Managing only") g_sets[idx].manage_only=true;            // B49b (F1)
+            else if(status!="Close Failed") g_sets[idx].manage_only=false;   // B49b (F1)
             edt_Status[idx+2].Text(DisplayStatusForRow(idx,TimeCurrent()));
             edt_Status[idx+2].Color(StatusColor(edt_Status[idx+2].Text()));
             MarkStateDirty();
@@ -3094,6 +3103,7 @@ bool CGOATDashboard::AdoptChild(const int adopt_idx,const long adopt_chart,const
    GlobalVariableDel(GoatChildGVName(adopt_magic,g_sets[adopt_idx].sym,GOAT_GV_FIELD_MAGIC));
    GlobalVariablesFlush();
    g_sets[adopt_idx].status="Linked";
+   g_sets[adopt_idx].manage_only=false;   // B49b (F1): a newly adopted chart says for itself
    if(ArraySize(edt_Status)>adopt_idx+2)
    {
       edt_Status[adopt_idx+2].Text(g_sets[adopt_idx].status);

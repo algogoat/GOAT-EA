@@ -100,6 +100,7 @@ const MUTANTS=[
  ['the EA is removed with a basket open','   if(Seq_Buy.Active || Seq_Sell.Active) return;\n   // Claude-Mac #284 P2-1','   // Claude-Mac #284 P2-1'],
  ['the sell side does not hold','   if(Seq_Buy.Active || Seq_Sell.Active) return;\n   // Claude-Mac #284 P2-1','   if(Seq_Buy.Active) return;\n   // Claude-Mac #284 P2-1'],
  ['open positions without a sequence are removed (Claude-Mac #284 P2-1)','   if(open_positions>0)\n','   if(false)\n'],
+ ['one leftover position is removed (Claude-Mac #284 APPROVE item 2)','   if(open_positions>0)\n','   if(open_positions>1)\n'],
  ['only buys count as open','int open_positions=FindNumberOfPositions(OP_BUYSELL,MAGIC1);','int open_positions=FindNumberOfPositions(OP_BUY,MAGIC1);'],
  ['any magic counts as open','int open_positions=FindNumberOfPositions(OP_BUYSELL,MAGIC1);','int open_positions=FindNumberOfPositions(OP_BUYSELL);'],
  ['"not removed" is said every timer','      g_GoatManageOnlyHeldLogged=true;\n',''],
@@ -109,6 +110,8 @@ const MUTANTS=[
  ['the byte count is the character count','   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8)-1;','   int size=StringLen(body); StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8);'],
  ['the terminating 0 is written','   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8)-1;','   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8);'],
  ['a short write passes','   bool okay=(written==(uint)size && GetLastError()==0);','   bool okay=true;'],
+ ['a full-size write with an error passes (Claude-Mac #284 APPROVE item 3)','   bool okay=(written==(uint)size && GetLastError()==0);','   bool okay=(written==(uint)size);'],
+ ['the move never replaces the file (Claude-Mac #284 APPROVE item 1)','FileMove(temporary,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE)','FileMove(temporary,FILE_COMMON,path,FILE_COMMON)'],
  ['a failed write keeps its .pending','   FileDelete(temporary,FILE_COMMON);\n   return false;','   return false;'],
  ['the move error is lost','   if(okay) g_GoatStateWriteError=GetLastError();\n',''],
  ['the open error is lost','   if(h==INVALID_HANDLE) {g_GoatStateWriteError=GetLastError(); return false;}','   if(h==INVALID_HANDLE) return false;'],
@@ -135,7 +138,17 @@ const MUTANTS=[
  ['the bias edge is a static again','    if(StopOut_Flag_B && !g_GoatLastStopOutB)','    static bool Last_StopOut_Flag_B = false;\n    if(StopOut_Flag_B && !g_GoatLastStopOutB)'],
  ['adoption publishes blocked exposure','    GuardRealStarted=true; // B49b (F1)','    // B49b (F1)'],
  // The dashboard (Dashboard.mqh).
- ['the dashboard hides a managing-only row','      if(g_sets[idx].status=="Managing only") return "Managing only";','      ;','dash'],
+ ['the dashboard hides a managing-only row','      if(g_sets[idx].manage_only && row_status!="No Ack"','      if(false && row_status!="No Ack"','dash'],
+ // Claude-Mac #284 APPROVE item 5: the row's flag, not its status (which the dashboard's own command writes replace).
+ ['the row shows its status, not the flag (the #284 round 2 code)','      if(g_sets[idx].manage_only && row_status!="No Ack" && row_status!="Command Failed" && row_status!="Close Failed" && row_status!="Closed") return "Managing only";',
+  '      if(row_status=="Managing only") return "Managing only";','dash'],
+ ['a command\'s outcome is hidden','      if(g_sets[idx].manage_only && row_status!="No Ack" && row_status!="Command Failed" && row_status!="Close Failed" && row_status!="Closed") return "Managing only";',
+  '      if(g_sets[idx].manage_only) return "Managing only";','dash'],
+ ['a failed close ends manage-only','            else if(status!="Close Failed") g_sets[idx].manage_only=false;','            else g_sets[idx].manage_only=false;','dash'],
+ ['the child never ends manage-only','            else if(status!="Close Failed") g_sets[idx].manage_only=false;   // B49b (F1)\n','','dash'],
+ ['the child never starts manage-only','            if(status=="Managing only") g_sets[idx].manage_only=true;','            if(false) g_sets[idx].manage_only=true;','dash'],
+ ['an adopted chart keeps the old row\'s flag','   g_sets[adopt_idx].manage_only=false;','   ;','dash'],
+ ['a new row starts manage-only','        manage_only=false;   // B49b (F1)\n','        manage_only=true;   // B49b (F1)\n','dash'],
  ['a managing-only row counts as active','      if(row_status=="Active" || row_status=="Linked") active_count++;','      if(row_status=="Active" || row_status=="Linked" || row_status=="Managing only") active_count++;','dash'],
 ];
 const DASH=fs.readFileSync(path.join(ROOT,'Dashboard.mqh'),'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');

@@ -67,17 +67,21 @@ const SIG={
 const FLAGS=fn('GoatManageOnlyLive',[],bodyOf(main,SIG.live))+fn('GoatManageOnlyReason',[],bodyOf(main,SIG.reason))
  +fn('GoatExpiryManageOnly',[],bodyOf(main,SIG.expiry))+fn('GoatLicenceManageOnly',['key'],bodyOf(main,SIG.licence))
  +fn('GoatLicenceTransient',['key'],bodyOf(main,SIG.transient))+fn('GoatStateValue',['keys','values','key'],bodyOf(main,SIG.value));
-// The MQL file API (Common files), modelled on the terminal: FILE_TXT writes "\r\n" for each "\n" and FileWriteString
-// returns what it wrote (Claude-Mac #284 P1); FILE_BIN writes the bytes given. A file appears at FileOpen, as on MT5.
-const FILE_TXT=16;
-const fileApi=t=>({INVALID_HANDLE:-1,FILE_READ:1,FILE_WRITE:2,FILE_BIN:4,FILE_TXT,FILE_ANSI:32,FILE_SHARE_READ:64,FILE_REWRITE:1,WHOLE_ARRAY:-1,CP_UTF8:65001,
+// The MQL file API (Common files), modelled on the terminal: FILE_TXT writes "\r\n" for each bare "\n" and leaves an
+// existing "\r\n" as it is (the probe's cases 1 and 2b), and FileWriteString returns what it wrote (Claude-Mac #284 P1);
+// FILE_BIN writes the bytes given. A file appears at FileOpen, as on MT5. FileMove refuses to replace an existing file
+// without FILE_REWRITE, as MT5 does (Claude-Mac #284 APPROVE item 1). The error codes of the injected failures are the model's.
+const FILE_TXT=16,FILE_REWRITE=512;
+const fileApi=t=>({INVALID_HANDLE:-1,FILE_READ:1,FILE_WRITE:2,FILE_BIN:4,FILE_TXT,FILE_ANSI:32,FILE_SHARE_READ:64,FILE_REWRITE,WHOLE_ARRAY:-1,CP_UTF8:65001,
  ChartID:()=>131,GetTickCount64:()=>t.now,ResetLastError:()=>{t.err=0;},GetLastError:()=>t.err,StringLen:s=>s.length,
  FileIsExist:p=>t.files.has(p),
  FileOpen:(p,flags)=>{if(p.endsWith('.pending'))t.writes=(t.writes||0)+1;if(t.failOpen){t.err=5004;return -1;}t.handles.push({p,flags,data:''});t.files.set(p,'');return t.handles.length;},
- FileWriteArray:(h,bytes,start,count)=>{if(t.failWrite){t.err=5020;return 0;}t.handles[h-1].data+=Buffer.from(bytes.slice(start,start+count)).toString('utf8');return count;},
- FileWriteString:(h,s)=>{const o=t.handles[h-1];const w=(o.flags&FILE_TXT)?s.replace(/\n/g,'\r\n'):s;o.data+=w;return w.length;},
+ FileWriteArray:(h,bytes,start,count)=>{if(t.failWrite){t.err=5020;return 0;}t.handles[h-1].data+=Buffer.from(bytes.slice(start,start+count)).toString('utf8');
+  if(t.errAfterWrite)t.err=5026;return count;},   // errAfterWrite: every byte reported written, but an error is set
+ FileWriteString:(h,s)=>{const o=t.handles[h-1];const w=(o.flags&FILE_TXT)?s.replace(/\r?\n/g,'\r\n'):s;o.data+=w;return w.length;},
  FileFlush:()=>{},FileClose:h=>{const o=t.handles[h-1];t.files.set(o.p,o.data);},
- FileMove:(a,af,b)=>{if(t.failMove){t.err=5021;return false;}t.files.set(b,t.files.get(a));t.files.delete(a);return true;},
+ FileMove:(a,af,b,bf)=>{if(t.failMove){t.err=5021;return false;}if(t.files.has(b)&&!(bf&FILE_REWRITE)){t.err=5022;return false;}
+  t.files.set(b,t.files.get(a));t.files.delete(a);return true;},
  FileDelete:p=>{t.files.delete(p);t.deleted.push(p);return true;},
  StringToCharArray:(s,arr)=>{arr.length=0;arr.push(...Buffer.from(s,'utf8'),0);return arr.length;}});
 const pending=files=>[...files.keys()].filter(k=>k.endsWith('.pending'));
@@ -154,7 +158,7 @@ function sequence(ea,{dir=0,virtual=false,active=true,traded=true,adopted=true,m
 // ---------------------------------------------------------------- the EA: globals, the state file, the licence service
 function ea({tester=false,mode=0,state=NONE,files=new Map(),licence=[]}={}){
  const t={tester,logs:[],alerts:[],now:100000,files,writes:0,failWrite:false,failMove:false,failOpen:false,unreadable:false,licence:[...licence],verifies:0,removed:0,sleeps:[],
-  prompts:[],hidden:0,statuses:[],activations:[],activationOk:true,handles:[],deleted:[],err:0,folders:[],positions:0,counted:[]};
+  prompts:[],hidden:0,statuses:[],activations:[],activationOk:true,handles:[],deleted:[],err:0,errAfterWrite:false,folders:[],positions:0,counted:[]};
  const c={...K,...common(t),...fileApi(t),t,Mode_Operation:mode,g_GoatStateWriteError:0,serial:0,g_GoatManageOnlyHeldLogged:false,
   FindNumberOfPositions:(op,magic)=>{t.counted.push([op,magic]);return t.positions;},Mode:'',g_GoatManageOnly:state,g_GoatLicenceRetriedMs:0,g_GoatStateFailed:false,
   g_GoatLastStopOutB:false,g_GoatLastStopOutS:false,g_GoatStateLast:'',g_GoatStateWrittenMs:0,g_GoatStateDay:0,g_GoatDayRestorePending:false,
@@ -242,6 +246,9 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  // A change waits for GOAT_SQ_FLUSH_MS unless forced; unchanged text is never rewritten, forced or not.
  a.Seq_Buy.Trailing=false;a.t.now+=1;a.GoatStateFlush();assert.equal(a.t.writes,1,'within the flush interval');
  a.t.now+=FLUSH_MS;a.GoatStateFlush();assert.equal(a.t.writes,2);
+ // The second write replaces the file (FILE_REWRITE): without it MT5's FileMove refuses and every write after the first
+ // fails (Claude-Mac #284 APPROVE item 1).
+ assert.deepEqual([a.g_GoatStateFailed,files.get(PATH),pending(files)],[false,a.GoatStateText(),[]],'the existing file is replaced');
  a.t.now+=FLUSH_MS;a.GoatStateFlush();a.GoatStateFlush(true);assert.equal(a.t.writes,2,'unchanged');
  a.Seq_Buy.Retrace_Triggered=false;a.GoatStateFlush(true);assert.equal(a.t.writes,3,'forced');a.Seq_Buy.Retrace_Triggered=true;
  // A failed write freezes adds (said once) until a write succeeds.
@@ -251,9 +258,10 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  assert.match(a.t.alerts.find(x=>/not written/.test(x)),/, error 5020\)/,'the write error, kept past the cleanup');
  assert.deepEqual(pending(files),[],'a failed write leaves no .pending (Claude-Mac #284 P1)');assert.equal(files.get(PATH),lastGood,'the last good file stays');
  a.t.failWrite=false;a.GoatStateFlush(true);assert.equal(a.g_GoatStateFailed,false);assert.match(a.t.logs.at(-1),/written again/);
- // A failed move (and a failed open) leaves no .pending either, and the last good file stands.
+ // A failed move (and a failed open, and a write that reports every byte but sets an error: item 3) leaves no .pending
+ // either, and the last good file stands.
  const good=files.get(PATH);
- for(const [flag,err] of [['failMove',5021],['failOpen',5004]]){a.t[flag]=true;a.Seq_Buy.Trailing=!a.Seq_Buy.Trailing;a.GoatStateFlush(true);
+ for(const [flag,err] of [['failMove',5021],['failOpen',5004],['errAfterWrite',5026]]){a.t[flag]=true;a.Seq_Buy.Trailing=!a.Seq_Buy.Trailing;a.GoatStateFlush(true);
   assert.deepEqual([a.g_GoatStateFailed,a.g_GoatStateWriteError,pending(files),files.get(PATH)],[true,err,[],good],flag);
   a.t[flag]=false;a.Seq_Buy.Trailing=!a.Seq_Buy.Trailing;a.GoatStateFlush(true);assert.equal(a.g_GoatStateFailed,false,flag+': recovered');}
  // The restart: a fresh EA over the same files; the matched buy takes its section back; the day waits for the first tick.
@@ -301,6 +309,13 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  assert.ok(Buffer.byteLength(text)<2048,'well under GoatSetupRead\'s 4096-byte cap: '+Buffer.byteLength(text));
  assert.equal(c.GoatSetupWrite('X\\setup.txt',text),false,'B49a\'s writer refuses the multi-line text');
  assert.equal(pending(t.files).length,1,'and leaves its .pending (B49a behaviour, untouched)');
+ // TXT mode leaves an existing "\r\n" alone (the probe's case 2b: CRLF text in, the same 326 bytes out, no "\r\r").
+ const crlf=text.replace(/\n/g,'\r\n');
+ assert.equal(c.GoatSetupWrite('X\\setup-crlf.txt',crlf),true);assert.equal(t.files.get('X\\setup-crlf.txt'),crlf,'CRLF text written as is');
+ // The model's own FileMove: an existing target is replaced only with FILE_REWRITE (item 1).
+ t.files.set('X\\m.a','new');t.files.set('X\\m.b','old');
+ assert.deepEqual([c.FileMove('X\\m.a',4096,'X\\m.b',4096),t.err,t.files.get('X\\m.b')],[false,5022,'old'],'no FILE_REWRITE: refused');
+ assert.deepEqual([c.FileMove('X\\m.a',4096,'X\\m.b',4096|FILE_REWRITE),t.files.get('X\\m.b'),t.files.has('X\\m.a')],[true,'new',false]);
  const json='{"schema":1,"id":"r","result":"ok"}';
  assert.equal(c.GoatSetupWrite('X\\receipt.json',json),true);assert.equal(t.files.get('X\\receipt.json'),json,'its single-line JSON is unchanged');
  t.files=new Map();
@@ -362,10 +377,11 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
   a.Seq_Sell.Active=false;a.GoatManageOnlyTimer();assert.equal(a.t.removed,1,'flat: removed');assert.equal(a.t.verifies,0,'no licence call');}
  // Claude-Mac #284 P2-1: no sequence active but positions of this magic still open on the symbol (a failed close whose
  // sequence ended anyway): never removed, said once; removed once those positions are gone.
- for(const s of [EXPIRED,REFUSED,CRED]){const a=ea({state:s});holding(a,false);a.t.positions=2;
-  a.GoatManageOnlyTimer();a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,'positions open: not removed');
+ // One leftover position holds too (Claude-Mac #284 APPROVE item 2).
+ for(const s of [EXPIRED,REFUSED,CRED]) for(const n of [1,2]){const a=ea({state:s});holding(a,false);a.t.positions=n;
+  a.GoatManageOnlyTimer();a.GoatManageOnlyTimer();assert.equal(a.t.removed,0,n+' position(s) open: not removed');
   assert.deepEqual(a.t.counted.at(-1),[2,1843920117],'both directions, this magic (FindNumberOfPositions on _Symbol)');
-  assert.equal(a.t.logs.filter(l=>/^GOAT manage-only: not removed: 2 position\(s\) of magic 1843920117 are still open on EURUSD/.test(l)).length,1,'said once');
+  assert.equal(a.t.logs.filter(l=>new RegExp('^GOAT manage-only: not removed: '+n+' position\\(s\\) of magic 1843920117 are still open on EURUSD').test(l)).length,1,'said once');
   a.t.positions=0;a.GoatManageOnlyTimer();assert.equal(a.t.removed,1,'flat: removed');}
  // Claude-Mac #284 P2-2: a 408 or 429 from the recovering service is still an outage, never a refusal; and the retry
  // puts the manage-only prompt back over VerifyLicense's "re-attach" prompt (P3).
@@ -389,6 +405,36 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
   for(const s of [DOWN,REFUSED,EXPIRED,CRED]) assert.deepEqual(send(s,status),[[555,9,1843920117,131,'EURUSD|Managing only']],status+' while manage-only '+s);}
  for(const status of ['Offline','Close Failed']) assert.deepEqual(send(DOWN,status),[[555,9,1843920117,131,'EURUSD|'+status]],status+' still shows');
  ok();}
+{// Claude-Mac #284 APPROVE item 5: the dashboard's own writes. A command's start sets the row to Syncing and its ack to
+ // Active, Paused or a policy label, before the child's next heartbeat; the row still shows "Managing only" (so it is never
+ // counted active) because only the child sets or clears its manage_only flag. A command's outcome still shows until the
+ // next heartbeat. Dashboard.mqh's child-status handler and DisplayStatusForRow run here from source.
+ const handler=bodyOf(dash,'   if(id==GOAT_EVENT_CHILD_STATUS)');
+ const shown=[];const c={GOAT_EVENT_CHILD_STATUS:9,GOAT_DASH_TRADE_ALLOW_BUY:1,GOAT_DASH_TRADE_ALLOW_SELL:2,GOAT_EXPOSURE_ALLOW:0,GOAT_EXPOSURE_SYMBOL_DIRECTION:3,
+  m_portfolio_command_pending:false,now:5000,TimeCurrent:()=>5000,ArraySize:a=>a.length,StringSplit:(s,sep,arr)=>{arr.length=0;arr.push(...s.split(sep));return arr.length;},
+  MarkStateDirty:()=>{},StatusColor:()=>0,ExposurePolicyLabelForMode:m=>'Exposure '+m,CurrencyPolicyLabelForMask:m=>'Mask '+m,
+  edt_Status:[0,1,2].map(()=>({Text(v){if(v===undefined)return this.v;this.v=v;shown.push(v);},Color(){}})),
+  g_sets:[{magic:1843920117,cid:131,sym:'EURUSD',status:'Linked',manage_only:false,heartbeat_ts:4990,policy_paused:false,trade_allow_mask:3,exposure_policy_mode:0}]};
+ vm.createContext(c);
+ vm.runInContext(fn('DisplayStatusForRow',['idx','now'],bodyOf(dash,'string DisplayStatusForRow(const int idx,const datetime now) const'))
+  +fn('ChildStatus',['id','lparam','dparam','sparam'],'if(id==GOAT_EVENT_CHILD_STATUS)'+'{'+handler+'}'),c);
+ const row=c.g_sets[0],child=s=>c.ChildStatus(9,1843920117,131,'EURUSD|'+s),show=()=>c.DisplayStatusForRow(0,5000);
+ child('Managing only');assert.deepEqual([row.manage_only,show(),shown.at(-1)],[true,'Managing only','Managing only']);
+ // The dashboard's own writes: a command's start, then its ack's Active, Paused or a policy label.
+ for(const [label,set] of [['Syncing',()=>{row.status='Syncing';}],['Active',()=>{row.status='Active';}],['Paused',()=>{row.status='Paused';row.policy_paused=true;}],
+  ['an exposure label',()=>{row.status='Exposure 1';row.exposure_policy_mode=1;}],['a currency label',()=>{row.status='Mask 1';row.trade_allow_mask=1;}]]){
+  set();assert.equal(show(),'Managing only',label);Object.assign(row,{policy_paused:false,exposure_policy_mode:0,trade_allow_mask:3});}
+ // A command's outcome shows until the next heartbeat; a stale heartbeat still says so first.
+ for(const s of ['No Ack','Command Failed','Close Failed','Closed']){row.status=s;assert.equal(show(),s,s);}
+ row.status='Active';row.heartbeat_ts=4900;assert.equal(show(),'Update delayed');row.heartbeat_ts=4990;
+ // The child: a failed close leaves manage-only; the next "Managing only" shows it again; anything else ends it.
+ child('Close Failed');assert.deepEqual([row.manage_only,show()],[true,'Close Failed']);
+ child('Managing only');assert.equal(show(),'Managing only');
+ for(const s of ['Active','Offline','Linked']){child('Managing only');child(s);assert.deepEqual([row.manage_only,show()],[false,s],s);}
+ // A new row starts clear, and an adopted chart's row is cleared (it says for itself).
+ assert.match(dash,/\n        policy_paused=false;\n        manage_only=false;   \/\/ B49b \(F1\)\n/);
+ assert.match(dash,/\n   g_sets\[adopt_idx\]\.status="Linked";\n   g_sets\[adopt_idx\]\.manage_only=false;/);
+ ok();}
 
 // ---------------------------------------------------------------- 6. where it sits
 {const line=re=>{const m=main.split('\n').filter(l=>re.test(l));assert.equal(m.length,1,String(re));return m[0];};
@@ -408,9 +454,7 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  // Re-derived at every init (Claude-Mac 6475450194): the first thing OnInit does after the no-tick reset, before the expiry check.
  assert.match(init,/^\s*GoatNoTickForget\(\);[^\n]*\n   g_GoatManageOnly=GOAT_MANAGE_NONE; g_GoatLicenceRetriedMs=0;/);
  assert.ok(init.indexOf('g_GoatManageOnly=GOAT_MANAGE_NONE;')<init.indexOf('TimeCurrent()>Expiry'),'reset before the expiry check');
- // The dashboard: a "Managing only" row shows so (after a stale heartbeat, ahead of every policy label) and is never active.
- const display=bodyOf(dash,'string DisplayStatusForRow(const int idx,const datetime now) const');
- assert.match(display,/return "Update delayed";\n      if\(g_sets\[idx\]\.status=="Managing only"\) return "Managing only";[^\n]*\n      if\(g_sets\[idx\]\.policy_paused\) return "Paused";/);
+ // The dashboard: a "Managing only" row is never counted active (section 7 runs the row's display).
  assert.match(dash,/\n      if\(row_status=="Active" \|\| row_status=="Linked"\) active_count\+\+;\n/,'only Active/Linked rows count as active');
  assert.match(dash,/if\(status=="Managing only"\)\s+return clrOrangeRed;/);
  // OnTick: the day restore right after the new-day block's resets; the bias edges are globals, no statics.

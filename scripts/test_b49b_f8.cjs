@@ -229,6 +229,8 @@ function windows(text,{days,boos,foos,fwdStart,fwdEnd,equity,finalEquity,tickAt=
  // Claude-Mac 6470355579: a shared minute whose equity (or balance) changed still gets the final row.
  const g=mk(1000,'1000.00\t990.00');g.GoatEquityCsvFinalRow();assert.deepEqual(g.rows,[[7,'T60030','1000.00','987.65',0]],'same minute, equity changed');
  const h=mk(1000,'999.00\t987.65');h.GoatEquityCsvFinalRow();assert.equal(h.rows.length,1,'same minute, balance changed');
+// Claude-Mac #283 P3-1: a later minute with the very same values still gets the final row (it marks the evidence end).
+const m=mk(999,'1000.00\t987.65');m.GoatEquityCsvFinalRow();assert.deepEqual(m.rows,[[7,'T60030','1000.00','987.65',0]],'a later minute, identical values');
  const e=mk(-1);e.FileCSV_handle=-1;e.GoatEquityCsvFinalRow();assert.deepEqual(e.rows,[],'no file, no row');
  const onTester=bodyOf(main,'double OnTester()');
  assert.match(onTester,/if\(FileCSV_handle != INVALID_HANDLE\) \{GoatEquityCsvFinalRow\(\); FileClose\(FileCSV_handle\); FileCSV_handle=INVALID_HANDLE;\}/,'written before the close');

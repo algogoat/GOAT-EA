@@ -3,7 +3,7 @@
 // Equivalent, not listed: dropping GoatStateDayRestore's "pending=false" (IsNewDay fires once per server day, and a
 // later day's section is refused by the day check anyway).
 'use strict';
-const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawn}=require('node:child_process');
 const ROOT=path.join(__dirname,'..');
 const F1=path.join(__dirname,'test_b49b_f1.cjs');
 const MAIN=fs.readFileSync(path.join(ROOT,'GOAT V1.49.mq5'),'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');
@@ -100,6 +100,7 @@ const MUTANTS=[
  ['the EA is removed with a basket open','   if(Seq_Buy.Active || Seq_Sell.Active) return;\n   // Claude-Mac #284 P2-1','   // Claude-Mac #284 P2-1'],
  ['the sell side does not hold','   if(Seq_Buy.Active || Seq_Sell.Active) return;\n   // Claude-Mac #284 P2-1','   if(Seq_Buy.Active) return;\n   // Claude-Mac #284 P2-1'],
  ['open positions without a sequence are removed (Claude-Mac #284 P2-1)','   if(open_positions>0)\n','   if(false)\n'],
+ ['one leftover position is removed (Claude-Mac #284 APPROVE item 2)','   if(open_positions>0)\n','   if(open_positions>1)\n'],
  ['only buys count as open','int open_positions=FindNumberOfPositions(OP_BUYSELL,MAGIC1);','int open_positions=FindNumberOfPositions(OP_BUY,MAGIC1);'],
  ['any magic counts as open','int open_positions=FindNumberOfPositions(OP_BUYSELL,MAGIC1);','int open_positions=FindNumberOfPositions(OP_BUYSELL);'],
  ['"not removed" is said every timer','      g_GoatManageOnlyHeldLogged=true;\n',''],
@@ -109,6 +110,8 @@ const MUTANTS=[
  ['the byte count is the character count','   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8)-1;','   int size=StringLen(body); StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8);'],
  ['the terminating 0 is written','   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8)-1;','   int size=StringToCharArray(body,bytes,0,WHOLE_ARRAY,CP_UTF8);'],
  ['a short write passes','   bool okay=(written==(uint)size && GetLastError()==0);','   bool okay=true;'],
+ ['a full-size write with an error passes (Claude-Mac #284 APPROVE item 3)','   bool okay=(written==(uint)size && GetLastError()==0);','   bool okay=(written==(uint)size);'],
+ ['the move never replaces the file (Claude-Mac #284 APPROVE item 1)','FileMove(temporary,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE)','FileMove(temporary,FILE_COMMON,path,FILE_COMMON)'],
  ['a failed write keeps its .pending','   FileDelete(temporary,FILE_COMMON);\n   return false;','   return false;'],
  ['the move error is lost','   if(okay) g_GoatStateWriteError=GetLastError();\n',''],
  ['the open error is lost','   if(h==INVALID_HANDLE) {g_GoatStateWriteError=GetLastError(); return false;}','   if(h==INVALID_HANDLE) return false;'],
@@ -135,26 +138,48 @@ const MUTANTS=[
  ['the bias edge is a static again','    if(StopOut_Flag_B && !g_GoatLastStopOutB)','    static bool Last_StopOut_Flag_B = false;\n    if(StopOut_Flag_B && !g_GoatLastStopOutB)'],
  ['adoption publishes blocked exposure','    GuardRealStarted=true; // B49b (F1)','    // B49b (F1)'],
  // The dashboard (Dashboard.mqh).
- ['the dashboard hides a managing-only row','      if(g_sets[idx].status=="Managing only") return "Managing only";','      ;','dash'],
+ ['the dashboard hides a managing-only row','      if(g_sets[idx].manage_only && row_status!="No Ack"','      if(false && row_status!="No Ack"','dash'],
+ // Claude-Mac #284 APPROVE item 5: the row's flag, not its status (which the dashboard's own command writes replace).
+ ['the row shows its status, not the flag (the #284 round 2 code)','      if(g_sets[idx].manage_only && row_status!="No Ack" && row_status!="Command Failed" && row_status!="Close Failed" && row_status!="Closed") return "Managing only";',
+  '      if(row_status=="Managing only") return "Managing only";','dash'],
+ ['a command\'s outcome is hidden','      if(g_sets[idx].manage_only && row_status!="No Ack" && row_status!="Command Failed" && row_status!="Close Failed" && row_status!="Closed") return "Managing only";',
+  '      if(g_sets[idx].manage_only) return "Managing only";','dash'],
+ ['a failed close ends manage-only','            else if(status!="Close Failed") g_sets[idx].manage_only=false;','            else g_sets[idx].manage_only=false;','dash'],
+ ['the child never ends manage-only','            else if(status!="Close Failed") g_sets[idx].manage_only=false;   // B49b (F1)\n','','dash'],
+ ['the child never starts manage-only','            if(status=="Managing only") g_sets[idx].manage_only=true;','            if(false) g_sets[idx].manage_only=true;','dash'],
+ ['an adopted chart keeps the old row\'s flag','   g_sets[adopt_idx].manage_only=false;','   ;','dash'],
+ ['a new row starts manage-only','        manage_only=false;   // B49b (F1)\n','        manage_only=true;   // B49b (F1)\n','dash'],
  ['a managing-only row counts as active','      if(row_status=="Active" || row_status=="Linked") active_count++;','      if(row_status=="Active" || row_status=="Linked" || row_status=="Managing only") active_count++;','dash'],
 ];
 const DASH=fs.readFileSync(path.join(ROOT,'Dashboard.mqh'),'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');
+// B49b tidy (#285 CI): the mutants run in parallel, one test process per core, so the step fits the controller job's 45 min
+// on a 4-core runner (serially, 127 mutants ran past it). Each mutant still gets its own scratch copy and its own process;
+// a mutant is killed when its run fails, times out (status null, as spawnSync reported) or crashes.
 function runOn(mainText,dashText=DASH){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-f1-'));
- try{
-  const file=path.join(dir,'GOAT V1.49.mq5'),dashFile=path.join(dir,'Dashboard.mqh');
-  fs.writeFileSync(file,'﻿'+mainText.replace(/\n/g,'\r\n'),'utf8');fs.writeFileSync(dashFile,dashText.replace(/\n/g,'\r\n'),'utf8');
-  return spawnSync(process.execPath,[F1],{cwd:ROOT,env:{...process.env,GOAT_EA_MAIN:file,GOAT_EA_DASH:dashFile},encoding:'utf8',timeout:120000});
- }finally{fs.rmSync(dir,{recursive:true,force:true});}
+ const file=path.join(dir,'GOAT V1.49.mq5'),dashFile=path.join(dir,'Dashboard.mqh');
+ fs.writeFileSync(file,'\uFEFF'+mainText.replace(/\n/g,'\r\n'),'utf8');fs.writeFileSync(dashFile,dashText.replace(/\n/g,'\r\n'),'utf8');
+ return new Promise(resolve=>{
+  const child=spawn(process.execPath,[F1],{cwd:ROOT,env:{...process.env,GOAT_EA_MAIN:file,GOAT_EA_DASH:dashFile},stdio:['ignore','ignore','pipe']});
+  let stderr='';child.stderr.setEncoding('utf8');child.stderr.on('data',d=>{stderr+=d;});
+  const timer=setTimeout(()=>child.kill(),120000);
+  const done=status=>{clearTimeout(timer);fs.rmSync(dir,{recursive:true,force:true});resolve({status,stderr});};
+  child.on('error',()=>done(null));child.on('close',code=>done(code));
+ });
 }
-{const r=runOn(MAIN);assert.equal(r.status,0,'the unmutated test_b49b_f1.cjs passes on the scratch entrypoint: '+r.stderr);}
-let killed=0;
-for(const [label,from,to,target] of MUTANTS){
- const text=target==='dash'?DASH:MAIN;
- const n=text.split(from).length-1;
- assert.equal(n,1,`mutant "${label}": its anchor must occur exactly once in ${target==='dash'?'Dashboard.mqh':'GOAT V1.49.mq5'} (found ${n})`);
- const r=target==='dash'?runOn(MAIN,text.replace(from,()=>to)):runOn(text.replace(from,()=>to));
- assert.notEqual(r.status,0,`mutant survived: ${label}`);
- killed++;
-}
-console.log(JSON.stringify({mutants:MUTANTS.length,killed}));
+(async()=>{
+ {const r=await runOn(MAIN);assert.equal(r.status,0,'the unmutated test_b49b_f1.cjs passes on the scratch entrypoint: '+r.stderr);}
+ // Every anchor is checked before any mutant runs.
+ const jobs=MUTANTS.map(([label,from,to,target])=>{
+  const text=target==='dash'?DASH:MAIN;
+  const n=text.split(from).length-1;
+  assert.equal(n,1,`mutant "${label}": its anchor must occur exactly once in ${target==='dash'?'Dashboard.mqh':'GOAT V1.49.mq5'} (found ${n})`);
+  return target==='dash'?{label,main:MAIN,dash:text.replace(from,()=>to)}:{label,main:text.replace(from,()=>to),dash:DASH};
+ });
+ const width=Math.max(1,Math.min(jobs.length,typeof os.availableParallelism==='function'?os.availableParallelism():os.cpus().length));
+ const results=new Array(jobs.length);let next=0;
+ await Promise.all(Array.from({length:width},async()=>{while(next<jobs.length){const i=next++;results[i]=await runOn(jobs[i].main,jobs[i].dash);}}));
+ let killed=0;
+ jobs.forEach((job,i)=>{assert.notEqual(results[i].status,0,`mutant survived: ${job.label}`);killed++;});
+ console.log(JSON.stringify({mutants:MUTANTS.length,killed}));
+})().catch(error=>{console.error(error);process.exitCode=1;});

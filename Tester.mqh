@@ -716,6 +716,7 @@ bool   GoatExportBefore(const ExportRecord &a,const ExportRecord &b,const double
 void SortAndTrimExports(const int keepTop,const double minARF,const double minSR,ExportRecord &expArr[],const int rank=GOAT_EXPORT_RANK_ARFxSR)        // passing rows first, highest rank score first
   {
    const int n = ArraySize(expArr);
+   // B49b (F8, Claude-Mac #283 P3): 0 or 1 row returns before the log below, so a single failing export carries no fallback note. Its meaning is still exact (that row is kept, as the fallback would keep it), and the controller's single_export_passed_thresholds reports whether it passed.
    if(n <= 1) return;
    /* ---------- sort: passing rows first, then by the rank score (selection sort) ---------- */
    for(int i = 0; i < n-1; ++i)

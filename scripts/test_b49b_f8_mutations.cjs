@@ -48,6 +48,7 @@ const MUTANTS=[
  // R17.
  ['main','no final row','{GoatEquityCsvFinalRow(); FileClose(FileCSV_handle);','{FileClose(FileCSV_handle);'],
  ['main','the final row repeats a written row','   if((long)TimeCurrent()/60==g_GoatCsvLastMinute && csv_balance+"\\t"+csv_equity==g_GoatCsvLastValues) return;\n',''],
+ ['main','a later minute with identical values gets no final row (Mac #283 P3-1)','   if((long)TimeCurrent()/60==g_GoatCsvLastMinute && csv_balance+"\\t"','   if(csv_balance+"\\t"'],
  ['main','a shared minute with new equity gets no final row (Mac 6470355579)','==g_GoatCsvLastMinute && csv_balance+"\\t"+csv_equity==g_GoatCsvLastValues) return;','==g_GoatCsvLastMinute) return;'],
  ['main','minute rows do not record their values','; g_GoatCsvLastValues=DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+"\\t"+DoubleToString(MinuteLowEquity,2); // B49b (F8 R17)','; // B49b (F8 R17)'],
  ['main','BOOS straight into FOOS stays at its last day\'s open','     if(days_FOOS==0 && days_IS==0 && days_BOOS>0) eq_BOOS_end = DStartEquity;','     if(false) eq_BOOS_end = DStartEquity;'],

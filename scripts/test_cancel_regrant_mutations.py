@@ -1,0 +1,116 @@
+"""Mutation check for cancel-regrant (studio_cancel_regrant and what it binds).
+
+Each guard is removed in a temporary copy of controller/ and test_studio_cancel_regrant must
+fail. The repository is never modified. Run it directly: python scripts/test_cancel_regrant_mutations.py
+Off Windows, msvcrt is stubbed after the stdlib loads so demo_agent imports; that is local convenience,
+never evidence about Windows. Not wired into the CI shards.
+"""
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+CONTROLLER = REPO / 'controller'
+RUNNER = ('import asyncio,multiprocessing,os,shutil,subprocess,sys,types,unittest\n'
+          'root=sys.argv[1]\n'
+          'if os.name!="nt":\n'
+          '    stub=types.ModuleType("msvcrt");stub.LK_NBLCK=2;stub.LK_UNLCK=0;stub.LK_LOCK=1\n'
+          '    stub.locking=lambda fd,mode,n:None;stub.get_osfhandle=lambda fd:fd;sys.modules["msvcrt"]=stub\n'
+          'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'
+          'sys.path.insert(0,root)\n'
+          'suite=unittest.defaultTestLoader.loadTestsFromName("test_studio_cancel_regrant")\n'
+          'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
+          'sys.exit(0 if result.wasSuccessful() else 1)\n')
+R = 'studio_cancel_regrant.py'
+MUTATIONS = [
+    # Admission clauses
+    ('lane not required', R, "if session.get('authority_kind') != 'demo_direct' or session.get('demo_only') is not True:",
+     "if session.get('demo_only') is not True:"),
+    ('demo_only not required', R, "if session.get('authority_kind') != 'demo_direct' or session.get('demo_only') is not True:",
+     "if session.get('authority_kind') != 'demo_direct':"),
+    ('frozen configuration not checked', R, "if sha(job['configuration']) != job['configuration_sha256']:", "if False:"),
+    ('owner not checked', R, "if state['owner'] != 'agent':\n        _refuse('REGRANT_OWNER_NOT_AGENT', 'The human owns this terminal; ask them to click GIVE TO AGENT first.')\n    root, gate",
+     "if False:\n        pass\n    root, gate"),
+    ('successor not required', R, "if not successor_path.exists():", "if False:"),
+    ('unpublished successor accepted', R, "    if prior is None:\n", "    if False:\n"),
+    ('second stop at one generation', R, "if retained is not None and (gate / ('issued-' + retained['request_id'] + '.json')).exists():", "if False:"),
+    ('link ahead accepted', R, "if links and links[-1]['generation'] > state['generation']:", "if False:"),
+    ('same generation accepted', R, "if state['generation'] <= prior['generation']:", "if False:"),
+    ('consumed prior accepted', R, "if dispatch.get('consumed') is not False:", "if False:"),
+    ('live prior accepted', R, "if prior['expires_utc'] >= now:", "if False:"),
+    ('any prior receipt accepted', R, "if dispatch['status'] == 'receipt_observed' and dispatch['receipt']['status'] not in REPLACEABLE_RECEIPTS:", "if False:"),
+    ('no archived grant needed', R, "    grant = _archived_grant(controller, state)\n", "    grant = None\n"),
+    ('archive not hashed to its human receipt', R, "or sha(dict(request=request, actor='human')) != payload_hash):", "or False):"),
+    ('native hashes not checked', R, "    hashes = _native_hashes(controller, job, prior)\n", "    hashes = {}\n"),
+    ('owner hash not checked', R, "if owner.get('owner') != job['launch_intent']['attempt_id'] or owner_hash != prior.get('native_owner_sha256'):", "if False:"),
+    ('pointer hash not checked', R, "if (pointer_hash != prior.get('pointer_sha256') or manifest", "if (False or manifest"),
+    ('EA sample not checked', R, "    batch_ongoing = _runtime(controller, state)\n", "    batch_ongoing = True\n"),
+    ('grant need not be observed', R, "if observation.get('owner') != 'agent' or observation.get('generation') != state['generation']:", "if False:"),
+    ('broker not checked', R, "    native = _broker(controller)\n", "    native = {}\n"),
+    ('stale link publishes under a later grant', R, "if value['request_id'] == request_id and value['generation'] != state['generation']:", "if False:"),
+    # Identity chain
+    ('link identity not verified', R, "or value.get('request_id') != sha([attempt, 'cancel-successor-regrant', value.get('prior_issued_sha256'), generation])", "or False"),
+    ('prior evidence not verified', R, "or _digest(gate / ('issued-' + latest + '.json')) != value['prior_issued_sha256']):", "or False):"),
+    ('cancel_id ignores the link', 'studio_cancel_successor.py', "return current_stop(root,gate,value)", "return value['request_id']"),
+    # Finding 1: nothing irreversible before finish's own refusals are read
+    ('finish preflight removed', R, "    _finish_preflight(controller, job)\n", ""),
+    ('report verdict ignored', R, "    if not reports_verified(reports):\n        rows =", "    if False:\n        rows ="),
+    ('preflight reads the queue before the stop', R, "after_stop = ['native_cancelled' if member['status'] in ('native_pending', 'native_queued', 'native_ongoing')\n                      else member['status'] for member in native['members']]",
+     "after_stop = [member['status'] for member in native['members']]"),
+    ('missing native queue accepted', R, "        if native.get('status') == 'native_evidence_missing':", "        if False:"),
+    ('source evidence not read first', R, "        read_json(Path(controller.root) / 'packages' / (job['job_id'] + '.source.json'))\n", ""),
+    ('transaction not read first', R, "        read_json(evidence / 'transaction.json')\n", ""),
+    ('report bridge not read first', R, "if bridge is not None and read_json(evidence / 'report-bridge.json') != bridge:", "if False:"),
+    ('finish still gates reports', 'studio_finish.py', "    if not reports_verified(reports):\n", "    if False:\n"),
+    # Finding 2: settle does what the revoked driver would
+    ('settle skips reconcile', R, "            controller.reconcile(job_id)\n", "            pass\n"),
+    ('settle skips the end state', R, "    _end_state(controller, job_id, record, path, time, end_state_fn)\n", ""),
+    ('settle skips idle maintenance', R, "    after_batch(controller)\n", ""),
+    ('end state not reported', R, "    if end_state.get('plain'):\n", "    if False:\n"),
+    ('disk observation not recorded', R, "disk_observation=_capacity(controller, record.get('min_free_bytes') or DEFAULT_MIN_FREE_BYTES))", "disk_observation=None)"),
+    ('admission skips the attempt binding', R, "    _owned(controller, job, journal)\n    _finish_preflight", "    _finish_preflight"),
+    ('settle skips the attempt binding', R, "        _owned(controller, job, journal)\n        _refuse_undelivered", "        _refuse_undelivered"),
+    ('driver journal not required', R, "    if journal is None:\n        _refuse('REGRANT_NO_DRIVER_JOURNAL', 'This batch has no driver journal to bind the re-grant to.')\n    _owned", "    _owned"),
+    # Finding 3: a stop that never reached MT5 is named, not waited on
+    ('admission calls it already issued', R, "        _refuse_undelivered(gate, retained['request_id'], dispatch)\n", ""),
+    ('settle waits on an undelivered stop', R, "        _refuse_undelivered(gate, request_id, dispatch)\n        record = step(", "        record = step("),
+    # Settling and the pause
+    ('settle finishes an unconsumed stop', R, "if dispatch.get('consumed') is not True or dispatch.get('receipt', {}).get('status') not in CONSUMED_RECEIPTS:", "if False:"),
+    ('one stop re-arms a failed pause repeatedly', 'studio_batch_pause.py', "if record['state'] == 'pause_failed':\n        if record.get('regrant_request_id') == request_id:", "if record['state'] == 'pause_failed':\n        if False:"),
+    ('failed pause not re-armed', 'studio_batch_pause.py', "record.update(state='pausing', failure=None, blocker=None, generation=generation, regrant_request_id=request_id)", "record.update(failure=None, blocker=None, generation=generation, regrant_request_id=request_id)"),
+    # Verb
+    ('verb ignores a waiting human request', 'demo_agent.py', "if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n                    raise Refusal('A human TAKE CONTROL or GIVE", "if False:\n                    raise Refusal('A human TAKE CONTROL or GIVE"),
+    ('verb reads only the inbox', 'demo_agent.py', "if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n                    raise Refusal('A human TAKE CONTROL or GIVE", "if any(any((human / channel).glob('*.json')) for channel in ('inbox',)):\n                    raise Refusal('A human TAKE CONTROL or GIVE"),
+    ('verb refused under owner STOP', 'demo_agent.py', "with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id)", "with self._studio('cancel-regrant', idle=False, owner_required=True, job_id=batch_id)"),
+    ('verb skips the broker', 'demo_agent.py', "            try:\n                self._broker(idle=False)\n            except Refusal:\n                raise\n            except ValueError as exc:\n                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_IDLE_DEMO') from exc\n", ""),
+]
+
+
+def main():
+    caught = 0
+    for label, name, old, new in MUTATIONS:
+        with tempfile.TemporaryDirectory() as work:
+            copy = Path(work) / 'controller'
+            shutil.copytree(CONTROLLER, copy, ignore=shutil.ignore_patterns('__pycache__'))
+            shutil.copy(REPO / 'GOATStudioDispatch.mqh', Path(work) / 'GOATStudioDispatch.mqh')
+            module = copy / name
+            text = module.read_text(encoding='utf-8').replace('\r\n', '\n')
+            if old not in text:
+                raise SystemExit('mutation anchor missing: ' + label)
+            module.write_text(text.replace(old, new, 1), encoding='utf-8')
+            log = Path(work) / 'log.txt'
+            result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)], timeout=600, cwd=str(copy),
+                                    capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            report = log.read_text(encoding='utf-8') if log.exists() else ''
+            # Caught means the tests ran and failed, not that the copy broke.
+            failed = (result.returncode == 1 and 'FAILED (' in report and 'ImportError' not in report and 'SyntaxError' not in report)
+            caught += failed
+            print(('CAUGHT ' if failed else 'MISSED ') + label, flush=True)
+    print(f'{caught}/{len(MUTATIONS)} mutations caught')
+    return 0 if caught == len(MUTATIONS) else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

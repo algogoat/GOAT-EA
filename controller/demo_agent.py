@@ -723,7 +723,7 @@ class DemoAgent:
             except Refusal:
                 raise
             except ValueError as exc:
-                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_DEMO') from exc
+                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_IDLE_DEMO') from exc
             with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
                 human = self.local / self.session['directory_id'] / 'human'
                 if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):

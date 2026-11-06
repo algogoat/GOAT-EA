@@ -22,6 +22,16 @@ def _research_outcomes(native):
     except (OSError,ValueError,KeyError,TypeError) as error:
         return [],str(error)[:240]
 
+def member_reports(controller,job,package,statuses):
+    """Report evidence for the completed members; None when no member completed. Also the re-grant's pre-check."""
+    if 'native_completed' not in statuses:return None
+    return observe_reports(package,job['configuration'],controller.schema,member_statuses=statuses)
+
+
+def reports_verified(reports):
+    return reports is None or reports['status'] in ('report_pair_verified','report_batch_verified')
+
+
 def finish(controller,job_id,*,expected_generation=None):
     if expected_generation is not None and controller.state()['generation']!=expected_generation:
         raise ValueError('Controller generation changed before finish')
@@ -58,9 +68,8 @@ def finish(controller,job_id,*,expected_generation=None):
         signal_only=receipt['status']=='CANCEL_SIGNAL_SENT_RECONCILE'
     outcomes={'native_completed':'completed','native_cancelled':'cancelled','native_error':'failed'}
     if native['status'] not in outcomes: raise ValueError('Native queue is not finished; reconcile, do not reset')
-    completed_members=any(member['status']=='native_completed' for member in native['members'])
-    reports=observe_reports(package,job['configuration'],controller.schema,member_statuses=[member['status'] for member in native['members']]) if completed_members else None
-    if reports and reports['status'] not in ('report_pair_verified','report_batch_verified'):
+    reports=member_reports(controller,job,package,[member['status'] for member in native['members']])
+    if not reports_verified(reports):
         raise ValueError('Completed queue members still require verified report pairs')
     research_outcomes,research_error=_research_outcomes(native)
     result=dict(schema_version=1,member_outcomes=native['members'],attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],

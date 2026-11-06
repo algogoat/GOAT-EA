@@ -167,7 +167,7 @@ members keep their results and every earlier stop keeps its receipts. Nothing is
 deleted, and neither step starts work. Both are allowed under owner STOP, which
 cannot clear while the batch is unresolved.
 
-**Identity.** One stop per genuine new human grant:
+**Identity.** One stop per new grant recorded in the human channel:
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked
 first in `cancel-successors/<attempt>.regrant-<generation>.json`. `cancel_id` resolves
 to the newest link and verifies the chain, so `finish`, the settled-gate checks and
@@ -181,20 +181,22 @@ refuses with its reason code and sends nothing:
 | Clause | Refusal |
 | --- | --- |
 | Broker-verified demo lane session | `REGRANT_NOT_DEMO_LANE` |
-| An unresolved native attempt in the exact frozen configuration | `REGRANT_JOB_NOT_ACTIVE` |
+| An unresolved native attempt in the exact frozen configuration | `REGRANT_JOB_NOT_ACTIVE`, `REGRANT_CONFIG_CHANGED` |
 | `owner=agent` | `REGRANT_OWNER_NOT_AGENT` |
 | One issued cancellation successor exists, with verified evidence | `REGRANT_NO_PRIOR_SUCCESSOR`, `REGRANT_STOP_IDENTITY_CHANGED` |
-| This generation has not issued its stop | `REGRANT_ALREADY_ISSUED` |
+| This generation has not issued its stop | `REGRANT_ALREADY_ISSUED`, `REGRANT_STOP_UNDELIVERED` |
 | Generation above the prior stop's | `REGRANT_SAME_GENERATION` |
 | Prior stop unconsumed | `REGRANT_PRIOR_STOP_CONSUMED` |
 | Prior stop expired | `REGRANT_PRIOR_STOP_LIVE` |
 | Prior stop unanswered, `CANCEL_REJECTED` or `CANCEL_CONTROL_REVOKED` | `REGRANT_PRIOR_RECEIPT_NOT_RECOVERABLE` |
-| Exactly one human grant created this generation: receipt, archive and actor-bound hash agree | `REGRANT_NO_ARCHIVED_GRANT` |
+| Exactly one grant in the human channel created this generation: receipt, archive and actor-bound hash agree | `REGRANT_NO_ARCHIVED_GRANT` |
+| The attempt still matches its driver journal, apart from the generation | `REGRANT_ATTEMPT_CHANGED`, `REGRANT_NO_DRIVER_JOURNAL` |
+| `finish` would accept the batch after this stop | `REGRANT_REPORTS_NOT_VERIFIED`, `REGRANT_FINISH_WOULD_REFUSE` |
 | Native owner file names this attempt, same hash as the prior stop | `REGRANT_NATIVE_OWNER_CHANGED` |
 | Run pointer addresses this run, same hash as the prior stop | `REGRANT_POINTER_CHANGED` |
 | Fresh bound EA sample, tester idle, no pending restart, Algo off | `REGRANT_TESTER_NOT_IDLE`, `REGRANT_RUNTIME_NOT_VERIFIED` |
 | The EA reported this grant's owner and generation | `REGRANT_GRANT_NOT_OBSERVED` |
-| Broker and EA both report the connected, flat, paired demo; a running tester caption refuses | `REGRANT_BROKER_NOT_DEMO`, `REGRANT_TESTER_NOT_IDLE` |
+| Broker and EA both report the connected, flat, paired demo with Algo off; a running tester caption refuses | `REGRANT_BROKER_NOT_IDLE_DEMO`, `REGRANT_TESTER_NOT_IDLE` |
 | No other GOAT process holds the batch, no human request waits (verb) | `REGRANT_BATCH_BUSY`, `REGRANT_LIVE_DRIVER`, `REGRANT_HUMAN_PENDING` |
 | The pause can re-arm | `REGRANT_PAUSE_NOT_REARMABLE` |
 
@@ -203,11 +205,43 @@ permit, so it may never get a receipt. It is only ever accepted expired and
 unconsumed under the gate the EA takes before consuming anything, and the EA refuses
 an expired request regardless.
 
+**Pre-check, because a consumed stop cannot be replaced.** The stop rewrites only
+Pending, Queued and OnGoing rows, so publication first runs `finish`'s own report gate
+on the queue as it will be. A Completed member without a verified report pair refuses
+with `REGRANT_REPORTS_NOT_VERIFIED`, naming the member, while nothing has changed.
+Native evidence, the source and transaction records and any report bridge are read
+first too (`REGRANT_FINISH_WOULD_REFUSE`). No rewrite can produce a missing report, so
+if a report is truly lost this batch stays unresolved and no command settles it:
+keep every file and escalate. What a pre-check cannot rule out is a change after
+publication: a report lost then, or the EA failing to save the queue
+(`CANCEL_SIGNAL_SENT_RECONCILE`). `--settle` then answers `finish_waiting` with the
+exact error, and because the stop cannot be replaced, it may need an escalation too.
+
+**A stop that never reached MT5.** A crash after `issued-` is written but before the
+permit, or a later commit revoking the permit, leaves a stop MT5 will never answer.
+`cancel-regrant` and `--settle` both refuse with `REGRANT_STOP_UNDELIVERED` instead of
+waiting. It is not resent. Next step: once it expires, TAKE CONTROL and GIVE TO AGENT,
+then `cancel-regrant` publishes one stop for that grant.
+
+**`--settle` and the revoked driver.** It does what that driver does after its finish:
+binds the attempt to the driver journal in everything except the generation
+(`REGRANT_ATTEMPT_CHANGED`, `REGRANT_NO_DRIVER_JOURNAL`), reconciles, finishes, completes
+the pause, closes the journal, runs its one end state and runs the idle-point maintenance.
+The disk guard is recorded and blocks nothing: a driver's disk guard stops a batch, so
+it never holds a stop back. The end state keeps its rule of closing only the MT5 this
+batch launched. After a reboot that usually answers `skipped`: MT5 stays open on its
+current profile until GOAT next stops it. The result's `end_state` says which happened.
+
+**What "human grant" proves.** `actor` comes from the bridge folder a request arrived
+in, and nothing signs it. An archived grant shows the request came through `human/`
+with a matching receipt. It tells the human channel from the agent channel between
+cooperating local tools. It does not prove a person clicked, and a same-user process
+writing into that folder is out of scope, as for every other control in this document.
+
 **Pause.** The verb re-arms the pause before publication: `pause_failed` or `pausing`
 returns to `pausing` at the new generation, any failure moves to `rearmed_failures`,
 and a batch with no pause gets one so its members stay resumable. One stop identity
-re-arms a failed pause only once. The old driver's epoch is revoked and stays refused:
-`--settle` does the finish and closes its journal.
+re-arms a failed pause only once. The old driver's epoch is revoked and stays refused.
 
 **Nothing relaxed.** The EA is unchanged and keeps every check, including its demo-only
 check and `CANCEL_CONTROL_REVOKED`. `finish` still requires a consumed receipt, a

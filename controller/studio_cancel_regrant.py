@@ -1,17 +1,25 @@
-"""One more stop identity per genuine human re-grant of a stranded demo batch.
+"""One more stop identity per recorded human re-grant of a stranded demo batch.
 
 The deadlock (a reboot, a rejected cancel, one successor, then TAKE CONTROL): only
 finish settles the job; finish needs a consumed stop, a settled native queue and
 owner=agent; only a consumed stop rewrites queue.GOAT and clears BatchOnGoing; the
 one successor is spent and publish_cancel returns it rather than resending it.
 
-A new human grant is the only new authority in that state, so it admits exactly one
-new identity, sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation]).
-The link is immutable and written before publication, so an interrupted publication can
-only publish this same stop at this same generation. cancel_id resolves to the newest
-link, which binds finish and every settled-gate check to the new stop. Every earlier
-receipt is kept. Nothing here starts work, edits the native queue or changes a flag:
-the EA stays the only writer of those, with its own demo and owner checks unchanged.
+A new grant in the human channel is the only new authority in that state, so it admits
+exactly one new identity, sha([attempt, 'cancel-successor-regrant', prior_issued_sha256,
+generation]). The link is immutable and written before publication, so an interrupted
+publication can only publish this same stop at this same generation. cancel_id resolves
+to the newest link, which binds finish and every settled-gate check to the new stop.
+Every earlier receipt is kept. Nothing here starts work, edits the native queue or changes
+a flag: the EA stays the only writer of those, with its own demo and owner checks unchanged.
+
+Boundary: "human" means the request arrived through the human/ bridge folder, so its
+receipt says actor=human and a matching file sits in human/archive. Nothing signs it. This
+tells the agent channel from the human channel between cooperating local tools; it does not
+prove a person clicked, and a same-user process writing into that folder is out of scope.
+
+A consumed stop cannot be replaced, so every refusal finish would give after it that can be
+read beforehand is checked before publication (_finish_preflight), with the same report gate.
 """
 import hashlib
 import json
@@ -159,6 +167,61 @@ def _native_hashes(controller, job, prior):
     return dict(native_owner_sha256=owner_hash, pointer_sha256=pointer_hash)
 
 
+def _owned(controller, job, journal):
+    """The driver's _owned_attempt with one difference: the generation moved, by design, to this grant."""
+    from studio_batch_driver import _binding
+    intent = job['launch_intent']
+    try:
+        current = _binding(controller, job['job_id'])
+        bound = journal['binding']
+        same = ({key: value for key, value in current.items() if key != 'generation'}
+                == {key: value for key, value in bound.items() if key != 'generation'}
+                and intent.get('attempt_id') == journal.get('attempt_id')
+                and intent.get('package_sha256') == bound['package_sha256']
+                and str(Path(intent.get('package', '')).resolve()) == bound['package'])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        _refuse('REGRANT_ATTEMPT_CHANGED', 'The batch no longer matches its driver journal: ' + str(error)[:200] + '.')
+    if not same:
+        _refuse('REGRANT_ATTEMPT_CHANGED', 'The batch, session or package no longer matches its driver journal.')
+
+
+def _finish_preflight(controller, job):
+    """What finish would refuse after the stop, read now while nothing has changed.
+
+    The stop rewrites only Pending, Queued and OnGoing rows to Cancelled: Completed and Error rows stay as they
+    are, so this is finish's own report gate on the queue as it will be. No rewrite can produce a missing report.
+    """
+    from studio_finish import member_reports, reports_verified
+    from studio_native_observe import observe
+    intent = job['launch_intent']
+    package = Path(intent['package'])
+    evidence = Path(controller.root) / 'attempts' / intent['attempt_id']
+    try:
+        native = observe(package)
+        if native.get('status') == 'native_evidence_missing':
+            _refuse('REGRANT_FINISH_WOULD_REFUSE', 'The native queue is missing, so finish could never settle this batch.')
+        read_json(Path(controller.root) / 'packages' / (job['job_id'] + '.source.json'))
+        read_json(evidence / 'transaction.json')
+        bridge = (job.get('restart_intent') or {}).get('report_bridge')
+        if bridge is not None and read_json(evidence / 'report-bridge.json') != bridge:
+            _refuse('REGRANT_FINISH_WOULD_REFUSE', 'The report bridge evidence changed, so finish would refuse this batch.')
+        after_stop = ['native_cancelled' if member['status'] in ('native_pending', 'native_queued', 'native_ongoing')
+                      else member['status'] for member in native['members']]
+        reports = member_reports(controller, job, package, after_stop)
+    except Refusal:
+        raise
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        _refuse('REGRANT_FINISH_WOULD_REFUSE', 'Finish would refuse this batch: ' + str(error)[:200] + '.')
+    if not reports_verified(reports):
+        rows = reports.get('members') or [reports]
+        unverified = [dict(index=row.get('index'), symbol=row.get('symbol'), status=row['status'], missing=row.get('missing'),
+                           reason=row.get('reason')) for row in rows
+                      if row['status'] not in ('report_pair_verified', 'member_not_completed')]
+        _refuse('REGRANT_REPORTS_NOT_VERIFIED', 'A completed member has no verified report pair, and finish would refuse the '
+                'batch for good once the stop is consumed. Keep MT5 open while it may still be migrating reports and retry; '
+                'if the reports are lost, keep every file and escalate: no command settles this batch yet.', members=unverified)
+
+
 def _runtime(controller, state):
     """A fresh bound EA sample: this terminal, demo, Algo off, tester idle, the grant seen."""
     from studio_resilient_read import read_observation
@@ -177,7 +240,7 @@ def _runtime(controller, state):
         if 'Tester idleness' in text:
             _refuse('REGRANT_TESTER_NOT_IDLE', text + '.')
         if 'account_demo' in text:
-            _refuse('REGRANT_BROKER_NOT_DEMO', 'The EA reports this account is not a demo account.')
+            _refuse('REGRANT_BROKER_NOT_IDLE_DEMO', 'The EA reports this account is not a demo account.')
         _refuse('REGRANT_RUNTIME_NOT_VERIFIED', text[:200] + '.')
     if observation.get('owner') != 'agent' or observation.get('generation') != state['generation']:
         _refuse('REGRANT_GRANT_NOT_OBSERVED', 'The EA has not reported this grant yet; keep serve running and retry.')
@@ -192,13 +255,31 @@ def _broker(controller):
     except Refusal:
         raise
     except (OSError, ValueError) as error:
-        code = 'REGRANT_TESTER_NOT_IDLE' if 'Tester is running' in str(error) else 'REGRANT_BROKER_NOT_DEMO'
+        code = 'REGRANT_TESTER_NOT_IDLE' if 'Tester is running' in str(error) else 'REGRANT_BROKER_NOT_IDLE_DEMO'
         _refuse(code, str(error)[:200] + '.')
     if (any(native.get(key) != value for key, value in dict(demo=True, connected=True, algo_trading=False, positions=0,
                                                             orders=0, account_matches=True).items())
             or native.get('tester_state') not in ('idle', 'unknown')):
-        _refuse('REGRANT_BROKER_NOT_DEMO', 'A broker-verified connected demo, Algo off and no trades are required.')
+        _refuse('REGRANT_BROKER_NOT_IDLE_DEMO', 'A broker-verified connected demo, Algo off and no trades are required.')
     return native
+
+
+def _delivered(gate, request_id, dispatch):
+    """Whether MT5 can still see this stop: its exact request bytes and a permit for them are in place."""
+    try:
+        digest = dispatch['request_sha256']
+        return (_digest(gate / 'request.json') == digest and read_json(gate / 'permit.json').get('request_sha256') == digest)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _refuse_undelivered(gate, request_id, dispatch):
+    """A stop written but never handed to MT5 (crash mid-publication, or a later commit revoked its permit) never gets an answer."""
+    if dispatch.get('status') == 'awaiting_receipt' and dispatch.get('consumed') is False and not _delivered(gate, request_id, dispatch):
+        expires = read_json(gate / ('issued-' + request_id + '.json'))['request']['expires_utc']
+        raise Refusal('This stop was written but never reached MT5, and MT5 will never answer it. It is not resent. Next: once it '
+                      'expires, ask the user to TAKE CONTROL and GIVE TO AGENT, then run cancel-regrant, which publishes one '
+                      'stop for that grant.', 'REGRANT_STOP_UNDELIVERED', request_id=request_id, expires_utc=expires)
 
 
 def admit(controller, job, state, *, now):
@@ -208,8 +289,10 @@ def admit(controller, job, state, *, now):
         _refuse('REGRANT_NOT_DEMO_LANE', 'A cancellation re-grant exists only on the broker-verified demo lane.')
     intent = job.get('launch_intent') or {}
     attempt = intent.get('attempt_id')
-    if job.get('status') not in ACTIVE or not isinstance(attempt, str) or sha(job['configuration']) != job['configuration_sha256']:
+    if job.get('status') not in ACTIVE or not isinstance(attempt, str):
         _refuse('REGRANT_JOB_NOT_ACTIVE', 'Batch ' + job['job_id'] + ' has no unresolved native attempt.')
+    if sha(job['configuration']) != job['configuration_sha256']:
+        _refuse('REGRANT_CONFIG_CHANGED', 'The frozen batch configuration changed.')
     if state['owner'] != 'agent':
         _refuse('REGRANT_OWNER_NOT_AGENT', 'The human owns this terminal; ask them to click GIVE TO AGENT first.')
     root, gate = controller.root, controller.local / 'native-gate'
@@ -230,6 +313,7 @@ def admit(controller, job, state, *, now):
         _refuse('REGRANT_NO_PRIOR_SUCCESSOR', 'The cancellation successor was never published; ordinary cancel publishes it.')
     retained = links[-1] if links and links[-1]['generation'] == state['generation'] else None
     if retained is not None and (gate / ('issued-' + retained['request_id'] + '.json')).exists():
+        _refuse_undelivered(gate, retained['request_id'], dispatch)
         _refuse('REGRANT_ALREADY_ISSUED', 'This human grant already issued its one stop; run cancel-regrant --settle.',
                 request_id=retained['request_id'], generation=state['generation'])
     if links and links[-1]['generation'] > state['generation']:
@@ -251,6 +335,11 @@ def admit(controller, job, state, *, now):
                 + ', which a new grant cannot change.', request_id=latest)
     grant = _archived_grant(controller, state)
     hashes = _native_hashes(controller, job, prior)
+    journal = _journal(controller, job['job_id'])
+    if journal is None:
+        _refuse('REGRANT_NO_DRIVER_JOURNAL', 'This batch has no driver journal to bind the re-grant to.')
+    _owned(controller, job, journal)
+    _finish_preflight(controller, job)
     batch_ongoing = _runtime(controller, state)
     native = _broker(controller)
     if retained is not None:
@@ -320,34 +409,42 @@ def publish(controller, job_id, *, now=None):
                 next_action='Keep the monitor reporting, then run cancel-regrant --settle until the batch is paused or finished.')
 
 
-def _record_journal(controller, job_id, result):
-    """Close the old epoch's driver journal the way its own finish would have. Its binding stays as written."""
-    from studio_batch_driver import _save
+def _close_driver_journal(controller, job_id, result, *, end_state_fn=None):
+    """What the driver does after its verified finish: close its journal, then its one end state. Idempotent.
+
+    Its binding stays as written. The end state leaves any MT5 this batch did not launch alone, which after a reboot
+    is the usual answer; the result always says what happened.
+    """
+    from studio_batch_driver import DEFAULT_MIN_FREE_BYTES, _capacity, _end_state, _save
     path = safe_path(Path(controller.root) / 'batch-drivers' / (job_id + '.json'))
-    if not path.is_file():
-        return
     record = read_json(path)
-    if record.get('attempt_id') != result.get('attempt_id') or record.get('stopped') is True:
-        return
-    record.update(status=result['status'], stopped=True, last_error=None, settled_by='cancel_regrant',
-                  result_path=result.get('result_path'))
-    _save(path, record, time)
+    if record.get('attempt_id') != result.get('attempt_id'):
+        _refuse('REGRANT_ATTEMPT_CHANGED', 'The driver journal belongs to another attempt; it and MT5 were left as they are.')
+    if record.get('stopped') is not True:
+        record.update(status=result['status'], stopped=True, last_error=None, settled_by='cancel_regrant',
+                      result_path=result.get('result_path'),
+                      disk_observation=_capacity(controller, record.get('min_free_bytes') or DEFAULT_MIN_FREE_BYTES))
+        _save(path, record, time)
+    _end_state(controller, job_id, record, path, time, end_state_fn)
+    return record
 
 
-def settle(controller, job_id, *, now=None, monitor):
-    """Observe this grant's stop; once consumed, finish the batch and complete its pause. Publishes nothing."""
+def settle(controller, job_id, *, now=None, monitor, end_state_fn=None):
+    """Observe this grant's stop, then do what the revoked driver would: reconcile, finish, complete the pause,
+    close its journal, its one end state, the idle-point maintenance. Publishes nothing."""
     driver_gate = safe_path(Path(controller.root) / 'batch-driver-gate')
     driver_gate.mkdir(exist_ok=True)
     try:
         with exclusive_gate(driver_gate):
-            return _settle(controller, job_id, now=time.time() if now is None else now, monitor=monitor)
+            return _settle(controller, job_id, now=time.time() if now is None else now, monitor=monitor, end_state_fn=end_state_fn)
     except GateBusy as error:
         _refuse('REGRANT_BATCH_BUSY', 'Another GOAT process holds this batch: ' + str(error)[:200] + '.')
 
 
-def _settle(controller, job_id, *, now, monitor):
+def _settle(controller, job_id, *, now, monitor, end_state_fn):
     from studio_batch_pause import complete, public, step
     from studio_cancel_successor import cancel_id
+    from studio_db_maintenance import after_batch
     from studio_finish import finish
     job, state = _read(controller, job_id)
     attempt = (job.get('launch_intent') or {}).get('attempt_id')
@@ -362,7 +459,12 @@ def _settle(controller, job_id, *, now, monitor):
     if state['owner'] != 'agent':
         _refuse('REGRANT_OWNER_NOT_AGENT', 'The human owns this terminal; ask them to click GIVE TO AGENT first.')
     summary = dict(batch_id=job_id, request_id=request_id, dispatch=dispatch)
+    journal = _journal(controller, job_id)
+    if journal is None:
+        _refuse('REGRANT_NO_DRIVER_JOURNAL', 'This batch has no driver journal to bind the re-grant to.')
     if job['status'] not in TERMINAL:
+        _owned(controller, job, journal)
+        _refuse_undelivered(gate, request_id, dispatch)
         record = step(controller, job_id, now=now, monitor=monitor)
         if record['state'] == 'pause_failed':
             return dict(summary, status='pause_failed', pause=public(record),
@@ -371,14 +473,21 @@ def _settle(controller, job_id, *, now, monitor):
             return dict(summary, status='regrant_waiting', pause=public(record),
                         next_action='Keep the monitor reporting and run cancel-regrant --settle again; nothing was replayed.')
     try:
+        if controller.job(job_id)['status'] not in TERMINAL:
+            controller.reconcile(job_id)
         finished = finish(controller, job_id, expected_generation=state['generation'])
-    except (ValueError, GateBusy) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         record = step(controller, job_id, now=now, monitor=monitor, finish_error=str(error))
         return dict(summary, status='finish_waiting', error=str(error)[:240], pause=public(record),
-                    next_action='MT5 took the stop; keep the monitor reporting and run cancel-regrant --settle again.')
+                    next_action='MT5 took the stop, which cannot be replaced. Keep the monitor reporting and run cancel-regrant '
+                                '--settle again. If this error never clears, keep every file and escalate it.')
     record = complete(controller, job_id, now=now)
-    _record_journal(controller, job_id, dict(finished.get('result') or {}, status=finished['status'],
-                                             result_path=finished.get('result_path')))
+    journal = _close_driver_journal(controller, job_id, dict(finished.get('result') or {}, status=finished['status'],
+                                                             result_path=finished.get('result_path')), end_state_fn=end_state_fn)
+    after_batch(controller)
+    end_state = journal.get('end_state') or dict(status='not_applicable', reason=journal.get('start_route'))
+    next_action = 'Finished members and their results are kept; batch-resume continues the unfinished members.'
+    if end_state.get('plain'):
+        next_action = end_state['plain'] + ' ' + next_action
     return dict(summary, status=record['state'], batch_status=finished['status'], result_path=finished.get('result_path'),
-                pause=public(record),
-                next_action='Finished members and their results are kept; batch-resume continues the unfinished members.')
+                pause=public(record), end_state=end_state, disk_observation=journal.get('disk_observation'), next_action=next_action)

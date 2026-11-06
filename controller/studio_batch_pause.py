@@ -17,6 +17,11 @@ supervisor when no driver is alive, calls ``step`` on every tick:
   first in ``cancel-successors/<attempt>.json`` under the cancel-rejected-successor
   identity rules, so ``finish`` and the settled-gate checks bind it. Both stop
   receipts are kept.
+* A human TAKE CONTROL strands a pause: its epoch is revoked and its driver can never
+  resume. After a later GIVE TO AGENT, cancel-regrant (studio_cancel_regrant) re-arms
+  the record at the new generation before it publishes that grant's one stop, so the
+  pause can still reach ``paused``. A failed pause keeps its failure in
+  ``rearmed_failures``, and one stop identity re-arms a failed pause only once.
 * A closed, unbound or unlicensed monitor is a named blocker with a fix, never a
   silent wait. So is a member pace too fast for any safe window.
 * A pause never sets the driver journal's ``cancel_issued``, so the journal is
@@ -145,7 +150,9 @@ def public(record):
             'paused_utc', 'blocker', 'failure', 'resume_token', 'members_completed', 'members_remaining',
             'members_failed', 'members_no_edge', 'result_path', 'successor_batch_id', 'safe_point', 'adopted_stop',
             # batch-pause-close (studio_batch_close); absent (None) on every other record.
-            'closed_mode', 'closed_at', 'members_done_count', 'members_unrun_count')
+            'closed_mode', 'closed_at', 'members_done_count', 'members_unrun_count',
+            # cancel-regrant (studio_cancel_regrant); absent (None) on every other record.
+            'generation', 'regrant_request_id', 'rearmed_failures')
     value = {key: record.get(key) for key in keys}
     value['cancels'] = [{key: item.get(key) for key in ('request_id', 'kind', 'published_utc', 'expires_utc', 'receipt',
                                                        'adopted')} for item in record.get('cancels', [])]
@@ -509,6 +516,41 @@ def step(controller, job_id, *, now, monitor, escalation=None, finish_error=None
     message, fix = RECEIPT_FAILURES.get(receipt, ('MT5 answered the pause with ' + receipt + '.',
                                                   'Run batch-status before any other action; nothing was replayed.'))
     return _fail(root, record, now, 'receipt_' + receipt.lower(), message, fix)
+
+
+def rearm_for_regrant(root, job, journal, *, now, generation, request_id):
+    """Bind this batch's pause to a new human grant's stop, before that stop is published.
+
+    Creates the pause when none was requested, so the unfinished members stay
+    resumable. No native, journal or queue effect happens here.
+    """
+    job_id = job['job_id']
+    attempt = job['launch_intent']['attempt_id']
+    record = load(root, job_id)
+    if record is None:
+        record, _ = request(root, job, journal, now=now, requested_by='cancel_regrant')
+    if record['attempt_id'] != attempt or record['configuration_sha256'] != job['configuration_sha256']:
+        raise PauseRefused('The pause of batch ' + job_id + ' belongs to another attempt.')
+    if record['state'] not in ('pausing', 'pause_failed'):
+        raise refusal(record)
+    if record['state'] == 'pause_failed':
+        if record.get('regrant_request_id') == request_id:
+            raise PauseRefused(plain(record))
+        record.setdefault('rearmed_failures', []).append(dict(at=now, failure=record.get('failure'),
+                                                              generation=record.get('generation')))
+    record.update(state='pausing', failure=None, blocker=None, generation=generation, regrant_request_id=request_id)
+    _entry(record, request_id, 'regrant', None).update(adopted=False, decided_utc=now)
+    _note(record, now, 'successor_publishing', request_id=request_id, regrant_generation=generation)
+    _save(root, record)
+    return record
+
+
+def regrant_published(root, job_id, request_id, issued, *, now):
+    record = load(root, job_id)
+    _entry(record, request_id, 'regrant', issued).update(published_utc=now, expires_utc=issued['request']['expires_utc'])
+    _note(record, now, 'successor_published', request_id=request_id)
+    _save(root, record)
+    return record
 
 
 def resume_token(job_id, attempt_id, result_sha256):

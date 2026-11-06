@@ -145,6 +145,80 @@ still means stop was not proven, and finish still requires native idle evidence.
 The EA holds the native gate for that bound; controller transactions that meet
 the busy gate retry on their next tick, as they already do during a Start.
 
+### Stranded batch after a human takeover (cancel re-grant)
+
+The state: a reboot interrupted a batch, its cancel was rejected, one cancellation
+successor was issued, then the human took control. Tester idle, native queue still
+holding OnGoing and Pending rows, `owner=human`. Only `finish` settles the job, and
+monitor setup, orphan recovery and handover all need it settled. `finish` needs a
+consumed stop, a settled native queue and `owner=agent`. Only an EA-consumed cancel
+rewrites `queue.GOAT` and clears `BatchOnGoing`. The takeover revoked the unconsumed
+successor's permit and the epoch it was issued under, and `publish_cancel` returns an
+already-issued stop rather than resending it. A new grant alone does not change that.
+
+**Human step:** after TAKE CONTROL, GIVE TO AGENT in the Studio panel, with `serve`
+running so the grant is processed. Ask the user first: this stops the batch.
+
+**Agent steps:** `goat.exe demo cancel-regrant --batch-id <id>` publishes one stop.
+Then run `cancel-regrant --batch-id <id> --settle` until it answers `paused` or
+`finished`; it publishes nothing, and finishes the batch and completes its pause once
+MT5 consumed the stop. `batch-resume` then continues the unfinished members. Finished
+members keep their results and every earlier stop keeps its receipts. Nothing is
+deleted, and neither step starts work. Both are allowed under owner STOP, which
+cannot clear while the batch is unresolved.
+
+**Identity.** One stop per genuine new human grant:
+`sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked
+first in `cancel-successors/<attempt>.regrant-<generation>.json`. `cancel_id` resolves
+to the newest link and verifies the chain, so `finish`, the settled-gate checks and
+reconcile bind that stop. An unpublished link can only publish the same stop at its
+own generation; under a later grant it refuses with `REGRANT_GENERATION_CHANGED`, and
+`cancel-regrant` admits that grant from the newest stop actually issued.
+
+**Admission.** All of these, under the driver gate and the native gate. Anything else
+refuses with its reason code and sends nothing:
+
+| Clause | Refusal |
+| --- | --- |
+| Broker-verified demo lane session | `REGRANT_NOT_DEMO_LANE` |
+| An unresolved native attempt in the exact frozen configuration | `REGRANT_JOB_NOT_ACTIVE` |
+| `owner=agent` | `REGRANT_OWNER_NOT_AGENT` |
+| One issued cancellation successor exists, with verified evidence | `REGRANT_NO_PRIOR_SUCCESSOR`, `REGRANT_STOP_IDENTITY_CHANGED` |
+| This generation has not issued its stop | `REGRANT_ALREADY_ISSUED` |
+| Generation above the prior stop's | `REGRANT_SAME_GENERATION` |
+| Prior stop unconsumed | `REGRANT_PRIOR_STOP_CONSUMED` |
+| Prior stop expired | `REGRANT_PRIOR_STOP_LIVE` |
+| Prior stop unanswered, `CANCEL_REJECTED` or `CANCEL_CONTROL_REVOKED` | `REGRANT_PRIOR_RECEIPT_NOT_RECOVERABLE` |
+| Exactly one human grant created this generation: receipt, archive and actor-bound hash agree | `REGRANT_NO_ARCHIVED_GRANT` |
+| Native owner file names this attempt, same hash as the prior stop | `REGRANT_NATIVE_OWNER_CHANGED` |
+| Run pointer addresses this run, same hash as the prior stop | `REGRANT_POINTER_CHANGED` |
+| Fresh bound EA sample, tester idle, no pending restart, Algo off | `REGRANT_TESTER_NOT_IDLE`, `REGRANT_RUNTIME_NOT_VERIFIED` |
+| The EA reported this grant's owner and generation | `REGRANT_GRANT_NOT_OBSERVED` |
+| Broker and EA both report the connected, flat, paired demo; a running tester caption refuses | `REGRANT_BROKER_NOT_DEMO`, `REGRANT_TESTER_NOT_IDLE` |
+| No other GOAT process holds the batch, no human request waits (verb) | `REGRANT_BATCH_BUSY`, `REGRANT_LIVE_DRIVER`, `REGRANT_HUMAN_PENDING` |
+| The pause can re-arm | `REGRANT_PAUSE_NOT_REARMABLE` |
+
+An unanswered prior stop is accepted because every controller commit revokes its
+permit, so it may never get a receipt. It is only ever accepted expired and
+unconsumed under the gate the EA takes before consuming anything, and the EA refuses
+an expired request regardless.
+
+**Pause.** The verb re-arms the pause before publication: `pause_failed` or `pausing`
+returns to `pausing` at the new generation, any failure moves to `rearmed_failures`,
+and a batch with no pause gets one so its members stay resumable. One stop identity
+re-arms a failed pause only once. The old driver's epoch is revoked and stays refused:
+`--settle` does the finish and closes its journal.
+
+**Nothing relaxed.** The EA is unchanged and keeps every check, including its demo-only
+check and `CANCEL_CONTROL_REVOKED`. `finish` still requires a consumed receipt, a
+settled native queue and, under the gate, an idle tester with no batch ongoing. No real
+account can enter: the verb is demo lane only and proves demo from the broker twice.
+A refused re-grant stop is never replaced without another human TAKE CONTROL and GIVE
+TO AGENT. A batch whose first cancel never got a successor still refuses
+(`REGRANT_NO_PRIOR_SUCCESSOR`).
+
+Status: source and simulated-EA tests only. No Windows or MT5 replay has been done.
+
 ## Native protocol requirements
 
 The versioned native action is `recover_orphan_continuation`, advertised

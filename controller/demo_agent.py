@@ -704,6 +704,46 @@ class DemoAgent:
                          result_path=result.get('result_path'), reused=result.get('reused'))
             return result
 
+    def cancel_regrant(self, batch_id, *, settle=False):
+        """One new stop for a batch stranded by a human takeover, after a new human grant (studio_cancel_regrant).
+
+        Allowed under owner STOP, which cannot clear while this batch is unresolved. Without ``settle`` it publishes
+        this grant's one stop; ``settle`` only observes it, then finishes the batch and completes its pause once MT5
+        consumed it. Neither replays a stop, starts work, or takes the grant: only the human gives control.
+        """
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if type(settle) is not bool:
+            raise ValueError('settle must be a boolean')
+        from studio_batch_pause import observe_monitor
+        from studio_cancel_regrant import publish, settle as settle_stop
+        with self._exclusive(wait_seconds=5):
+            try:
+                self._broker(idle=False)
+            except Refusal:
+                raise
+            except ValueError as exc:
+                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_DEMO') from exc
+            with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
+                human = self.local / self.session['directory_id'] / 'human'
+                if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+                    raise Refusal('A human TAKE CONTROL or GIVE TO AGENT has not been processed yet: keep serve running '
+                                  'and retry. Nothing was sent.', 'REGRANT_HUMAN_PENDING')
+                worker = self.state_root / 'workers' / (batch_id + '.json')
+                if worker.is_file() and self._worker_alive(read_json(worker)):
+                    raise Refusal('The driver of this batch is still running; a re-grant waits for it to end. '
+                                  'Nothing was sent.', 'REGRANT_LIVE_DRIVER')
+                if settle:
+                    now = self.clock()
+                    result = settle_stop(controller, batch_id, now=now,
+                                         monitor=observe_monitor(controller, now, process_fn=self.process.inspect))
+                else:
+                    self._append('cancel_regrant', 'intent', batch_id=batch_id, broker=broker)
+                    result = publish(controller, batch_id, now=self.clock())
+                self._append('cancel_regrant', result['status'], batch_id=batch_id, request_id=result['request_id'],
+                             generation=result.get('generation'), result_path=result.get('result_path'))
+                return result
+
     def settle_refused_start(self, batch_id):
         """Settle a restart-arm start the EA refused before consuming it (goatai#1885, tester a649295d).
 
@@ -3931,6 +3971,11 @@ def main(argv=None):
     retire = commands.add_parser('retire-unactivated',
                                  help='Settle a start refused before MT5 was touched to cancelled; allowed under owner STOP')
     retire.add_argument('--batch-id', required=True)
+    regrant = commands.add_parser('cancel-regrant',
+                                  help='After a human takeover and a new GIVE TO AGENT: publish that grant\'s one new stop for a '
+                                       'batch whose stop expired unconsumed; --settle then finishes it. Demo only, keeps results')
+    regrant.add_argument('--batch-id', required=True)
+    regrant.add_argument('--settle', action='store_true', help='Publish nothing: observe the stop, then finish and complete the pause')
     settle = commands.add_parser('settle-refused-start',
                                  help='Settle a restart-arm start the EA refused before consuming it (receipt such as '
                                       'START_PROTOCOL_NOT_QUALIFIED): closes MT5 normally, restores the controls, '
@@ -4218,6 +4263,7 @@ def main(argv=None):
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
             include_no_edge=args.include_no_edge, accept_news_change=args.accept_news_change)
         elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
+        elif args.command == 'cancel-regrant': result = agent.cancel_regrant(args.batch_id, settle=args.settle)
         elif args.command == 'settle-refused-start': result = agent.settle_refused_start(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'peer-list': result = agent.peer_list()

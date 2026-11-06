@@ -22,8 +22,8 @@ def publish_cancel(controller, job, *, expected_generation=None):
             raise ValueError('Current agent ownership and exact attempt required')
         if (gate/('issued-'+request_id+'.json')).exists():
             return dict(request_id=request_id,dispatch=observe_dispatch(gate,request_id),stopped=False)
-        from studio_cancel_regrant import require_current_generation
-        require_current_generation(controller.root,job,request_id,state)
+        from studio_cancel_regrant import require_admission
+        require_admission(controller.root,job,request_id)
         return issue_stop(controller,job,request_id,state,gate)
 
 

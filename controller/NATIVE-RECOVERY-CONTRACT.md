@@ -171,9 +171,9 @@ cannot clear while the batch is unresolved.
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked
 first in `cancel-successors/<attempt>.regrant-<generation>.json`. `cancel_id` resolves
 to the newest link and verifies the chain, so `finish`, the settled-gate checks and
-reconcile bind that stop. An unpublished link can only publish the same stop at its
-own generation; under a later grant it refuses with `REGRANT_GENERATION_CHANGED`, and
-`cancel-regrant` admits that grant from the newest stop actually issued.
+reconcile bind that stop. An unpublished link can only publish through `cancel-regrant`,
+at its own generation and after every check again: ordinary cancel refuses it with
+`REGRANT_LINK_NEEDS_ADMISSION`, and a later grant starts from the newest stop issued.
 
 **Admission.** All of these, under the driver gate and the native gate. Anything else
 refuses with its reason code and sends nothing:
@@ -186,12 +186,13 @@ refuses with its reason code and sends nothing:
 | One issued cancellation successor exists, with verified evidence | `REGRANT_NO_PRIOR_SUCCESSOR`, `REGRANT_STOP_IDENTITY_CHANGED` |
 | This generation has not issued its stop | `REGRANT_ALREADY_ISSUED`, `REGRANT_STOP_UNDELIVERED` |
 | Generation above the prior stop's | `REGRANT_SAME_GENERATION` |
-| Prior stop unconsumed | `REGRANT_PRIOR_STOP_CONSUMED` |
+| Prior stop unconsumed | `REGRANT_PRIOR_STOP_CONSUMED` (run `--settle`), `REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME` |
 | Prior stop expired | `REGRANT_PRIOR_STOP_LIVE` |
 | Prior stop unanswered, `CANCEL_REJECTED` or `CANCEL_CONTROL_REVOKED` | `REGRANT_PRIOR_RECEIPT_NOT_RECOVERABLE` |
 | Exactly one grant in the human channel created this generation: receipt, archive and actor-bound hash agree | `REGRANT_NO_ARCHIVED_GRANT` |
 | The attempt still matches its driver journal, apart from the generation | `REGRANT_ATTEMPT_CHANGED`, `REGRANT_NO_DRIVER_JOURNAL` |
-| `finish` would accept the batch after this stop | `REGRANT_REPORTS_NOT_VERIFIED`, `REGRANT_FINISH_WOULD_REFUSE` |
+| `finish` would accept the batch after this stop | `REGRANT_REPORTS_NOT_VERIFIED` (retry), `REGRANT_ESCALATE_REPORTS_LOST`, `REGRANT_FINISH_WOULD_REFUSE` |
+| 256 MB free on every volume, all readable | `REGRANT_DISK_TOO_LOW` |
 | Native owner file names this attempt, same hash as the prior stop | `REGRANT_NATIVE_OWNER_CHANGED` |
 | Run pointer addresses this run, same hash as the prior stop | `REGRANT_POINTER_CHANGED` |
 | Fresh bound EA sample, tester idle, no pending restart, Algo off | `REGRANT_TESTER_NOT_IDLE`, `REGRANT_RUNTIME_NOT_VERIFIED` |
@@ -207,15 +208,30 @@ an expired request regardless.
 
 **Pre-check, because a consumed stop cannot be replaced.** The stop rewrites only
 Pending, Queued and OnGoing rows, so publication first runs `finish`'s own report gate
-on the queue as it will be. A Completed member without a verified report pair refuses
-with `REGRANT_REPORTS_NOT_VERIFIED`, naming the member, while nothing has changed.
-Native evidence, the source and transaction records and any report bridge are read
-first too (`REGRANT_FINISH_WOULD_REFUSE`). No rewrite can produce a missing report, so
-if a report is truly lost this batch stays unresolved and no command settles it:
-keep every file and escalate. What a pre-check cannot rule out is a change after
-publication: a report lost then, or the EA failing to save the queue
-(`CANCEL_SIGNAL_SENT_RECONCILE`). `--settle` then answers `finish_waiting` with the
-exact error, and because the stop cannot be replaced, it may need an escalation too.
+on the queue as it will be, with the tester already proven idle. It also reads native
+evidence and the source record, and runs the checks `finish`'s restore and report-alias
+retirement run on the transaction and the alias, without changing them. Any refusal
+leaves everything as it was. Report files are not recreated by anything here, so a
+missing or unreadable pair is `REGRANT_ESCALATE_REPORTS_LOST`; a report whose bytes are
+still changing is `REGRANT_REPORTS_NOT_VERIFIED`, a retry.
+
+**Disk.** `ReconstructFile` opens `queue.GOAT` for writing, which truncates it, before
+it writes, so a full disk could lose the queue. Publication needs 256 MB free on every
+volume (`REGRANT_DISK_TOO_LOW`) and gives the reading in `next_action`. That floor is
+deliberately far below a batch's own disk guard, so a batch stopping for low disk can
+still stop. It narrows the risk; only the EA could close it.
+
+**Where this ends in an escalation.** Each of these says what is known, sends nothing,
+and needs a person. No check is weakened to get past them.
+
+| Code | State | Why nothing automatic is safe |
+| --- | --- | --- |
+| `REGRANT_ESCALATE_REPORTS_LOST` | Before any stop: a completed member has no verified pair | `finish` would refuse for good. Restoring the exact pair lets `cancel-regrant` run again. |
+| `REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME` | `consumed-` exists with no receipt, or with a receipt that does not report a stop | A reboot between the EA's claim and its receipt. Its retry answers `CANCEL_REJECTED` or `CANCEL_ALREADY_CONSUMED`, or nothing if the permit is gone. Flags and queue may be unchanged, partly changed or fully changed. `finish` rightly refuses, and another stop could double-apply. The refusal gives the claim, the receipt, the queue counts and `BatchOnGoing`. |
+| `REGRANT_ESCALATE_FINISH_REFUSED` | After a consumed stop, `finish` kept refusing for 15 minutes | A report lost after publication, or `CANCEL_SIGNAL_SENT_RECONCILE` with the queue unsaved or truncated. The stop cannot be replaced. `--settle` still retries, so fixing the cause finishes. |
+
+The claim check holds the native gate, which the EA holds from its claim to its receipt,
+so a stop still being processed is never mistaken for a dead one.
 
 **A stop that never reached MT5.** A crash after `issued-` is written but before the
 permit, or a later commit revoking the permit, leaves a stop MT5 will never answer.

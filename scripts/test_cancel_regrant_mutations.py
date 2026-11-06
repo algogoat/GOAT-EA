@@ -2,6 +2,7 @@
 
 Each guard is removed in a temporary copy of controller/ and test_studio_cancel_regrant must
 fail. The repository is never modified. Run it directly: python scripts/test_cancel_regrant_mutations.py
+Optional arguments START STOP run that slice of the list, so a long sweep can be split; a slice never reports the total as 100%.
 Off Windows, msvcrt is stubbed after the stdlib loads so demo_agent imports; that is local convenience,
 never evidence about Windows. Not wired into the CI shards.
 """
@@ -49,7 +50,10 @@ MUTATIONS = [
     ('EA sample not checked', R, "    batch_ongoing = _runtime(controller, state)\n", "    batch_ongoing = True\n"),
     ('grant need not be observed', R, "if observation.get('owner') != 'agent' or observation.get('generation') != state['generation']:", "if False:"),
     ('broker not checked', R, "    native = _broker(controller)\n", "    native = {}\n"),
-    ('stale link publishes under a later grant', R, "if value['request_id'] == request_id and value['generation'] != state['generation']:", "if False:"),
+    ('ordinary cancel publishes an unissued link', R, "if any(value['request_id'] == request_id for value in _links(root, attempt)):", "if False:"),
+    ('disk floor not read before publishing', R, "                disk = _disk_gate(controller)\n", "                disk = dict(volumes=[])\n"),
+    ('disk floor ignored', R, "    if disk['reason']:\n        reading", "    if False:\n        reading"),
+    ('disk reading not given', R, "'Disk when sent: ' + _disk_reading(disk) + '.')", "'')"),
     # Identity chain
     ('link identity not verified', R, "or value.get('request_id') != sha([attempt, 'cancel-successor-regrant', value.get('prior_issued_sha256'), generation])", "or False"),
     ('prior evidence not verified', R, "or _digest(gate / ('issued-' + latest + '.json')) != value['prior_issued_sha256']):", "or False):"),
@@ -61,8 +65,16 @@ MUTATIONS = [
      "after_stop = [member['status'] for member in native['members']]"),
     ('missing native queue accepted', R, "        if native.get('status') == 'native_evidence_missing':", "        if False:"),
     ('source evidence not read first', R, "        read_json(Path(controller.root) / 'packages' / (job['job_id'] + '.source.json'))\n", ""),
-    ('transaction not read first', R, "        read_json(evidence / 'transaction.json')\n", ""),
-    ('report bridge not read first', R, "if bridge is not None and read_json(evidence / 'report-bridge.json') != bridge:", "if False:"),
+    ('transaction not read first', R, "transaction = read_json(evidence / 'transaction.json')", "transaction = dict(owner=intent['attempt_id'], phase='restored')"),
+    ('report bridge evidence not compared', R, "if read_json(evidence / 'report-bridge.json') != bridge or sha(plan) != manifest['campaign_id']:", "if False:"),
+    ('report alias not checked first', R, "            check_retirable(plan['research_binding'], manifest['native_run_relative'], bridge, evidence)\n", ""),
+    ('alias check skips the junction', 'studio_report_bridge.py', "    elif exists:\n        verify(expected)\n", "    elif exists:\n        pass\n"),
+    ('alias check accepts a missing alias', 'studio_report_bridge.py', "    elif retained is None:\n        raise ValueError('Report alias missing without retirement intent')\n", ""),
+    ('control backup not validated first', R, "            restorable(evidence)\n", "            pass\n"),
+    ('another attempts transaction accepted', R, "if transaction['owner'] != intent['attempt_id']:", "if False:"),
+    ('backup hash not checked', 'native_control_transaction.py', "if digest(raw) != item['before_sha256']:", "if False:"),
+    ('lost report treated as a retry', R, "if all(row['status'] == 'reports_changing' for row in unverified):", "if True:"),
+    ('changing report treated as lost', R, "if all(row['status'] == 'reports_changing' for row in unverified):", "if False:"),
     ('finish still gates reports', 'studio_finish.py', "    if not reports_verified(reports):\n", "    if False:\n"),
     # Finding 2: settle does what the revoked driver would
     ('settle skips reconcile', R, "            controller.reconcile(job_id)\n", "            pass\n"),
@@ -70,12 +82,21 @@ MUTATIONS = [
     ('settle skips idle maintenance', R, "    after_batch(controller)\n", ""),
     ('end state not reported', R, "    if end_state.get('plain'):\n", "    if False:\n"),
     ('disk observation not recorded', R, "disk_observation=_capacity(controller, record.get('min_free_bytes') or DEFAULT_MIN_FREE_BYTES))", "disk_observation=None)"),
-    ('admission skips the attempt binding', R, "    _owned(controller, job, journal)\n    _finish_preflight", "    _finish_preflight"),
+    ('admission skips the attempt binding', R, "    _owned(controller, job, journal)\n    batch_ongoing", "    batch_ongoing"),
     ('settle skips the attempt binding', R, "        _owned(controller, job, journal)\n        _refuse_undelivered", "        _refuse_undelivered"),
     ('driver journal not required', R, "    if journal is None:\n        _refuse('REGRANT_NO_DRIVER_JOURNAL', 'This batch has no driver journal to bind the re-grant to.')\n    _owned", "    _owned"),
     # Finding 3: a stop that never reached MT5 is named, not waited on
     ('admission calls it already issued', R, "        _refuse_undelivered(gate, retained['request_id'], dispatch)\n", ""),
-    ('settle waits on an undelivered stop', R, "        _refuse_undelivered(gate, request_id, dispatch)\n        record = step(", "        record = step("),
+    ('settle waits on an undelivered stop', R, "        _refuse_undelivered(gate, request_id, dispatch)\n        if not links", "        if not links"),
+    # Reboot between the EA's claim and its receipt, and the other dead ends: one named code each
+    ('admission gives the wrong advice on a dead claim', R, "    _escalate_claim(controller, job, latest, dispatch)\n", ""),
+    ('settle waits on a dead claim', R, "        _escalate_claim(controller, job, request_id, dispatch)\n", "        pass\n"),
+    ('a good receipt counts as a dead claim', R, "if dispatch.get('consumed') is not True or dispatch.get('receipt', {}).get('status') in CONSUMED_RECEIPTS:\n        return", "if dispatch.get('consumed') is not True:\n        return"),
+    ('a claim is read without the gate MT5 holds', R, "    with exclusive_gate(gate, wait_seconds=NATIVE_GATE_WAIT_SECONDS):\n        dispatch = observe_dispatch(gate, request_id)\n", "    dispatch = observe_dispatch(gate, request_id)\n"),
+    ('finish refusal never escalates', R, "if waited > FINISH_PATIENCE_SECONDS:", "if False:"),
+    ('consumed successor cannot settle', R, "if not links and dispatch.get('consumed') is not True:", "if not links:"),
+    ('unconsumed successor settles', R, "if not links and dispatch.get('consumed') is not True:", "if False:"),
+    ('journal omits the pause', R, "record.update(status='paused' if pause['state'] == 'paused' else result['status'], pause_id=pause['pause_id'],", "record.update(status=result['status'],"),
     # Settling and the pause
     ('settle finishes an unconsumed stop', R, "if dispatch.get('consumed') is not True or dispatch.get('receipt', {}).get('status') not in CONSUMED_RECEIPTS:", "if False:"),
     ('one stop re-arms a failed pause repeatedly', 'studio_batch_pause.py', "if record['state'] == 'pause_failed':\n        if record.get('regrant_request_id') == request_id:", "if record['state'] == 'pause_failed':\n        if False:"),
@@ -90,7 +111,8 @@ MUTATIONS = [
 
 def main():
     caught = 0
-    for label, name, old, new in MUTATIONS:
+    selected = MUTATIONS[slice(*map(int, sys.argv[1:3]))] if len(sys.argv) > 2 else MUTATIONS
+    for label, name, old, new in selected:
         with tempfile.TemporaryDirectory() as work:
             copy = Path(work) / 'controller'
             shutil.copytree(CONTROLLER, copy, ignore=shutil.ignore_patterns('__pycache__'))
@@ -108,8 +130,8 @@ def main():
             failed = (result.returncode == 1 and 'FAILED (' in report and 'ImportError' not in report and 'SyntaxError' not in report)
             caught += failed
             print(('CAUGHT ' if failed else 'MISSED ') + label, flush=True)
-    print(f'{caught}/{len(MUTATIONS)} mutations caught')
-    return 0 if caught == len(MUTATIONS) else 1
+    print(f'{caught}/{len(selected)} selected mutations caught, of {len(MUTATIONS)} in the list')
+    return 0 if caught == len(selected) else 1
 
 
 if __name__ == '__main__':

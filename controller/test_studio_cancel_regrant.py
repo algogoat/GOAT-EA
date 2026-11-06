@@ -8,10 +8,11 @@ the broker SDK and process inventory are the only fakes. This is not a Windows o
 """
 import hashlib
 import json
+import os
 from pathlib import Path, PureWindowsPath
 import sys
 import time
-import types
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -28,8 +29,9 @@ from studio_refusal import Refusal
 from studio_research_authority import demo_agent_scope, operation
 import studio_batch_pause as pause
 import studio_cancel
+import studio_finish
 import test_demo_agent as demo_fixtures
-from test_studio_batch_pause import PauseFixture, native_base, ticking, utc
+from test_studio_batch_pause import HostDeath, PauseFixture, native_base, ticking, utc
 
 STATES = ['Completed', 'Completed', 'Error', 'OnGoing', 'Pending', 'Pending', 'Pending', 'Pending']
 STOP_LIFE = 120
@@ -48,7 +50,7 @@ class StrandedFixture(PauseFixture):
         super().setUp()
         self.job_id = 'g6'
         self.now = int(time.time())
-        self.batch_ongoing, self.tester, self.ea_demo = True, 'idle', True
+        self.batch_ongoing, self.tester, self.ea_demo, self.ea_fault = True, 'idle', True, None
         session = read_json(self.c.root / 'session.json') | dict(authority_kind='demo_direct', demo_only=True)
         write_json(self.c.root / 'session.json', session)
         write_json(self.c.root / 'installation.json', self.c.install)
@@ -137,6 +139,8 @@ class StrandedFixture(PauseFixture):
         if receipt.exists():
             return None
         status = self.ea_cancel(request, body)
+        if status is None:
+            return None   # the host died between the claim and the receipt
         write_json(receipt, dict(request_id=request['request_id'], request_sha256=permit['request_sha256'],
                                  status=status, observed_utc=utc(self.now)))
         return status
@@ -159,9 +163,16 @@ class StrandedFixture(PauseFixture):
         if consumed.exists():
             return 'CANCEL_ALREADY_CONSUMED'
         consumed.write_bytes(body)
+        if self.ea_fault == 'dies_after_claim':
+            return None
         self.batch_ongoing = False
         for name in ('active_optimization_launch.ini', 'active_optimization_config.ini'):
             (self.base / name).unlink(missing_ok=True)
+        if self.ea_fault == 'save_fails':
+            return 'CANCEL_SIGNAL_SENT_RECONCILE'
+        if self.ea_fault == 'truncated':   # ReconstructFile opens for write, which truncates, then cannot write
+            (self.run / 'queue.GOAT').write_bytes(b'')
+            return 'CANCEL_SIGNAL_SENT_RECONCILE'
         raw = (self.run / 'queue.GOAT').read_bytes().decode('utf-16')
         for state in ('Pending', 'Queued', 'OnGoing'):
             raw = raw.replace(';' + state + '_', ';Cancelled_')
@@ -361,7 +372,7 @@ class ReplayTests(StrandedFixture):
         # A later grant: the stranded link can never publish under it.
         self.human('control.takeover'); self.human('control.grant_agent'); self.ea_tick()
         self.assertEqual(cancel_id(self.c.root, self.c.job('g6'), self.gate), link['request_id'])
-        self.assertRefused('REGRANT_GENERATION_CHANGED', lambda: self.c.cancel('g6'))
+        self.assertRefused('REGRANT_LINK_NEEDS_ADMISSION', lambda: self.c.cancel('g6'))
         fresh = self.publish()
         self.assertNotEqual(fresh['request_id'], link['request_id'])
         self.assertEqual(read_json(self.c.root / 'cancel-successors' / (self.attempt + '.regrant-5.json'))['prior_request_id'], link['prior_request_id'])
@@ -411,8 +422,7 @@ class AdmissionRefusalTests(StrandedFixture):
 
     def test_prior_stop_consumed_refuses(self):
         successor = self.stranded()
-        issued = read_json(self.gate / ('issued-' + successor + '.json'))['request']
-        (self.gate / ('consumed-' + successor + '.json')).write_bytes((json.dumps(issued, ensure_ascii=False, allow_nan=False) + '\n').encode())
+        self.answer(successor, 'CANCELLED_RECONCILE', consumed=True, observed=self.now)
         self.assertRefused('REGRANT_PRIOR_STOP_CONSUMED')
 
     def test_prior_stop_still_live_refuses(self):
@@ -514,7 +524,7 @@ class OneStopTests(StrandedFixture):
         identity = self.publish()['request_id']
         self.assertRefused('REGRANT_ALREADY_ISSUED')
         self.ea_tick()
-        self.assertRefused('REGRANT_ALREADY_ISSUED')
+        self.assertRefused('REGRANT_PRIOR_STOP_CONSUMED')   # once consumed the advice is --settle, never another stop
         self.assertEqual(cancel_id(self.c.root, self.c.job('g6'), self.gate), identity)
         self.assertEqual(self.c.cancel('g6')['request_id'], identity)   # ordinary cancel returns it, never resends
         self.assertEqual(len(self.issued()), 3)
@@ -629,7 +639,7 @@ class ReportPrecheckTests(StrandedFixture):
         self.stranded()
         back, _ = self.report_files(1)
         raw = back.read_bytes(); back.unlink()
-        self.assertNothingChanged('REGRANT_REPORTS_NOT_VERIFIED')
+        self.assertNothingChanged('REGRANT_ESCALATE_REPORTS_LOST')
         with self.assertRaises(Refusal) as caught:
             self.publish()
         self.assertEqual([(row['index'], row['status']) for row in caught.exception.fields['members']], [(1, 'reports_pending')])
@@ -641,7 +651,7 @@ class ReportPrecheckTests(StrandedFixture):
     def test_an_unreadable_report_refuses(self):
         self.stranded()
         self.report_files(0)[1].write_text('<Workbook', encoding='utf-8')
-        self.assertNothingChanged('REGRANT_REPORTS_NOT_VERIFIED')
+        self.assertNothingChanged('REGRANT_ESCALATE_REPORTS_LOST')
 
     def test_members_only_the_stop_settles_need_no_reports(self):
         self.stranded()
@@ -668,16 +678,178 @@ class ReportPrecheckTests(StrandedFixture):
         self.edit_job(restart_intent=dict(report_bridge=dict(status='installed')))
         self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
 
-    def test_reports_lost_after_the_stop_say_so_and_name_the_next_step(self):
-        """The one window a pre-check cannot close: finish refuses, the stop cannot be replaced, and it stays named."""
+    def test_a_report_still_being_written_is_a_retry_not_an_escalation(self):
+        self.stranded()
+        moving = dict(artifacts=[dict(path=str(self.report_files(0)[0]), sha256='0' * 64)])
+        with patch('studio_report_observe.verify_pair', return_value=moving):
+            self.assertNothingChanged('REGRANT_REPORTS_NOT_VERIFIED')
+
+    def test_a_retry_never_publishes_past_a_report_lost_since_the_link(self):
+        self.stranded()
+        with patch('studio_cancel.issue_stop', side_effect=OSError('host died')), self.assertRaises(OSError):
+            self.publish()
+        self.report_files(0)[0].unlink()
+        self.assertRefused('REGRANT_ESCALATE_REPORTS_LOST')
+        self.assertRefused('REGRANT_LINK_NEEDS_ADMISSION', lambda: self.c.cancel('g6'))
+        self.assertEqual(len(self.issued()), 2)
+
+    def test_reports_lost_after_the_stop_end_in_the_named_escalation(self):
+        """The one window a pre-check cannot close: finish refuses and the stop cannot be replaced."""
         self.stranded()
         self.publish(); self.ea_tick(); self.ea_tick()
-        self.report_files(0)[0].unlink()
+        back = self.report_files(0)[0]
+        raw = back.read_bytes(); back.unlink()
         result = self.settle()
         self.assertEqual(result['status'], 'finish_waiting')
         self.assertIn('verified report pairs', result['error'])
-        self.assertIn('escalate', result['next_action'])
+        self.assertIn('REGRANT_ESCALATE_FINISH_REFUSED', result['next_action'])
         self.assertNotIn(self.c.job('g6')['status'], ('completed', 'cancelled', 'failed'))
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        with self.assertRaises(Refusal) as caught:
+            self.settle()
+        self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
+        self.assertIn('verified report pairs', caught.exception.fields['error'])
+        self.assertEqual(caught.exception.fields['receipt'], 'CANCELLED_RECONCILE')
+        self.assertEqual(caught.exception.fields['native_queue'], dict(native_cancelled=5, native_completed=2, native_error=1))
+        # Named, not terminal: fixing the cause still finishes, and no stop was added.
+        back.write_bytes(raw)
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEqual(len(self.issued()), 3)
+
+    def test_a_queue_the_ea_could_not_save_ends_in_the_named_escalation(self):
+        self.stranded()
+        self.publish()
+        self.ea_fault = 'save_fails'
+        self.assertEqual(self.ea_tick(), 'CANCEL_SIGNAL_SENT_RECONCILE'); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'finish_waiting')
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        with self.assertRaises(Refusal) as caught:
+            self.settle()
+        self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
+        self.assertEqual(caught.exception.fields['receipt'], 'CANCEL_SIGNAL_SENT_RECONCILE')
+        self.assertEqual(caught.exception.fields['native_queue']['native_pending'], 4)
+        self.assertEqual(len(self.issued()), 3)
+
+    def test_a_queue_truncated_by_a_failed_save_ends_in_the_named_escalation(self):
+        self.stranded()
+        self.publish()
+        self.ea_fault = 'truncated'
+        self.assertEqual(self.ea_tick(), 'CANCEL_SIGNAL_SENT_RECONCILE'); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'finish_waiting')
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        with self.assertRaises(Refusal) as caught:
+            self.settle()
+        self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
+        self.assertIn('unreadable', caught.exception.fields['native_queue'])
+
+    def bridge(self, *, make_target=True):
+        from studio_report_bridge import paths
+        plan = read_json(self.package / 'studio-plan.json')
+        relative = self.manifest['native_run_relative']
+        source, target = paths(plan['research_binding'], relative)
+        if make_target:
+            target.mkdir(parents=True, exist_ok=True)
+        receipt = dict(kind='owned_run_junction', path=str(source), target=str(target))
+        return plan['research_binding'], relative, source, target, receipt
+
+    def install_bridge(self, receipt):
+        write_json(self.c.root / 'attempts' / self.attempt / 'report-bridge.json', receipt)
+        self.edit_job(restart_intent=dict(phase='monitor_ready', report_bridge=receipt))
+
+    def test_a_removed_report_alias_refuses_before_the_stop(self):
+        self.stranded()
+        *_, receipt = self.bridge()
+        self.install_bridge(receipt)
+        self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
+        with self.assertRaisesRegex(Refusal, 'alias missing without retirement intent'):
+            self.publish()
+
+    def test_a_report_alias_that_is_not_the_junction_refuses_before_the_stop(self):
+        self.stranded()
+        *_, source, _target, receipt = self.bridge()
+        source.mkdir(parents=True)   # a plain folder where the owned junction was
+        self.install_bridge(receipt)
+        self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
+        with self.assertRaisesRegex(Refusal, 'junction changed'):
+            self.publish()
+
+    def test_changed_report_bridge_evidence_refuses_before_the_stop(self):
+        self.stranded()
+        *_, receipt = self.bridge()
+        self.install_bridge(receipt)
+        write_json(self.c.root / 'attempts' / self.attempt / 'report-bridge-retirement.json',
+                   dict(schema_version=1, receipt=receipt, phase='retiring'))   # the alias check itself passes
+        write_json(self.c.root / 'attempts' / self.attempt / 'report-bridge.json', dict(receipt, path='elsewhere'))
+        self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
+        with self.assertRaisesRegex(Refusal, 'report bridge evidence changed'):
+            self.publish()
+
+    def test_a_missing_report_target_refuses_before_the_stop(self):
+        self.stranded()
+        *_, receipt = self.bridge(make_target=False)
+        self.install_bridge(receipt)
+        self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
+
+    def test_an_interrupted_alias_retirement_still_passes_and_finish_completes_it(self):
+        self.stranded()
+        *_, source, _target, receipt = self.bridge()
+        self.install_bridge(receipt)
+        write_json(self.c.root / 'attempts' / self.attempt / 'report-bridge-retirement.json',
+                   dict(schema_version=1, receipt=receipt, phase='retiring'))
+        self.publish(); self.ea_tick(); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEqual(read_json(self.c.root / 'attempts' / self.attempt / 'result.json')['report_bridge_retirement']['phase'], 'retired')
+        self.assertFalse(source.exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'MT5 report junctions exist only on Windows; CI runs this')
+    def test_a_real_junction_passes_the_pre_check_and_finish_retires_only_the_alias(self):
+        from studio_report_bridge import prepare
+        self.stranded()
+        binding, relative, source, target, receipt = self.bridge()
+        kept = target / 'kept.xml'; kept.write_bytes(b'<kept/>')
+        self.assertEqual(prepare(binding, relative), receipt)
+        self.install_bridge(receipt)
+        self.publish(); self.ea_tick(); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertFalse(os.path.lexists(source))
+        self.assertEqual(kept.read_bytes(), b'<kept/>')
+
+    def test_a_corrupt_control_backup_refuses_before_the_stop(self):
+        self.stranded()
+        path = self.c.root / 'attempts' / self.attempt / 'transaction.json'
+        value = read_json(path)
+        value['files']['active_optimization_run.ini']['before_sha256'] = '0' * 64
+        write_json(path, value)
+        self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
+        with self.assertRaisesRegex(Refusal, 'Corrupt backup'):
+            self.publish()
+
+    def test_a_transaction_of_another_attempt_refuses_before_the_stop(self):
+        self.stranded()
+        path = self.c.root / 'attempts' / self.attempt / 'transaction.json'
+        write_json(path, read_json(path) | dict(owner='f' * 64))
+        self.assertNothingChanged('REGRANT_FINISH_WOULD_REFUSE')
+        with self.assertRaisesRegex(Refusal, 'belongs to another attempt'):
+            self.publish()
+
+    def test_too_little_free_disk_refuses_with_the_reading_while_nothing_changed(self):
+        self.stranded()
+        queue = (self.run / 'queue.GOAT').read_bytes()
+        with patch('studio_batch_driver.shutil.disk_usage', return_value=SimpleNamespace(free=1024 ** 2)):
+            self.assertRefused('REGRANT_DISK_TOO_LOW')
+            with self.assertRaises(Refusal) as caught:
+                self.publish()
+        self.assertIn('GB free', caught.exception.fields['next_action'])
+        self.assertEqual(caught.exception.fields['disk_observation']['reason'], 'disk_low')
+        self.assertEqual((self.run / 'queue.GOAT').read_bytes(), queue)
+        self.assertFalse(list((self.c.root / 'cancel-successors').glob('*.regrant-*')))
+        self.assertFalse((self.gate / 'permit.json').exists())
+        self.assertIn('GB free', self.publish()['next_action'])   # the floor is not a batch's 5 GB guard
+
+    def test_an_unreadable_disk_refuses(self):
+        self.stranded()
+        with patch('studio_batch_driver.shutil.disk_usage', side_effect=OSError('gone')):
+            self.assertRefused('REGRANT_DISK_TOO_LOW')
 
 
 class DriverParityTests(StrandedFixture):
@@ -700,12 +872,67 @@ class DriverParityTests(StrandedFixture):
         end_state.assert_called_once()
         self.assertEqual(read_json(self.c.root / 'batch-drivers' / 'g6.json')['end_state']['status'], 'monitor_relaunched')
 
-    def test_the_real_end_state_never_closes_an_mt5_this_batch_did_not_launch(self):
+    def real_end_state(self, **patches):
+        """The real batch_end_state on a journal naming the running MT5; close and relaunch are stopped at their own
+        entry points, whose internals test_studio_research_profile covers against a simulated MT5."""
+        import studio_research_profile as profile
+        identity = dict(pid=4242, executable=self.c.install['terminal_executable'], created_utc='2026-11-06T00:00:00Z')
+        path = self.c.root / 'batch-drivers' / 'g6.json'
+        write_json(path, read_json(path) | dict(batch_process=identity))
+        process = SimpleNamespace(inspect=lambda: identity)
+        calls = []
+        defaults = dict(
+            preflight=None, restore=dict(status='restored'),
+            close=lambda c, end_id, **kwargs: calls.append(('close', end_id, kwargs['expected_process'])) or dict(phase='stopped', status='stopped'),
+            launch=lambda c, end_id: calls.append(('launch', end_id)) or dict(status='started', pid=4243))
+        defaults.update(patches)
+        with patch('studio_research_profile.monitor_launch_preflight', return_value=defaults['preflight'], side_effect=defaults.get('preflight_error')), \
+                patch('studio_research_profile.restore', return_value=defaults['restore']), \
+                patch('studio_agent_setup.close_terminal', side_effect=defaults['close']), \
+                patch('studio_onboarding.monitor_launch', side_effect=defaults['launch']):
+            result = self.settle(end_state_fn=lambda c, job_id, record: profile.batch_end_state(c, job_id, record, process=process))
+        return result, calls, identity
+
+    def test_the_real_end_state_closes_the_batchs_mt5_once_and_relaunches_the_monitor(self):
+        self.consumed(); self.config_restart()
+        result, calls, identity = self.real_end_state()
+        self.assertEqual(result['end_state']['status'], 'monitor_relaunched')
+        end_id = 'batch-end-' + self.attempt[:32]
+        self.assertEqual(calls, [('close', end_id, identity), ('launch', end_id)])
+        self.assertEqual(result['status'], 'paused')
+        self.assertIn('GOAT Studio monitor', result['next_action'])
+
+    def test_a_refused_close_leaves_mt5_and_says_so(self):
+        self.consumed(); self.config_restart()
+        def refuse(*args, **kwargs):
+            raise ValueError('Repair requires a connected demo, Algo Trading off and no positions/orders')
+        launch = Mock()
+        result, _calls, _ = self.real_end_state(close=refuse, launch=launch)
+        self.assertEqual((result['end_state']['status'], result['end_state']['reason']), ('left_as_is', 'close_refused'))
+        launch.assert_not_called()
+        self.assertEqual(result['status'], 'paused')
+        self.assertIn('MT5 was left as it is', result['next_action'])
+
+    def test_a_refused_relaunch_after_the_close_says_mt5_is_closed(self):
+        self.consumed(); self.config_restart()
+        def refuse(*args, **kwargs):
+            raise ValueError('Fresh loaded licensed Studio dialog required')
+        result, calls, _ = self.real_end_state(launch=refuse)
+        self.assertEqual((result['end_state']['status'], result['end_state']['reason']), ('closed_not_reopened', 'monitor_launch_refused'))
+        self.assertEqual(len(calls), 1)
+        self.assertIn('MT5 is closed', result['next_action'])
+
+    def test_a_reboot_means_the_end_state_never_closes_an_mt5_this_batch_did_not_launch(self):
         self.consumed(); self.config_restart()
         result = self.settle()
         self.assertEqual(result['end_state']['status'], 'skipped')
-        self.assertIn('did not close', result['end_state']['plain'])
         self.assertIn('did not close', result['next_action'])
+
+    def test_the_journal_records_paused_and_the_pause_like_the_driver(self):
+        self.consumed()
+        self.settle()
+        journal = read_json(self.c.root / 'batch-drivers' / 'g6.json')
+        self.assertEqual((journal['status'], journal['pause_id']), ('paused', pause.load(self.c.root, 'g6')['pause_id']))
 
     def test_an_interrupted_settle_still_runs_the_end_state_once(self):
         self.consumed(); self.config_restart()
@@ -734,7 +961,7 @@ class DriverParityTests(StrandedFixture):
         self.assertEqual((result['status'], result['error']), ('finish_waiting', 'Attempt package changed'))
         self.assertNotIn(self.c.job('g6')['status'], ('completed', 'cancelled', 'failed'))
 
-    def test_the_disk_guard_is_recorded_and_never_blocks_a_stop(self):
+    def test_a_batchs_own_disk_guard_is_recorded_and_never_blocks_a_stop(self):
         self.stranded()
         path = self.c.root / 'batch-drivers' / 'g6.json'
         write_json(path, read_json(path) | dict(min_free_bytes=2 ** 62))   # always "low": the driver would stop now
@@ -858,6 +1085,187 @@ class UnpinnedClauseTests(StrandedFixture):
         self.assertRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
         self.mt5.positions, self.mt5.orders = (), (object(),)
         self.assertRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
+
+
+class ClaimWithoutOutcomeTests(StrandedFixture):
+    """A reboot between the EA's claim (GOATStudioDispatch.mqh consumed- file) and its receipt."""
+
+    def claimed(self):
+        self.stranded()
+        identity = self.publish()['request_id']
+        self.ea_fault = 'dies_after_claim'
+        self.assertIsNone(self.ea_tick())
+        self.ea_fault = None
+        self.assertTrue((self.gate / ('consumed-' + identity + '.json')).exists())
+        self.assertFalse((self.gate / ('result-' + identity + '.json')).exists())
+        return identity
+
+    def assertEscalated(self, identity, receipt, call=None):
+        with self.assertRaises(Refusal) as caught:
+            (call or self.settle)()
+        fields = caught.exception.fields
+        self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME')
+        self.assertEqual((fields['request_id'], fields['receipt'], fields['claimed']), (identity, receipt, True))
+        self.assertIn('native_queue', fields)
+        self.assertIn('batch_ongoing', fields)
+        self.assertNotIn('TAKE CONTROL', str(caught.exception))   # never the re-grant advice
+        self.assertEqual(pause.load(self.c.root, 'g6')['state'], 'pausing')
+        self.assertEqual(len(self.issued()), 3)
+
+    def assertDeadEnd(self, identity, receipt):
+        self.assertEscalated(identity, receipt)
+        self.assertEscalated(identity, receipt, self.publish)
+        self.assertRaisesRegex(ValueError, 'Successor cancellation requires', finish, self.c, 'g6')
+        self.human('control.takeover'); self.human('control.grant_agent'); self.ea_tick()
+        self.now += STOP_LIFE + 1
+        self.assertEscalated(identity, receipt, self.publish)   # a later grant cannot get past it
+        self.assertEscalated(identity, receipt)
+        self.assertNotIn(self.c.job('g6')['status'], ('completed', 'cancelled', 'failed'))
+
+    def test_no_receipt_and_a_revoked_permit_escalates_instead_of_waiting_forever(self):
+        identity = self.claimed()
+        (self.gate / 'permit.json').unlink()
+        self.assertDeadEnd(identity, None)
+
+    def test_no_receipt_with_the_permit_still_in_place_escalates(self):
+        self.assertDeadEnd(self.claimed(), None)
+
+    def test_the_eas_retry_answering_already_consumed_escalates(self):
+        identity = self.claimed()
+        self.assertEqual(self.ea_tick(), 'CANCEL_ALREADY_CONSUMED')
+        self.assertDeadEnd(identity, 'CANCEL_ALREADY_CONSUMED')
+
+    def test_the_eas_retry_after_expiry_answering_rejected_escalates(self):
+        identity = self.claimed()
+        self.now += STOP_LIFE + 1
+        self.assertEqual(self.ea_tick(), 'CANCEL_REJECTED')
+        self.assertDeadEnd(identity, 'CANCEL_REJECTED')
+
+    def test_effects_that_landed_before_the_crash_change_nothing(self):
+        identity = self.claimed()
+        (self.gate / 'permit.json').unlink()
+        self.queue(['Completed', 'Completed', 'Error', 'Cancelled', 'Cancelled', 'Cancelled', 'Cancelled', 'Cancelled'])
+        self.batch_ongoing = False; self.ea_tick()
+        self.assertEscalated(identity, None)
+        self.assertRaisesRegex(ValueError, 'Successor cancellation requires', finish, self.c, 'g6')
+
+    def test_a_stop_still_being_processed_is_not_mistaken_for_a_dead_claim(self):
+        self.stranded()
+        self.publish()
+        with exclusive_gate(self.gate), patch('studio_cancel_regrant.NATIVE_GATE_WAIT_SECONDS', 0):   # MT5 holds this gate
+            self.assertRefused('REGRANT_BATCH_BUSY', self.settle)
+
+    def test_a_successors_claim_without_outcome_escalates_at_admission(self):
+        successor = self.stranded()
+        issued = read_json(self.gate / ('issued-' + successor + '.json'))['request']
+        (self.gate / ('consumed-' + successor + '.json')).write_bytes((json.dumps(issued, ensure_ascii=False, allow_nan=False) + '\n').encode())
+        self.assertRefused('REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME')
+        self.assertRefused('REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME', self.settle)
+
+    def test_a_refused_unconsumed_stop_still_points_at_a_new_grant(self):
+        self.stranded()
+        self.publish()
+        self.now += STOP_LIFE + 1
+        self.assertEqual(self.ea_tick(), 'CANCEL_REJECTED')
+        result = self.settle()
+        self.assertEqual(result['status'], 'pause_failed')
+        self.assertIn('TAKE CONTROL', result['next_action'])
+
+    def test_a_successor_consumed_before_the_takeover_settles_without_a_new_stop(self):
+        successor = self.stranded()
+        self.queue(['Completed', 'Completed', 'Error', 'Cancelled', 'Cancelled', 'Cancelled', 'Cancelled', 'Cancelled'])
+        self.answer(successor, 'CANCELLED_RECONCILE', consumed=True, observed=self.now)
+        self.batch_ongoing = False; self.ea_tick()
+        self.assertRefused('REGRANT_PRIOR_STOP_CONSUMED')
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEqual(len(self.issued()), 2)
+
+
+class CrashInjectionTests(StrandedFixture):
+    """Host death at every durable step: the next run reaches paused and never issues a stop twice."""
+
+    def write_dies(self, target, name):
+        real = sys.modules[target].write_json
+        def write(path, value):
+            if Path(path).name.startswith(name):
+                raise HostDeath()
+            return real(path, value)
+        return patch(target + '.write_json', side_effect=write)
+
+    def finish_up(self, stops=3):
+        self.assertEqual(self.ea_tick(), 'CANCELLED_RECONCILE'); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEqual(len(self.issued()), stops)
+
+    def test_death_before_the_stop_exists_retries_the_same_identity(self):
+        self.stranded()
+        for label, point in (('rearm', lambda: patch('studio_batch_pause.rearm_for_regrant', side_effect=HostDeath())),
+                             ('pause record', lambda: patch('studio_batch_pause._save', side_effect=HostDeath())),
+                             ('link', lambda: self.write_dies('studio_cancel_regrant', self.attempt + '.regrant')),
+                             ('before issue', lambda: patch('studio_cancel.issue_stop', side_effect=HostDeath())),
+                             ('issued', lambda: self.write_dies('studio_cancel', 'issued-'))):
+            with self.subTest(point=label):
+                with point(), self.assertRaises(HostDeath):
+                    self.publish()
+                self.assertEqual(len(self.issued()), 2)
+                self.assertIsNone(self.ea_tick())
+                self.assertEqual(self.counts(), dict(native_completed=2, native_error=1, native_ongoing=1, native_pending=4))
+        self.publish()
+        self.finish_up()
+
+    def test_death_after_the_issue_record_is_named_undelivered(self):
+        self.stranded()
+        with self.write_dies('studio_cancel', 'snapshot'), self.assertRaises(HostDeath):
+            self.publish()
+        self.assertRefused('REGRANT_STOP_UNDELIVERED')
+        self.assertRefused('REGRANT_STOP_UNDELIVERED', self.settle)
+
+    def test_death_right_after_delivery_loses_nothing(self):
+        self.stranded()
+        with patch('studio_batch_pause.regrant_published', side_effect=HostDeath()), self.assertRaises(HostDeath):
+            self.publish()
+        self.assertRefused('REGRANT_ALREADY_ISSUED')
+        self.finish_up()
+
+    def settle_step_dies(self, point):
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        with point, self.assertRaises(HostDeath):
+            self.settle()
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEqual(len(self.issued()), 3)
+        record = pause.load(self.c.root, 'g6')
+        self.assertEqual((record['members_completed'], record['members_remaining']), (2, 5))
+        self.assertTrue(read_json(self.c.root / 'batch-drivers' / 'g6.json')['stopped'])
+        self.assertEqual(self.settle()['status'], 'paused')
+
+    def test_death_at_reconcile(self):
+        self.settle_step_dies(patch.object(self.c, 'reconcile', side_effect=HostDeath()))
+
+    def test_death_entering_finish(self):
+        self.settle_step_dies(patch('studio_finish.finish', side_effect=HostDeath()))
+
+    def test_death_after_the_controls_are_restored(self):
+        real = studio_finish.restore
+        def restored_then_dies(*args, **kwargs):
+            real(*args, **kwargs)
+            raise HostDeath()
+        self.settle_step_dies(patch('studio_finish.restore', side_effect=restored_then_dies))
+
+    def test_death_writing_the_result(self):
+        self.settle_step_dies(self.write_dies('studio_finish', 'result'))
+
+    def test_death_completing_the_pause(self):
+        self.settle_step_dies(patch('studio_batch_pause.complete', side_effect=HostDeath()))
+
+    def test_death_closing_the_journal(self):
+        self.settle_step_dies(patch('studio_batch_driver._save', side_effect=HostDeath()))
+
+    def test_death_entering_the_end_state(self):
+        self.settle_step_dies(patch('studio_batch_driver._end_state', side_effect=HostDeath()))
+
+    def test_death_in_idle_maintenance(self):
+        self.settle_step_dies(patch('studio_db_maintenance.after_batch', side_effect=HostDeath()))
 
 
 class VerbTests(StrandedFixture):

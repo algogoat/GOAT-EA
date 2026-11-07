@@ -23,6 +23,9 @@
 //   rejects a structurally valid request; B51 beta-1b), a refused or unanswered partial close (world.rejectPartial
 //   (ticket,volume,w) true: nothing fills, retcode world.partialRetcode, default 10006, and world.partialReturnsTrue makes the
 //   call return true all the same; world.partialFilled(ticket,volume,w): the volume that fills, 10010 if less than asked;
+//   world.lateFills [{at,ticket,volume}]: a close that fills at time at, with its deal; a close above the position's volume
+//   closes what is left, as CTrade's clamp does; world.tickAge: the last tick's age in seconds; world.afterHistory(position,w):
+//   runs after a history read, to land a fill between that read and the send;
 //   world.lostPartialReply(ticket,volume,w) true: it fills, the call fails with 10012), the account (world.tradeMode, default demo; world.connected, default on;
 //   world.accountServer; world.accountError, an error the account reads set), a failing history read
 //   (world.rejectHistory(position,w) true) and MQL_FORWARD (world.forward; B51 section 8.3-8.4), the
@@ -552,7 +555,7 @@ function terminalModel(w,K){
   OrdersTotal:()=>0,OrderGetTicket:()=>0,OrderSelect:()=>false,
   // history
   HistorySelect:(from,to)=>{selection=w.deals.filter(d=>d.time>=from&&d.time<=to).map(d=>d.ticket);return true;},
-  HistorySelectByPosition:id=>{if(w.rejectHistory&&w.rejectHistory(id,w))return false;selection=w.deals.filter(d=>d.position===id).map(d=>d.ticket);return true;},
+  HistorySelectByPosition:id=>{if(w.rejectHistory&&w.rejectHistory(id,w))return false;selection=w.deals.filter(d=>d.position===id).map(d=>d.ticket);if(w.afterHistory)w.afterHistory(id,w);return true;},
   HistoryDealsTotal:()=>selection.length,HistoryDealGetTicket:i=>selection[i]??0,HistoryDealSelect:t=>!!dealOf(t),
   HistoryDealGetInteger:(t,k,box)=>{const v=dealGet(t,k);if(box){box.v=v;return true;}return v;},
   HistoryDealGetDouble:(t,k,box)=>{const v=dealGet(t,k);if(box){box.v=v;return true;}return v;},
@@ -568,7 +571,7 @@ function terminalModel(w,K){
   Symbol:()=>sym,Period:()=>w.period,Point:()=>w.point,Digits:()=>w.digits,_Symbol:sym,_Point:w.point,_Digits:w.digits,
   SymbolInfoDouble:(s,k,box)=>{const v=symD(k);if(box){box.v=v;return true;}return v;},
   SymbolInfoInteger:(s,k,box)=>{const v=symI(k);if(box){box.v=v;return true;}return v;},
-  SymbolInfoString:(s,k)=>symS(k),SymbolInfoTick:(s,tk)=>{Object.assign(tk,{time:w.time,bid:w.bid,ask:w.ask,time_msc:w.time*1000});return true;},
+  SymbolInfoString:(s,k)=>symS(k),SymbolInfoTick:(s,tk)=>{const tt=w.time-(w.tickAge||0);Object.assign(tk,{time:tt,bid:w.bid,ask:w.ask,time_msc:tt*1000});return true;},
   SymbolSelect:()=>true,SymbolsTotal:()=>1,SymbolName:()=>sym,
   AccountInfoDouble:k=>{if(k===K.ACCOUNT_BALANCE)return w.balance;if(k===K.ACCOUNT_EQUITY)return equity();if(k===K.ACCOUNT_MARGIN)return 0;
    if(k===K.ACCOUNT_MARGIN_FREE)return equity();if(k===K.ACCOUNT_MARGIN_LEVEL)return 0;if(k===K.ACCOUNT_PROFIT)return equity()-w.balance;throw new Error('unmodelled account double '+k);},
@@ -619,7 +622,9 @@ function terminalModel(w,K){
   // modelled objects
   __ctrade:ctrade,__positionInfo:positionInfo,
   // the broker side, run before each tick: SL and TP fills
-  __brokerFills:()=>{for(const p of [...w.positions]){const px=p.type===0?w.bid:w.ask;
+  __brokerFills:()=>{for(const f of (w.lateFills||[]).filter(x=>x.at<=w.time)){const p=pos(f.ticket);if(p)close(p,f.volume,3,undefined,w.lateFillMagic??p.magic);}
+   if(w.lateFills)w.lateFills=w.lateFills.filter(x=>x.at>w.time);
+   for(const p of [...w.positions]){const px=p.type===0?w.bid:w.ask;
    if(p.sl>0&&(p.type===0?px<=p.sl:px>=p.sl)){w.trace.push({op:'BrokerStop',ticket:p.ticket,price:p.sl,time:w.time});close(p,p.volume,4,p.sl,p.magic);}
    else if(p.tp>0&&(p.type===0?px>=p.tp:px<=p.tp)){w.trace.push({op:'BrokerTake',ticket:p.ticket,price:p.tp,time:w.time});close(p,p.volume,5,p.tp,p.magic);}}},
   __open:open,__equity:equity,

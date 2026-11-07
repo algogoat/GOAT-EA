@@ -16,9 +16,12 @@
 // - the remainder keeps its break-even, trailing, TP, time stop and broker stop; the ledger books the partial once;
 // - Single_Partial_BE moves the stop to the entry at the fill, retries, survives a restart, and never clamps;
 // - at 0 the tree trades exactly as B50-alpha (32df4eb); the OnInit refusals;
-// - the demo gate: a live chart trades only on a connected demo with a login, a server and no read error; real, contest,
-//   unreadable and disconnected are refused at OnInit and at every open; the tester contexts pass; no input is read;
-//   the grid is untouched; Random_Direction stays tester-only.
+// - quotes: an empty quote, a last tick over 30 s old and OnInit's own tick trigger nothing (partial, break-even, trailing);
+// - a late fill: reconciled below the trigger, never closed twice, and a close never clamps into the whole remainder;
+// - the demo gate: a live chart opens only on a connected demo with a login, a server and no read error. A positively read
+//   non-demo fails OnInit and removes the EA once; an unreadable account stays loaded with exits running and opens refused,
+//   and is adopted once verified; the tester contexts pass; no input is read; the grid is untouched; Random_Direction stays
+//   tester-only.
 // scripts/test_b51_partial_mutations.cjs runs this file on mutated entrypoints (GOAT_EA_MAIN): each must fail it.
 // What it does not prove: compile cleanliness, a real broker's fills, MT5's history timing or a real ACCOUNT_TRADE_MODE
 // read. The MetaEditor compile and the PR's Windows and MT5 acceptance list do.
@@ -30,7 +33,7 @@ let passed=0;const ok=()=>passed++;
 
 const MON=Date.UTC(2026,9,5)/1000,H1=3600,T0=MON+2*H1;
 const BASE={EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70,
- Engine_Mode:'Engine_Single',Single_SL_ATR:1.5,Mode_Lots:'RiskperSeq',Risk:500};
+ Engine_Mode:'Engine_Single',Single_SL_ATR:1.5,Mode_Lots:'RiskperSeq',Risk:500,Ledger_Mode:'Ledger_PositionJoin'};
 const PARTIAL={Single_Partial_ATR:1,Single_Partial_Fraction:0.5};
 const PBE0={...PARTIAL,Single_Partial_BE:true};
 const indicator=rsi=>(name,buffer,shift,w)=>{
@@ -40,8 +43,10 @@ const indicator=rsi=>(name,buffer,shift,w)=>{
 function ticks(points,step=1){const t=[];for(let k=1;k<points.length;k++){const [a,p]=points[k-1],[b,q]=points[k];for(let s=a;s<b;s+=step)t.push([T0+s,p+(q-p)*(s-a)/(b-a)]);}return t;}
 const OPEN=ticks([[-600,1.1000],[0,1.1000]],20);
 function world({inputs=PARTIAL,rsi=25,source,tester=true,optimization=false,fastSpeed=true,world:wx={},adopt,start,bid,spread}={}){
- return H.build(source,{inputs:{...BASE,...inputs},tester,optimization,fastSpeed,indicator:indicator(rsi),world:wx,adopt,start,bid,spread});
+ try{return H.build(source,{inputs:{...BASE,...inputs},tester,optimization,fastSpeed,indicator:indicator(rsi),world:wx,adopt,start,bid,spread});}
+ catch(e){if(e.initCode!==undefined) assert.fail('OnInit refused a world this test needs: code '+e.initCode);throw e;}
 }
+const gridWorld=fx=>{try{return H.build(undefined,fx);}catch(e){if(e.initCode!==undefined) assert.fail('OnInit refused the grid: code '+e.initCode);throw e;}};
 const closes=W=>W.w.trace.filter(x=>x.op==='PositionClosePartial');
 const mods=W=>W.w.trace.filter(x=>x.op==='PositionModify');
 const sends=W=>W.w.trace.filter(x=>x.op==='OrderSend');
@@ -49,7 +54,9 @@ const lines=(W,re)=>W.w.logs.filter(l=>re.test(l));
 const field=(line,name)=>{const m=line.match(new RegExp('(?:^|\\s)'+name+'=([^\\s:]+)'));assert.ok(m,'the line carries '+name+': '+line);return m[1];};
 const near=(a,b,eps=1e-9)=>Math.abs(a-b)<=eps;
 function opened(W,type=0){W.run(OPEN);const s=sends(W);assert.equal(s.length,1,'the single opens');assert.equal(s[0].type,type);return {...W.w.positions[0]};}
-const refused=(args)=>{try{world(args);return null;}catch(e){assert.ok(e.initCode!==undefined,e.message);return e.initCode;}};
+const refused=({inputs=PARTIAL,tester=true,optimization=false,fastSpeed=true,world:wx={}}={})=>{
+ try{H.build(undefined,{inputs:{...BASE,...inputs},tester,optimization,fastSpeed,indicator:indicator(25),world:wx});return null;}
+ catch(e){assert.ok(e.initCode!==undefined,e.message);return e.initCode;}};
 
 // 1. The trigger, the fraction and once only: buy and sell, tester and live.
 for(const live of [false,true]){
@@ -241,6 +248,9 @@ function restart(first,inputs,extra={}){
  // A close made elsewhere, with its deal not in the history yet: the volume alone shows it.
  const V=world({});opened(V);V.w.positions[0].volume=2;V.run(ticks([[0,1.10110],[30,1.10110]]));
  assert.equal(closes(V).length,0,'less volume than its entry: it has had one');assert.equal(lines(V,/already done/).length,1);
+ // The same read below the trigger, in a new run (the slot empty): the volume alone marks it done, and the stop follows.
+ const VB=world({inputs:PBE0});const vb=opened(VB);VB.ctx.g_GoatPartialState[0]=0;VB.w.positions[0].volume=2;VB.run([[T0+1,1.1005]]);
+ assert.equal(VB.ctx.GoatSinglePartialDone(vb.ticket),true,'less volume than its entry, below the trigger');assert.equal(VB.w.positions[0].sl,vb.open);
  // A close made elsewhere, with its exit deal in the history.
  const E=world({});opened(E);E.w.deals.push({...E.w.deals[0],ticket:1,entry:1,volume:0.5});E.run(ticks([[0,1.10110],[30,1.10110]]));
  assert.equal(closes(E).length,0,'an exit deal: it has had one');
@@ -292,13 +302,16 @@ function restart(first,inputs,extra={}){
 }
 {
  // Ledger_PositionJoin books the partial's profit once (the close helper, then the transaction); MLPS reads it.
- const J=world({inputs:{...PARTIAL,Ledger_Mode:'Ledger_PositionJoin'}});opened(J);const before=J.ctx.Seq_Buy.SequenceRealizedPL;
+ const J=world({});opened(J);const before=J.ctx.Seq_Buy.SequenceRealizedPL;
  J.run(ticks([[0,1.10110],[30,1.10110]]));
  assert.ok(near(J.ctx.Seq_Buy.SequenceRealizedPL-before,166,1e-6),'1.66 lots x 100 points at 1 USD: '+(J.ctx.Seq_Buy.SequenceRealizedPL-before));
  assert.equal(J.w.deals.filter(d=>d.entry===1)[0].magic,J.ctx.MAGIC1,'the close carries MAGIC1');
  assert.ok(near(J.ctx.Seq_Buy.CurrentSequencePL(),166+167,1e-6),'realized + the remainder\'s open P/L');
- // Ledger_Legacy books what the grid's partial books there: nothing, as the deal has no magic (documented in 8.3).
- const L=world({});opened(L);L.run(ticks([[0,1.10110],[30,1.10110]]));assert.equal(L.ctx.Seq_Buy.SequenceRealizedPL,0);
+ // The dashboard counts exit deals: the partial and the remainder's exit are two, and each deal's P/L counts once.
+ const D=world({inputs:{...PARTIAL,Single_TP_R:9},tester:false,fastSpeed:false});opened(D);const count0=D.ctx.DashboardBusClosedTradesTotal,pl0=D.ctx.DashboardBusClosedPLTotal;
+ D.run(ticks([[0,1.10110],[30,1.10110]]));assert.equal(D.ctx.DashboardBusClosedTradesTotal-count0,1,'the partial is one exit deal, once');
+ assert.ok(near(D.ctx.DashboardBusClosedPLTotal-pl0,166,1e-6),'its P/L once');
+ D.ctx.Seq_Buy.CloseSequencePositions('test');D.pump();assert.equal(D.ctx.DashboardBusClosedTradesTotal-count0,2,'the remainder\'s exit is the second');
  ok();
 }
 
@@ -362,7 +375,7 @@ for(const live of [false,true]){
 {
  let reads=0;const W=world({inputs:{},world:{rejectHistory:()=>{reads++;return false;}}});opened(W);reads=0;W.run(ticks([[0,1.1030],[60,1.1030]]));assert.equal(reads,0,'off: no read');
  // The grid engine, default inputs: no partial, whatever the price.
- const G=H.build(undefined,{inputs:{EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70},tester:true,fastSpeed:true,indicator:indicator(25)});
+ const G=gridWorld({inputs:{EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70},tester:true,fastSpeed:true,indicator:indicator(25)});
  G.run([...OPEN,...ticks([[0,1.1030],[60,1.1030]])]);assert.equal(closes(G).length,0);
  ok();
 }
@@ -373,6 +386,7 @@ for(const live of [false,true]){
  for(const [name,inputs] of [['a negative trigger',{Single_Partial_ATR:-1,Single_Partial_Fraction:0.5}],['a negative fraction',{Single_Partial_ATR:1,Single_Partial_Fraction:-0.5}],
   ['a negative trigger alone',{Single_Partial_ATR:-1}],['a negative fraction alone',{Single_Partial_Fraction:-0.5}],['both negative',{Single_Partial_ATR:-1,Single_Partial_Fraction:-0.5}],
   ['a fraction of 1',{Single_Partial_ATR:1,Single_Partial_Fraction:1}],['a fraction above 1',{Single_Partial_ATR:1,Single_Partial_Fraction:1.5}],
+  ['the partial under Ledger_Legacy',{...PARTIAL,Ledger_Mode:'Ledger_Legacy'}],
   ['a trigger without a fraction',{Single_Partial_ATR:1}],['a fraction without a trigger',{Single_Partial_Fraction:0.5}],
   ['Single_Partial_BE without a trigger',{Single_Partial_BE:true}],
   ['the grid engine with the partial',{Engine_Mode:'Engine_Grid',Single_Partial_ATR:1,Single_Partial_Fraction:0.5}],
@@ -384,58 +398,136 @@ for(const live of [false,true]){
  ok();
 }
 
-// 9. The demo gate.
+// 9. Quotes: an empty quote, a stale one and OnInit's own tick trigger nothing, and each comes back once it is fresh.
+{
+ const W=world({inputs:{...PBE,Single_BE_ATR:1}});const p=opened(W);W.w.tickAge=31;
+ W.run(ticks([[0,1.1030],[60,1.1030]]));assert.equal(closes(W).length,0,'a last tick 31 s old: no partial');assert.equal(mods(W).length,0,'and no stop');
+ assert.equal(lines(W,/on these quotes/).length,1,'one line for the dropout');
+ W.w.tickAge=30;W.run(ticks([[60,1.1030],[70,1.1030]]));assert.equal(closes(W).length,1,'30 s old is fresh');assert.equal(mods(W)[0].sl,p.open);
+ W.w.tickAge=31;W.run([[T0+80,1.1030]]);W.w.tickAge=0;W.run([[T0+81,1.1030]]);W.w.tickAge=31;W.run([[T0+82,1.1030]]);assert.equal(lines(W,/on these quotes/).length,3,'one line per dropout');
+ const T=world({inputs:{Single_Trail_Start_ATR:0,Single_Trail_ATR:0.5}});opened(T);T.w.tickAge=31;T.run(ticks([[0,1.1030],[60,1.1030]]));assert.equal(mods(T).length,0,'no trailing on a stale quote');
+ // An empty quote: a sell's ask of 0 reads as all favour, a buy's bid of 0 as none.
+ const S=world({inputs:PBE,rsi:80});opened(S,1);S.run([[T0+1,1.1000,0],[T0+2,1.1000,0]]);assert.equal(closes(S).length,0,'ask 0: never due');assert.equal(mods(S).length,0);
+ S.run([[T0+3,1.09890]]);assert.equal(closes(S).length,1,'a real ask');
+ const Z=world({inputs:PBE});const zp=opened(Z);Z.w.rejectModify=null;Z.run([[T0+1,1.1030]]);assert.equal(closes(Z).length,1);
+ const n=mods(Z).length;Z.w.positions[0].sl=zp.sl;Z.run([[T0+2,1.1030,0]]);assert.equal(mods(Z).length,n,'an empty ask moves no stop');
+ const B=world({inputs:{...PARTIAL,Single_Trail_Start_ATR:0,Single_Trail_ATR:0.5},rsi:25});opened(B);B.ctx.bid=0;assert.equal(B.ctx.GoatSingleQuotesFresh(),false,'bid 0');
+ B.ctx.bid=1.1;B.ctx.ask=0;assert.equal(B.ctx.GoatSingleQuotesFresh(),false,'ask 0');B.ctx.ask=1.1001;assert.equal(B.ctx.GoatSingleQuotesFresh(),true,'both');
+ // OnInit's own tick: the same, silently, and OnInit raises the flag around exactly that OnTick.
+ const I=world({inputs:{...PBE,Single_BE_ATR:1}});opened(I);I.ctx.g_GoatSingleInitTick=true;I.run([[T0+1,1.1030]]);
+ assert.equal(closes(I).length,0,'no partial on OnInit\'s tick');assert.equal(mods(I).length,0,'no stop');assert.equal(lines(I,/on these quotes/).length,0,'no line');
+ I.ctx.g_GoatSingleInitTick=false;I.run([[T0+2,1.1030]]);assert.equal(closes(I).length,1,'the next real tick');
+ const src=H.readSource(undefined,H.MAIN);assert.match(src,/g_GoatSingleInitTick=true;[^\n]*\n   OnTick\(\); Sleep\(50\);\n   g_GoatSingleInitTick=false;/,'OnInit flags its own tick');
+ assert.equal((src.match(/^\s*OnTick\(\);/gm)||[]).length,1,'the only direct OnTick call');
+ ok();
+}
+
+// 10. A late fill (the stubs fill at once otherwise; a close above the position's volume closes it all, as CTrade clamps).
+{
+ // Fills after the reply was lost, before the retry: fraction 0.6, so a stale 1.99 lots would take the whole 1.34 left.
+ const LATE={...PBE,Single_Partial_Fraction:0.6};
+ const W=world({inputs:LATE,world:{rejectPartial:()=>true,partialRetcode:10012}});const p=opened(W);
+ W.w.lateFills=[{at:T0+2,ticket:p.ticket,volume:1.99}];
+ W.run(ticks([[0,1.10110],[60,1.10110]]));
+ assert.equal(closes(W).length,1,'one send, no retry');assert.ok(near(closes(W)[0].volume,1.99));
+ assert.ok(near(W.w.positions[0].volume,1.34),'the remainder survives: '+W.w.positions[0].volume);assert.equal(W.ctx.GoatSinglePartialDone(p.ticket),true);
+ assert.ok(near(W.ctx.Seq_Buy.TradeLevels[0].lots,1.34),'the level follows');assert.equal(W.w.positions[0].sl,p.open,'the break-even follows');
+ assert.ok(near(W.ctx.Seq_Buy.SequenceRealizedPL,199,1e-6),'booked once, by its transaction: '+W.ctx.Seq_Buy.SequenceRealizedPL);
+ // Fills after the history read, before the send: the volume read at the send stops it.
+ const G=world({inputs:LATE});const g=opened(G);let once=true;
+ G.w.afterHistory=(id,w)=>{if(once&&w.bid>=1.1011){once=false;w.positions[0].volume=1.34;}};
+ G.run(ticks([[0,1.10110],[30,1.10110]]));
+ assert.equal(closes(G).length,0,'nothing is sent on a volume that just fell');assert.ok(near(G.w.positions[0].volume,1.34));assert.equal(G.ctx.GoatSinglePartialDone(g.ticket),true);
+ assert.equal(lines(G,/a late fill/).length,1);assert.equal(G.w.positions[0].sl,g.open);
+ // A reply lost, then the price leaves the trigger: the history is read once the wait ends, and the stop still moves.
+ const R=world({inputs:PBE,world:{lostPartialReply:()=>true}});const r=opened(R);
+ R.run(ticks([[0,1.10110],[2,1.10110],[3,1.10060],[30,1.10060]]));
+ assert.equal(closes(R).length,1);assert.equal(R.ctx.GoatSinglePartialDone(r.ticket),true,'below the trigger, reconciled');assert.equal(R.w.positions[0].sl,r.open,'the remainder is protected');
+ // A refusal, then the price leaves: nothing is sent below the trigger, the reads stay bounded, and it retries when due.
+ let reads=0;const B=world({world:{rejectPartial:()=>true,rejectHistory:()=>{reads++;return false;}}});opened(B);B.run(ticks([[0,1.10110],[1,1.10110]]));reads=0;
+ B.run(ticks([[1,1.10060],[400,1.10060]]));assert.equal(closes(B).length,1,'never below the trigger');assert.ok(reads>=6&&reads<=8,'a read a minute: '+reads);
+ B.w.rejectPartial=null;B.run(ticks([[400,1.10110],[480,1.10110]]));assert.equal(closes(B).length,2,'due again: it retries');assert.ok(near(B.w.positions[0].volume,1.67));
+ ok();
+}
+
+// 11. The demo gate.
 const live=(wx,inputs=PARTIAL)=>({inputs,tester:false,fastSpeed:false,world:wx});
 const FAILED=1;
+const UNKNOWN=[['an unreadable mode (reads 0, which is demo)',{accountError:4301}],['not connected',{connected:0}],['no login',{login:0}],['a bad login',{login:-1}],['no server',{accountServer:''}],
+ ['an unreadable mode on a real account',{accountError:4301,tradeMode:2}],['no login on a real account',{login:0,tradeMode:2}]];
 {
  assert.equal(refused(live({})),null,'a connected demo with a login and a server: allowed');
  assert.equal(refused(live({tradeMode:2})),FAILED,'a real account');
  assert.equal(refused(live({tradeMode:1})),FAILED,'a contest account');
- assert.equal(refused(live({accountError:4301})),FAILED,'an unreadable mode reads 0, which is demo: refused');
- assert.equal(refused(live({connected:0})),FAILED,'not connected');
- assert.equal(refused(live({login:0})),FAILED,'no login');
- assert.equal(refused(live({login:-1})),FAILED,'a bad login');
- assert.equal(refused(live({accountServer:''})),FAILED,'no server');
+ assert.equal(refused(live({tradeMode:2,connected:0})),FAILED,'a real account stays refused while disconnected');
+ assert.equal(refused(live({marginMode:0})),FAILED,'alpha\'s netting refusal, on an account it can read');
  // Refused on a real account whatever the single's inputs: nothing in a SET opens it.
  for(const inputs of [{},{Single_Flat_Only:true},{Mode_Trade:'Long'},{Mode_Bias_Exit:0}]) assert.equal(refused(live({tradeMode:2},inputs)),FAILED,JSON.stringify(inputs));
  // A stale error from an earlier call is not this read's.
- assert.equal(refused(live({lastError:4301})),null,'only the account reads\' own error counts');
+ const S=world(live({lastError:4301}));assert.equal(S.ctx.g_GoatSingleAccountPending,false,'only the account reads\' own error counts');
  // The tester contexts pass, whatever the account reads.
- assert.equal(refused({inputs:PARTIAL,tester:true,world:{tradeMode:2,connected:0,login:0}}),null,'the tester');
- assert.equal(refused({inputs:PARTIAL,tester:false,optimization:true,world:{tradeMode:2,connected:0}}),null,'optimization');
- assert.equal(refused({inputs:PARTIAL,tester:false,world:{forward:true,tradeMode:2,connected:0}}),null,'forward');
- // The grid and the build's other refusals are untouched: the grid runs on a real account.
- assert.equal(refused({inputs:{Engine_Mode:'Engine_Grid'},tester:false,fastSpeed:false,world:{tradeMode:2}}),null,'the grid is not gated');
- assert.equal(refused({inputs:{Engine_Mode:'Engine_Grid'},tester:false,fastSpeed:false,world:{accountError:4301,connected:0}}),null,'nor when it cannot read');
+ for(const [what,args] of [['the tester',{inputs:PARTIAL,tester:true,world:{tradeMode:2,connected:0,login:0}}],['optimization',{inputs:PARTIAL,tester:false,optimization:true,world:{tradeMode:2,connected:0}}],['forward',{inputs:PARTIAL,tester:false,world:{forward:true,tradeMode:2,connected:0}}]]){
+  const W=world(args);assert.equal(W.ctx.g_GoatSingleAccountPending,false,what);W.run(OPEN);assert.equal(sends(W).length,1,what+' opens');assert.ok(!W.w.removed,what);
+ }
+ // The grid is not gated, on any account.
+ for(const wx of [{tradeMode:2},{accountError:4301,connected:0}]){const G=gridWorld({inputs:{EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70},tester:false,fastSpeed:false,indicator:indicator(25),world:wx});
+  assert.equal(G.ctx.g_GoatSingleAccountPending,false);G.run(ticks([[-120,1.1000],[-60,1.1000]],20));assert.ok(!G.w.removed,'the grid is never removed');}
  ok();
 }
 {
- // Every open asks again, and a refusal is one line, leaves the episode armed, and sends nothing.
- for(const [what,wx] of [['real',{tradeMode:2}],['contest',{tradeMode:1}],['unreadable',{tradeMode:0,accountError:4301}],['disconnected',{tradeMode:0,accountError:0,connected:0}],['no login',{connected:1,login:0}],['no server',{login:12345678,accountServer:''}]]){
-  const R=world(live({}));Object.assign(R.w,wx);R.run(OPEN);
+ // Unknown stays loaded: no order, one line, armed, not removed. Verified, it opens.
+ for(const [what,wx] of UNKNOWN){
+  const R=world(live(wx));assert.equal(R.ctx.g_GoatSingleAccountPending,true,what+': pending');R.run(OPEN);
   assert.equal(sends(R).length,0,what+': no order');assert.equal(R.ctx.Seq_Buy.Active,false);assert.equal(R.ctx.g_GoatSingleArmed[0],true,what+': the episode stays armed');
-  assert.equal(lines(R,/Single refused/).length,1,what+': one line');
+  assert.equal(lines(R,/Single refused/).length,1,what+': one line');assert.ok(!R.w.removed,what+': still loaded');
+  Object.assign(R.w,{accountError:0,connected:1,login:12345678,accountServer:'Harness-Demo',tradeMode:0});
+  R.run(ticks([[0,1.1000],[120,1.1000]]));assert.equal(R.ctx.g_GoatSingleAccountPending,false,what+': verified');assert.equal(sends(R).length,1,what+': then it opens');assert.ok(!R.w.removed);
  }
- const R=world(live({}));Object.assign(R.w,{tradeMode:2});R.run(OPEN);assert.equal(sends(R).length,0);
- Object.assign(R.w,{tradeMode:0});R.run(ticks([[0,1.1000],[120,1.1000]]));assert.equal(sends(R).length,1,'back on a demo: it opens');
- // A demo trades live, end to end, partial included.
- const D=world(live({}));opened(D);D.run(ticks([[0,1.1012],[30,1.1012]]));assert.equal(closes(D).length,1);
- // Random_Direction stays tester-only, on a demo too; it still runs in the tester.
+ // Positively read as not demo later, on either path: removed once, nothing opens.
+ for(const [what,start,later] of [['unknown, then real',{connected:0},{connected:1,tradeMode:2}],['unknown, then contest',{accountError:4301},{accountError:0,tradeMode:1}],['demo, then real',{},{tradeMode:2}],['unknown, then real while disconnected',{connected:0},{tradeMode:2}]]){
+  const R=world(live(start));Object.assign(R.w,later);R.run(OPEN);
+  assert.equal(R.w.removed,true,what+': removed');assert.equal(sends(R).length,0,what+': no order');assert.equal(R.w.alerts.filter(a=>/removing the EA/.test(a)).length,1,what+': one alert');
+ }
+ // Netting found once it can be read: removed. An unread account answers 0, netting, so OnInit could not tell.
+ const N=world(live({connected:0,accountError:4301,marginMode:0}));assert.ok(!N.w.removed);N.run(ticks([[-120,1.1],[-100,1.1]],5));assert.ok(!N.w.removed,'not while unread');assert.equal(sends(N).length,0);
+ Object.assign(N.w,{connected:1,accountError:0});N.run(OPEN);assert.equal(N.w.removed,true,'netting');assert.equal(sends(N).length,0);
+ // A demo that drops mid-run: new opens refused; back on: it opens.
+ const D=world(live({}));D.w.connected=0;D.run(OPEN);assert.equal(sends(D).length,0);assert.ok(!D.w.removed);D.w.connected=1;D.run(ticks([[0,1.1000],[120,1.1000]]));assert.equal(sends(D).length,1);
+ // Pending alone refuses an open, whatever the account reads now.
+ const P=world(live({}));P.ctx.g_GoatSingleAccountPending=true;assert.equal(P.ctx.GoatSingleOpen(P.ctx.Seq_Buy,P.w.ask),false,'pending refuses');
+ ok();
+}
+{
+ // A VPS reboot with a running single: stays loaded, adopted, its exits run while the account is unread, and nothing opens beside it.
+ const inputs={...PARTIAL,Single_Time_Stop_Bars:2,Single_Time_Stop_TF:'TF_H1'};
+ const a=world({inputs,tester:false,fastSpeed:false});const p=opened(a);a.run(ticks([[0,1.1005],[30,1.1005]]));
+ const state={positions:JSON.parse(JSON.stringify(a.w.positions)),deals:JSON.parse(JSON.stringify(a.w.deals)),gv:[...a.w.gv],next:[a.w.nextTicket,a.w.nextDeal],balance:a.w.balance,time:a.w.time,bid:a.w.bid};
+ const load=(ctx,w)=>{w.positions.push(...JSON.parse(JSON.stringify(state.positions)));w.deals.push(...JSON.parse(JSON.stringify(state.deals)));for(const [k,v] of state.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=state.next;w.balance=state.balance;};
+ const U=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,world:{connected:0,accountError:4301,marginMode:0},adopt:load});
+ assert.equal(U.ctx.Seq_Buy.Adopted,true,'adopted while the account is unread');assert.equal(U.ctx.g_GoatSingleAccountPending,true);
+ U.run(ticks([[31,1.1012],[60,1.1012]]));assert.equal(closes(U).length,1,'the partial still runs');
+ U.run(ticks([[60,1.1012],[9000,1.1012]],20));const closed=U.w.trace.filter(x=>x.op==='PositionClose');assert.equal(closed.length,1,'the time stop still runs');assert.ok(!U.w.removed);
+ // The terminal had not loaded the positions at OnInit: adopted once verified, never a second position beside them.
+ const L=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,world:{connected:0},adopt:()=>{}});assert.equal(L.ctx.Seq_Buy.Active,false);
+ load(L.ctx,L.w);L.w.connected=1;L.run(ticks([[31,1.1005],[150,1.1005]]));
+ assert.equal(L.ctx.Seq_Buy.Adopted,true,'adopted once verified');assert.equal(sends(L).length,0,'nothing opens beside it');assert.equal(L.ctx.g_GoatSingleAccountPending,false);assert.equal(L.w.positions.length,1);
+ ok();
+}
+{
  const RD={Random_Direction:true,Single_Flat_Only:true,Mode_Trade:'Long_and_Short'};
  assert.equal(refused(live({},RD)),FAILED,'Random_Direction on a demo chart');
+ assert.equal(refused(live({connected:0},RD)),FAILED,'and on an unread one');
  assert.equal(refused({inputs:RD,tester:true}),null,'Random_Direction in the tester');
  // In the source: its refusal reads MQL_TESTER alone, and the gate reads no input and has no switch.
  const main=H.readSource(undefined,H.MAIN),C=H.compile(H.loadSources());
  assert.ok(main.includes('if(Random_Direction && !MQLInfoInteger(MQL_TESTER))  {Alert("Initialization Failed: Random_Direction is a strategy-tester benchmark'),'the benchmark\'s gate');
- const body=main.slice(main.indexOf('string GoatSingleAccountRefusal()'));const fn=body.slice(0,body.indexOf('// B51:end b51-account'));
+ const body=main.slice(main.indexOf('int GoatSingleAccountState(string &b51_why)'));const fn=body.slice(0,body.indexOf('bool GoatSingleAccountUnknown()'));
  const inputs=C.globals.filter(g=>g.input).map(g=>g.name);assert.ok(inputs.length>100);
  for(const name of inputs) assert.ok(!new RegExp('\\b'+name+'\\b').test(fn),'the gate reads no input: '+name);
  assert.ok(!/\bg_\w+|#if/.test(fn),'no global or conditional can turn it off');
  // The single's only way to a position, and the gate comes first in it.
  const open=main.slice(main.indexOf('bool GoatSingleOpen(SEQUENCE &s,double price)'));
- assert.ok(open.indexOf('GoatSingleAccountRefusal()')<open.indexOf('OpenPosition('),'asked before the order');
- const init=main.slice(main.indexOf('// B51:begin b51-init'),main.indexOf('// B51:end b51-init'));
- assert.match(init,/if\(Engine_Mode==Engine_Single && GoatSingleAccountRefusal\(\)!=""\) \{Alert\([^\n]*return INIT_FAILED;\}/,'OnInit refuses on it');
+ assert.ok(open.indexOf('GoatSingleAccountState(')<open.indexOf('OpenPosition('),'asked before the order');
  ok();
 }
 

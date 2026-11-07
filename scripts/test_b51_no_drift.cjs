@@ -26,6 +26,9 @@ const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSetting
 const ADDED=[];
 // Every B50-alpha line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
+ 'GOAT V1.49.mq5':[
+  'if(Engine_Mode==Engine_Single && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;}',
+ ],
  'GOATStudioSettingTypes.mqh':[
   '+"Single_SL_ATR|Single_TP_ATR|Single_TP_R|Single_Exit_Opposite|Single_Time_Stop_Bars|Single_Time_Stop_TF|Rollover_Block_Minutes|"; // B50 (A0): the B50 optimization axes (NY_Session is a string, never one)', // beta-1a: the list continues with the B51 axes
  ],

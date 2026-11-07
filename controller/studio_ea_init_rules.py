@@ -457,6 +457,11 @@ EA_INIT_RULES = (
           'Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0 (the two rules above refuse the fraction and Single_Partial_BE without it)',
           'Initialization Failed: Single_Partial_ATR, Single_Partial_Fraction and Single_Partial_BE need the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: not _single(v) and v['Single_Partial_ATR'] > 0.0),
+    _rule('SINGLE_PARTIAL_NEEDS_POSITION_JOIN', [4500], 'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
+          ['Single_Partial_ATR', 'Ledger_Mode'], {'Ledger_Mode': ['Ledger_PositionJoin']},
+          'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
+          'Initialization Failed: Single_Partial_ATR needs Ledger_Mode=Ledger_PositionJoin (Ledger_Legacy would drop the partial\'s profit from the sequence).',
+          lambda v: v['Single_Partial_ATR'] > 0.0 and v['Ledger_Mode'] != v.choice('Ledger_Mode', 'Ledger_PositionJoin')),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -535,14 +540,14 @@ NOT_PORTED = (
     # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
     dict(lines=(4491,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
          reason='run context (live chart)'),
-    # B51 (section 8.4): Engine_Single refuses a live account that is not a broker-verified demo; a SET cannot show the account.
-    dict(lines=(4500,), anchor='GoatSingleAccountRefusal()', condition='Engine_Single outside the tester on an account not verified as demo',
+    # B51 (section 8.4): Engine_Single refuses a live account positively read as not demo; a SET cannot show the account.
+    dict(lines=(4508,), anchor='b51_account==GOAT_ACCOUNT_NOT_DEMO', condition='Engine_Single outside the tester on an account read as not demo',
          reason='run context (account mode, connection)'),
-    dict(lines=(4572,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4583,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4573,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4581,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4586,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4584,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4592,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4597,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 
@@ -629,7 +634,9 @@ def applicable_rules(schema, table=EA_INIT_RULES):
         # B49a). One that declares some but lost one a rule reads fails closed below, like any other lost input.
         # B51 (beta-1a): the same per appended group (APPENDED_GROUPS), so a B50-alpha schema skips B51's rules.
         absent = {name for group in APPENDED_GROUPS if not any(name in inputs for name in group) for name in group}
-        if missing and all(name in absent for name in missing):
+        # Section 8.3: any, not all: a rule of an absent group may also read an older input its schema predates (a V1.48
+        # schema has neither Single_Partial_ATR nor Ledger_Mode). A lost input of a present group is never in absent.
+        if any(name in absent for name in missing):
             continue
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
                   for label in wanted if label not in (inputs[name].get('enum_choices') or {})]

@@ -379,6 +379,12 @@ is untouched, and no grid path calls this.
 frozen across a restart), bid for a buy, ask for a sell, normalized prices compared with a 0.001-point tolerance. An adopted
 single without its frozen sizes is left alone. A partial beyond the TP never fires; that is not refused.
 
+**Fresh quotes.** `GoatSingleQuotesFresh()` guards the partial and all of `GoatSingleModify` (break-even, trailing,
+`Single_Partial_BE`). Fresh means: not OnInit's own `OnTick` (which runs on whatever quotes are cached), a bid and an ask above 0,
+and the symbol's last tick (`SymbolInfoTick`) at most `GOAT_SINGLE_QUOTE_MAX_AGE_S` (30 s) behind `TimeTradeServer()`. That clock runs
+on while the feed is silent; `TimeCurrent` stops with it. It is a feed age in seconds, read directly, so it depends on no other
+change. One line per dropout. Exits are not gated, since the broker holds the stop and a time stop must not wait on a feed.
+
 **Volume.** `close = floor(volume x fraction / step) x step`, `remainder = volume - close`. Both must be at least
 `SYMBOL_VOLUME_MIN`, the close at most `SYMBOL_VOLUME_MAX` and the remainder a multiple of the step (a position sized under
 an earlier step can leave one that is not). No minimum or step, or an illegal volume: the position skips its partial for
@@ -387,7 +393,10 @@ good, logged once. `TRADE_RETCODE_INVALID_VOLUME` from the broker does the same.
 **Once per position, across restarts.** The broker decides, so the restart record gains no field and a crash between a fill
 and a write cannot double-close. A position has had its partial if its history (`HistorySelectByPosition`) holds an exit deal
 or its volume is below its entry deals' volume, which also covers a manual partial close and a fill whose deal has not arrived.
-That read runs once per position in each run of the EA and again before every send. An unreadable history or one with no
+That read runs once per position in each run of the EA and again before every send, and after a failed attempt once its wait
+ends, wherever the price is, so a late fill below the trigger still counts (and `Single_Partial_BE` still protects the remainder).
+At the send the position's volume is read once more against the entry deals: `CTrade` clamps a close to the position's volume, so a
+close sent on a stale figure could take the whole remainder. An unreadable history or one with no
 entry deal yet means unknown: nothing is sent, and one line is logged if the trigger is met. In memory, `g_GoatPartial*`
 (8 slots, a slot whose position is gone is reused) only saves reads. A live re-init keeps it, and losing it costs one read.
 
@@ -399,7 +408,7 @@ with the volume unmoved included, takes the failure path, and its retry reads th
 **A refused close.** One line per attempt: `ticket, bid, ask, volume, close, retcode, consecutive, backoff`. The wait is per
 ticket and starts at the first failure, 5 s, 30 s, then 60 s steady, with no attempt, read or line inside it. Waiting at once
 differs from section 8.2's five free tries because a timed-out close may still fill. The retry reads the history first. A stuck
-ticket logs once a minute, only while its trigger still holds. Attempts and failures count in `Pclosed` and `PcloseErrors`.
+ticket logs once a minute, only while its trigger still holds; below the trigger nothing is sent and the history is read once a minute. Attempts and failures count in `Pclosed` and `PcloseErrors`.
 
 **The remainder.** Same ticket, SL and TP. `GoatSingleModify` (break-even, trailing) reads the current volume nowhere, so it
 carries on from the frozen ATR. The time stop, the opposite exit and the broker stop close what is left and end the single as
@@ -411,15 +420,14 @@ never clamps: while the entry is not legal (a stops level above the trigger, a r
 sit just under the price, which is not break-even. A failed move and a crash before the move both recover, since the condition
 is re-derived from the history after a restart, below the trigger too. With trailing on, the better stop wins.
 
-**Ledger.** Under `Ledger_PositionJoin` the partial's P/L is booked once and MLPS reads it. Under `Ledger_Legacy` the close
-carries no magic, so, exactly as for the grid's partial closes there, it is not booked in `SequenceRealizedPL`. MLPS then sees
-the remainder only, which can only fire it earlier, and the remainder's stop is under the original risk. Demo singles should run
-`Ledger_PositionJoin`.
+**Ledger.** The partial needs `Ledger_PositionJoin`: its P/L is then booked once and MLPS reads it. `Ledger_Legacy`, the default,
+is refused at OnInit, because it would drop the partial's P/L from the sequence. The dashboard counts exit deals, as it does for the
+grid's partial closes: a single with a partial shows two closed trades in `TRADES_TOTAL`, and each deal's P/L counts once.
 
 **OnInit** (all INIT_PARAMETERS_INCORRECT, ported): a negative trigger or fraction (`SINGLE_PARTIAL_NEGATIVE`), a fraction of 1 or
 more (`SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE`), one of trigger and fraction without the other (`SINGLE_PARTIAL_INCOMPLETE`),
 `Single_Partial_BE` without a trigger (`SINGLE_PARTIAL_BE_WITHOUT_PARTIAL`), a trigger with the grid engine
-(`SINGLE_PARTIAL_WITHOUT_SINGLE`). So a ladder over the trigger that includes 0 needs the fraction at 0 too, and the Studio refuses
+(`SINGLE_PARTIAL_WITHOUT_SINGLE`), a trigger without `Ledger_PositionJoin` (`SINGLE_PARTIAL_NEEDS_POSITION_JOIN`). So a ladder over the trigger that includes 0 needs the fraction at 0 too, and the Studio refuses
 one that does not, as for any init-failing pass.
 
 **Known limits.** A lost reply that fills after the retry's read, more than 5 s later, could close a
@@ -430,27 +438,40 @@ second part; the remainder's history then shows it and no third follows. Tick an
 **What existed.** Nothing in the EA stopped `Engine_Single` on a live chart. "Research only" lived in the build's admission
 (`candidate-builds/beta17-B50`: no admission, no live arm) and in this document; only `Random_Direction` had an OnInit gate.
 
-**The gate.** `GoatSingleAccountRefusal()` (block `b51-account`). The tester, optimization and forward contexts pass. A live
-chart passes only if the terminal is connected (`TERMINAL_CONNECTED`), the account reads set no error after `ResetLastError`, the
-login is above 0, the server is not empty and `ACCOUNT_TRADE_MODE` is `ACCOUNT_TRADE_MODE_DEMO`. Real and contest accounts are
-refused. `ACCOUNT_TRADE_MODE_DEMO` is 0, the value a failed `AccountInfoInteger` returns, which is why the mode alone proves
-nothing. Note that the EA's other `==ACCOUNT_TRADE_MODE_DEMO` checks do not guard against that; they are out of scope here.
+**The gate.** `GoatSingleAccountState()` (block `b51-account`) has three answers:
+- **Demo OK:** the tester, optimization and forward contexts, or a live chart whose account reads set no error after
+  `ResetLastError`, with a login above 0, a server, `ACCOUNT_TRADE_MODE_DEMO` and `TERMINAL_CONNECTED`.
+- **Not demo:** the same clean read with a login and a server, and any other mode. A disconnected terminal still answers this, so a
+  real account is never mistaken for an unread one.
+- **Unknown:** anything else. `ACCOUNT_TRADE_MODE_DEMO` is 0, the value a failed `AccountInfoInteger` returns, so a demo reading proves
+  nothing without the rest. The EA's other `==ACCOUNT_TRADE_MODE_DEMO` checks do not guard against that; they are out of scope here.
 
-**Where it applies.** OnInit (`b51-init`, INIT_FAILED, `NOT_PORTED`: run context) and at the top of `GoatSingleOpen`, a single's only
-way to a position, on every attempt. An attempt refused there logs once per reason code, sends nothing and leaves the episode armed,
-so a dropped connection recovers by itself. An account switch re-runs OnInit. No input, global or conditional reads into it, and a
-test asserts that. The grid engine is not gated, so flags off nothing changes.
+Prop-firm accounts: many report `ACCOUNT_TRADE_MODE_DEMO` while evaluating or funding real challenges, so the gate lets them through.
+The broker's flag is all the EA can read; do not attach singles to a prop account until they are meant to trade there.
+
+**Where it applies.**
+- **OnInit** (`b51-init`): not demo is INIT_FAILED (`NOT_PORTED`: run context). Unknown stays loaded and sets
+  `g_GoatSingleAccountPending`. INIT_FAILED on a dropout would unload the EA for good after a VPS reboot or a re-init: no adoption, and
+  the time stop, opposite exit, trailing and partial would all stop silently. Alpha's netting refusal skips an unknown account for the
+  same reason, since an unread margin mode answers 0, netting.
+- **`GoatSingleOpen`**, a single's only way to a position, on every attempt: anything but demo OK, or a pending account, sends nothing.
+  It logs once per reason code and leaves the episode armed, so a dropped connection recovers by itself. Real money stays impossible.
+- **`GoatSingleAccountWatch()`**, on every tick: not demo removes the EA, once (`ExpertRemove`). A pending account, once verified, gets
+  alpha's netting check (netting removes the EA) and `AdoptOpenPositions`, for positions the terminal had not loaded at OnInit, before
+  any entry can run beside them.
+
+An account switch re-runs OnInit. No input, global or conditional reads into the state, and a test asserts that. The grid engine is not
+gated, so flags off nothing changes.
 
 **`Random_Direction` stays tester-only**: no design section lets it trade a live chart, so its own `!MQL_TESTER` refusal is unchanged,
 on a demo too.
 
-**Consequence.** `Engine_Single`'s OnInit refusals include this one and alpha's margin-mode check, and a failed OnInit unloads the
-EA. A terminal restart that runs OnInit before the broker connects therefore removes the EA from a demo chart. That fails closed:
-the broker's SL and TP still hold, but nothing manages them until it is re-attached (acceptance list). This PR also does not admit
-the build: a live chart still needs the assembly's build stamp and its admission (`GOATLicense*`).
+**Limits.** The license and activation path earlier in OnInit applies to every engine, and its behaviour before the broker connects is
+not changed or tested here, so whether a reboot reaches this gate at all needs the native run (acceptance list). This PR also does not
+admit the build: a live chart still needs the assembly's build stamp and its admission (`GOATLicense*`).
 
 **Tests.** `scripts/test_b51_partial.cjs` (+ `test_b51_partial_mutations.cjs`) runs on the converted OnTick path, with
-`b50_tick_harness.cjs` extended for refused and unanswered partial closes, a failing history read and the account model:
+`b50_tick_harness.cjs` extended for refused, unanswered and late partial closes, a clamped close, a failing history read, quote age and the account model:
 sections 8.3 and 8.4's rules, tester and live, with B50-alpha's trace flags off. `test_b51_parity.cjs` gains a mutant where the
 partial leaks into flags off. **Only checked by reading, or not at all here:** compile cleanliness, a real broker's partial fills and
 `CTrade::PositionClosePartial`, MT5's real history timing, and a real failed `ACCOUNT_TRADE_MODE` read. The PR's Windows and MT5

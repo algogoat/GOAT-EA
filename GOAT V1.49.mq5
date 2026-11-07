@@ -4463,7 +4463,7 @@ int OnInit()
     if(b50_minutes[0]<0 || b50_minutes[1]<0 || b50_minutes[0]==b50_minutes[1]) {Alert("Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times."); return INIT_PARAMETERS_INCORRECT;}
     g_GoatNYStartMin=b50_minutes[0]; g_GoatNYEndMin=b50_minutes[1];
    }
-   if(Engine_Mode==Engine_Single && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;}
+   if(Engine_Mode==Engine_Single && !GoatSingleAccountUnknown() && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;} // B51 (section 8.4): an unread account answers 0, netting; GoatSingleAccountWatch checks it once it is read
    if(Engine_Mode==Engine_Single && !(Grid_Size<0||LP_Size_<0||SL_Pips_<0||TP_Pips_<0||TSL_Size_<0||Grid_Min_<0||Grid_Max_<0)) // the grid's ATR gate above did not create the handles
      {
       ATR_handle = iATR(Symbol(),ATR_TF,1);
@@ -4497,7 +4497,18 @@ int OnInit()
    if((Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)) {Alert("Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction need each other (a trigger and a fraction)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
    if(Single_Partial_BE && !(Single_Partial_ATR>0.0)) {Alert("Initialization Failed: Single_Partial_BE needs Single_Partial_ATR > 0 (no partial close, nothing to move the stop on)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
    if(Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0) {Alert("Initialization Failed: Single_Partial_ATR, Single_Partial_Fraction and Single_Partial_BE need the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
-   if(Engine_Mode==Engine_Single && GoatSingleAccountRefusal()!="") {Alert("Initialization Failed: the single-trade engine runs only in the strategy tester or on a broker-verified demo account ("+GoatSingleAccountRefusal()+")."); return INIT_FAILED;} // B51 (section 8.4): real accounts stay refused, and no input overrides it
+   if(Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin) {Alert("Initialization Failed: Single_Partial_ATR needs Ledger_Mode=Ledger_PositionJoin (Ledger_Legacy would drop the partial's profit from the sequence)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
+   // B51 (section 8.4): a positively read non-demo is refused and no input overrides it. An account that cannot be read yet
+   // (a VPS reboot, a dropout) stays loaded so its running singles keep their exits; it opens nothing until it is verified.
+   g_GoatSingleAccountPending=false; g_GoatSingleAccountRemoved=false; // a live re-init keeps EA globals
+   if(Engine_Mode==Engine_Single)
+     {
+      string b51_account_why="";
+      int    b51_account=GoatSingleAccountState(b51_account_why);
+      if(b51_account==GOAT_ACCOUNT_NOT_DEMO) {Alert("Initialization Failed: the single-trade engine runs only in the strategy tester or on a broker-verified demo account ("+b51_account_why+")."); return INIT_FAILED;}
+      g_GoatSingleAccountPending=(b51_account==GOAT_ACCOUNT_UNKNOWN);
+      if(g_GoatSingleAccountPending) Print("Single-trade engine: the account is not verified yet (",b51_account_why,"); no single opens until it is, and open positions keep their exits.");
+     }
 // B51:end b51-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
@@ -4598,7 +4609,9 @@ int OnInit()
 //-------------------------------------------------------------------------
    //if(Mode_Operation!=Operation_Batch) return INIT_PARAMETERS_INCORRECT;
    GoatTraceInit(); // Evidence failure never changes trading decisions.
+   g_GoatSingleInitTick=true;  // B51 (section 8.3): this tick is OnInit's own, on quotes that may be cached
    OnTick(); Sleep(50);
+   g_GoatSingleInitTick=false; // B51 (section 8.3)
    ChartRedraw(); Sleep(50);
    return (INIT_SUCCEEDED);
   }
@@ -6281,6 +6294,7 @@ void GoatTickBody()
    ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    tm_cur = TimeCurrent(); TimeCurrent(stm_cur);
    GoatRankTick(); // B44 item 5: blind export runs only (returns at once otherwise); measures, never trades
+   GoatSingleAccountWatch(); // B51 (section 8.4): removes the EA on a positively read non-demo; adopts once an unread account is verified
 //-------------------------------------------------------------------------
    if(IsNewDay())
    {
@@ -7461,7 +7475,7 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
   {
    int b50_side=(s.dir==OP_SELL ? 1 : 0);
    if(s.Virtual || s.Active || s.Traded) return false;            // only an idle real sequence: never a grid add, never a virtual leg
-   if(GoatSingleAccountRefusal()!="") {GoatSingleRefusal(b50_side,8,s.Desc,GoatSingleAccountRefusal()); return false;} // B51 (section 8.4): the tester or a broker-verified demo, asked on every attempt
+   {string b51_why=""; if(GoatSingleAccountState(b51_why)!=GOAT_ACCOUNT_DEMO_OK || g_GoatSingleAccountPending) {GoatSingleRefusal(b50_side,8,s.Desc,(b51_why!="" ? b51_why : "the account is being verified")); return false;}} // B51 (section 8.4): the tester or a broker-verified demo, asked on every attempt
    if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove(); return false;} // as Add_Level
    if(GoatCidGuardAddFrozen(s.dir,s.Level_Count+1)) return false; // B47: cid_duplicate freezes a real sequence's adds (as Add_Level)
    if(s.ManageOnlyFrozen(s.Level_Count+1)) return false;          // B49a (F1-lite): an unwritten restart record freezes adds (as Add_Level)
@@ -7766,6 +7780,7 @@ void GoatSingleModifySequence(SEQUENCE &s)
 void GoatSingleModify()
   {
    if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || (!(Single_BE_ATR>0.0) && !(Single_Trail_ATR>0.0) && !Single_Partial_BE)) return; // B51 (section 8.3): Single_Partial_BE moves a stop too
+   if(!GoatSingleQuotesFresh()) return; // B51 (section 8.3): no stop moves on a cached or empty quote
    GoatSingleModifySequence(Seq_Buy);
    GoatSingleModifySequence(Seq_Sell);
   }
@@ -7774,6 +7789,8 @@ void GoatSingleModify()
 // B51 (docs/b50/B50_ALPHA_DESIGN.md section 8.3): the single's one partial close, on the trailing cadence, before its
 // stop moves. Once the price is Single_Partial_ATR x the entry's ATR in favour, Single_Partial_Fraction of the position
 // closes, once per position.
+// - Fresh quotes only (GoatSingleQuotesFresh): OnInit's own tick and a cached quote after a reconnect must not use up the
+//   one partial or move a stop.
 // - Once only, across restarts: the broker decides. A position with an exit deal in its history, or with less volume than
 //   its entry deals, has had its partial (ours, one whose reply was lost, or a manual one). That read runs once per
 //   position in each run of the EA and again before every send; an unreadable history sends nothing. The slot below only
@@ -7795,6 +7812,23 @@ int      g_GoatPartialState[GOAT_SINGLE_PARTIAL_SLOTS];
 int      g_GoatPartialFails[GOAT_SINGLE_PARTIAL_SLOTS];
 datetime g_GoatPartialNext[GOAT_SINGLE_PARTIAL_SLOTS];
 bool     g_GoatPartialNoted[GOAT_SINGLE_PARTIAL_SLOTS];
+// Fresh: not OnInit's own tick, a bid and an ask above 0, and the symbol's last tick at most GOAT_SINGLE_QUOTE_MAX_AGE_S
+// seconds behind the server clock. TimeTradeServer runs on while the feed is silent; TimeCurrent stops with it, so it could
+// not show the age. One line each time the quotes go stale.
+#define GOAT_SINGLE_QUOTE_MAX_AGE_S 30
+bool GoatSingleQuotesFresh()
+  {
+   static bool b51_stale=false;
+   if(g_GoatSingleInitTick) return false;
+   MqlTick b51_tick;
+   bool b51_read=SymbolInfoTick(_Symbol,b51_tick);
+   bool b51_fresh=(b51_read && bid>0.0 && ask>0.0 && (long)TimeTradeServer()-(long)b51_tick.time<=GOAT_SINGLE_QUOTE_MAX_AGE_S);
+   if(!b51_fresh && !b51_stale)
+      Print("Single: no partial close or stop move on these quotes: bid=",DoubleToString(bid,_Digits)," ask=",DoubleToString(ask,_Digits),
+            " (empty, or the last tick is over ",IntegerToString(GOAT_SINGLE_QUOTE_MAX_AGE_S)," s old)");
+   b51_stale=!b51_fresh;
+   return b51_fresh;
+  }
 int GoatSinglePartialSlot(const ulong tk)
   {
    for(int b51_j=0;b51_j<GOAT_SINGLE_PARTIAL_SLOTS;b51_j++) if(g_GoatPartialTicket[b51_j]==tk) return b51_j;
@@ -7815,9 +7849,10 @@ bool GoatSinglePartialDone(const ulong tk)
    return false;
   }
 // The broker's answer for one position: 1 it has had a partial, 0 it has not, -1 unknown now (no entry deal in the loaded
-// history yet, or the read failed), which sends nothing.
-int GoatSinglePartialTruth(const ulong tk)
+// history yet, or the read failed), which sends nothing. b51_entry: its entry deals' volume.
+int GoatSinglePartialTruth(const ulong tk,double &b51_entry)
   {
+   b51_entry=0.0;
    if(!PositionSelectByTicket(tk)) return -1;
    ulong  b51_id=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
    double b51_vol=PositionGetDouble(POSITION_VOLUME);
@@ -7828,12 +7863,13 @@ int GoatSinglePartialTruth(const ulong tk)
      {
       ulong b51_deal=HistoryDealGetTicket(b51_j);
       if(b51_deal==0) return -1;
-      long b51_entry=HistoryDealGetInteger(b51_deal,DEAL_ENTRY);
-      if(b51_entry==DEAL_ENTRY_IN) b51_in+=HistoryDealGetDouble(b51_deal,DEAL_VOLUME);
-      else if(b51_entry==DEAL_ENTRY_OUT || b51_entry==DEAL_ENTRY_OUT_BY) b51_out=true;
+      long b51_kind=HistoryDealGetInteger(b51_deal,DEAL_ENTRY);
+      if(b51_kind==DEAL_ENTRY_IN) b51_in+=HistoryDealGetDouble(b51_deal,DEAL_VOLUME);
+      else if(b51_kind==DEAL_ENTRY_OUT || b51_kind==DEAL_ENTRY_OUT_BY) b51_out=true;
      }
    if(b51_out) return 1;
    if(!(b51_in>0.0)) return -1;
+   b51_entry=b51_in;
    return (b51_vol<b51_in-1e-8 ? 1 : 0);
   }
 // Why this close cannot be sent ("" = it can), and the close and remainder it would leave.
@@ -7852,10 +7888,19 @@ string GoatSinglePartialIllegal(const double b51_vol,double &b51_cut,double &b51
    if(MathAbs(b51_rest/b51_vstep-MathRound(b51_rest/b51_vstep))>1e-6) return "the remainder is not a multiple of the volume step "+DoubleToString(b51_vstep,2);
    return "";
   }
-void GoatSinglePartialClose(SEQUENCE &s,const int b51_slot,const ulong tk)
+void GoatSinglePartialClose(SEQUENCE &s,const int b51_slot,const ulong tk,const double b51_entry)
   {
    if(!PositionSelectByTicket(tk)) return;
    double b51_vol=PositionGetDouble(POSITION_VOLUME);
+   // A late fill can land after the history read. CTrade clamps a close to the position's volume, so a second close here
+   // could take the whole remainder: the volume must still be the entry's, read now.
+   if(b51_vol<b51_entry-1e-8)
+     {
+      g_GoatPartialState[b51_slot]=GOAT_PARTIAL_DONE;
+      s.RefreshTicketLots();
+      Print(s.Desc,": Single partial close already done: ticket=",IntegerToString((long)tk),": the volume fell to ",DoubleToString(b51_vol,2)," (a late fill)");
+      return;
+     }
    double b51_cut=0.0,b51_rest=0.0;
    string b51_why=GoatSinglePartialIllegal(b51_vol,b51_cut,b51_rest);
    if(b51_why!="")
@@ -7898,7 +7943,7 @@ void GoatSinglePartialClose(SEQUENCE &s,const int b51_slot,const ulong tk)
          " volume=",DoubleToString(b51_vol,2)," close=",DoubleToString(b51_cut,2)," retcode=",IntegerToString(b51_ret),
          " consecutive=",IntegerToString(b51_count)," backoff=",IntegerToString(b51_wait),"s");
   }
-void GoatSinglePartialSequence(SEQUENCE &s)
+void GoatSinglePartialSequence(SEQUENCE &s,const bool b51_fresh)
   {
    if(s.Virtual || !s.Active || !s.Traded) return;
    if(s.Adopted && !s.AdoptSizes) return;                    // as GoatSingleModifySequence: no frozen sizes, no entry ATR
@@ -7917,9 +7962,14 @@ void GoatSinglePartialSequence(SEQUENCE &s)
       if(b51_state==GOAT_PARTIAL_DONE || b51_state==GOAT_PARTIAL_SKIPPED) continue;
       double b51_open=PositionGetDouble(POSITION_PRICE_OPEN);
       bool   b51_due=((b51_buy ? b51_px-b51_open : b51_open-b51_px)>=Single_Partial_ATR*b51_atr-b51_eps);
-      if(b51_state==GOAT_PARTIAL_PENDING && !b51_due) continue;
-      if(b51_due && TimeCurrent()<g_GoatPartialNext[b51_k]) continue;   // backing off: no read, no attempt, no line
-      int b51_truth=GoatSinglePartialTruth(b51_tk);
+      if(!b51_fresh) b51_due=false;
+      // A failed attempt may still have filled: its position is read again once its wait ends, wherever the price is, or a
+      // late fill below the trigger would leave Single_Partial_BE waiting. Only a new send needs the trigger.
+      bool   b51_tried=(g_GoatPartialFails[b51_k]>0);
+      if(b51_state==GOAT_PARTIAL_PENDING && !b51_due && !b51_tried) continue;
+      if((b51_due || b51_tried) && TimeCurrent()<g_GoatPartialNext[b51_k]) continue;   // backing off: no read, no attempt, no line
+      double b51_entry=0.0;
+      int b51_truth=GoatSinglePartialTruth(b51_tk,b51_entry);
       if(b51_truth<0)
         {
          if(b51_due && !g_GoatPartialNoted[b51_k])
@@ -7935,35 +7985,67 @@ void GoatSinglePartialSequence(SEQUENCE &s)
          continue;
         }
       g_GoatPartialState[b51_k]=GOAT_PARTIAL_PENDING;
-      if(b51_due) GoatSinglePartialClose(s,b51_k,b51_tk);
+      if(b51_due) GoatSinglePartialClose(s,b51_k,b51_tk,b51_entry);
+      else if(b51_tried) g_GoatPartialNext[b51_k]=TimeCurrent()+GOAT_SINGLE_BACKOFF_STEADY_S; // nothing filled, nothing due: read again in a minute
      }
   }
 void GoatSinglePartial()
   {
    if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || !(Single_Partial_ATR>0.0)) return;
-   GoatSinglePartialSequence(Seq_Buy);
-   GoatSinglePartialSequence(Seq_Sell);
+   bool b51_fresh=GoatSingleQuotesFresh();
+   GoatSinglePartialSequence(Seq_Buy,b51_fresh);
+   GoatSinglePartialSequence(Seq_Sell,b51_fresh);
   }
 // B51:end b51-partial
 // B51:begin b51-account
 // B51 (section 8.4): the single-trade engine runs in the strategy tester or on a broker-verified demo account, never on
-// anything else, and no input changes that. "" = allowed; anything else is the reason it is not. OnInit refuses on it, and
-// GoatSingleOpen, the single's only way to open a position, asks again on every attempt. ACCOUNT_TRADE_MODE_DEMO is 0,
-// the value a failed AccountInfoInteger returns, so the mode alone proves nothing: the terminal must be connected, the
-// reads must set no error and the account must have a login and a server.
-string GoatSingleAccountRefusal()
+// anything else, and no input changes that. Three answers, with the reason in b51_why:
+// - GOAT_ACCOUNT_DEMO_OK: the tester, or a connected demo account.
+// - GOAT_ACCOUNT_NOT_DEMO: an account read without error, with a login and a server, whose mode is not demo. OnInit refuses
+//   it and GoatSingleAccountWatch removes the EA. A disconnected terminal still answers this: it knows a real account.
+// - GOAT_ACCOUNT_UNKNOWN: anything else. ACCOUNT_TRADE_MODE_DEMO is 0, the value a failed AccountInfoInteger returns, so a
+//   demo reading proves nothing without a connection, a clean read, a login and a server. The EA stays loaded so a running
+//   single keeps its exits, and GoatSingleOpen, the single's only way to open a position, refuses on every attempt.
+int GoatSingleAccountState(string &b51_why)
   {
-   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return "";
-   if(!TerminalInfoInteger(TERMINAL_CONNECTED)) return "the terminal is not connected to the broker";
+   b51_why="";
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return GOAT_ACCOUNT_DEMO_OK;
    ResetLastError();
    long   b51_login=AccountInfoInteger(ACCOUNT_LOGIN);
    long   b51_mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
    string b51_server=AccountInfoString(ACCOUNT_SERVER);
    int    b51_err=GetLastError();
-   if(b51_err!=0) return "the account mode cannot be read, error "+IntegerToString(b51_err);
-   if(b51_login<=0 || b51_server=="") return "the account has no login or server yet";
-   if(b51_mode!=ACCOUNT_TRADE_MODE_DEMO) return "this account is not a demo account";
-   return "";
+   if(b51_err!=0) {b51_why="the account mode cannot be read, error "+IntegerToString(b51_err); return GOAT_ACCOUNT_UNKNOWN;}
+   if(b51_login<=0 || b51_server=="") {b51_why="the account has no login or server yet"; return GOAT_ACCOUNT_UNKNOWN;}
+   if(b51_mode!=ACCOUNT_TRADE_MODE_DEMO) {b51_why="this account is not a demo account"; return GOAT_ACCOUNT_NOT_DEMO;}
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED)) {b51_why="the terminal is not connected to the broker"; return GOAT_ACCOUNT_UNKNOWN;}
+   return GOAT_ACCOUNT_DEMO_OK;
+  }
+bool GoatSingleAccountUnknown()
+  {
+   string b51_why="";
+   return (GoatSingleAccountState(b51_why)==GOAT_ACCOUNT_UNKNOWN);
+  }
+void GoatSingleAccountRemove(const string b51_why)
+  {
+   if(g_GoatSingleAccountRemoved) return;
+   g_GoatSingleAccountRemoved=true;
+   Alert("The single-trade engine is removing the EA ("+b51_why+"). Open positions keep their broker SL and TP.");
+   ExpertRemove();
+  }
+// On every tick. A positively read non-demo removes the EA. An account unread at OnInit, once verified, gets what OnInit
+// could not do: alpha's margin-mode check, and the adoption of positions the terminal had not loaded yet.
+void GoatSingleAccountWatch()
+  {
+   if(Engine_Mode!=Engine_Single) return;
+   string b51_why="";
+   int    b51_state=GoatSingleAccountState(b51_why);
+   if(b51_state==GOAT_ACCOUNT_NOT_DEMO) {GoatSingleAccountRemove(b51_why); return;}
+   if(!g_GoatSingleAccountPending || b51_state!=GOAT_ACCOUNT_DEMO_OK) return;
+   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {GoatSingleAccountRemove("netting is not supported"); return;}
+   g_GoatSingleAccountPending=false;
+   Print("Single-trade engine: the account is verified as a demo account.");
+   Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();
   }
 // B51:end b51-account
 void CloseAllPositions(int OP,int magic=0)

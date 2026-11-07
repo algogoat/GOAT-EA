@@ -716,7 +716,7 @@ class DemoAgent:
         if type(settle) is not bool:
             raise ValueError('settle must be a boolean')
         from studio_batch_pause import observe_monitor
-        from studio_cancel_regrant import publish, settle as settle_stop
+        from studio_cancel_regrant import human_waiting, publish, settle as settle_stop
         with self._exclusive(wait_seconds=5):
             try:
                 self._broker(idle=False)
@@ -725,8 +725,7 @@ class DemoAgent:
             except ValueError as exc:
                 raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_IDLE_DEMO') from exc
             with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
-                human = self.local / self.session['directory_id'] / 'human'
-                if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+                if human_waiting(controller):   # the bridge's inbox or processing folder, or the panel's pending_id
                     raise Refusal('A human TAKE CONTROL or GIVE TO AGENT has not been processed yet: keep serve running '
                                   'and retry. Nothing was sent.', 'REGRANT_HUMAN_PENDING')
                 worker = self.state_root / 'workers' / (batch_id + '.json')
@@ -951,6 +950,8 @@ class DemoAgent:
         # Read-only, before any terminal effect or STOP clear: a refusal an unchanged retry repeats ends here.
         previous = self._previous_attempt(job)
         self._refuse_unfixable_retry(batch_id, previous)
+        from studio_batch_pause import load as load_pause, refuse_v148_cancel_latch
+        refuse_v148_cancel_latch(load_pause(self.root, batch_id, quiet=True))
         if unactivated_hint(self.root, job):
             self.retire_unactivated(batch_id)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
@@ -2972,8 +2973,8 @@ class DemoAgent:
                      clear_stop=False, include_failed=False, include_no_edge=False, accept_news_change=False):
         """Continue a paused batch: remaining work under a new ID, started under the bounded driver."""
         from studio_batch import resume_batch
-        from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refusal, successor_id,
-                                        verify_resumable)
+        from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refuse_v148_cancel_latch, refusal,
+                                        successor_id, verify_resumable)
         from studio_protected_peer import refresh_process
         from studio_research_status import lineage, monitor_state
         if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
@@ -2986,6 +2987,7 @@ class DemoAgent:
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        refuse_v148_cancel_latch(record)            # read-only, before any release, STOP clear or successor ID is written
         from studio_batch_close import refuse_closed
         refuse_closed(self.root, batch_id)          # closed (batch-pause-close): never resumes, nothing is released
         # A reserved successor that never ran (retired unactivated / never started, or
@@ -3026,9 +3028,9 @@ class DemoAgent:
         new_id = new_batch_id or record.get('resume_batch_id') or successor_id(batch_id, existing)
         if not isinstance(new_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', new_id):
             raise ValueError('Invalid successor batch ID')
-        plan_resume(self.root, batch_id, new_id, now=self.clock())
         with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
             verify_resumable(controller, batch_id, resume_token)
+            plan_resume(self.root, batch_id, new_id, now=self.clock())   # after the verification, as continue does
             peer = refresh_process(controller)
             self._append('batch_resume', 'intent', batch_id=batch_id, successor_batch_id=new_id,
                          peer=peer.get('status'), broker=broker)

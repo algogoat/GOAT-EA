@@ -1,7 +1,9 @@
 """Mutation check for cancel-regrant (studio_cancel_regrant and what it binds).
 
 Each guard is removed in a temporary copy of controller/ and test_studio_cancel_regrant must
-fail. The repository is never modified. Run it directly: python scripts/test_cancel_regrant_mutations.py
+fail; a NameError, ImportError or SyntaxError in the report means the mutated copy broke, which is
+never counted as caught. A mutant whose run exceeds MUTANT_TIMEOUT_SECONDS is reported TIMEOUT, not counted as
+caught, and the sweep continues. The repository is never modified. Run it directly: python scripts/test_cancel_regrant_mutations.py
 Optional arguments START STOP run that slice of the list, so a long sweep can be split; a slice never reports the total as 100%.
 Off Windows, msvcrt is stubbed after the stdlib loads so demo_agent imports; that is local convenience,
 never evidence about Windows. Not wired into the CI shards.
@@ -10,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -25,6 +28,9 @@ RUNNER = ('import asyncio,multiprocessing,os,shutil,subprocess,sys,types,unittes
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 R = 'studio_cancel_regrant.py'
+BROKEN_COPY = ('ImportError', 'SyntaxError', 'NameError', 'UnboundLocalError')
+# The whole test file takes about 9 minutes at Idle priority on a busy PC (11-07), so 600 s cut healthy runs short.
+MUTANT_TIMEOUT_SECONDS = 1800
 MUTATIONS = [
     # Admission clauses
     ('lane not required', R, "if session.get('authority_kind') not in LANES or session.get('demo_only') is not True:",
@@ -102,16 +108,16 @@ MUTATIONS = [
     ('one stop re-arms a failed pause repeatedly', 'studio_batch_pause.py', "if record['state'] == 'pause_failed':\n        if record.get('regrant_request_id') == request_id:", "if record['state'] == 'pause_failed':\n        if False:"),
     ('failed pause not re-armed', 'studio_batch_pause.py', "record.update(state='pausing', failure=None, blocker=None, generation=generation, regrant_request_id=request_id)", "record.update(failure=None, blocker=None, generation=generation, regrant_request_id=request_id)"),
     # Verb
-    ('verb ignores a waiting human request', 'demo_agent.py', "if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n                    raise Refusal('A human TAKE CONTROL or GIVE", "if False:\n                    raise Refusal('A human TAKE CONTROL or GIVE"),
-    ('verb reads only the inbox', 'demo_agent.py', "if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n                    raise Refusal('A human TAKE CONTROL or GIVE", "if any(any((human / channel).glob('*.json')) for channel in ('inbox',)):\n                    raise Refusal('A human TAKE CONTROL or GIVE"),
+    # The verb reads the shared human_waiting (studio_cancel_regrant); its inbox/processing/pending_id mutants are below.
+    ('verb ignores a waiting human request', 'demo_agent.py', "if human_waiting(controller):   # the bridge's inbox", "if False:   # the bridge's inbox"),
     ('verb refused under owner STOP', 'demo_agent.py', "with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id)", "with self._studio('cancel-regrant', idle=False, owner_required=True, job_id=batch_id)"),
     ('verb skips the broker', 'demo_agent.py', "            try:\n                self._broker(idle=False)\n            except Refusal:\n                raise\n            except ValueError as exc:\n                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_IDLE_DEMO') from exc\n", ""),
     # Round 3: the customer lane (goat.exe studio cancel-regrant) and its demo proof
     ('customer lane refused', R, "LANES = frozenset(('demo_direct', 'native_human_control'))", "LANES = frozenset(('demo_direct',))"),
     ('broker skipped on the customer lane', R, "    native = _broker(controller)\n",
-     "    native = _broker(controller) if session.get('authority_kind') == 'demo_direct' else {}\n"),
+     "    native = _broker(controller) if controller.session.get('authority_kind') == 'demo_direct' else {}\n"),
     ('EA sample skipped on the customer lane', R, "    batch_ongoing = _runtime(controller, state)\n",
-     "    batch_ongoing = _runtime(controller, state) if session.get('authority_kind') == 'demo_direct' else True\n"),
+     "    batch_ongoing = _runtime(controller, state) if controller.session.get('authority_kind') == 'demo_direct' else True\n"),
     ('customer entry ignores a waiting human request', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        return True",
      "    if False:\n        return True"),
     ('customer entry reads only the inbox', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        return True",
@@ -130,17 +136,25 @@ MUTATIONS = [
     # Round 3 review: the settle path, V1.48's cancellation flag, an MT5 that is not reporting
     ('Open Lab refusal skipped under --settle', R, "    if str(session['account']['login']) in OPEN_LAB_LOGINS:",
      "    if not settle_stop and str(session['account']['login']) in OPEN_LAB_LOGINS:"),
-    ('human-pending refusal skipped under --settle', R, "    if _human_waiting(controller):", "    if not settle_stop and _human_waiting(controller):"),
+    ('human-pending refusal skipped under --settle', R, "    if human_waiting(controller):", "    if not settle_stop and human_waiting(controller):"),
     ('entry ignores the panel pending_id', R, "    return isinstance(observation, dict) and bool(observation.get('pending_id'))", "    return False"),
     ('admission ignores the panel pending_id', R, "    if observation.get('pending_id'):\n        # The panel", "    if False:\n        # The panel"),
     ('settle skips the demo-only lane', R, "    _require_lane(controller.session)\n    job, state = _read(controller, job_id)\n    attempt",
      "    job, state = _read(controller, job_id)\n    attempt"),
     ('customer entry accepts any lane', R, "    if session.get('authority_kind') != 'native_human_control':", "    if False:"),
-    ('V1.48 resume not refused', 'studio_batch_pause.py', "    if controller.install.get('ea_version') == '1.48' and record.get('regrant_request_id'):", "    if False:"),
-    ('V1.48 refusal for every pause', 'studio_batch_pause.py', "    if controller.install.get('ea_version') == '1.48' and record.get('regrant_request_id'):",
-     "    if controller.install.get('ea_version') == '1.48':"),
-    ('V1.48 settle advises batch-resume', R, "    if controller.install['ea_version'] == '1.48':\n        from studio_batch_pause import V148_CANCEL_LATCH",
-     "    if False:\n        from studio_batch_pause import V148_CANCEL_LATCH"),
+    ('V1.48 resume not refused', 'studio_batch_pause.py', "    if stop_ea_version(record) != '1.48':\n        return", "    if True:\n        return"),
+    ('V1.48 refusal for every pause', 'studio_batch_pause.py',
+     "    if not isinstance(record, dict) or not record.get('regrant_request_id') or not record.get('result_path'):",
+     "    if not isinstance(record, dict) or not record.get('result_path'):"),
+    ('verify_resumable skips the V1.48 refusal', 'studio_batch_pause.py',
+     "    # Before anything is prepared: the successor's start would be claimed, then refused (RESTART_RUNTIME_CHANGED).\n    refuse_v148_cancel_latch(record)\n", ""),
+    ('continue skips the V1.48 refusal', 'studio_fast_lane.py', "    refuse_v148_cancel_latch(load_pause(c.root, job_id, quiet=True))   # read-only", "    (load_pause(c.root, job_id, quiet=True))   # read-only"),
+    ('owner resume refuses only after writing', 'demo_agent.py', "        refuse_v148_cancel_latch(record)            # read-only", "        (record)            # read-only"),
+    ('owner continue refuses only after writing', 'demo_agent.py', "        refuse_v148_cancel_latch(load_pause(self.root, batch_id, quiet=True))\n", ""),
+    ('V1.48 settle advises batch-resume', R, "    if (finished.get('result') or {}).get('ea_version') == '1.48':   # the EA that consumed",
+     "    if False:   # the EA that consumed"),
+    ('V1.48 finished batch told members remain', R, "if record['state'] == 'finished'\n                       else 'The finished members",
+     "if False\n                       else 'The finished members"),
     ('finish refusal escalates while MT5 is not reporting', R, "        if waited > FINISH_PATIENCE_SECONDS and not _monitor_reporting(controller, monitor):", "        if False:"),
     ('a stale sample counts as reporting', R, "    return 0 <= time.time() - modified <= RUNTIME_MAX_AGE_SECONDS", "    return True"),
     ('a silent monitor counts as reporting', R, "    if monitor.get('ticking') is not True:\n        return False", "    if False:\n        return False"),
@@ -148,7 +162,7 @@ MUTATIONS = [
 
 
 def main():
-    caught = 0
+    caught = timed_out = 0
     selected = MUTATIONS[slice(*map(int, sys.argv[1:3]))] if len(sys.argv) > 2 else MUTATIONS
     for label, name, old, new in selected:
         with tempfile.TemporaryDirectory() as work:
@@ -161,14 +175,24 @@ def main():
                 raise SystemExit('mutation anchor missing: ' + label)
             module.write_text(text.replace(old, new, 1), encoding='utf-8')
             log = Path(work) / 'log.txt'
-            result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)], timeout=600, cwd=str(copy),
-                                    capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            started = time.monotonic()
+            try:
+                result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)], timeout=MUTANT_TIMEOUT_SECONDS,
+                                        cwd=str(copy), capture_output=True, text=True,
+                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            except subprocess.TimeoutExpired:
+                # Its own outcome, never counted as caught: a hang proves nothing about the guard. The sweep goes on.
+                timed_out += 1
+                print('TIMEOUT ' + label + ' after ' + str(MUTANT_TIMEOUT_SECONDS) + ' s', flush=True)
+                continue
             report = log.read_text(encoding='utf-8') if log.exists() else ''
-            # Caught means the tests ran and failed, not that the copy broke.
-            failed = (result.returncode == 1 and 'FAILED (' in report and 'ImportError' not in report and 'SyntaxError' not in report)
+            # Caught means the tests ran and failed, not that the copy broke: a mutant whose own text fails to import,
+            # parse or name its variables (ImportError, SyntaxError, NameError) proves nothing about the guard it removed.
+            failed = (result.returncode == 1 and 'FAILED (' in report
+                      and not any(broken in report for broken in BROKEN_COPY))
             caught += failed
-            print(('CAUGHT ' if failed else 'MISSED ') + label, flush=True)
-    print(f'{caught}/{len(selected)} selected mutations caught, of {len(MUTATIONS)} in the list')
+            print(('CAUGHT ' if failed else 'MISSED ') + label + ' (' + str(round(time.monotonic() - started)) + ' s)', flush=True)
+    print(f'{caught}/{len(selected)} selected mutations caught, {timed_out} timed out, of {len(MUTATIONS)} in the list')
     return 0 if caught == len(selected) else 1
 
 

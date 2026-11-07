@@ -519,8 +519,9 @@ def publish(controller, job_id, *, now=None):
                             'Disk when sent: ' + _disk_reading(disk) + '.')
 
 
-def _human_waiting(controller):
-    """A click not yet applied: a request in the bridge's inbox or processing folder, or the panel's pending_id."""
+def human_waiting(controller):
+    """A click not yet applied: a request in the bridge's inbox or processing folder, or the panel's pending_id.
+    Both entries (DemoAgent.cancel_regrant and studio_entry) read it on publish and on settle."""
     from studio_resilient_read import read_observation
     human = controller.bridge.root / 'human'
     if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
@@ -552,7 +553,7 @@ def studio_entry(controller, job_id, *, settle_stop=False, now=None):
                 'use goat.exe demo cancel-regrant.')
     if str(session['account']['login']) in OPEN_LAB_LOGINS:
         _refuse('REGRANT_PROTECTED_ACCOUNT', 'This demo account belongs to a GOAT Open Lab experiment; agents never change it.')
-    if _human_waiting(controller):
+    if human_waiting(controller):
         _refuse('REGRANT_HUMAN_PENDING', 'A human TAKE CONTROL or GIVE TO AGENT has not been processed yet: keep the GOAT app '
                 'open so serve processes it, and retry.')
     now = time.time() if now is None else now
@@ -674,11 +675,17 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
     after_batch(controller)
     end_state = journal.get('end_state') or dict(status='not_applicable', reason=journal.get('start_route'))
     next_action = 'Finished members and their results are kept; batch-resume continues the unfinished members.'
-    if controller.install['ea_version'] == '1.48':
-        from studio_batch_pause import V148_CANCEL_LATCH
-        next_action = ('Finished members and their results are kept. ' + V148_CANCEL_LATCH + ' To run the remaining members, '
-                       'ask the person to press Start in the GOAT Studio panel on this MT5.')
+    extra = {}
+    if (finished.get('result') or {}).get('ea_version') == '1.48':   # the EA that consumed this stop (studio_finish)
+        from studio_batch_pause import V148_CANCEL_FLAG, V148_REMAINING, v148_next, v148_support
+        next_action = (('Every member finished and its results are kept; nothing remains to run. ' + V148_CANCEL_FLAG
+                        + ', so GOAT cannot start another batch on this MT5 on a V1.48 EA.') if record['state'] == 'finished'
+                       else 'The finished members and their results are kept. ' + V148_REMAINING) + ' ' + v148_next(job_id)
+        extra = dict(escalate_to=v148_support(job_id))
+    elif record['state'] == 'finished':
+        next_action = 'Every member finished and its results are kept; nothing remains to resume.'
     if end_state.get('plain'):
         next_action = end_state['plain'] + ' ' + next_action
     return dict(summary, status=record['state'], batch_status=finished['status'], result_path=finished.get('result_path'),
-                pause=public(record), end_state=end_state, disk_observation=journal.get('disk_observation'), next_action=next_action)
+                pause=public(record), end_state=end_state, disk_observation=journal.get('disk_observation'), next_action=next_action,
+                **extra)

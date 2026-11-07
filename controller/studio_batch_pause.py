@@ -100,15 +100,56 @@ class PauseRefused(ValueError):
     """A plain, actionable reason a pause or resume cannot proceed."""
 
 
-# V1.48's stop sets MT5's persistent batch-cancelled flag (GOATStudioDispatch.mqh@f771b36:70), and its report-capable
-# start refuses while that flag is set, after writing its consumed claim (f771b36:178-188). Only an in-place start
-# (f771b36:216, never on a report-capable lane) or the person's accepted Batch Start in the panel (f771b36
-# Optimizer.mqh:3089) clears it. V1.49 keeps value 1 as a person's or legacy stop until that Start
-# (GOATBatchCancelOrigin.mqh), so updating the EA alone does not clear it.
-V148_CANCEL_LATCH = ('This V1.48 EA keeps MT5\'s batch-cancelled flag after GOAT\'s stop, and only the person\'s own Start in '
-                     'the GOAT Studio panel on this MT5 clears it: until then MT5 would claim GOAT\'s start of the remaining '
-                     'members and refuse it, so batch-resume cannot run them on this EA. Updating the EA to V1.49 does not '
-                     'clear it either: V1.49 keeps a V1.48 stop as the person\'s cancel (HUMAN_CANCEL_RETAINED) until that Start.')
+# V1.48's stop sets MT5's persistent batch-cancelled flag, GOAT_BatchCancelled (GOATStudioDispatch.mqh@f771b36:70).
+# Its report-capable start, for any batch, writes its consumed claim, then refuses while that flag is set (f771b36:178-188).
+# Only an in-place start (:216, never sent on a report-capable lane) or the panel's Batch Start (Optimizer.mqh
+# OnClickStart, :3089) clears it. In managed mode that button is TAKE CONTROL (GOATStudioUI.mqh:279, Optimizer.mqh:217-227),
+# and OnClickStart needs a Pending row, which the stop turned Cancelled (GOATStudioDispatch.mqh:83-84). V1.49 keeps value 1
+# as a person's or legacy stop (GOATBatchCancelOrigin.mqh, HUMAN_CANCEL_RETAINED). No remedy is proven from source, so
+# the reply names none: the finished members are kept, and the next step is the V1.49 upgrade plus a support report.
+V148_CANCEL_LATCH_CODE = 'RESUME_V148_CANCEL_LATCHED'
+V148_CANCEL_FLAG = ('This V1.48 EA keeps MT5\'s batch-cancelled flag (GOAT_BatchCancelled) after GOAT\'s stop, and every start '
+                    'GOAT sends on this lane refuses while it is set')
+V148_REMAINING = V148_CANCEL_FLAG + (', so GOAT cannot run this batch\'s remaining members, or start another batch on this MT5, '
+                                     'on a V1.48 EA.')
+
+
+def v148_next(batch_id):
+    """The next step after a V1.48 controller stop: the V1.49 upgrade, then a support report naming the batch."""
+    return ('Next: update the EA to V1.49 in GOAT > Terminals (V1.49 does not clear this flag by itself), then send a GOAT '
+            'support report naming batch ' + batch_id + ': support.prepareReport with category studio and ' + V148_CANCEL_LATCH_CODE
+            + ' in errorCodes; show the user the preview, then support.submitReport after their yes.')
+
+
+def v148_support(batch_id):
+    return dict(route='support.prepareReport', category='studio', errorCodes=[V148_CANCEL_LATCH_CODE], batch_id=batch_id,
+                include='this whole reply, unedited, as actual', send='support.submitReport, only after the user approved the preview')
+
+
+def stop_ea_version(record):
+    """The EA version that consumed this batch's stop: finish records it in the result this pause is bound to.
+    None when that result is missing or no longer hashes to the record (verify_resumable refuses those itself)."""
+    try:
+        raw = Path(record['result_path']).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != record['result_sha256']:
+            return None
+        return json.loads(raw.decode('utf-8')).get('ea_version')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def refuse_v148_cancel_latch(record):
+    """Read-only, so every resume route runs it before anything it writes: a batch a re-grant stopped on a V1.48 EA.
+    Keyed on the EA that consumed the stop, not the current receipt, which a later V1.49 upgrade changes."""
+    if not isinstance(record, dict) or not record.get('regrant_request_id') or not record.get('result_path'):
+        return
+    if stop_ea_version(record) != '1.48':
+        return
+    from studio_refusal import Refusal
+    job_id = record['job_id']
+    raise Refusal('Batch ' + job_id + ' was stopped by GOAT on a V1.48 EA; its finished members and their results are kept. '
+                  + V148_REMAINING + ' ' + v148_next(job_id) + ' Nothing was prepared.', V148_CANCEL_LATCH_CODE,
+                  batch_id=job_id, escalate_to=v148_support(job_id))
 
 
 def path(root, job_id):
@@ -622,12 +663,8 @@ def verify_resumable(controller, job_id, token=None):
         raise PauseRefused('No pause is recorded for batch ' + job_id + '; pause it first.')
     if record['state'] not in ('paused', 'resumed'):
         raise refusal(record)
-    if controller.install.get('ea_version') == '1.48' and record.get('regrant_request_id'):
-        # Before anything is prepared: the successor's start would be claimed, then refused (RESTART_RUNTIME_CHANGED).
-        from studio_refusal import Refusal
-        raise Refusal('Batch ' + job_id + ' was stopped by GOAT. ' + V148_CANCEL_LATCH + ' Ask the person to press Start in '
-                      'the GOAT Studio panel on this MT5 to run the remaining members. Nothing was prepared.',
-                      'RESUME_V148_CANCEL_LATCHED', batch_id=job_id)
+    # Before anything is prepared: the successor's start would be claimed, then refused (RESTART_RUNTIME_CHANGED).
+    refuse_v148_cancel_latch(record)
     job = controller.job(job_id)
     result_path = Path(record['result_path'])
     if (job['status'] not in ('cancelled', 'failed') or job.get('completion_path') != str(result_path)

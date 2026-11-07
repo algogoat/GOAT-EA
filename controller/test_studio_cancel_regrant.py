@@ -265,17 +265,35 @@ class StrandedFixture(PauseFixture):
 
     def assertEscalatesToSupport(self, refusal):
         """Every REGRANT_ESCALATE_* names where it goes: a support report carrying this exact reply."""
+        self.assertIn('escalate_to', refusal.fields)
         self.assertEqual(refusal.fields['escalate_to'], dict(
             route='support.prepareReport', category='studio', errorCodes=[refusal.code],
             include='this whole reply, unedited, as actual', send='support.submitReport, only after the user approved the preview'))
         self.assertIn('support.prepareReport', str(refusal))
 
+    def assertV148Reply(self, text, batch_id):
+        """What is known after a V1.48 stop, and nothing unproven: no panel Start or Global Variables advice."""
+        self.assertIn('GOAT cannot run this batch\'s remaining members', text)
+        self.assertIn('update the EA to V1.49 in GOAT > Terminals', text)
+        self.assertIn('support report naming batch ' + batch_id, text)
+        self.assertIn('support.prepareReport', text)
+        for unproven in ('press Start', 'Global Variable', 'batch-resume continues'):
+            self.assertNotIn(unproven, text)
+
+    def raised_by(self, call):
+        """The exception call raised, or None: any other exception than a Refusal is an assertion failure, not an error."""
+        try:
+            call()
+        except Exception as error:   # noqa: BLE001 - classified by the caller's assertion
+            return error
+        return None
+
     def assertRefused(self, code, call=None):
         before = self.issued(), sorted(p.name for p in (self.c.root / 'cancel-successors').glob('*')) if (self.c.root / 'cancel-successors').exists() else []
         request = (self.gate / 'request.json').read_bytes() if (self.gate / 'request.json').exists() else None
-        with self.assertRaises(Refusal) as caught:
-            (call or self.publish)()
-        self.assertEqual(caught.exception.code, code, str(caught.exception))
+        raised = self.raised_by(call or self.publish)
+        self.assertIsInstance(raised, Refusal, repr(raised))
+        self.assertEqual(raised.code, code, str(raised))
         after = self.issued(), sorted(p.name for p in (self.c.root / 'cancel-successors').glob('*')) if (self.c.root / 'cancel-successors').exists() else []
         self.assertEqual(after, before)
         self.assertEqual((self.gate / 'request.json').read_bytes() if (self.gate / 'request.json').exists() else None, request)
@@ -344,13 +362,14 @@ class ReplayTests(StrandedFixture):
         self.assertEqual(self.c.state()['queue'][0]['job_id'], 'g6')
         self.assertEqual(len(self.c.state()['queue']), 1)
         if self.c.install['ea_version'] == '1.48':
-            # V1.48's stop leaves MT5's cancellation flag set, which only the person's panel Start clears (f771b36
-            # GOATStudioDispatch.mqh:70, 178-188): the person's Start, never batch-resume, and nothing is prepared.
-            self.assertIn('press Start in the GOAT Studio panel', result['next_action'])
-            self.assertNotIn('batch-resume continues', result['next_action'])
+            # V1.48's stop leaves GOAT_BatchCancelled set (f771b36 GOATStudioDispatch.mqh:70, 178-188): GOAT cannot run the
+            # rest, and the reply offers no unproven remedy, only the V1.49 upgrade and a support report.
+            self.assertV148Reply(result['next_action'], 'g6')
+            self.assertEqual(result['escalate_to']['errorCodes'], ['RESUME_V148_CANCEL_LATCHED'])
             with self.assertRaises(Refusal) as caught:
                 pause.verify_resumable(self.c, 'g6', record['resume_token'])
             self.assertEqual(caught.exception.code, 'RESUME_V148_CANCEL_LATCHED')
+            self.assertV148Reply(str(caught.exception), 'g6')
             self.assertIn('Nothing was prepared.', str(caught.exception))
             self.assertEqual(len(self.c.state()['queue']), 1)
             self.assertEqual(self.settle()['status'], 'paused')
@@ -1402,6 +1421,20 @@ class VerbTests(StrandedFixture):
                 self.assertEqual(len(self.issued()), 2)
                 waiting.unlink()
 
+    def test_the_verb_settle_refuses_a_click_the_panel_has_not_delivered(self):
+        self.stranded()
+        agent = self.agent()
+        agent.cancel_regrant('g6'); self.ea_tick(); self.ea_tick()
+        path = self.c.local / 'ui-observation.json'   # human/pending.json is written before the inbox copy
+        value = read_json(path); value['pending_id'] = 'ui-control-takeover-3'; write_json(path, value)
+        with patch('studio_batch_pause.observe_monitor', return_value=ticking(self.now, tester_state='idle')):
+            with self.assertRaises(Refusal) as caught:
+                agent.cancel_regrant('g6', settle=True)
+            self.assertEqual(caught.exception.code, 'REGRANT_HUMAN_PENDING')
+            self.assertNotIn(self.c.job('g6')['status'], ('completed', 'cancelled', 'failed'))
+            self.ea_tick()   # the click applied
+            self.assertEqual(agent.cancel_regrant('g6', settle=True)['status'], 'paused')
+
     def test_algo_on_refuses_at_the_verb(self):
         self.stranded()
         self.mt5.trade_allowed = True
@@ -1468,18 +1501,83 @@ class ResumeLatchTests(StrandedFixture):
         self.assertEqual(self.settle()['status'], 'paused')
         return pause.load(self.c.root, 'g6')
 
-    def test_v148_refuses_and_v149_resumes(self):
+    def test_a_v148_stop_refuses_even_after_the_receipt_moves_to_v149(self):
         record = self.paused()
         with self.assertRaises(Refusal) as caught:
             pause.verify_resumable(self.c, 'g6', record['resume_token'])
         self.assertEqual(caught.exception.code, 'RESUME_V148_CANCEL_LATCHED')
-        self.assertIn('Start in the GOAT Studio panel', str(caught.exception))
-        self.c.install = dict(self.c.install, ea_version='1.49')   # the same record on a V1.49 receipt
-        self.assertEqual(pause.verify_resumable(self.c, 'g6', record['resume_token'])['state'], 'paused')
+        self.assertV148Reply(str(caught.exception), 'g6')
+        self.assertEqual(caught.exception.fields['escalate_to']['batch_id'], 'g6')
+        # The flag belongs to the EA that took the stop (studio_finish's ea_version), not to a later receipt.
+        self.c.install = dict(self.c.install, ea_version='1.49')
+        with self.assertRaises(Refusal) as caught:
+            pause.verify_resumable(self.c, 'g6', record['resume_token'])
+        self.assertEqual(caught.exception.code, 'RESUME_V148_CANCEL_LATCHED')
 
     def test_an_ordinary_pause_is_not_this_refusal(self):
         record = self.paused()
         record.pop('regrant_request_id'); write_json(pause.path(self.c.root, 'g6'), record)
+        self.assertIsNone(self.raised_by(lambda: pause.verify_resumable(self.c, 'g6')))
+
+    def test_continue_refuses_before_writing_anything(self):
+        self.paused()
+        before = sorted(str(p.relative_to(self.c.root)) for p in self.c.root.rglob('*'))
+        from studio_fast_lane import continue_batch
+        raised = self.raised_by(lambda: continue_batch(self.c, 'g6'))
+        self.assertIsInstance(raised, Refusal, repr(raised))
+        self.assertEqual(raised.code, 'RESUME_V148_CANCEL_LATCHED')
+        self.assertEqual(sorted(str(p.relative_to(self.c.root)) for p in self.c.root.rglob('*')), before)
+        self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
+
+    def agent(self):
+        class Terminal(demo_fixtures.Process):
+            identity = dict(pid=91, executable=self.c.install['terminal_executable'], created_utc='2026-09-28T00:00:00Z')
+        return DemoAgent(self.f.path, process=Terminal(), mt5=self.mt5, clock=lambda: self.now)
+
+    def assertOwnerLaneRefusesBeforeWriting(self, call):
+        """Owner lane: refused before any release, STOP clear or successor ID is written."""
+        self.paused()
+        agent = self.agent()
+        agent.state_root.mkdir(parents=True, exist_ok=True)
+        stop = agent.state_root / 'STOP'; write_json(stop, dict(actor='demo_agent'))
+        record = pause.load(self.c.root, 'g6')
+        raised = self.raised_by(lambda: call(agent))
+        self.assertIsInstance(raised, Refusal, repr(raised))
+        self.assertEqual(raised.code, 'RESUME_V148_CANCEL_LATCHED')
+        self.assertTrue(stop.exists())
+        self.assertEqual(pause.load(self.c.root, 'g6'), record)
+        self.assertNotIn('resume_batch_id', record)
+        self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
+
+    def test_owner_lane_batch_resume_refuses_before_writing(self):
+        self.assertOwnerLaneRefusesBeforeWriting(lambda agent: agent.batch_resume('g6', clear_stop=True))
+
+    def test_owner_lane_continue_refuses_before_writing(self):
+        self.assertOwnerLaneRefusesBeforeWriting(lambda agent: agent.continue_batch('g6', clear_stop=True))
+
+    def test_a_batch_that_finished_every_member_is_told_so(self):
+        self.stranded()
+        self.queue(['Completed'] * len(self.MEMBERS))   # every member completed while the human held control
+        for index in range(len(self.MEMBERS)):
+            self.write_reports(index)
+        self.publish(); self.ea_tick(); self.ea_tick()
+        result = self.settle()
+        self.assertEqual(result['status'], 'finished')
+        self.assertIn('Every member finished and its results are kept; nothing remains to run.', result['next_action'])
+        self.assertIn('GOAT cannot start another batch on this MT5', result['next_action'])
+        self.assertNotIn('remaining members', result['next_action'])
+        self.assertIn('update the EA to V1.49 in GOAT > Terminals', result['next_action'])
+
+
+class ResumeLatchV149Tests(StrandedFixture):
+    EA_VERSION = '1.49'
+
+    def test_a_v149_stop_resumes(self):
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        result = self.settle()
+        self.assertIn('batch-resume continues the unfinished members', result['next_action'])
+        self.assertNotIn('escalate_to', result)
         self.assertEqual(pause.verify_resumable(self.c, 'g6')['state'], 'paused')
 
 
@@ -1592,8 +1690,8 @@ class StudioEntryTests(CustomerLane, StrandedFixture):
         self.assertEqual((record['members_completed'], record['members_failed'], record['members_remaining']), (2, 1, 5))
         self.assertEqual(len(self.issued()), 3)
         if self.c.install['ea_version'] == '1.48':
-            # TBMEif's case: the person's Start in the panel, and batch-resume refuses before preparing anything.
-            self.assertIn('press Start in the GOAT Studio panel', result['next_action'])
+            # TBMEif's case: no remedy is offered beyond what is proven, and batch-resume refuses before preparing anything.
+            self.assertV148Reply(result['next_action'], 'g6')
             code, resumed = self.cli(operation='batch-resume')
             self.assertEqual((code, resumed.get('refusal_code')), (2, 'RESUME_V148_CANCEL_LATCHED'), resumed.get('error'))
             self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])

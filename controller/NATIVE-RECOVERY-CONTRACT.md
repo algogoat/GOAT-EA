@@ -164,7 +164,7 @@ lane, or `goat.exe studio cancel-regrant --job-id <id>` on the customer lane, pu
 one stop. Then run the same command with `--settle` until it answers `paused` or
 `finished`; it publishes nothing, and finishes the batch and completes its pause once
 MT5 consumed the stop. On V1.49, `batch-resume` then continues the unfinished members.
-On V1.48 it cannot (below), and `--settle` says so instead. Finished members keep their
+After a V1.48 stop it cannot (below), and `--settle` says so instead. Finished members keep their
 results and every earlier stop keeps its receipts. Nothing is deleted, and neither step
 starts work. Both are allowed under owner STOP, which cannot clear while the batch is
 unresolved.
@@ -173,9 +173,9 @@ unresolved.
 clause below and both demo proofs: the EA sample and the broker read through the
 MetaTrader5 adapter. `--settle` reads no broker on either entry. `finish` proves the
 EA's demo flag, Algo off and the idle tester under the native gate. Both entries check
-the demo-only lane on publish and on settle, and refuse while a human request waits
-(`REGRANT_HUMAN_PENDING`): in the bridge's inbox or processing folder, or as the panel's
-`pending_id`. The customer entry also refuses an Open Lab experiment login
+the demo-only lane on publish and on settle. Both refuse while a human request waits
+(`REGRANT_HUMAN_PENDING`), with one shared check (`human_waiting`): a request in the
+bridge's inbox or processing folder, or the panel's `pending_id`. The customer entry also refuses an Open Lab experiment login
 (`REGRANT_PROTECTED_ACCOUNT`), like this lane's close-terminal, monitor-launch and
 monitor-repair; the owner verb has no such check. The installed EA is the receipt's,
 because loading the receipt hashes it for every studio command. The customer entry runs
@@ -186,16 +186,31 @@ same way and answer with the same receipts. Only the batch base folder differs:
 `GOAT V1.48-<server>`, or V1.49's per-terminal and per-login folder. `controller_base`
 resolves it by version, so the stop's owner and pointer hashes are the ones that EA reads.
 
-**V1.48 after the stop.** V1.48's stop sets MT5's persistent batch-cancelled flag
-(`f771b36` GOATStudioDispatch.mqh:70). Its report-capable start writes its consumed
-claim, then refuses `RESTART_RUNTIME_CHANGED` while that flag is set (:178-188). Only an
-in-place start (:216, never used on a report-capable lane) or the person's accepted
-Batch Start in the panel (Optimizer.mqh:3089) clears it. V1.49 keeps value 1 as a
-person's or legacy stop until that Start (GOATBatchCancelOrigin.mqh), so updating the EA
-does not clear it either. On a V1.48 receipt, `--settle` therefore asks for the person's
-Start in the GOAT Studio panel instead of `batch-resume`. `batch-resume` and `continue`
-of a batch a re-grant stopped refuse `RESUME_V148_CANCEL_LATCHED` before anything is
-prepared, rather than spend a start MT5 would claim and refuse.
+**V1.48 after the stop.** V1.48's stop sets MT5's persistent batch-cancelled flag,
+`GOAT_BatchCancelled` (`f771b36` GOATStudioDispatch.mqh:70). Its report-capable start,
+for any batch, writes its consumed claim, then refuses `RESTART_RUNTIME_CHANGED` while
+that flag is set (:178-188). Only two things clear it:
+- an in-place start (:216), which GOAT never sends on a report-capable lane;
+- the panel's Batch Start (Optimizer.mqh `OnClickStart`, :3089).
+
+In managed mode that button reads TAKE CONTROL (GOATStudioUI.mqh:279, Optimizer.mqh:217-227),
+and `OnClickStart` needs a Pending row, which the stop turned Cancelled
+(GOATStudioDispatch.mqh:83-84). V1.49 keeps value 1 as a person's or legacy stop
+(GOATBatchCancelOrigin.mqh, `HUMAN_CANCEL_RETAINED`). No remedy is proven from source, so
+none is offered. When the EA that consumed the stop was V1.48 (`ea_version` in the
+finish result), the reply says what is known:
+- the finished members are kept;
+- GOAT cannot run this batch's remaining members, or start another batch on that MT5;
+- the next step is the V1.49 upgrade in GOAT > Terminals, then a support report naming
+  the batch, with `RESUME_V148_CANCEL_LATCHED` in `errorCodes`.
+
+`--settle` says this in `next_action` and `escalate_to`. `batch-resume` and `continue`
+(both lanes) refuse `RESUME_V148_CANCEL_LATCHED` with the same sentence before they write
+anything, rather than spend a start MT5 would claim and refuse.
+
+**Known limit:** on a V1.48 EA a controller stop leaves `GOAT_BatchCancelled` set; GOAT
+cannot resume that batch's remaining members. This predates the re-grant and holds for
+every V1.48 pause→resume. Only re-grant-stopped batches are refused up front.
 
 **Identity.** One stop per new grant recorded in the human channel:
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked

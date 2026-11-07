@@ -1,9 +1,12 @@
 // Mutation check for the B49b lag hotfix: every rule is load-bearing. Each mutant edits GOAT V1.49.mq5 or
 // GOAT_Inputs_Definitions.mqh in memory; test_b49b_lag.cjs, run on the mutated sources (GOAT_EA_MAIN, GOAT_EA_HEADER), must
-// then fail. Run in parallel, as the F1 mutants are (the controller job has a time cap).
+// then fail. Run in parallel, as the F1 mutants are (the controller job has a time cap). CI runs them as 4 shards:
+// GOAT_MUTATION_SHARD=N/M runs every Mth mutant from the Nth; unset runs all. Every anchor is checked in every shard.
 'use strict';
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawn}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),TEST=path.join(__dirname,'test_b49b_lag.cjs');
+const SHARD=/^([1-9]\d*)\/([1-9]\d*)$/.exec(process.env.GOAT_MUTATION_SHARD||'1/1');
+assert.ok(SHARD&&+SHARD[1]<=+SHARD[2],'GOAT_MUTATION_SHARD must be N/M with 1 <= N <= M');
 const SOURCES={main:fs.readFileSync(path.join(ROOT,'GOAT V1.49.mq5'),'utf8').replace(/^\uFEFF/,'').replace(/\r\n/g,'\n'),
  header:fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'),'utf8').replace(/^\uFEFF/,'').replace(/\r\n/g,'\n')};
 const MUTANTS=[
@@ -224,11 +227,12 @@ function runOn(texts){
 (async()=>{
  const base=await runOn(SOURCES);assert.equal(base.status,0,'the unmutated test passes on the scratch sources: '+base.stderr);
  for(const [file,label,from] of MUTANTS){const n=SOURCES[file].split(from).length-1;assert.equal(n,1,`mutant "${label}": its anchor must occur exactly once in ${file} (found ${n})`);}
+ const mine=MUTANTS.filter((_,i)=>i%+SHARD[2]===+SHARD[1]-1);
  let next=0,killed=0;const survivors=[];
- const worker=async()=>{while(next<MUTANTS.length){const [file,label,from,to]=MUTANTS[next++];
+ const worker=async()=>{while(next<mine.length){const [file,label,from,to]=mine[next++];
    const r=await runOn({...SOURCES,[file]:SOURCES[file].replace(from,()=>to)});
    if(r.status===0)survivors.push(label);else killed++;}};
  await Promise.all(Array.from({length:Math.max(2,Math.min(8,os.cpus().length))},worker));
  assert.deepEqual(survivors,[],'mutants survived');
- console.log(JSON.stringify({mutants:MUTANTS.length,killed}));
+ console.log(JSON.stringify({mutants:MUTANTS.length,shard:SHARD[0],ran:mine.length,killed}));
 })().catch(e=>{console.error(e);process.exit(1);});

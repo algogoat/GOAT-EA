@@ -718,7 +718,7 @@ def check_retest_inputs(configured, exported, reported, schema):
     the config set, and agree on each. A, MT5's report, is a cross-check when readable: on every input both list, A and B
     must agree; inputs only A lists (the runtime ones) must equal the config's pins. EA_Desc is the EA's own label and is
     not compared. Returns the number of inputs compared; raises one ValueError naming every disagreement."""
-    from studio_tester_report import RUNTIME_INPUT_DEFAULTS, _same_input
+    from studio_tester_report import RUNTIME_INPUT_DEFAULTS, _same_input, _schema_default
     if exported is None:
         raise ValueError("the EA's exported re-test SET is missing or unreadable")
     definitions = schema.get('inputs') or {}
@@ -728,7 +728,16 @@ def check_retest_inputs(configured, exported, reported, schema):
     unset = sorted(name for name in exported if name != 'EA_Desc' and name not in configured)
     if unset:
         problems.append('the EA exported input(s) the run did not set: ' + ', '.join(unset[:8]))
-    absent = sorted(name for name in configured if name in definitions and name != 'EA_Desc' and name not in exported)
+    # The append-only SET rule: the EA writes an input added after B49a only off its default (GOAT_Inputs_Definitions.mqh,
+    # e.g. `if(Engine_Mode!=Engine_Grid) FileWrite(...)`), so its export omits exactly the ones that ran at that default
+    # (D1 hunt 2026-11-07: every B51 sequence catch-up refused Engine_Mode, Clock_Mode, Random_Seed ...). An omitted input
+    # is a problem only when the config set another value, or GOAT cannot read the default (fails closed). MT5's report
+    # still cross-checks it below when readable.
+    def omitted_at_default(name):
+        default = _schema_default(definitions[name], schema.get('defines'))
+        return default is not None and _same_input(name, configured[name], default, kind(name))
+    absent = sorted(name for name in configured if name in definitions and name != 'EA_Desc' and name not in exported
+                    and not omitted_at_default(name))
     if absent:
         problems.append("the EA's export does not list input(s) the run set: " + ', '.join(absent[:8]))
     differ = [name for name in exported if name != 'EA_Desc' and name in configured

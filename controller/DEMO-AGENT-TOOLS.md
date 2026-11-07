@@ -295,6 +295,8 @@ safety rules, in `studio_batch_pause.py`:
   `cancel-regrant --batch-id <id> --settle` then finishes it to `paused` or
   `finished`. See "Stranded batch after a human takeover" in
   NATIVE-RECOVERY-CONTRACT.md for every admission clause and refusal code.
+  The customer lane has the same pair as `goat.exe studio cancel-regrant
+  --job-id <id> [--settle]`, with the same admission and both demo proofs.
 
 `batch-resume` refuses in plain words while the batch is still pausing, failed,
 finished, its monitor has a blocker, or an owner STOP is set (pass `--clear-stop`

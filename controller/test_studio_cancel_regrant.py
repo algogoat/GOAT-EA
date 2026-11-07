@@ -5,8 +5,15 @@ successor was issued, the human took control. Tester idle, native queue 2 comple
 1 error / 1 ongoing / 4 pending, owner=human, generation=2. No MT5 process is inspected,
 launched or signalled here. The report pairs are real files through the real report gate;
 the broker SDK and process inventory are the only fakes. This is not a Windows or MT5 replay.
+
+Both lanes (owner demo lane and customer lane) and both EA versions: on the portable V1.48
+receipt the simulated EA follows GOATStudioDispatch.mqh@f771b36, the V1.48 handler TBMEif's
+beta.6 EA runs; on a V1.49 receipt it follows the head handler.
 """
+import configparser
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -45,19 +52,21 @@ def regrant():
 
 class StrandedFixture(PauseFixture):
     MEMBERS = ('EURUSD.c', 'GBPUSD.c', 'USDJPY.c', 'AUDUSD.c', 'USDCAD.c', 'NZDUSD.c', 'EURJPY.c', 'GBPJPY.c')
+    LANE = 'demo_direct'   # the customer lane is bootstrap's own native_human_control
 
     def setUp(self):
         super().setUp()
         self.job_id = 'g6'
         self.now = int(time.time())
         self.batch_ongoing, self.tester, self.ea_demo, self.ea_fault = True, 'idle', True, None
-        session = read_json(self.c.root / 'session.json') | dict(authority_kind='demo_direct', demo_only=True)
+        session = read_json(self.c.root / 'session.json') | dict(authority_kind=self.LANE, demo_only=True)
         write_json(self.c.root / 'session.json', session)
         write_json(self.c.root / 'installation.json', self.c.install)
         self.c.session = session
         # The monitor's serve loop, the only unscoped reader a demo_direct session allows.
         serving = operation('serve'); serving.__enter__(); self.addCleanup(serving.__exit__, None, None, None)
         self.base = native_base(self.c)
+        self.assertEqual(self.ea_base(), self.base, 'the controller hashes the batch folder this EA version reads')
         # Results a completed member already produced: they must survive byte for byte.
         self.kept = self.run / 'reports' / 'member-1.xml'
         self.kept.parent.mkdir(parents=True); self.kept.write_bytes(b'<kept/>')
@@ -115,6 +124,21 @@ class StrandedFixture(PauseFixture):
         self.c.store.db.commit()
 
     # ---- the EA, simulated from GOATStudioDispatch.mqh -------------------------------------
+    def ea_base(self):
+        """The batch folder the EA reads, from the EA's own source, never from controller code.
+
+        V1.48 (GOATStudioDispatch.mqh@f771b36:63): GOAT\\GOAT V1.48-<server>. V1.49 (head, GOAT_TERMINAL_ISOLATION_V149):
+        GoatOptBasePath, GOAT\\GOAT V1.49-<server>-<login>-<first 8 hex of sha256 over the lowered data path>."""
+        i, account = self.c.install, self.c.session['account']
+        name = 'GOAT V' + i['ea_version'] + '-' + account['server']
+        if i['ea_version'] == '1.49':
+            path = str(i['terminal_data_root']).replace('/', '\\')
+            while len(path) > 3 and path.endswith('\\'):
+                path = path[:-1]
+            lowered = ''.join(chr(ord(ch) + 32) if 'A' <= ch <= 'Z' else ch for ch in path)
+            name += '-' + str(account['login']) + '-' + hashlib.sha256(lowered.encode('utf-8')).hexdigest()[:8]
+        return Path(i['common_files_root']).resolve() / 'GOAT' / name
+
     def ea_tick(self):
         """A monitor tick: publish the runtime sample, then answer a permitted request exactly once."""
         state = self.c.state()
@@ -146,6 +170,8 @@ class StrandedFixture(PauseFixture):
         return status
 
     def ea_cancel(self, request, body):
+        """GoatStudioCancelRequest: f771b36:22-88 on V1.48, the head handler on V1.49. Both check and consume alike; the
+        base folder (ea_base) is the one difference this sees. Neither confirms a stop through anything the controller reads."""
         snapshot = read_json(self.c.bridge.root / 'snapshot.json')['state']
         if (request.get('action') != 'cancel' or request['expires_utc'] <= self.now or request['expires_utc'] > self.now + STOP_LIFE
                 or request['owner'] != 'agent' or not self.ea_demo
@@ -155,10 +181,14 @@ class StrandedFixture(PauseFixture):
             return 'CANCEL_CONTROL_REVOKED'
         matched = any(item['job_id'] == request['job_id'] and item['configuration_sha256'] == request['configuration_sha256']
                       and item['status'] in ('starting', 'running', 'verifying', 'reconcile_required') for item in snapshot['queue'])
-        digest = lambda name: hashlib.sha256((self.base / name).read_bytes()).hexdigest()
+        base = self.ea_base()
+        digest = lambda name: hashlib.sha256((base / name).read_bytes()).hexdigest() if (base / name).is_file() else None
         if (not matched or digest('agent-native-control-owner.json') != request['native_owner_sha256']
                 or digest('active_optimization_run.ini') != request['pointer_sha256']):
             return 'CANCEL_NATIVE_OWNER_CHANGED'
+        pointer = (base / 'active_optimization_run.ini').read_bytes().decode('utf-16')
+        if 'RunPath=' + request['native_run'] + '\r\n' not in pointer:
+            return 'CANCEL_RUN_CHANGED'
         consumed = self.gate / ('consumed-' + request['request_id'] + '.json')
         if consumed.exists():
             return 'CANCEL_ALREADY_CONSUMED'
@@ -167,7 +197,7 @@ class StrandedFixture(PauseFixture):
             return None
         self.batch_ongoing = False
         for name in ('active_optimization_launch.ini', 'active_optimization_config.ini'):
-            (self.base / name).unlink(missing_ok=True)
+            (base / name).unlink(missing_ok=True)
         if self.ea_fault == 'save_fails':
             return 'CANCEL_SIGNAL_SENT_RECONCILE'
         if self.ea_fault == 'truncated':   # ReconstructFile opens for write, which truncates, then cannot write
@@ -232,6 +262,13 @@ class StrandedFixture(PauseFixture):
 
     def settle(self, **kwargs):
         return regrant().settle(self.c, 'g6', now=self.now, monitor=ticking(self.now, tester_state='idle'), **kwargs)
+
+    def assertEscalatesToSupport(self, refusal):
+        """Every REGRANT_ESCALATE_* names where it goes: a support report carrying this exact reply."""
+        self.assertEqual(refusal.fields['escalate_to'], dict(
+            route='support.prepareReport', category='studio', errorCodes=[refusal.code],
+            include='this whole reply, unedited, as actual', send='support.submitReport, only after the user approved the preview'))
+        self.assertIn('support.prepareReport', str(refusal))
 
     def assertRefused(self, code, call=None):
         before = self.issued(), sorted(p.name for p in (self.c.root / 'cancel-successors').glob('*')) if (self.c.root / 'cancel-successors').exists() else []
@@ -314,8 +351,11 @@ class ReplayTests(StrandedFixture):
         preset = Path(self.c.install['terminal_data_root']) / 'MQL5/Presets/GOAT Studio Agent.set'
         preset.parent.mkdir(parents=True, exist_ok=True)
         preset.write_bytes('Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16'))
-        with demo_agent_scope(root=self.c.root, installation_sha256=self.c.session['installation_sha256'],
-                              account=self.c.session['account'], job_id='g6-r1'), operation('prepare-batch'):
+        # The owner demo lane prepares through the broker-verified scope; the customer lane's batch-resume needs none.
+        scope = (demo_agent_scope(root=self.c.root, installation_sha256=self.c.session['installation_sha256'],
+                                  account=self.c.session['account'], job_id='g6-r1')
+                 if self.LANE == 'demo_direct' else contextlib.nullcontext())
+        with scope, operation('prepare-batch' if self.LANE == 'demo_direct' else 'batch-resume'):
             prepared = resume_batch(self.c, 'g6', 'g6-r1', allow_peer_refresh=True,   # as batch_resume calls it
                                     allow_binding_change=bool(binding_changed(self.c, 'g6')))
         self.assertEqual(prepared['member_count'], 5)
@@ -399,10 +439,12 @@ class AdmissionRefusalTests(StrandedFixture):
         self.ea_demo = False; self.ea_tick()
         self.assertRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
 
-    def test_not_the_demo_lane_refuses(self):
+    def test_a_lane_other_than_the_two_demo_lanes_refuses(self):
         self.stranded()
-        self.c.session = dict(self.c.session, authority_kind='native_human_control')
-        self.assertRefused('REGRANT_NOT_DEMO_LANE')
+        for lane in ('research_continuation', None, 'demo'):
+            with self.subTest(lane=lane):
+                self.c.session = dict(self.c.session, authority_kind=lane)
+                self.assertRefused('REGRANT_NOT_DEMO_LANE')
 
     def test_tester_busy_refuses_on_the_ea_sample_and_on_the_tester_caption(self):
         self.stranded()
@@ -465,6 +507,12 @@ class AdmissionRefusalTests(StrandedFixture):
         path = self.base / 'active_optimization_run.ini'
         path.write_bytes(path.read_bytes() + ' '.encode('utf-16-le'))
         self.assertRefused('REGRANT_POINTER_CHANGED')
+
+    def test_a_pointer_cut_by_a_reboot_refuses_with_its_code_not_an_internal_error(self):
+        self.stranded()
+        path = self.base / 'active_optimization_run.ini'
+        path.write_bytes('[ActiveOptimizationRun]\r\nRunPa'.encode('utf-16'))   # a write a reboot cut mid-line
+        self.assertRefused('REGRANT_NATIVE_OWNER_CHANGED')
 
     def test_no_successor_refuses(self):
         record, _ = self.request()
@@ -643,6 +691,7 @@ class ReportPrecheckTests(StrandedFixture):
         with self.assertRaises(Refusal) as caught:
             self.publish()
         self.assertEqual([(row['index'], row['status']) for row in caught.exception.fields['members']], [(1, 'reports_pending')])
+        self.assertEscalatesToSupport(caught.exception)
         # The refusal is retryable: the report arrives and the whole path still works.
         back.write_bytes(raw)
         self.publish(); self.ea_tick(); self.ea_tick()
@@ -711,10 +760,23 @@ class ReportPrecheckTests(StrandedFixture):
         self.assertIn('verified report pairs', caught.exception.fields['error'])
         self.assertEqual(caught.exception.fields['receipt'], 'CANCELLED_RECONCILE')
         self.assertEqual(caught.exception.fields['native_queue'], dict(native_cancelled=5, native_completed=2, native_error=1))
+        self.assertEscalatesToSupport(caught.exception)
         # Named, not terminal: fixing the cause still finishes, and no stop was added.
         back.write_bytes(raw)
         self.assertEqual(self.settle()['status'], 'paused')
         self.assertEqual(len(self.issued()), 3)
+
+    def test_a_block_finish_cannot_parse_after_the_stop_waits_then_escalates_by_name(self):
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        with patch('studio_finish.finish', side_effect=configparser.ParsingError('queue.GOAT')):
+            self.assertEqual(self.settle()['status'], 'finish_waiting')
+            self.now += pause.FINISH_PATIENCE_SECONDS + 1
+            with self.assertRaises(Refusal) as caught:
+                self.settle()
+        self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
+        self.assertEscalatesToSupport(caught.exception)
+        self.assertEqual(self.settle()['status'], 'paused')
 
     def test_a_queue_the_ea_could_not_save_ends_in_the_named_escalation(self):
         self.stranded()
@@ -846,10 +908,15 @@ class ReportPrecheckTests(StrandedFixture):
         self.assertFalse((self.gate / 'permit.json').exists())
         self.assertIn('GB free', self.publish()['next_action'])   # the floor is not a batch's 5 GB guard
 
-    def test_an_unreadable_disk_refuses(self):
+    def test_an_unreadable_disk_refuses_without_asking_to_free_space(self):
         self.stranded()
         with patch('studio_batch_driver.shutil.disk_usage', side_effect=OSError('gone')):
-            self.assertRefused('REGRANT_DISK_TOO_LOW')
+            self.assertRefused('REGRANT_DISK_UNREADABLE')
+            with self.assertRaises(Refusal) as caught:
+                self.publish()
+        self.assertNotIn('free disk space', caught.exception.fields['next_action'].lower())
+        self.assertIn('unavailable', caught.exception.fields['next_action'])
+        self.assertEqual(caught.exception.fields['disk_observation']['reason'], 'disk_probe_unavailable')
 
 
 class DriverParityTests(StrandedFixture):
@@ -1109,6 +1176,7 @@ class ClaimWithoutOutcomeTests(StrandedFixture):
         self.assertIn('native_queue', fields)
         self.assertIn('batch_ongoing', fields)
         self.assertNotIn('TAKE CONTROL', str(caught.exception))   # never the re-grant advice
+        self.assertEscalatesToSupport(caught.exception)
         self.assertEqual(pause.load(self.c.root, 'g6')['state'], 'pausing')
         self.assertEqual(len(self.issued()), 3)
 
@@ -1340,6 +1408,145 @@ class VerbTests(StrandedFixture):
             verb.reset_mock()
             demo_main(['--installation', 'x', 'cancel-regrant', '--batch-id', 'g6'])
             verb.assert_called_once_with('g6', settle=False)
+
+
+class CustomerLane:
+    """The customer lane: bootstrap's own native_human_control session, as on TBMEif's terminal (lane=customer)."""
+    LANE = 'native_human_control'
+
+
+class CustomerDeadlockTests(CustomerLane, DeadlockTests):
+    pass
+
+
+class CustomerReplayTests(CustomerLane, ReplayTests):
+    pass
+
+
+class CustomerAdmissionRefusalTests(CustomerLane, AdmissionRefusalTests):
+    pass
+
+
+class CustomerUnpinnedClauseTests(CustomerLane, UnpinnedClauseTests):
+    pass
+
+
+class V149ReplayTests(ReplayTests):
+    """The same replays on a V1.49 receipt: the head handler, reading its per-terminal, per-login batch folder."""
+    EA_VERSION = '1.49'
+
+
+class CustomerV149ReplayTests(CustomerLane, ReplayTests):
+    EA_VERSION = '1.49'
+
+
+class StudioEntryTests(CustomerLane, StrandedFixture):
+    """goat.exe studio cancel-regrant, end to end through goat_studio.main on the real store, gate and bridge."""
+
+    def cli(self, *extra):
+        from goat_studio import main as studio_main
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = studio_main(['--installation', str(self.f.path), 'cancel-regrant', '--job-id', 'g6', *extra])
+        return code, json.loads(out.getvalue())
+
+    def assertCliRefused(self, code, *extra):
+        issued, links = self.issued(), sorted(p.name for p in (self.c.root / 'cancel-successors').glob('*'))
+        exit_code, reply = self.cli(*extra)
+        self.assertEqual((exit_code, reply['ok'], reply.get('refusal_code')), (2, False, code), reply.get('error'))
+        self.assertIn('Nothing was sent.', reply['error'])
+        self.assertEqual(self.issued(), issued)
+        self.assertEqual(sorted(p.name for p in (self.c.root / 'cancel-successors').glob('*')), links)
+        return reply
+
+    def test_the_customer_command_runs_the_incident_from_publication_to_paused(self):
+        self.stranded()
+        report = self.kept.read_bytes()
+        code, published = self.cli()
+        self.assertEqual((code, published['result']['status']), (0, 'regrant_published_not_confirmed'))
+        identity = published['result']['request_id']
+        self.assertEqual(cancel_id(self.c.root, self.c.job('g6'), self.gate), identity)
+        self.assertEqual(self.ea_tick(), 'CANCELLED_RECONCILE'); self.ea_tick()
+        with patch('studio_batch_pause.observe_monitor', return_value=ticking(self.now, tester_state='idle')):
+            code, settled = self.cli('--settle')
+        result = settled['result']
+        self.assertEqual((code, result['status'], result['batch_status'], result['request_id']), (0, 'paused', 'failed', identity))
+        self.assertEqual(self.counts(), dict(native_cancelled=5, native_completed=2, native_error=1))
+        self.assertEqual(self.kept.read_bytes(), report)
+        record = pause.load(self.c.root, 'g6')
+        self.assertEqual((record['members_completed'], record['members_failed'], record['members_remaining']), (2, 1, 5))
+        pause.verify_resumable(self.c, 'g6', record['resume_token'])
+        self.assertEqual(len(self.issued()), 3)
+
+    def test_settle_publishes_nothing(self):
+        self.stranded()
+        with patch('studio_batch_pause.observe_monitor', return_value=ticking(self.now, tester_state='idle')):
+            self.assertCliRefused('REGRANT_NOT_PUBLISHED', '--settle')
+
+    def test_a_real_account_refuses_at_the_broker_and_on_the_ea_sample(self):
+        self.stranded()
+        self.mt5.trade_mode = 2
+        self.assertCliRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
+        self.mt5.trade_mode = 0
+        self.ea_demo = False; self.ea_tick()
+        self.assertCliRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
+
+    def test_algo_on_or_an_open_position_refuses(self):
+        self.stranded()
+        self.mt5.trade_allowed = True
+        self.assertCliRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
+        self.mt5.trade_allowed, self.mt5.positions = False, (object(),)
+        self.assertCliRefused('REGRANT_BROKER_NOT_IDLE_DEMO')
+
+    def test_an_unprocessed_human_request_refuses_in_either_channel_and_is_not_touched(self):
+        self.stranded()
+        for channel in ('inbox', 'processing'):
+            with self.subTest(channel=channel):
+                folder = self.c.bridge.root / 'human' / channel; folder.mkdir(parents=True, exist_ok=True)
+                waiting = folder / 'ui-take.json'; write_json(waiting, dict(request_id='ui-take'))
+                self.assertCliRefused('REGRANT_HUMAN_PENDING')
+                self.assertTrue(waiting.exists())
+                waiting.unlink()
+
+    def test_an_installed_ea_that_is_not_the_receipts_refuses_before_anything_is_read(self):
+        self.stranded()
+        binary = Path(self.c.install['terminal_data_root']) / 'MQL5/Experts' / self.c.install['ea_relative_path'].replace('\\', '/')
+        binary.write_bytes(binary.read_bytes() + b'changed')
+        exit_code, reply = self.cli()   # the receipt load hashes the EA for every studio command
+        self.assertEqual((exit_code, reply['ok'], reply['error']), (2, False, 'Installed EA hash differs from receipt; repair installation'))
+        self.assertEqual(len(self.issued()), 2)
+
+    def test_an_open_lab_experiment_login_refuses(self):
+        self.stranded()
+        import studio_onboarding
+        with patch.object(studio_onboarding, 'OPEN_LAB_LOGINS', frozenset((str(self.c.session['account']['login']),))):
+            self.assertCliRefused('REGRANT_PROTECTED_ACCOUNT')
+
+    def test_a_live_run_batch_driver_refuses(self):
+        self.stranded()
+        driver = self.c.root / 'batch-driver-gate'; driver.mkdir(exist_ok=True)
+        with exclusive_gate(driver):
+            self.assertCliRefused('REGRANT_BATCH_BUSY')
+
+    def test_the_demo_lane_keeps_its_own_verb(self):
+        self.stranded()
+        session = read_json(self.c.root / 'session.json') | dict(authority_kind='demo_direct')
+        write_json(self.c.root / 'session.json', session)
+        exit_code, reply = self.cli()
+        self.assertEqual((exit_code, reply['ok']), (2, False))
+        self.assertIn('broker-verified agent tool', reply['error'])   # the studio CLI's default-deny for demo_direct
+        self.c.session = session
+        with self.assertRaises(Refusal) as caught:
+            regrant().studio_entry(self.c, 'g6', now=self.now)
+        self.assertEqual(caught.exception.code, 'REGRANT_NOT_DEMO_LANE')
+        self.assertEqual(len(self.issued()), 2)
+
+    def test_the_command_is_listed_with_its_lane_and_lease(self):
+        import goat_studio
+        contract = goat_studio.OPERATION_CONTRACTS['cancel-regrant']
+        self.assertEqual((contract['required'], contract['optional']), (['job-id'], ['settle']))
+        self.assertIn('goat.exe demo cancel-regrant', contract['demo_lane'])
+        self.assertIn('cancel-regrant', goat_studio.TERMINAL_LEASE_OPERATIONS)
 
 
 if __name__ == '__main__':

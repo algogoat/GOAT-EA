@@ -157,6 +157,7 @@ OPERATION_CONTRACTS = {
     'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
+    'cancel-regrant':dict(required=['job-id'],optional=['settle'],demo_lane='goat.exe demo cancel-regrant --batch-id <id> [--settle]',effect='customer lane (demo only): after a human TAKE CONTROL and a new GIVE TO AGENT, publish that grant\'s one new stop for a batch whose stop and one successor expired unconsumed (NATIVE-RECOVERY-CONTRACT.md "Stranded batch after a human takeover"); refuses with a REGRANT_* code and sends nothing unless broker and EA both prove the connected flat demo with Algo off, the installed EA is the receipt\'s, it is not an Open Lab experiment login and no human request waits. --settle publishes nothing: observes that stop, then finishes the batch to paused or finished, keeping every completed member\'s results; batch-resume continues the rest'),
     'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else (native_human_control only; never on a demo_direct installation, where it is a pure read) register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
     'close-terminal':dict(required=['attempt-id'],optional=['build-id','timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats. When it read the GOAT monitor healthy just before its close (native_monitor facts, SDK Algo off, demo, bound login), it records the post-close chart hash monitor-launch may reopen (monitor_chart_record)'),
     'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback (plus account currency, balance, equity, leverage, company and trade mode), existing dashboard state and live deployment record for a desktop deploy review, and the Allow Algo Trading default MT5 saved (allow_live_trading_default, plus an informational notes entry when it is off; readiness_blockers stays empty for it; never written)'),
@@ -425,7 +426,7 @@ TERMINAL_LEASE_OPERATIONS=frozenset((
     'run-batch','seed-start','seed-resume','catchup-start','catchup-resume','close-terminal','deploy-load','deploy-stop',
     'monitor-launch','monitor-repair','monitor-stop','research-monitor-restart-resume',
     'research-monitor-repair-derived-report','research-monitor-repair-revoked-report','research-retire-never-started',
-    'bootstrap-retirement-apply'))
+    'bootstrap-retirement-apply','cancel-regrant'))
 
 
 def main(argv=None):
@@ -516,6 +517,7 @@ def main(argv=None):
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','cancel-rejected-successor'):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
+    p=sub.add_parser('cancel-regrant');p.add_argument('--job-id',required=True);p.add_argument('--settle',action='store_true',help='Publish nothing: observe the stop, then finish and complete the pause')
     p=sub.add_parser('research-monitor-reopen-prepare');p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-monitor-adopt-reopen');p.add_argument('--job-id',required=True);p.add_argument('--human-reopened',action='store_true')
     p=sub.add_parser('research-monitor-repair-derived-report');p.add_argument('--job-id',required=True)
@@ -855,6 +857,9 @@ def main(argv=None):
             elif args.operation=='cancel-rejected-successor':
                 from studio_cancel_successor import create
                 result=create(controller,args.job_id)
+            elif args.operation=='cancel-regrant':
+                from studio_cancel_regrant import studio_entry
+                result=studio_entry(controller,args.job_id,settle_stop=args.settle)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
             elif args.operation=='clear-queue':

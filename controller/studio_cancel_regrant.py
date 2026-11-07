@@ -20,7 +20,14 @@ prove a person clicked, and a same-user process writing into that folder is out 
 
 A consumed stop cannot be replaced, so every refusal finish would give after it that can be
 read beforehand is checked before publication (_finish_preflight), with the same report gate.
+
+Two lanes, both demo-only: the owner demo lane (goat.exe demo cancel-regrant) and the customer lane
+(goat.exe studio cancel-regrant, studio_entry). admit() proves demo the same way on both, from the
+EA sample (_runtime) and from the broker itself (_broker). The EA side is the same on V1.48 and
+V1.49: both consume a valid stop with the same receipts; only the batch base folder differs, and
+controller_base resolves it per version (V1.48 GOAT V1.48-<server>, V1.49 per terminal and login).
 """
+import configparser
 import hashlib
 import json
 from pathlib import Path
@@ -47,10 +54,22 @@ REPLACEABLE_RECEIPTS = frozenset(('CANCEL_REJECTED', 'CANCEL_CONTROL_REVOKED'))
 MIN_PUBLISH_FREE_BYTES = 256 * 1024**2
 NATIVE_GATE_WAIT_SECONDS = 15   # the EA holds this gate for its bounded 10 s stop confirmation
 NOTHING_SENT = ' Nothing was sent.'
+LANES = frozenset(('demo_direct', 'native_human_control'))
+# A file cut by a reboot mid-write fails to parse (configparser.Error is not a ValueError); it is evidence, not a crash.
+READ_ERRORS = (OSError, ValueError, KeyError, TypeError, configparser.Error)
+ESCALATE = (' Escalate it as a GOAT support report: support.prepareReport with category studio, this code in errorCodes and '
+            'this whole reply as actual; show the user the preview, then support.submitReport after their yes.')
 
 
 def _refuse(code, message, **fields):
     raise Refusal(message + NOTHING_SENT, code, **fields)
+
+
+def _escalation(code):
+    """Where a dead end goes: GOAT support, with this exact reply (GOAT-OPERATING-MODEL.md, "Support report")."""
+    return dict(escalate_to=dict(route='support.prepareReport', category='studio', errorCodes=[code],
+                                 include='this whole reply, unedited, as actual',
+                                 send='support.submitReport, only after the user approved the preview'))
 
 
 def _link_path(root, attempt, generation):
@@ -158,7 +177,7 @@ def _native_hashes(controller, job, prior):
         owner = json.loads(owner_raw.decode('utf-8'))
         manifest = json.loads((Path(job['launch_intent']['package']) / 'manifest.json').read_text(encoding='utf-8'))
         pointer = ini_sections(pointer_raw)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, configparser.Error) as error:
         _refuse('REGRANT_NATIVE_OWNER_CHANGED', 'Native control files could not be read: ' + str(error)[:200] + '.')
     owner_hash, pointer_hash = hashlib.sha256(owner_raw).hexdigest(), hashlib.sha256(pointer_raw).hexdigest()
     if owner.get('owner') != job['launch_intent']['attempt_id'] or owner_hash != prior.get('native_owner_sha256'):
@@ -222,7 +241,7 @@ def _finish_preflight(controller, job):
         reports = member_reports(controller, job, package, after_stop)
     except Refusal:
         raise
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except READ_ERRORS as error:
         _refuse('REGRANT_FINISH_WOULD_REFUSE', 'Finish would refuse this batch: ' + str(error)[:200] + '.')
     if not reports_verified(reports):
         rows = reports.get('members') or [reports]
@@ -234,8 +253,8 @@ def _finish_preflight(controller, job):
         # The tester is already proven idle here, so nothing is still migrating these reports.
         _refuse('REGRANT_ESCALATE_REPORTS_LOST', 'A completed member has no verified report pair and the tester is idle, so '
                 'nothing is still writing it. Finish would refuse this batch for good once the stop is consumed, so no stop was '
-                'sent and no command settles this batch. Keep every file and escalate: restoring the exact report pair lets '
-                'cancel-regrant run again.', members=unverified)
+                'sent and no command settles this batch. Keep every file; restoring the exact report pair lets cancel-regrant '
+                'run again.' + ESCALATE, members=unverified, **_escalation('REGRANT_ESCALATE_REPORTS_LOST'))
 
 
 def _disk_reading(disk):
@@ -247,6 +266,11 @@ def _disk_gate(controller):
     """Free space for the EA's queue rewrite and finish's result, read before anything changes."""
     from studio_batch_driver import _capacity
     disk = _capacity(controller, MIN_PUBLISH_FREE_BYTES)
+    if disk['reason'] == 'disk_probe_unavailable':
+        reading = _disk_reading(disk)
+        _refuse('REGRANT_DISK_UNREADABLE', 'A stop rewrites the native queue by truncating it first, so every volume it writes '
+                'must be readable and have room; found ' + reading + '.', disk_observation=disk,
+                next_action='Reconnect or repair the unavailable volume (' + reading + '), then run cancel-regrant again.')
     if disk['reason']:
         reading = _disk_reading(disk)
         _refuse('REGRANT_DISK_TOO_LOW', 'A stop rewrites the native queue by truncating it first, so a full disk could lose it. '
@@ -330,24 +354,25 @@ def _escalate_claim(controller, job, request_id, dispatch):
     facts = dict(request_id=request_id, claimed=True, receipt=dispatch.get('receipt', {}).get('status'))
     try:
         facts['native_queue'] = observe(Path(job['launch_intent']['package'])).get('status_counts')
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except READ_ERRORS as error:
         facts['native_queue_error'] = str(error)[:200]
     try:
         runtime = read_observation(controller.local / 'ui-observation.json')[0]['runtime']
         facts.update(batch_ongoing=runtime.get('batch_ongoing'), tester_state=runtime.get('tester_state'))
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except READ_ERRORS as error:
         facts['runtime_error'] = str(error)[:200]
     raise Refusal('MT5 claimed this stop but no receipt says it took effect, as after a reboot between its claim and its '
                   'receipt. Its effect is unknown, finish will not accept it, and no new stop is allowed, so no command settles '
-                  'this batch. Keep every file and escalate with these facts. Retrying changes nothing.',
-                  'REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME', **facts)
+                  'this batch. Keep every file. Retrying changes nothing.' + ESCALATE,
+                  'REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME', **facts, **_escalation('REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME'))
 
 
 def admit(controller, job, state, *, now):
     """Every clause, under the native gate. Returns the link to use; refuses with a reason code."""
     session = controller.session
-    if session.get('authority_kind') != 'demo_direct' or session.get('demo_only') is not True:
-        _refuse('REGRANT_NOT_DEMO_LANE', 'A cancellation re-grant exists only on the broker-verified demo lane.')
+    if session.get('authority_kind') not in LANES or session.get('demo_only') is not True:
+        _refuse('REGRANT_NOT_DEMO_LANE', 'A cancellation re-grant exists only on a demo-only lane: the owner demo lane or the '
+                'customer lane.')
     intent = job.get('launch_intent') or {}
     attempt = intent.get('attempt_id')
     if job.get('status') not in ACTIVE or not isinstance(attempt, str):
@@ -473,6 +498,34 @@ def publish(controller, job_id, *, now=None):
                             'Disk when sent: ' + _disk_reading(disk) + '.')
 
 
+def studio_entry(controller, job_id, *, settle_stop=False, now=None):
+    """goat.exe studio cancel-regrant: the customer lane's entry, with the owner verb's own pre-checks
+    (DemoAgent.cancel_regrant), before admit() runs every clause and both demo proofs again.
+
+    The account is not an Open Lab experiment login and no human request waits. The installed EA is the receipt's:
+    loading the receipt hashes it for every studio command (studio_installation.load_installation). A live run-batch
+    driver holds the driver gate for its whole run, so it refuses REGRANT_BATCH_BUSY here; the customer lane has no
+    detached worker. Called under the terminal lease (goat_studio TERMINAL_LEASE_OPERATIONS), so no seed, catch-up or
+    batch driver closes or relaunches MT5 meanwhile.
+    """
+    from studio_batch_pause import observe_monitor
+    from studio_onboarding import OPEN_LAB_LOGINS
+    session = controller.session
+    if session.get('authority_kind') != 'native_human_control' or session.get('demo_only') is not True:
+        _refuse('REGRANT_NOT_DEMO_LANE', 'goat.exe studio cancel-regrant is the customer lane\'s entry; on the owner demo lane '
+                'use goat.exe demo cancel-regrant.')
+    if str(session['account']['login']) in OPEN_LAB_LOGINS:
+        _refuse('REGRANT_PROTECTED_ACCOUNT', 'This demo account belongs to a GOAT Open Lab experiment; agents never change it.')
+    human = controller.bridge.root / 'human'
+    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+        _refuse('REGRANT_HUMAN_PENDING', 'A human TAKE CONTROL or GIVE TO AGENT has not been processed yet: keep the GOAT app '
+                'open so serve processes it, and retry.')
+    now = time.time() if now is None else now
+    if settle_stop:
+        return settle(controller, job_id, now=now, monitor=observe_monitor(controller, now))
+    return publish(controller, job_id, now=now)
+
+
 def _close_driver_journal(controller, job_id, result, pause, *, end_state_fn=None):
     """What the driver does after its verified finish: close its journal, then its one end state. Idempotent.
 
@@ -553,20 +606,21 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
         if controller.job(job_id)['status'] not in TERMINAL:
             controller.reconcile(job_id)
         finished = finish(controller, job_id, expected_generation=state['generation'])
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except READ_ERRORS as error:
         record = step(controller, job_id, now=now, monitor=monitor, finish_error=str(error))
         waited = now - (record.get('finishing_since') or now)
         if waited > FINISH_PATIENCE_SECONDS:
             from studio_native_observe import observe
             try:
                 queue = observe(Path(job['launch_intent']['package'])).get('status_counts')
-            except (OSError, ValueError, KeyError, TypeError) as read_error:
+            except READ_ERRORS as read_error:
                 queue = 'unreadable: ' + str(read_error)[:200]
             raise Refusal('MT5 took this stop, which cannot be replaced, and finish has refused the batch for '
-                          + str(round(waited)) + ' s: ' + str(error)[:240] + ' No command settles this batch. Keep every file and '
-                          'escalate; run cancel-regrant --settle again only once the cause is fixed.',
+                          + str(round(waited)) + ' s: ' + str(error)[:240] + ' No command settles this batch. Keep every file; '
+                          'run cancel-regrant --settle again only once the cause is fixed.' + ESCALATE,
                           'REGRANT_ESCALATE_FINISH_REFUSED', request_id=request_id, error=str(error)[:240], waited_seconds=round(waited),
-                          receipt=dispatch.get('receipt', {}).get('status'), native_queue=queue)
+                          receipt=dispatch.get('receipt', {}).get('status'), native_queue=queue,
+                          **_escalation('REGRANT_ESCALATE_FINISH_REFUSED'))
         return dict(summary, status='finish_waiting', error=str(error)[:240], pause=public(record),
                     next_action='MT5 took the stop. Keep the monitor reporting and run cancel-regrant --settle again; after '
                                 + str(FINISH_PATIENCE_SECONDS) + ' s this escalates as REGRANT_ESCALATE_FINISH_REFUSED.')

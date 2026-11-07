@@ -27,10 +27,10 @@ RUNNER = ('import asyncio,multiprocessing,os,shutil,subprocess,sys,types,unittes
 R = 'studio_cancel_regrant.py'
 MUTATIONS = [
     # Admission clauses
-    ('lane not required', R, "if session.get('authority_kind') != 'demo_direct' or session.get('demo_only') is not True:",
+    ('lane not required', R, "if session.get('authority_kind') not in LANES or session.get('demo_only') is not True:",
      "if session.get('demo_only') is not True:"),
-    ('demo_only not required', R, "if session.get('authority_kind') != 'demo_direct' or session.get('demo_only') is not True:",
-     "if session.get('authority_kind') != 'demo_direct':"),
+    ('demo_only not required', R, "if session.get('authority_kind') not in LANES or session.get('demo_only') is not True:",
+     "if session.get('authority_kind') not in LANES:"),
     ('frozen configuration not checked', R, "if sha(job['configuration']) != job['configuration_sha256']:", "if False:"),
     ('owner not checked', R, "if state['owner'] != 'agent':\n        _refuse('REGRANT_OWNER_NOT_AGENT', 'The human owns this terminal; ask them to click GIVE TO AGENT first.')\n    root, gate",
      "if False:\n        pass\n    root, gate"),
@@ -106,6 +106,27 @@ MUTATIONS = [
     ('verb reads only the inbox', 'demo_agent.py', "if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n                    raise Refusal('A human TAKE CONTROL or GIVE", "if any(any((human / channel).glob('*.json')) for channel in ('inbox',)):\n                    raise Refusal('A human TAKE CONTROL or GIVE"),
     ('verb refused under owner STOP', 'demo_agent.py', "with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id)", "with self._studio('cancel-regrant', idle=False, owner_required=True, job_id=batch_id)"),
     ('verb skips the broker', 'demo_agent.py', "            try:\n                self._broker(idle=False)\n            except Refusal:\n                raise\n            except ValueError as exc:\n                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_IDLE_DEMO') from exc\n", ""),
+    # Round 3: the customer lane (goat.exe studio cancel-regrant) and its demo proof
+    ('customer lane refused', R, "LANES = frozenset(('demo_direct', 'native_human_control'))", "LANES = frozenset(('demo_direct',))"),
+    ('broker skipped on the customer lane', R, "    native = _broker(controller)\n",
+     "    native = _broker(controller) if session.get('authority_kind') == 'demo_direct' else {}\n"),
+    ('EA sample skipped on the customer lane', R, "    batch_ongoing = _runtime(controller, state)\n",
+     "    batch_ongoing = _runtime(controller, state) if session.get('authority_kind') == 'demo_direct' else True\n"),
+    ('customer entry ignores a waiting human request', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        _refuse('REGRANT_HUMAN_PENDING'",
+     "    if False:\n        _refuse('REGRANT_HUMAN_PENDING'"),
+    ('customer entry reads only the inbox', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        _refuse('REGRANT_HUMAN_PENDING'",
+     "    if any(any((human / channel).glob('*.json')) for channel in ('inbox',)):\n        _refuse('REGRANT_HUMAN_PENDING'"),
+    ('customer entry skips the Open Lab refusal', R, "    if str(session['account']['login']) in OPEN_LAB_LOGINS:", "    if False:"),
+    ('customer entry outside the terminal lease', 'goat_studio.py', "'bootstrap-retirement-apply','cancel-regrant'))", "'bootstrap-retirement-apply'))"),
+    # Round 3: the P3s
+    ('a cut pointer escapes as an internal error', R, "    except (OSError, ValueError, configparser.Error) as error:\n        _refuse('REGRANT_NATIVE_OWNER_CHANGED'",
+     "    except (OSError, ValueError) as error:\n        _refuse('REGRANT_NATIVE_OWNER_CHANGED'"),
+    ('a cut block in finish escapes as an internal error', R, "READ_ERRORS = (OSError, ValueError, KeyError, TypeError, configparser.Error)",
+     "READ_ERRORS = (OSError, ValueError, KeyError, TypeError)"),
+    ('an unreadable volume is told to free space', R, "    if disk['reason'] == 'disk_probe_unavailable':", "    if False:"),
+    ('finish escalation names no destination', R, "                          **_escalation('REGRANT_ESCALATE_FINISH_REFUSED'))", "                          )"),
+    ('claim escalation names no destination', R, "**facts, **_escalation('REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME'))", "**facts)"),
+    ('reports escalation names no destination', R, "members=unverified, **_escalation('REGRANT_ESCALATE_REPORTS_LOST'))", "members=unverified)"),
 ]
 
 

@@ -159,13 +159,26 @@ already-issued stop rather than resending it. A new grant alone does not change 
 **Human step:** after TAKE CONTROL, GIVE TO AGENT in the Studio panel, with `serve`
 running so the grant is processed. Ask the user first: this stops the batch.
 
-**Agent steps:** `goat.exe demo cancel-regrant --batch-id <id>` publishes one stop.
-Then run `cancel-regrant --batch-id <id> --settle` until it answers `paused` or
+**Agent steps:** `goat.exe demo cancel-regrant --batch-id <id>` on the owner demo
+lane, or `goat.exe studio cancel-regrant --job-id <id>` on the customer lane, publishes
+one stop. Then run the same command with `--settle` until it answers `paused` or
 `finished`; it publishes nothing, and finishes the batch and completes its pause once
 MT5 consumed the stop. `batch-resume` then continues the unfinished members. Finished
 members keep their results and every earlier stop keeps its receipts. Nothing is
 deleted, and neither step starts work. Both are allowed under owner STOP, which
 cannot clear while the batch is unresolved.
+
+**Both lanes, both EA versions.** The two entries share every admission clause below
+and both demo proofs: the EA sample and the broker read through the MetaTrader5
+adapter. The customer entry adds the owner verb's own pre-checks: the account is not
+an Open Lab experiment login (`REGRANT_PROTECTED_ACCOUNT`) and no human request waits
+(`REGRANT_HUMAN_PENDING`). The installed EA is the receipt's, because loading the
+receipt hashes it for every studio command. It runs under the terminal lease. A live `run-batch` driver
+holds the driver gate for its whole run, so it refuses `REGRANT_BATCH_BUSY`. V1.48
+(`f771b36`) and V1.49 consume a valid stop the same way and answer with the same
+receipts. Only the batch base folder differs: `GOAT V1.48-<server>`, or V1.49's
+per-terminal and per-login folder. `controller_base` resolves it by version, so the
+stop's owner and pointer hashes are the ones that EA reads.
 
 **Identity.** One stop per new grant recorded in the human channel:
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked
@@ -180,7 +193,7 @@ refuses with its reason code and sends nothing:
 
 | Clause | Refusal |
 | --- | --- |
-| Broker-verified demo lane session | `REGRANT_NOT_DEMO_LANE` |
+| Demo-only session on the owner demo lane or the customer lane | `REGRANT_NOT_DEMO_LANE` |
 | An unresolved native attempt in the exact frozen configuration | `REGRANT_JOB_NOT_ACTIVE`, `REGRANT_CONFIG_CHANGED` |
 | `owner=agent` | `REGRANT_OWNER_NOT_AGENT` |
 | One issued cancellation successor exists, with verified evidence | `REGRANT_NO_PRIOR_SUCCESSOR`, `REGRANT_STOP_IDENTITY_CHANGED` |
@@ -192,13 +205,14 @@ refuses with its reason code and sends nothing:
 | Exactly one grant in the human channel created this generation: receipt, archive and actor-bound hash agree | `REGRANT_NO_ARCHIVED_GRANT` |
 | The attempt still matches its driver journal, apart from the generation | `REGRANT_ATTEMPT_CHANGED`, `REGRANT_NO_DRIVER_JOURNAL` |
 | `finish` would accept the batch after this stop | `REGRANT_REPORTS_NOT_VERIFIED` (retry), `REGRANT_ESCALATE_REPORTS_LOST`, `REGRANT_FINISH_WOULD_REFUSE` |
-| 256 MB free on every volume, all readable | `REGRANT_DISK_TOO_LOW` |
-| Native owner file names this attempt, same hash as the prior stop | `REGRANT_NATIVE_OWNER_CHANGED` |
+| 256 MB free on every volume, all readable | `REGRANT_DISK_TOO_LOW`, `REGRANT_DISK_UNREADABLE` |
+| Native owner file names this attempt, same hash as the prior stop; a file cut mid-write refuses too | `REGRANT_NATIVE_OWNER_CHANGED` |
 | Run pointer addresses this run, same hash as the prior stop | `REGRANT_POINTER_CHANGED` |
 | Fresh bound EA sample, tester idle, no pending restart, Algo off | `REGRANT_TESTER_NOT_IDLE`, `REGRANT_RUNTIME_NOT_VERIFIED` |
 | The EA reported this grant's owner and generation | `REGRANT_GRANT_NOT_OBSERVED` |
 | Broker and EA both report the connected, flat, paired demo with Algo off; a running tester caption refuses | `REGRANT_BROKER_NOT_IDLE_DEMO`, `REGRANT_TESTER_NOT_IDLE` |
-| No other GOAT process holds the batch, no human request waits (verb) | `REGRANT_BATCH_BUSY`, `REGRANT_LIVE_DRIVER`, `REGRANT_HUMAN_PENDING` |
+| No other GOAT process holds the batch, no human request waits (both entries) | `REGRANT_BATCH_BUSY`, `REGRANT_LIVE_DRIVER`, `REGRANT_HUMAN_PENDING` |
+| Customer entry: not an Open Lab experiment login (the EA hash is checked when the receipt loads) | `REGRANT_PROTECTED_ACCOUNT` |
 | The pause can re-arm | `REGRANT_PAUSE_NOT_REARMABLE` |
 
 An unanswered prior stop is accepted because every controller commit revokes its
@@ -217,12 +231,16 @@ still changing is `REGRANT_REPORTS_NOT_VERIFIED`, a retry.
 
 **Disk.** `ReconstructFile` opens `queue.GOAT` for writing, which truncates it, before
 it writes, so a full disk could lose the queue. Publication needs 256 MB free on every
-volume (`REGRANT_DISK_TOO_LOW`) and gives the reading in `next_action`. That floor is
+volume (`REGRANT_DISK_TOO_LOW`) and gives the reading in `next_action`; a volume
+that cannot be read is `REGRANT_DISK_UNREADABLE`, never "free disk space". That floor is
 deliberately far below a batch's own disk guard, so a batch stopping for low disk can
 still stop. It narrows the risk; only the EA could close it.
 
 **Where this ends in an escalation.** Each of these says what is known, sends nothing,
-and needs a person. No check is weakened to get past them.
+and needs a person. No check is weakened to get past them. Each names its destination
+in the sentence and in `escalate_to`: a GOAT support report (`support.prepareReport`,
+category `studio`, the code in `errorCodes`, the whole reply unedited as `actual`),
+sent with `support.submitReport` only after the user approved the preview.
 
 | Code | State | Why nothing automatic is safe |
 | --- | --- | --- |
@@ -262,12 +280,13 @@ re-arms a failed pause only once. The old driver's epoch is revoked and stays re
 **Nothing relaxed.** The EA is unchanged and keeps every check, including its demo-only
 check and `CANCEL_CONTROL_REVOKED`. `finish` still requires a consumed receipt, a
 settled native queue and, under the gate, an idle tester with no batch ongoing. No real
-account can enter: the verb is demo lane only and proves demo from the broker twice.
+account can enter: both entries are demo-only and prove demo from the EA and the broker.
 A refused re-grant stop is never replaced without another human TAKE CONTROL and GIVE
 TO AGENT. A batch whose first cancel never got a successor still refuses
 (`REGRANT_NO_PRIOR_SUCCESSOR`).
 
-Status: source and simulated-EA tests only. No Windows or MT5 replay has been done.
+Status: source and simulated-EA tests only, on both lanes and with both the V1.48
+(`f771b36`) and the V1.49 cancel handler simulated. No Windows or MT5 replay has been done.
 
 ## Native protocol requirements
 

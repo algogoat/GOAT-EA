@@ -30,6 +30,7 @@ const emaIndicator=phases=>(name,buffer,shift,w)=>{
 const BASE={Engine_Mode:'Engine_Single',Single_SL_ATR:1.5,Delay_Trade:0,Delay_Trade_Live:0,Mode_Bias:'Bias_Disabled',
  RSI_Mode:'RSI_Disabled',ADX_Mode:'Trade_Disabled',EMA_Mode:'Trade_Trend',EMA_Count:3,EMA_TF_:'TF_M15',Mode_Trade:'Long'};
 function world(source,inputs,phases,opts={}){
+ if(opts.tester===false&&inputs.Clock_Mode==='Clock_NewYork') source=H.withoutLiveNYRefusal(source);   // B52: its live code, without the build's OnInit refusal
  const W=H.build(source,{tester:opts.tester??true,fastSpeed:opts.fastSpeed??(opts.tester??true),inputs:{...BASE,...inputs},
   indicator:emaIndicator(phases),start:opts.start??MON,world:opts.world});
  W.panel=[];const setEdit=W.ctx.SetEdit;W.ctx.SetEdit=(field,text,...rest)=>{W.panel.push(String(text));return setEdit(field,text,...rest);};

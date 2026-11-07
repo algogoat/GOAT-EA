@@ -221,6 +221,20 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(!GoatChildAuditAdd(names,values,b50_names[n],b50_values[n])) return false;found=true;}
    }
    // B50:end b50-audit
+   // B49b:begin fix-audit
+   // B49b (F7): the fix flags are written by WriteSet only when on, like Ledger_Mode; a child that carries one while the
+   // SET does not must hold Off (0).
+   {
+      string fix_names[9]={"Fix_MoneyVolume","Gate_Recheck","Fix_ClosePath","Max_Spread_Points","Min_Margin_Level_PC","Fix_Clock","Fix_FeedGuard","Diag_TickTiming","Fix_TickLoad"};   // B49b: F7, F5, F3, F6, F4/R2, LAG-A, LAG-T, LAG-B (0 = off)
+      for(int n=0;n<ArraySize(fix_names);n++)
+      {
+         bool found=false;
+         for(int i=0;i<ArraySize(names);i++) if(names[i]==fix_names[n]) found=true;
+         for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]==fix_names[n])
+         {if(!GoatChildAuditAdd(names,values,fix_names[n],"0")) return false;found=true;}
+      }
+   }
+   // B49b:end fix-audit
    // B51:begin b51-audit
    // B51 (B50-beta): the same rule for the B50-beta inputs, appended at the end of the inputs.
    string b51_names[9]={"Random_Direction","Random_Seed","Single_Flat_Only","Single_BE_ATR","Single_Trail_Start_ATR","Single_Trail_ATR","Single_Partial_ATR","Single_Partial_Fraction","Single_Partial_BE"};

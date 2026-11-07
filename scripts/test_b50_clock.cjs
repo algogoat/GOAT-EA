@@ -50,6 +50,7 @@ const atr=(name)=>name==='ATR_MA'?0.0010:undefined;
 const sourceWith=(text,file=NYFILE)=>({files:H.loadSources(undefined,{[file]:text})});
 // A world over a source: tester (default) or live; serverOffset is the live terminal's real server offset (TimeGMT).
 function world(source,{inputs={},tester=true,serverOffset=2,start}={}){
+ if(!tester&&inputs.Clock_Mode==='Clock_NewYork') source=H.withoutLiveNYRefusal(source);   // B52: its live code, without the build's OnInit refusal
  const W=H.build(source,{tester,inputs:{...quiet,...inputs},indicator:atr,start,world:{serverOffset}});
  W.panel=[];const setEdit=W.ctx.SetEdit;W.ctx.SetEdit=(field,text,...rest)=>{W.panel.push(String(text));return setEdit(field,text,...rest);};
  W.apply=t=>{W.w.time=t;W.ctx.GoatNYClockApply(0);return W.ctx;};   // the call alone (as if the server block were off)
@@ -316,6 +317,15 @@ function runAll(src){
 // 1. The tree passes every check.
 const treeFailures=runAll(undefined);
 assert.deepEqual(treeFailures,[],'GOAT_NYClock.mqh: the expected checks');
+// B52 (the final build's review, P1): the tree itself refuses the New York clock on a live chart at OnInit (INIT_FAILED,
+// with the EA's own sentence) and runs it in the tester as before; the live checks above run without that one refusal.
+{
+ let code=null;try{H.build(undefined,{tester:false,inputs:{...quiet,Clock_Mode:'Clock_NewYork'},indicator:atr,world:{serverOffset:3}});}catch(e){code=e.initCode;}
+ assert.equal(code,1,'live: the New York clock is refused at OnInit (INIT_FAILED)');
+ assert.match(MAINSRC,/Initialization Failed: the New York clock is tester-only in this build/,'the refusal says why');
+ H.build(undefined,{tester:true,inputs:{...quiet,Clock_Mode:'Clock_NewYork'},indicator:atr,world:{serverOffset:3}});   // the tester: no refusal
+ H.build(undefined,{tester:false,inputs:{...quiet,Clock_Mode:'Clock_Server'},indicator:atr,world:{serverOffset:3}});   // live, server clock: no refusal
+}
 // The mutants' route (the file's text as an override) passes too, so a kill below is the mutation's, not the route's.
 assert.deepEqual(runAll(sourceWith(SRC)),[],'the override route of the unmutated file passes');
 assert.deepEqual(runAll(sourceWith(MAINSRC,H.MAIN)),[],'the override route of the unmutated entrypoint passes');

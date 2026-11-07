@@ -9,9 +9,10 @@ import json
 from pathlib import Path
 import unittest
 
-from studio_strategy_settings import (APPENDED_INPUTS, B50_INPUTS, B51_INPUTS, appended_default, complete_appended_inputs,
-                                      read_values, validate_strategy)
+from studio_strategy_settings import (APPENDED_INPUTS, B49B_INPUTS, B50_INPUTS, B51_INPUTS, appended_default,
+                                      complete_appended_inputs, read_values, validate_strategy)
 from studio_input_readback import explicit_paste_inputs, verify_input_readback
+from studio_export_inputs import verify_export_inputs
 import studio_tester_report as tester_report
 from campaign_ledger import sha
 from studio_native_request import ini_sections
@@ -19,6 +20,9 @@ import test_goat_studio as goat_studio_tests   # its PortableControllerTests fix
 from test_studio_pinned_tester_inputs import compass_like_template
 
 ROOT = Path(__file__).resolve().parent
+# B49b's own appended line: B49a's Ledger_Mode and B49b's nine fix inputs, sinputs that each default to 0. B50's and
+# B51's have their own tests below, with their own declarations and defaults.
+B49B_LINE = ('Ledger_Mode',) + B49B_INPUTS
 
 
 class AppendedInputTests(unittest.TestCase):
@@ -31,15 +35,30 @@ class AppendedInputTests(unittest.TestCase):
     def test_the_appended_inputs_are_ledger_mode_last_in_the_header_defaulting_to_legacy(self):
         self.assertEqual(APPENDED_INPUTS[0], 'Ledger_Mode')
         # B50 (A0): the appended inputs are the header's last ones, in order, after B47's 114.
-        self.assertEqual(list(self.schema['inputs'])[-len(APPENDED_INPUTS):], list(APPENDED_INPUTS))
+        self.assertEqual(list(self.schema['inputs'])[-len(APPENDED_INPUTS):], list(APPENDED_INPUTS), 'appended last, in order')
         self.assertEqual(len(self.schema['inputs']), 114 + len(APPENDED_INPUTS))
+        # B49b: its nine follow B50-alpha's and come before B51's (B49b's header: Claude-Mac 6433854745 ruling 6).
+        self.assertEqual(B49B_INPUTS, ('Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC', 'Fix_Clock', 'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad'))
+        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS)
         definition = self.schema['inputs']['Ledger_Mode']
         self.assertEqual((definition['type'], definition['declaration'], definition['default_expression']),
                          ('ENUM_LEDGER_MODE', 'sinput', 'Ledger_Legacy'))
         self.assertEqual(definition['enum_choices'], {'Ledger_Legacy': 0, 'Ledger_PositionJoin': 1})
-        self.assertEqual(appended_default(definition), '0')
-        # The same default the tester report pins for any omitted input (GOAT-EA#250).
-        self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), '0')
+        # B49b (F7): a per-fix flag, Off = B49a.
+        fix = self.schema['inputs']['Fix_MoneyVolume']
+        self.assertEqual((fix['type'], fix['declaration'], fix['default_expression']), ('ENUM_GOAT_FIX', 'sinput', 'GoatFix_Off'))
+        self.assertEqual(fix['enum_choices'], {'GoatFix_Off': 0, 'GoatFix_On': 1})
+        # B49b (F5): Gate_Recheck, Legacy = B49a.
+        gate = self.schema['inputs']['Gate_Recheck']
+        self.assertEqual((gate['type'], gate['declaration'], gate['default_expression']), ('ENUM_GATE_RECHECK', 'sinput', 'Gate_Legacy'))
+        self.assertEqual(gate['enum_choices'], {'Gate_Legacy': 0, 'Gate_AtFirstOrder': 1})
+        # B49b (F3): Fix_ClosePath, the shared fix type.
+        close = self.schema['inputs']['Fix_ClosePath']
+        self.assertEqual((close['type'], close['declaration'], close['default_expression']), ('ENUM_GOAT_FIX', 'sinput', 'GoatFix_Off'))
+        for name in B49B_LINE:
+            self.assertEqual(appended_default(self.schema['inputs'][name]), '0', name)
+            # The same default the tester report pins for any omitted input (GOAT-EA#250).
+            self.assertEqual(tester_report._schema_default(self.schema['inputs'][name], self.schema.get('defines')), '0', name)
 
     def test_the_b50_inputs_follow_ledger_mode_and_default_to_b49a(self):
         # B50 (A0, docs/b50/B50_ALPHA_DESIGN.md section 2): twelve inputs after Ledger_Mode; every default reproduces
@@ -131,11 +150,29 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(validate_strategy(dict(self.full), self.schema)['axes'], checked['axes'])
 
     def test_a_set_may_choose_position_join_but_nothing_undeclared(self):
-        self.assertEqual(validate_strategy(dict(self.old, Ledger_Mode='1'), self.schema)['values']['Ledger_Mode'], '1')
-        with self.assertRaisesRegex(ValueError, 'Ledger_Mode: Undeclared enum value'):
-            validate_strategy(dict(self.old, Ledger_Mode='2'), self.schema)
-        with self.assertRaisesRegex(ValueError, 'Ledger_Mode: Input not exposed for optimization'):
-            validate_strategy(dict(self.old, Ledger_Mode='0||0||1||1||Y'), self.schema)
+        for name in B49B_LINE:
+            self.assertEqual(validate_strategy(dict(self.old, **{name: '1'}), self.schema)['values'][name], '1')
+            if self.schema['inputs'][name].get('enum_choices'):   # B49b (F6): the pre-trade caps are plain numbers
+                with self.assertRaisesRegex(ValueError, name+': Undeclared enum value'):
+                    validate_strategy(dict(self.old, **{name: '2'}), self.schema)
+            with self.assertRaisesRegex(ValueError, name+': Input not exposed for optimization'):
+                validate_strategy(dict(self.old, **{name: '0||0||1||1||Y'}), self.schema)
+
+    def test_the_pre_trade_caps_only_tighten(self):
+        # B49b (F6, Claude-Mac GOAT-EA#281 6445315361): Max_Spread_Points 0..9999 (B49a's fixed MaxSP), both caps >= 0.
+        for name, value in (('Max_Spread_Points', '0'), ('Max_Spread_Points', '30'), ('Max_Spread_Points', '9999'),
+                            ('Min_Margin_Level_PC', '0'), ('Min_Margin_Level_PC', '150.0'), ('Min_Margin_Level_PC', '100000'),
+                            ('Max_Spread_Points', '30||10000||1||10000||N')):            # a dormant tuple runs its first field
+            with self.subTest(name=name, value=value):
+                self.assertEqual(validate_strategy(dict(self.old, **{name: value}), self.schema)['values'][name], value)
+        for name, value in (('Max_Spread_Points', '10000'), ('Max_Spread_Points', '50000'), ('Max_Spread_Points', '-1'),
+                            ('Min_Margin_Level_PC', '-0.5'), ('Min_Margin_Level_PC', '-100'),
+                            ('Max_Spread_Points', '50000||0||1||10||N')):
+            with self.subTest(name=name, value=value):
+                with self.assertRaisesRegex(ValueError, '^PRETRADE_CAP_OUT_OF_RANGE: .*' + name + '=' + value.replace('|', r'\|')):
+                    validate_strategy(dict(self.old, **{name: value}), self.schema)
+        # An omitted cap is its default, 0 (off), and passes.
+        validate_strategy(dict(self.old), self.schema)
 
     def test_every_other_input_stays_required_and_unknown_inputs_stay_refused(self):
         missing = {k: v for k, v in self.old.items() if k != 'Mode_News'}
@@ -148,22 +185,28 @@ class AppendedInputTests(unittest.TestCase):
         self.assertIsNot(complete_appended_inputs(self.old, self.schema), self.old)
         self.assertNotIn('Ledger_Mode', self.old)
         self.assertEqual(complete_appended_inputs(dict(self.old, Ledger_Mode='1'), self.schema)['Ledger_Mode'], '1')
-        # A schema without the input (the V1.48 contract) adds nothing.
+        self.assertEqual(complete_appended_inputs(dict(self.old, Fix_MoneyVolume='1'), self.schema)['Fix_MoneyVolume'], '1')
+        # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no B50 input, fix flag or B51 input) adds
+        # only Ledger_Mode.
         v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in APPENDED_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, v148), self.old)
+        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in B50_INPUTS + B49B_INPUTS + B51_INPUTS})
+        self.assertEqual(complete_appended_inputs(self.old, b49a), dict(self.old, Ledger_Mode='0'))
 
     def test_the_paste_sets_the_default_instead_of_inheriting_the_last_run(self):
         pasted = explicit_paste_inputs(dict(self.old), self.schema)
-        self.assertEqual(pasted['Ledger_Mode'], '0||0||0||0||N')
+        for name in B49B_LINE:
+            self.assertEqual(pasted[name], '0||0||0||0||N', name)
 
     def test_the_readback_wants_the_default_and_catches_a_position_join_run(self):
         observed = complete_appended_inputs(dict(self.full), self.schema)   # MT5 reports every input (B50's at their defaults)
-        self.assertEqual(observed['Ledger_Mode'], '0')
+        self.assertEqual({name: observed[name] for name in B49B_LINE}, {name: '0' for name in B49B_LINE})
         self.assertEqual(verify_input_readback(dict(self.old), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Engine_Mode'):
             verify_input_readback(dict(self.old), dict(observed, Engine_Mode='1'), self.schema)   # B50: a Single run for a B49a SET
-        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
-            verify_input_readback(dict(self.old), dict(observed, Ledger_Mode='1'), self.schema)
+        for name in B49B_LINE:
+            with self.assertRaisesRegex(ValueError, 'Fixed input value changed: '+name):
+                verify_input_readback(dict(self.old), dict(observed, **{name: '1'}), self.schema)
 
 
 class AppendedInputPrepareTests(unittest.TestCase):
@@ -194,6 +237,103 @@ class AppendedInputPrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
             verify_input_readback(dict(stored), dict(stored, Ledger_Mode='1'), c.schema)
 
+
+class LedgerModeRoundTripTests(unittest.TestCase):
+    """Claude-Mac GOAT-EA#267 P2 (B49b PR-0): a PositionJoin research run's export survives the whole round trip:
+    the EA's WriteSet line, the controller's export check (studio_export_scan's verify_export_inputs), a reload of the
+    exported SET, its paste into the next run and that run's input readback, all as PositionJoin. A writer that drops
+    the line (B47's, or the ungated B49a mutant's opposite) is caught by the export check instead of silently becoming
+    Legacy, and a Legacy run's export stays B47's bytes."""
+
+    ALIAS = 'GOAT EURUSD roundtrip'
+    STANDARD_MODE = 9   # what studio_export_scan passes
+
+    def setUp(self):
+        self.schema = json.loads((ROOT/'contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))
+        self.template = compass_like_template(self.schema)
+        source = read_values(('\r\n'.join(self.template.splitlines())+'\r\n').encode('utf-16'))
+        self.legacy_source = {k: v for k, v in source.items() if k not in APPENDED_INPUTS}
+        self.axes = sorted(validate_strategy(dict(self.legacy_source), self.schema)['axes'])
+        self.assertTrue(self.axes)
+        # The writer: B49a's WriteSet records a non-Legacy ledger with this exact line, after Trade_December.
+        writer = (ROOT.parent/'GOAT_Inputs_Definitions.mqh').read_text(encoding='utf-8-sig')
+        self.assertIn('if(Ledger_Mode!=Ledger_Legacy) FileWrite(FileSET_handle,"Ledger_Mode="+(string)(int)Ledger_Mode);', writer)
+        # B49b (F7): each fix flag is written the same way, only when on.
+        self.assertIn('if(Fix_MoneyVolume!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_MoneyVolume="+(string)(int)Fix_MoneyVolume);', writer)
+
+    @staticmethod
+    def raw(values):
+        return ('\r\n'.join(n+'='+v for n, v in values.items())+'\r\n').encode('utf-16')   # FILE_CSV, no FILE_ANSI: UTF-16
+
+    def export_of(self, source, *, ledger_line, fix_line=False):
+        """What WriteSet writes for one optimization pass of `source`: every input at the pass's value (an axis at its
+        first value), the alias and the standard mode, the ledger line when the run was PositionJoin, and the fix
+        line when Fix_MoneyVolume was on."""
+        exported = {}
+        for name, value in source.items():
+            if name in APPENDED_INPUTS:
+                continue
+            exported[name] = value if self.schema['inputs'][name]['type'] == 'string' else value.split('||')[0]
+        exported.update(EA_Desc=self.ALIAS, Mode_Operation=str(self.STANDARD_MODE))
+        if ledger_line:
+            exported['Ledger_Mode'] = str(self.schema['inputs']['Ledger_Mode']['enum_choices']['Ledger_PositionJoin'])
+        if fix_line:
+            exported['Fix_MoneyVolume'] = str(self.schema['inputs']['Fix_MoneyVolume']['enum_choices']['GoatFix_On'])
+        return exported
+
+    def check(self, source, exported):
+        row = {name: exported[name] for name in self.axes}
+        return verify_export_inputs(self.raw(source), self.raw(exported), self.schema, {'7': row}, {'7': dict(row)},
+                                    alias=self.ALIAS, standard_mode=self.STANDARD_MODE)
+
+    def test_a_position_join_export_passes_the_check_and_reloads_as_position_join(self):
+        source = dict(self.legacy_source, Ledger_Mode='1')
+        exported = self.export_of(source, ledger_line=True)
+        self.assertEqual(exported['Ledger_Mode'], '1')
+        identity = self.check(source, exported)
+        self.assertEqual(identity['status'], 'SET_INPUTS_MATCH_PAIRED_PASSES')
+        self.assertEqual(identity['matching_pass_ids'], ['7'])
+        # The reload: the exported SET is the next run's source.
+        reloaded = read_values(self.raw(exported))
+        self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Ledger_Mode'], '1')
+        self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Ledger_Mode'], '1||0||0||0||N')
+        observed = complete_appended_inputs(dict(reloaded, Ledger_Mode='1', Fix_MoneyVolume='0', Gate_Recheck='0', Fix_ClosePath='0', Max_Spread_Points='0', Min_Margin_Level_PC='0', Fix_Clock='0', Fix_FeedGuard='0', Diag_TickTiming='0', Fix_TickLoad='0'), self.schema)   # MT5 reports every input (B50's and B51's at their defaults)
+        self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Ledger_Mode'):
+            verify_input_readback(dict(reloaded), dict(observed, Ledger_Mode='0'), self.schema)
+
+    def test_a_fix_on_export_round_trips_as_fix_on_and_a_lost_line_is_refused(self):
+        # B49b (F7): Fix_MoneyVolume follows Ledger_Mode's rule through the same check, reload, paste and readback.
+        source = dict(self.legacy_source, Fix_MoneyVolume='1')
+        exported = self.export_of(source, ledger_line=False, fix_line=True)
+        self.assertEqual(self.check(source, exported)['status'], 'SET_INPUTS_MATCH_PAIRED_PASSES')
+        reloaded = read_values(self.raw(exported))
+        self.assertEqual(validate_strategy(dict(reloaded), self.schema)['values']['Fix_MoneyVolume'], '1')
+        self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Fix_MoneyVolume'], '1||0||0||0||N')
+        observed = complete_appended_inputs(dict(reloaded, Ledger_Mode='0', Fix_MoneyVolume='1', Gate_Recheck='0', Fix_ClosePath='0', Max_Spread_Points='0', Min_Margin_Level_PC='0', Fix_Clock='0', Fix_FeedGuard='0', Diag_TickTiming='0', Fix_TickLoad='0'), self.schema)
+        self.assertEqual(verify_input_readback(dict(reloaded), observed, self.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Fix_MoneyVolume'):
+            verify_input_readback(dict(reloaded), dict(observed, Fix_MoneyVolume='0'), self.schema)
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Fix_MoneyVolume'):
+            self.check(source, self.export_of(source, ledger_line=False, fix_line=False))
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Fix_MoneyVolume'):
+            self.check(self.legacy_source, self.export_of(self.legacy_source, ledger_line=False, fix_line=True))
+
+    def test_an_export_that_lost_the_line_is_refused_not_read_as_legacy(self):
+        source = dict(self.legacy_source, Ledger_Mode='1')
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Ledger_Mode'):
+            self.check(source, self.export_of(source, ledger_line=False))
+
+    def test_a_legacy_run_round_trips_without_the_line(self):
+        exported = self.export_of(self.legacy_source, ledger_line=False)
+        self.assertNotIn('Ledger_Mode', exported)
+        self.assertEqual(self.check(self.legacy_source, exported)['status'], 'SET_INPUTS_MATCH_PAIRED_PASSES')
+        reloaded = read_values(self.raw(exported))
+        self.assertNotIn('Ledger_Mode', validate_strategy(dict(reloaded), self.schema)['values'])
+        self.assertEqual(explicit_paste_inputs(dict(reloaded), self.schema)['Ledger_Mode'], '0||0||0||0||N')
+        # A Legacy source whose export claims PositionJoin is refused too (the writer's gate, from the other side).
+        with self.assertRaisesRegex(ValueError, 'Fixed export input mismatch: Ledger_Mode'):
+            self.check(self.legacy_source, self.export_of(self.legacy_source, ledger_line=True))
 
 
 if __name__ == '__main__':

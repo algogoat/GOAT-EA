@@ -241,6 +241,31 @@ class RequiredCheckTests(unittest.TestCase):
         self.assertEqual(len(steps), len(set(steps)))
         self.assertEqual(set(steps), EXPECTED)
 
+    def test_every_matrix_mutation_job_feeds_the_mutation_suites_aggregate(self):
+        # The second read of B52 (P2-3): the node mutation suites and the B49b lag shards run as their own matrix jobs, and
+        # one aggregate under a stable name fails unless every leg of each succeeded.
+        agg = self.jobs['mutation-suites']
+        self.assertEqual(agg['name'], 'mutation-suites')
+        self.assertEqual(agg['if'], 'always()', 'never skipped, so a failed or cancelled leg turns it red')
+        direct = sorted(job_id for job_id, job in self.jobs.items()
+                        if re.search(r'run: node scripts/(?:test_\w+_mutations\.cjs|\$\{\{ matrix\.suite \}\})', job['body']))
+        self.assertEqual(direct, ['b49b-lag-mutations', 'node-mutations'])
+        self.assertEqual(sorted(agg['needs']), direct)
+        for need in direct:
+            self.assertIn(f'${{{{ needs.{need}.result }}}}', agg['body'])
+        self.assertEqual(len(re.findall(r'test "\$\w+" = success', agg['body'])), len(direct), 'each result must be success')
+        # Every node mutation script runs: in the matrix, in its own lag job, or in a shard step of the reusable workflow.
+        suites = re.findall(r'\n          - (test_\w+_mutations\.cjs)', self.jobs['node-mutations']['body'])
+        self.assertEqual(len(suites), len(set(suites)))
+        shard_text = SHARD_WORKFLOW.read_text(encoding='utf-8')
+        for script in sorted(p.name for p in (ROOT / 'scripts').glob('test_*_mutations.cjs')):
+            with self.subTest(script=script):
+                self.assertTrue(script in suites or script == 'test_b49b_lag_mutations.cjs' or f'scripts/{script}' in shard_text,
+                                'not run by any workflow job')
+        self.assertIn('node scripts/test_b49b_lag_mutations.cjs', self.jobs['b49b-lag-mutations']['body'])
+        # No mutation suite is left in the controller job (its cap, 70 minutes).
+        self.assertNotRegex(self.jobs['controller']['body'], r'node scripts/test_\w+_mutations\.cjs')
+
     def test_no_single_aggregate_and_no_name_collisions(self):
         self.assertNotIn('controller-mutations-all', self.jobs)
         names = [job.get('name') for job in self.jobs.values()]

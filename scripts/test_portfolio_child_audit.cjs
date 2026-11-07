@@ -59,7 +59,45 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),false,'Legacy SET, child at PositionJoin');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=1\n'+tail,expert),true,'PositionJoin SET and child');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+'Ledger_Mode=0\n'+tail,expert),false,'PositionJoin SET, child at Legacy');passed++;
- assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+tail,expert),false,'PositionJoin SET, a B47 child without the input');passed++;}
+ assert.equal(api.GoatChildAuditMaps(original+'Ledger_Mode=1\n',0,50,2,ledger+tail,expert),false,'PositionJoin SET, a B47 child without the input');passed++;
+ // B49b (F7): Fix_MoneyVolume follows the same rule (written only when on; a child that carries it must hold Off).
+ const fix=ledger+'Ledger_Mode=0\n';
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),true,'Off SET, B49b child at Off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=1\n'+tail,expert),false,'Off SET, child at On');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_MoneyVolume=1\n',0,50,2,fix+'Fix_MoneyVolume=1\n'+tail,expert),true,'On SET and child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_MoneyVolume=1\n',0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),false,'On SET, child at Off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_MoneyVolume=1\n',0,50,2,fix+tail,expert),false,'On SET, a B49a child without the input');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+tail,expert),true,'Off SET, a B49a child without the input');passed++;
+ // B49b (F5): Gate_Recheck under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=0\n'+tail,expert),true,'Legacy SET, B49b child at Legacy');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=1\n'+tail,expert),false,'Legacy SET, child rechecking');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Gate_Recheck=1\n',0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=1\n'+tail,expert),true,'AtFirstOrder SET and child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Gate_Recheck=1\n',0,50,2,fix+'Fix_MoneyVolume=0\n'+tail,expert),false,'AtFirstOrder SET, a PR-1 child without the input');passed++;
+ // B49b (F3): Fix_ClosePath under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=0\n'+tail,expert),true,'Off SET, B49b child at Off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=1\n'+tail,expert),false,'Off SET, child at On');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_ClosePath=1\n',0,50,2,fix+'Fix_ClosePath=1\n'+tail,expert),true,'On SET and child');passed++;
+ // B49b (F6): the pre-trade caps under the same rule (0 = off), compared as numbers.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Max_Spread_Points=0\nMin_Margin_Level_PC=0.0\n'+tail,expert),true,'Off SET, B49b child with both caps off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Max_Spread_Points=30\n'+tail,expert),false,'Off SET, child with a spread cap');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Min_Margin_Level_PC=150\n'+tail,expert),false,'Off SET, child with a margin floor');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Min_Margin_Level_PC=150\n',0,50,2,fix+'Min_Margin_Level_PC=150.0\n'+tail,expert),true,'Set SET and child, as numbers');passed++;
+ // B49b (LAG-A): Fix_FeedGuard under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_FeedGuard=0\n'+tail,expert),true,'Off SET, B49b child with Fix_FeedGuard off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_FeedGuard=1\n'+tail,expert),false,'Off SET, child with Fix_FeedGuard on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_FeedGuard=1\n',0,50,2,fix+'Fix_FeedGuard=1\n'+tail,expert),true,'On SET and child');passed++;
+ // B49b (LAG-T): Diag_TickTiming under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Diag_TickTiming=0\n'+tail,expert),true,'Off SET, B49b child with Diag_TickTiming off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Diag_TickTiming=1\n'+tail,expert),false,'Off SET, child with Diag_TickTiming on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Diag_TickTiming=1\n',0,50,2,fix+'Diag_TickTiming=1\n'+tail,expert),true,'On SET and child');passed++;
+ // B49b (LAG-B): Fix_TickLoad under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_TickLoad=0\n'+tail,expert),true,'Off SET, B49b child with Fix_TickLoad off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_TickLoad=1\n'+tail,expert),false,'Off SET, child with Fix_TickLoad on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_TickLoad=1\n',0,50,2,fix+'Fix_TickLoad=1\n'+tail,expert),true,'On SET and child');passed++;
+ // B49b (F4/R2): Fix_Clock under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=0\n'+tail,expert),true,'Off SET, B49b child with Fix_Clock off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=1\n'+tail,expert),false,'Off SET, child with Fix_Clock on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_Clock=1\n',0,50,2,fix+'Fix_Clock=1\n'+tail,expert),true,'On SET and child');passed++;}
 // B50 (A0): a B50 child template carries the twelve B50 inputs, which WriteSet writes only when they differ from their
 // defaults. A SET without them maps only to a child holding every default; a SET that carries one is compared exactly.
 {const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'
@@ -89,7 +127,20 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  }
  assert.equal(api.GoatChildAuditMaps(original+'Random_Seed=7\n',0,50,2,child+b51.replace('Random_Seed=1','Random_Seed=7')+tail,expert),true,'a seed SET and its child');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Random_Seed=7\n',0,50,2,child+tail,expert),false,'a seed SET, a B50-alpha child without the input');passed++;}
-// Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
+// The merged line (B50 + B51 with B49b): a child carries B50's, B49b's and B51's inputs, in the header's order (each
+// written only when it differs from its default); a SET without them maps only to a child holding every default.
+{const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'
+  +'Single_Time_Stop_TF=0\nClock_Mode=0\nServer_Clock_Model=0\nServer_UTC_Offset=2\nNY_Session=09:30-16:00\nRollover_Block_Minutes=0\n';
+ const b49b='Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=0\nMax_Spread_Points=0\nMin_Margin_Level_PC=0.0\nFix_Clock=0\nFix_FeedGuard=0\nDiag_TickTiming=0\nFix_TickLoad=0\n';
+ const b51='Random_Direction=false\nRandom_Seed=1\nSingle_Flat_Only=false\nSingle_BE_ATR=0.0\nSingle_Trail_Start_ATR=0\nSingle_Trail_ATR=0.00\nSingle_Partial_ATR=0\nSingle_Partial_Fraction=0.0\nSingle_Partial_BE=false\n';
+ const child=head+inputs+declared+'BlindExport=false\nLedger_Mode=0\n'+b50+b49b+b51;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+tail,expert),true,'B49a SET, merged child at the defaults');passed++;
+ for(const [from,to] of [['Engine_Mode=0','Engine_Mode=1'],['Fix_MoneyVolume=0','Fix_MoneyVolume=1'],['Max_Spread_Points=0','Max_Spread_Points=30'],
+  ['Fix_TickLoad=0','Fix_TickLoad=1'],['Random_Seed=1','Random_Seed=2'],['Single_Partial_BE=false','Single_Partial_BE=true']]){
+  assert.equal(api.GoatChildAuditMaps(original,0,50,2,child.replace(from,to)+tail,expert),false,'B49a SET, merged child at '+to);passed++;
+ }
+ assert.equal(api.GoatChildAuditMaps(original+'Engine_Mode=1\nSingle_SL_ATR=1.5\nFix_FeedGuard=1\n',0,50,2,
+  child.replace('Engine_Mode=0','Engine_Mode=1').replace('Single_SL_ATR=0.0','Single_SL_ATR=1.50').replace('Fix_FeedGuard=0','Fix_FeedGuard=1')+tail,expert),true,'a Single SET with the feed guard, and its child');passed++;}// Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
 // Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
 // everything else in the map is still compared exactly. Without an id, the input keeps its "" default.
 {

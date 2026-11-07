@@ -24,17 +24,31 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation, test_profile_staged_adoption, test_b49a_no_drift, test_ticket_width,
-#           test_ledger_join, test_ledger_join_mutations, test_restart_adopt, test_restart_adopt_mutations,
-#           test_b50_no_drift, test_b50_parity, test_b50_single, test_b50_single_mutations, test_b50_clock,
-#           test_b50_exits, test_b50_exits_mutations, test_b50_integration,
-#           test_b51_no_drift, test_b51_parity, test_b51_random, test_b51_random_mutations, test_b51_modify,
-#           test_b51_modify_mutations, test_b51_partial, test_b51_partial_mutations,
+#           test_terminal_isolation, test_profile_staged_adoption, test_b49a_no_drift, test_b49b_no_drift,
+#           test_ticket_width,
+#           test_ledger_join, test_restart_adopt,
+#           test_b50_no_drift, test_b50_parity, test_b50_single, test_b50_clock,
+#           test_b50_exits, test_b50_integration,
+#           test_b51_no_drift, test_b51_parity, test_b51_random, test_b51_modify,
+#           test_b51_partial,
+#           test_b49b_f7, test_b49b_f5, test_b49b_f3,
+#           test_b49b_f3b, test_b49b_f6, test_b49b_f4, test_b49b_lag, test_b49b_f8,
+#           test_b49b_f1,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
 #           test_panel_headless, test_alert_guard, test_cid_guard
 #     python: test_goat_deployment_liveness
+#
+# b49b lag mutations (N/4)    test_b49b_lag_mutations, every 4th mutant from the Nth (GOAT-EA#290: the whole suite took
+#                             the controller job past its cap).
+#
+# node mutations (<suite>)  every node mutation suite the controller job ran (B50, B51, B49a and B49b), plus
+#                             test_b52_review_mutations, one parallel job each (B52: both lines' suites took the combined
+#                             controller job past its 70-minute cap).
+#
+# mutation-suites             one aggregate of node mutations and b49b lag mutations: it fails unless every leg of both
+#                             succeeded (the second read of B52, P2-3: no gated check depended on them).
 #
 # Controller mutations (GOAT-EA#204; Claude-Mac, goatai#2350 6089452823 + 6089458580). With 3 shards,
 # shard 1/3 hit the 45-min cap on GOAT-EA#201 and #203 (run 37956413084: 45.25 min, cancelled), so the
@@ -63,6 +77,11 @@ jobs:
   controller:
     runs-on: windows-2022
     # Setup, fast fixtures and the full unittest suite: ~8-10 min (unittest alone 7 min on a slow runner).
+    # B49b: its in-job mutation suites (F7, then F5 and F3) took a 27-min job past 30 (GOAT-EA#270 run 40462891356 was
+    # cancelled in the unittest step), so the job had 45. B49b tidy (GOAT-EA#285): on the slower runners of 10-29 the steps
+    # before the F1 mutations took 27-29 min (18 on #284's run), the F1 mutations ran past the cap (run 40805681829), and the
+    # full unittest suite after them takes ~12 min, so the job has 70. The cap only stops a runaway: a normal run bills its
+    # actual minutes.
     timeout-minutes: 70
     env:
       PYTHONUTF8: "1"
@@ -78,6 +97,7 @@ jobs:
           # B49a: test_b49a_no_drift, test_ticket_width and test_ledger_join read B47's source (ccb0a07) from history.
           # B50: test_b49a_no_drift, test_b50_no_drift and test_b50_parity read B49a's source (65fde12) from history.
           # B51: test_b50_no_drift, test_b51_no_drift, test_b51_parity and test_b51_random read B50-alpha's (32df4eb).
+          # B49b: test_b49b_no_drift reads B49a's (693cad0) and, on the merged line, B49b's own tree (claude-pc/b49b 808ff728) from history.
           fetch-depth: 0
 
       - name: Set up Windows x64 Python
@@ -150,14 +170,11 @@ jobs:
         run: node scripts/test_b50_parity.cjs
       - name: B50 single core (Engine_Single on the converted OnTick path; risk lots, one position per signal episode)
         run: node scripts/test_b50_single.cjs
-      - name: B50 single core mutants (every rule of GoatSingleOpen and the Single branches is load-bearing)
-        run: node scripts/test_b50_single_mutations.cjs
+      # The node mutation suites run in their own job (node-mutations, below), each in parallel.
       - name: B50 New York clock (DST 2007-2035, server-clock models, NY session through the real tick, rollover, live self-check; mutants)
         run: node scripts/test_b50_clock.cjs
       - name: B50 single exits (opposite signal, time stop, the FastSpeed bypass for every single)
         run: node scripts/test_b50_exits.cjs
-      - name: B50 single exits mutants (every exit rule is load-bearing)
-        run: node scripts/test_b50_exits_mutations.cjs
       - name: B50 integration (the clock's entry block holds for singles; a full New York week of entries, exits and the Friday cutoff; mutants)
         run: node scripts/test_b50_integration.cjs
       - name: B51 no drift from B50-alpha (every changed line marked; contract follows the tree; inputs append-only, B50-beta allowance)
@@ -166,26 +183,39 @@ jobs:
         run: node scripts/test_b51_parity.cjs
       - name: B51 random-direction benchmark (splitmix64 of seed and signal-bar time; same timing, gates, sizing and exits; flags off = B50-alpha)
         run: node scripts/test_b51_random.cjs
-      - name: B51 random-direction mutants (MathRand, the seed, the bar time, the flag, SplitMix64 and the gates are load-bearing)
-        run: node scripts/test_b51_random_mutations.cjs
       - name: B51 single break-even and trailing (entry ATR, legal clamp, only in favour; modify failure log and back-off per ticket; restart)
         run: node scripts/test_b51_modify.cjs
-      - name: B51 break-even and trailing mutants (back-off, every log field, never against the trade, nothing at 0)
-        run: node scripts/test_b51_modify_mutations.cjs
       - name: B51 single partial close and the demo gate (legal volumes, once per position across restarts, refused closes; real accounts refused, also when the mode cannot be read)
         run: node scripts/test_b51_partial.cjs
-      - name: B51 partial close and demo gate mutants (every clause of the gate, the broker's history, the back-off, nothing at 0)
-        run: node scripts/test_b51_partial_mutations.cjs
+      - name: B49b no drift from B49a (every changed line marked; contract follows the tree; inputs append-only)
+        run: node scripts/test_b49b_no_drift.cjs
       - name: B49a 64-bit tickets (no int holds a ticket; tickets above INT_MAX replayed; B47 caught)
         run: node scripts/test_ticket_width.cjs
       - name: B49a F2 Ledger_Mode (exits join by position; Legacy reproduces B47; MT5 history-selection rules)
         run: node scripts/test_ledger_join.cjs
-      - name: B49a F2 Ledger_Mode mutations (every part of the join and the Legacy gate is load-bearing)
-        run: node scripts/test_ledger_join_mutations.cjs
       - name: B49a F1-lite restart adoption (manage-only, the restart record, matched and unmatched baskets)
         run: node scripts/test_restart_adopt.cjs
-      - name: B49a F1-lite restart adoption mutations
-        run: node scripts/test_restart_adopt_mutations.cjs
+      - name: B49b F7 money and volume units, indicator handles and buffers (B49a compared)
+        run: node scripts/test_b49b_f7.cjs
+      - name: B49b F5 Gate_Recheck (every start gate at the first real order; EX-11)
+        run: node scripts/test_b49b_f5.cjs
+      - name: B49b F3 Fix_ClosePath (an end waits for flat; failed closes and modifies logged)
+        run: node scripts/test_b49b_f3.cjs
+      - name: B49b F3b dashboard (a failed child close is retried; a risk breach is followed until flat)
+        run: node scripts/test_b49b_f3b.cjs
+      - name: B49b F6 pre-trade caps (Max_Spread_Points replaces MaxSP; Min_Margin_Level_PC floor)
+        run: node scripts/test_b49b_f6.cjs
+      - name: B49b F4 exits without a tick (live-only timer) and Fix_Clock (full-timestamp IsNew*)
+        run: node scripts/test_b49b_f4.cjs
+      - name: B49b lag hotfix (flags off is the base; the feed guard, server-time ends, the owed Friday close; read-only timing; bounded per-tick load)
+        run: node scripts/test_b49b_lag.cjs
+      # The lag hotfix mutations run in their own job (b49b-lag-mutations, below).
+      - name: B49b F8 export integrity (trim, mismatched rows, window P/L, CSV final row, tester wait, format stamp)
+        run: node scripts/test_b49b_f8.cjs
+      - name: B49b F1 full (manage-only on a licence outage, refusal or expiry; the state file; the day state)
+        run: node scripts/test_b49b_f1.cjs
+      - name: B52 the final build's review fixes (a deferred adoption keeps its state and is held; a held single stays armed; no benchmark under the first-order gate)
+        run: node scripts/test_b52_review.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness
@@ -235,6 +265,85 @@ jobs:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: python -m unittest discover -s controller -p "test_*.py" -v
+
+  # B49b lag hotfix mutations (GOAT-EA#290). 186 mutants, each a full run of test_b49b_lag.cjs (97 s on a hosted runner),
+  # took the controller job past its 70-minute cap (run 42346124149: the step ran 33 min and was cancelled with the F8 and
+  # F1 steps and the unittest suite still to come). They run here instead, as 4 parallel shards: every 4th mutant from the
+  # Nth (GOAT_MUTATION_SHARD=N/4), about 47 mutants and 20 min each. Every mutant still runs on every PR.
+  b49b-lag-mutations:
+    name: b49b lag mutations (${{ matrix.shard }}/4)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # test_b49b_lag compares against be341e5 from history.
+          fetch-depth: 0
+
+      - name: B49b lag hotfix mutations
+        env:
+          GOAT_MUTATION_SHARD: ${{ matrix.shard }}/4
+        run: node scripts/test_b49b_lag_mutations.cjs
+
+  # B52 (the final build): both lines' in-job node mutation suites took the combined controller job past its 70-minute
+  # cap (B51 random 19.7 min, partial 10.8, B49b F7 15.7, F1-lite up to 11.8, with the 16-minute unittest suite still in
+  # the job). They run here, one matrix entry per suite, in parallel; every suite still runs on every PR.
+  node-mutations:
+    name: node mutations (${{ matrix.suite }})
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - test_b50_single_mutations.cjs
+          - test_b50_exits_mutations.cjs
+          - test_b51_random_mutations.cjs
+          - test_b51_modify_mutations.cjs
+          - test_b51_partial_mutations.cjs
+          - test_ledger_join_mutations.cjs
+          - test_restart_adopt_mutations.cjs
+          - test_b49b_f7_mutations.cjs
+          - test_b49b_f5_mutations.cjs
+          - test_b49b_f3_mutations.cjs
+          - test_b49b_f3b_mutations.cjs
+          - test_b49b_f6_mutations.cjs
+          - test_b49b_f4_mutations.cjs
+          - test_b49b_f8_mutations.cjs
+          - test_b49b_f1_mutations.cjs
+          - test_b52_review_mutations.cjs
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # B49a/B49b/B50/B51 guards and tests read earlier commits from history.
+          fetch-depth: 0
+
+      - name: Node mutation suite
+        run: node scripts/${{ matrix.suite }}
+
+  # The second read of B52 (P2-3): no check the merge gate stops on depended on the two matrices above. One aggregate under
+  # one stable name fails unless every leg of both succeeded (a matrix's result is its legs' aggregate). It always runs, so
+  # it is never "skipping", and ops-merge-ea-pr.ps1 refuses every check outside pass and skipping, this one included.
+  mutation-suites:
+    name: mutation-suites
+    needs: [node-mutations, b49b-lag-mutations]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every node mutation suite and every B49b lag mutation shard succeeded
+        env:
+          NODE_MUTATIONS: ${{ needs.node-mutations.result }}
+          B49B_LAG_MUTATIONS: ${{ needs.b49b-lag-mutations.result }}
+        run: echo "node-mutations=$NODE_MUTATIONS b49b-lag-mutations=$B49B_LAG_MUTATIONS"; test "$NODE_MUTATIONS" = success && test "$B49B_LAG_MUTATIONS" = success
 
   mutation-selection:
     name: mutation selection

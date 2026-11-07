@@ -539,6 +539,9 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     from studio_batch_close import refuse_closed
     refuse_closed(controller.root, source_batch_id)
     previous = controller.job(source_batch_id)
+    # Nor, by any path, a batch a re-grant stopped on a V1.48 EA: MT5 would claim its start and refuse it (studio_batch_pause).
+    from studio_batch_pause import refuse_v148_cancel_latch
+    refuse_v148_cancel_latch(controller.root, source_batch_id, job=previous)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')
     package, source_plan, manifest = _verify_package(controller, previous, allow_peer_refresh=allow_peer_refresh,

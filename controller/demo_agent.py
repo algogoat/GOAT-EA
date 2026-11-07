@@ -704,6 +704,45 @@ class DemoAgent:
                          result_path=result.get('result_path'), reused=result.get('reused'))
             return result
 
+    def cancel_regrant(self, batch_id, *, settle=False):
+        """One new stop for a batch stranded by a human takeover, after a new human grant (studio_cancel_regrant).
+
+        Allowed under owner STOP, which cannot clear while this batch is unresolved. Without ``settle`` it publishes
+        this grant's one stop; ``settle`` only observes it, then finishes the batch and completes its pause once MT5
+        consumed it. Neither replays a stop, starts work, or takes the grant: only the human gives control.
+        """
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if type(settle) is not bool:
+            raise ValueError('settle must be a boolean')
+        from studio_batch_pause import observe_monitor
+        from studio_cancel_regrant import human_waiting, publish, settle as settle_stop
+        with self._exclusive(wait_seconds=5):
+            try:
+                self._broker(idle=False)
+            except Refusal:
+                raise
+            except ValueError as exc:
+                raise Refusal(str(exc) + ' Nothing was sent.', 'REGRANT_BROKER_NOT_IDLE_DEMO') from exc
+            with self._studio('cancel-regrant', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
+                if human_waiting(controller):   # the bridge's inbox or processing folder, or the panel's pending_id
+                    raise Refusal('A human TAKE CONTROL or GIVE TO AGENT has not been processed yet: keep serve running '
+                                  'and retry. Nothing was sent.', 'REGRANT_HUMAN_PENDING')
+                worker = self.state_root / 'workers' / (batch_id + '.json')
+                if worker.is_file() and self._worker_alive(read_json(worker)):
+                    raise Refusal('The driver of this batch is still running; a re-grant waits for it to end. '
+                                  'Nothing was sent.', 'REGRANT_LIVE_DRIVER')
+                if settle:
+                    now = self.clock()
+                    result = settle_stop(controller, batch_id, now=now,
+                                         monitor=observe_monitor(controller, now, process_fn=self.process.inspect))
+                else:
+                    self._append('cancel_regrant', 'intent', batch_id=batch_id, broker=broker)
+                    result = publish(controller, batch_id, now=self.clock())
+                self._append('cancel_regrant', result['status'], batch_id=batch_id, request_id=result['request_id'],
+                             generation=result.get('generation'), result_path=result.get('result_path'))
+                return result
+
     def settle_refused_start(self, batch_id):
         """Settle a restart-arm start the EA refused before consuming it (goatai#1885, tester a649295d).
 
@@ -911,6 +950,8 @@ class DemoAgent:
         # Read-only, before any terminal effect or STOP clear: a refusal an unchanged retry repeats ends here.
         previous = self._previous_attempt(job)
         self._refuse_unfixable_retry(batch_id, previous)
+        from studio_batch_pause import refuse_v148_cancel_latch
+        refuse_v148_cancel_latch(self.root, batch_id, job=job)
         if unactivated_hint(self.root, job):
             self.retire_unactivated(batch_id)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
@@ -2932,8 +2973,8 @@ class DemoAgent:
                      clear_stop=False, include_failed=False, include_no_edge=False, accept_news_change=False):
         """Continue a paused batch: remaining work under a new ID, started under the bounded driver."""
         from studio_batch import resume_batch
-        from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refusal, successor_id,
-                                        verify_resumable)
+        from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refuse_v148_cancel_latch, refusal,
+                                        successor_id, verify_resumable)
         from studio_protected_peer import refresh_process
         from studio_research_status import lineage, monitor_state
         if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
@@ -2946,6 +2987,9 @@ class DemoAgent:
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        # Read-only, before any release, STOP clear or successor ID is written.
+        refuse_v148_cancel_latch(self.root, batch_id,
+                                 job=next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None))
         from studio_batch_close import refuse_closed
         refuse_closed(self.root, batch_id)          # closed (batch-pause-close): never resumes, nothing is released
         # A reserved successor that never ran (retired unactivated / never started, or
@@ -2986,9 +3030,9 @@ class DemoAgent:
         new_id = new_batch_id or record.get('resume_batch_id') or successor_id(batch_id, existing)
         if not isinstance(new_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', new_id):
             raise ValueError('Invalid successor batch ID')
-        plan_resume(self.root, batch_id, new_id, now=self.clock())
         with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
             verify_resumable(controller, batch_id, resume_token)
+            plan_resume(self.root, batch_id, new_id, now=self.clock())   # after the verification, as continue does
             peer = refresh_process(controller)
             self._append('batch_resume', 'intent', batch_id=batch_id, successor_batch_id=new_id,
                          peer=peer.get('status'), broker=broker)
@@ -3931,6 +3975,11 @@ def main(argv=None):
     retire = commands.add_parser('retire-unactivated',
                                  help='Settle a start refused before MT5 was touched to cancelled; allowed under owner STOP')
     retire.add_argument('--batch-id', required=True)
+    regrant = commands.add_parser('cancel-regrant',
+                                  help='After a human takeover and a new GIVE TO AGENT: publish that grant\'s one new stop for a '
+                                       'batch whose stop expired unconsumed; --settle then finishes it. Demo only, keeps results')
+    regrant.add_argument('--batch-id', required=True)
+    regrant.add_argument('--settle', action='store_true', help='Publish nothing: observe the stop, then finish and complete the pause')
     settle = commands.add_parser('settle-refused-start',
                                  help='Settle a restart-arm start the EA refused before consuming it (receipt such as '
                                       'START_PROTOCOL_NOT_QUALIFIED): closes MT5 normally, restores the controls, '
@@ -4218,6 +4267,7 @@ def main(argv=None):
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
             include_no_edge=args.include_no_edge, accept_news_change=args.accept_news_change)
         elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
+        elif args.command == 'cancel-regrant': result = agent.cancel_regrant(args.batch_id, settle=args.settle)
         elif args.command == 'settle-refused-start': result = agent.settle_refused_start(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'peer-list': result = agent.peer_list()

@@ -17,6 +17,11 @@ supervisor when no driver is alive, calls ``step`` on every tick:
   first in ``cancel-successors/<attempt>.json`` under the cancel-rejected-successor
   identity rules, so ``finish`` and the settled-gate checks bind it. Both stop
   receipts are kept.
+* A human TAKE CONTROL strands a pause: its epoch is revoked and its driver can never
+  resume. After a later GIVE TO AGENT, cancel-regrant (studio_cancel_regrant) re-arms
+  the record at the new generation before it publishes that grant's one stop, so the
+  pause can still reach ``paused``. A failed pause keeps its failure in
+  ``rearmed_failures``, and one stop identity re-arms a failed pause only once.
 * A closed, unbound or unlicensed monitor is a named blocker with a fix, never a
   silent wait. So is a member pace too fast for any safe window.
 * A pause never sets the driver journal's ``cancel_issued``, so the journal is
@@ -95,6 +100,89 @@ class PauseRefused(ValueError):
     """A plain, actionable reason a pause or resume cannot proceed."""
 
 
+# V1.48's stop sets MT5's persistent batch-cancelled flag, GOAT_BatchCancelled (GOATStudioDispatch.mqh@f771b36:70).
+# Its report-capable start, for any batch, writes its consumed claim, then refuses while that flag is set (f771b36:178-188).
+# Only an in-place start (:216, never sent on a report-capable lane) or the panel's Batch Start (Optimizer.mqh
+# OnClickStart, :3089) clears it. In managed mode that button is TAKE CONTROL (GOATStudioUI.mqh:279, Optimizer.mqh:217-227),
+# and OnClickStart needs a Pending row, which the stop turned Cancelled (GOATStudioDispatch.mqh:83-84). V1.49 keeps value 1
+# as a person's or legacy stop (GOATBatchCancelOrigin.mqh, HUMAN_CANCEL_RETAINED). No remedy is proven from source, so
+# the reply names none: the finished members are kept, and the next step is the V1.49 upgrade plus a support report.
+V148_CANCEL_LATCH_CODE = 'RESUME_V148_CANCEL_LATCHED'
+V148_CANCEL_FLAG = ('This V1.48 EA keeps MT5\'s batch-cancelled flag (GOAT_BatchCancelled) after GOAT\'s stop, and every start '
+                    'GOAT sends on this lane refuses while it is set')
+V148_REMAINING = V148_CANCEL_FLAG + (', so GOAT cannot run this batch\'s remaining members, or start another batch on this MT5, '
+                                     'on a V1.48 EA.')
+
+
+def v148_next(batch_id):
+    """The next step after a V1.48 controller stop: the V1.49 upgrade, then a support report naming the batch."""
+    return ('Next: update the EA to V1.49 in GOAT > Terminals (V1.49 does not clear this flag by itself), then send a GOAT '
+            'support report naming batch ' + batch_id + ': support.prepareReport with category studio and ' + V148_CANCEL_LATCH_CODE
+            + ' in errorCodes; show the user the preview, then support.submitReport after their yes.')
+
+
+def v148_support(batch_id):
+    return dict(route='support.prepareReport', category='studio', errorCodes=[V148_CANCEL_LATCH_CODE], batch_id=batch_id,
+                include='this whole reply, unedited, as actual', send='support.submitReport, only after the user approved the preview')
+
+
+STOP_VERSION_UNKNOWN_CODE = 'RESUME_STOP_VERSION_UNKNOWN'
+
+
+def stop_ea_version(record):
+    """The receipt's ea_version when finish recorded this batch's stop (studio_finish), from the result this pause is
+    bound to: the EA that took the stop, since no EA install runs while a batch is unsettled. None when that result is
+    missing or no longer hashes to the record."""
+    try:
+        raw = Path(record['result_path']).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != record['result_sha256']:
+            return None
+        return json.loads(raw.decode('utf-8')).get('ea_version')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _regrant_links(root, job):
+    """Whether a cancel re-grant linked a stop to this job's attempt (cancel-successors/<attempt>.regrant-<n>.json)."""
+    attempt = ((job or {}).get('launch_intent') or {}).get('attempt_id')
+    if not isinstance(attempt, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', attempt):
+        return False
+    folder = Path(root) / 'cancel-successors'
+    return folder.is_dir() and any(folder.glob(attempt + '.regrant-*.json'))
+
+
+def refuse_v148_cancel_latch(root, job_id, *, job=None):
+    """Read-only, so every resume route runs it before anything it writes: a batch a re-grant stopped on a V1.48 EA.
+
+    Keyed on the version recorded with the stop, never the current receipt, which a later V1.49 upgrade changes: the
+    finish result the pause is bound to, else the job's completion in the store. It fails closed: a re-grant batch
+    (by its pause record, or by its re-grant links when that record cannot be read) whose version cannot be read
+    refuses too, naming why."""
+    if (isinstance(job, dict) and job.get('status') not in ('completed', 'cancelled', 'failed')
+            and not job.get('completion')):
+        return   # not finished yet (a re-grant stop not settled): each route refuses that itself, with its own next step
+    record = load(root, job_id, quiet=True)   # None: no pause record, or one that cannot be read
+    regrant = record.get('regrant_request_id') if isinstance(record, dict) else _regrant_links(root, job)
+    if not regrant:
+        return
+    version = stop_ea_version(record) if isinstance(record, dict) and record.get('result_path') else None
+    if version is None:
+        version = ((job or {}).get('completion') or {}).get('ea_version')
+    if version not in (None, '1.48'):
+        return
+    from studio_refusal import Refusal
+    if version is None:
+        raise Refusal('GOAT cannot read which EA version took the stop of batch ' + job_id + ': its pause record or finish '
+                      'result is missing, changed or unreadable, so it cannot tell whether MT5 still holds the batch-cancelled '
+                      'flag a V1.48 EA leaves. Nothing was prepared. Keep every file and send a GOAT support report naming batch '
+                      + job_id + ': support.prepareReport with category studio and ' + STOP_VERSION_UNKNOWN_CODE + ' in errorCodes; '
+                      'show the user the preview, then support.submitReport after their yes.', STOP_VERSION_UNKNOWN_CODE,
+                      batch_id=job_id, escalate_to=dict(v148_support(job_id), errorCodes=[STOP_VERSION_UNKNOWN_CODE]))
+    raise Refusal('Batch ' + job_id + ' was stopped by GOAT on a V1.48 EA; its finished members and their results are kept. '
+                  + V148_REMAINING + ' ' + v148_next(job_id) + ' Nothing was prepared.', V148_CANCEL_LATCH_CODE,
+                  batch_id=job_id, escalate_to=v148_support(job_id))
+
+
 def path(root, job_id):
     if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
         raise ValueError('Invalid batch ID')
@@ -145,7 +233,9 @@ def public(record):
             'paused_utc', 'blocker', 'failure', 'resume_token', 'members_completed', 'members_remaining',
             'members_failed', 'members_no_edge', 'result_path', 'successor_batch_id', 'safe_point', 'adopted_stop',
             # batch-pause-close (studio_batch_close); absent (None) on every other record.
-            'closed_mode', 'closed_at', 'members_done_count', 'members_unrun_count')
+            'closed_mode', 'closed_at', 'members_done_count', 'members_unrun_count',
+            # cancel-regrant (studio_cancel_regrant); absent (None) on every other record.
+            'generation', 'regrant_request_id', 'rearmed_failures')
     value = {key: record.get(key) for key in keys}
     value['cancels'] = [{key: item.get(key) for key in ('request_id', 'kind', 'published_utc', 'expires_utc', 'receipt',
                                                        'adopted')} for item in record.get('cancels', [])]
@@ -511,6 +601,41 @@ def step(controller, job_id, *, now, monitor, escalation=None, finish_error=None
     return _fail(root, record, now, 'receipt_' + receipt.lower(), message, fix)
 
 
+def rearm_for_regrant(root, job, journal, *, now, generation, request_id):
+    """Bind this batch's pause to a new human grant's stop, before that stop is published.
+
+    Creates the pause when none was requested, so the unfinished members stay
+    resumable. No native, journal or queue effect happens here.
+    """
+    job_id = job['job_id']
+    attempt = job['launch_intent']['attempt_id']
+    record = load(root, job_id)
+    if record is None:
+        record, _ = request(root, job, journal, now=now, requested_by='cancel_regrant')
+    if record['attempt_id'] != attempt or record['configuration_sha256'] != job['configuration_sha256']:
+        raise PauseRefused('The pause of batch ' + job_id + ' belongs to another attempt.')
+    if record['state'] not in ('pausing', 'pause_failed'):
+        raise refusal(record)
+    if record['state'] == 'pause_failed':
+        if record.get('regrant_request_id') == request_id:
+            raise PauseRefused(plain(record))
+        record.setdefault('rearmed_failures', []).append(dict(at=now, failure=record.get('failure'),
+                                                              generation=record.get('generation')))
+    record.update(state='pausing', failure=None, blocker=None, generation=generation, regrant_request_id=request_id)
+    _entry(record, request_id, 'regrant', None).update(adopted=False, decided_utc=now)
+    _note(record, now, 'successor_publishing', request_id=request_id, regrant_generation=generation)
+    _save(root, record)
+    return record
+
+
+def regrant_published(root, job_id, request_id, issued, *, now):
+    record = load(root, job_id)
+    _entry(record, request_id, 'regrant', issued).update(published_utc=now, expires_utc=issued['request']['expires_utc'])
+    _note(record, now, 'successor_published', request_id=request_id)
+    _save(root, record)
+    return record
+
+
 def resume_token(job_id, attempt_id, result_sha256):
     return hashlib.sha256(('goat-batch-pause-v1\n' + job_id + '\n' + attempt_id + '\n' + result_sha256).encode()).hexdigest()
 
@@ -569,6 +694,8 @@ def verify_resumable(controller, job_id, token=None):
         raise PauseRefused('No pause is recorded for batch ' + job_id + '; pause it first.')
     if record['state'] not in ('paused', 'resumed'):
         raise refusal(record)
+    # Before anything is prepared: the successor's start would be claimed, then refused (RESTART_RUNTIME_CHANGED).
+    refuse_v148_cancel_latch(controller.root, job_id, job=controller.job(job_id))
     job = controller.job(job_id)
     result_path = Path(record['result_path'])
     if (job['status'] not in ('cancelled', 'failed') or job.get('completion_path') != str(result_path)

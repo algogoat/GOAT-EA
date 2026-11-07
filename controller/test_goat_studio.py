@@ -31,6 +31,12 @@ class PortableControllerTests(unittest.TestCase):
         if self.controller and self.controller.store:self.controller.store.close()
         self.temp.cleanup()
 
+    def use_ea_version(self,version):
+        """Before bound(): the same portable receipt for another supported EA version, with its own EA file."""
+        ea=self.data/'MQL5/Experts/GOAT-EA'/('GOAT V'+version+'.ex5');ea.write_bytes(b'qualified test fixture')
+        self.receipt.update(ea_version=version,ea_relative_path='GOAT-EA\\GOAT V'+version+'.ex5',ea_sha256=hashlib.sha256(ea.read_bytes()).hexdigest())
+        self.path.write_text(json.dumps(self.receipt));self.tester['Expert']=self.receipt['ea_relative_path']
+
     def bound(self):
         c=Controller(self.path);self.controller=c
         c.bootstrap('123456','Customer-Demo');c.store.close();c.store=None;c.open()

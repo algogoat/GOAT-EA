@@ -79,12 +79,8 @@ def begin(base, evidence, replacements, expected, owner):
     return receipt
 
 
-def restore(evidence, expected_current):
-    """Restore after caller proves native jobs stopped; refuse unknown newer state.
-
-    expected_current must come from an inspected completion/recovery snapshot,
-    since native export legitimately deletes or rewrites config/guard files.
-    """
+def restorable(evidence):
+    """Everything restore refuses before it looks at current bytes. Read-only; (receipt, base, marker, originals)."""
     evidence = Path(evidence).resolve()
     receipt = json.loads((evidence / 'transaction.json').read_text())
     base = Path(receipt['base'])
@@ -92,8 +88,6 @@ def restore(evidence, expected_current):
     ownership = json.loads(marker.read_text())
     if ownership != dict(owner=receipt['owner'], evidence=str(evidence)):
         raise ValueError('Different transaction owns native controls')
-    if set(expected_current) != set(NAMES):
-        raise ValueError('Inspect all current controls before recovery')
     originals = {}
     for name in NAMES:
         item = receipt['files'][name]
@@ -101,6 +95,20 @@ def restore(evidence, expected_current):
         if digest(raw) != item['before_sha256']:
             raise ValueError('Corrupt backup; cannot restore')
         originals[name] = raw
+    return receipt, base, marker, originals
+
+
+def restore(evidence, expected_current):
+    """Restore after caller proves native jobs stopped; refuse unknown newer state.
+
+    expected_current must come from an inspected completion/recovery snapshot,
+    since native export legitimately deletes or rewrites config/guard files.
+    """
+    evidence = Path(evidence).resolve()
+    receipt, base, marker, originals = restorable(evidence)
+    if set(expected_current) != set(NAMES):
+        raise ValueError('Inspect all current controls before recovery')
+    for name in NAMES:
         if digest(contents(base / name)) != expected_current[name]:
             raise ValueError('New native state detected; refusing restoration')
     receipt['phase'] = 'restoring'

@@ -64,9 +64,12 @@ class PauseFixture(unittest.TestCase):
     MEMBERS = ('EURUSD.c', 'GBPUSD.c', 'USDJPY.c')
     TEMPLATE = 'EA_Desc=Customer Template\r\nLots=0.1||0.1||0.1||0.3||Y\r\n'   # subclasses may add inputs (news guard)
     EXTRA_INPUTS = {}                                                          # ... declared here for the schema
+    EA_VERSION = '1.48'                                                        # the portable receipt's; subclasses may use 1.49
 
     def setUp(self):
         self.f = fixtures.PortableControllerTests(); self.f.setUp(); self.addCleanup(self.f.tearDown)
+        if self.EA_VERSION != self.f.receipt['ea_version']:
+            self.f.use_ea_version(self.EA_VERSION)
         self.c = self.f.bound()
         if self.EXTRA_INPUTS:
             from campaign_ledger import sha as _sha

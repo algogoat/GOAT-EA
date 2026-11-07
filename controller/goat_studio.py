@@ -111,7 +111,7 @@ OPERATION_CONTRACTS = {
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
     'load-batch':dict(required=['batch-id','file'],effect='validate saved .goatbatch as a new unstarted batch on this installation'),
-    'resume-batch':dict(required=['source-batch-id','batch-id'],optional=['accept-news-change'],news_file_guard=NEWS_FILE_GUARD,effect='prepare remaining members under a new identity after original stop/finish; failed members require include-failed; members tested with no profitable settings only with include-no-edge'),
+    'resume-batch':dict(required=['source-batch-id','batch-id'],optional=['accept-news-change'],news_file_guard=NEWS_FILE_GUARD,effect='prepare remaining members under a new identity after original stop/finish; failed members require include-failed; members tested with no profitable settings only with include-no-edge; like batch-resume and batch-continue it refuses, before writing anything, a batch closed with batch-pause-close and a batch a cancel re-grant stopped on a V1.48 EA (RESUME_V148_CANCEL_LATCHED, or RESUME_STOP_VERSION_UNKNOWN when that version cannot be read)'),
     'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; refuses any reachable Mode_Lots=RiskperSeq with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), any reachable value combination the EA refuses at OnInit (EA_INIT_REFUSED) and any optimized enum ladder the EA refuses at OnTesterInit (ENUM_LADDER_NOT_NATIVE: step 1 over consecutive declared items only); no launch'),
     'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite. A starter-set source is recorded as parent starter:single|sequence with its starter receipt hash; the output still needs at least one active search axis'),
     'starter-set':dict(required=['shape','output'],choices={'shape':['single','sequence']},effect='write a blank starting SET generated from the installed input schema plus a same-stem .starter.json receipt (schema hash, versions, shape, sha256, every input it sets away from its declared default): indicator signal modes, AI bias and news filters off, no search axes; single = Max_Seq_Trades 1 with CloseAtMaxLevels, sequence = 5 trades with CloseAtMaxLevels, RiskperSeq sizing and hard close at Risk, default Grid_* gaps; its Risk is a placeholder the user must choose (build-set refuses RISK_NOT_CHOSEN until changes set Risk). Local create-only file outside the publisher catalog; never overwrites, never opens the store or MT5. A starter is untested and has zero evidence: build-set adds the idea'),
@@ -157,6 +157,7 @@ OPERATION_CONTRACTS = {
     'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
+    'cancel-regrant':dict(required=['job-id'],optional=['settle'],demo_lane='goat.exe demo cancel-regrant --batch-id <id> [--settle]',effect='customer lane (demo only): after a human TAKE CONTROL and a new GIVE TO AGENT, publish that grant\'s one new stop for a batch whose stop and one successor expired unconsumed (NATIVE-RECOVERY-CONTRACT.md "Stranded batch after a human takeover"); refuses with a REGRANT_* code and sends nothing unless broker and EA both prove the connected flat demo with Algo off, the installed EA is the receipt\'s, it is not an Open Lab experiment login and no human request waits; a live run-batch holds the terminal lease (TERMINAL_LEASE_BUSY). --settle publishes nothing and reads no broker (finish checks the EA demo flag under the gate): observes that stop, then finishes the batch to paused or finished, keeping every completed member\'s results; batch-resume continues the rest after a V1.49 stop; after a V1.48 stop GOAT cannot run the remaining members (RESUME_V148_CANCEL_LATCHED: V1.49 upgrade, then a support report naming the batch)'),
     'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else (native_human_control only; never on a demo_direct installation, where it is a pure read) register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
     'close-terminal':dict(required=['attempt-id'],optional=['build-id','timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats. When it read the GOAT monitor healthy just before its close (native_monitor facts, SDK Algo off, demo, bound login), it records the post-close chart hash monitor-launch may reopen (monitor_chart_record)'),
     'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback (plus account currency, balance, equity, leverage, company and trade mode), existing dashboard state and live deployment record for a desktop deploy review, and the Allow Algo Trading default MT5 saved (allow_live_trading_default, plus an informational notes entry when it is off; readiness_blockers stays empty for it; never written)'),
@@ -425,7 +426,7 @@ TERMINAL_LEASE_OPERATIONS=frozenset((
     'run-batch','seed-start','seed-resume','catchup-start','catchup-resume','close-terminal','deploy-load','deploy-stop',
     'monitor-launch','monitor-repair','monitor-stop','research-monitor-restart-resume',
     'research-monitor-repair-derived-report','research-monitor-repair-revoked-report','research-retire-never-started',
-    'bootstrap-retirement-apply'))
+    'bootstrap-retirement-apply','cancel-regrant'))
 
 
 def main(argv=None):
@@ -516,6 +517,7 @@ def main(argv=None):
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','cancel-rejected-successor'):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
+    p=sub.add_parser('cancel-regrant');p.add_argument('--job-id',required=True);p.add_argument('--settle',action='store_true',help='Publish nothing: observe the stop, then finish and complete the pause')
     p=sub.add_parser('research-monitor-reopen-prepare');p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-monitor-adopt-reopen');p.add_argument('--job-id',required=True);p.add_argument('--human-reopened',action='store_true')
     p=sub.add_parser('research-monitor-repair-derived-report');p.add_argument('--job-id',required=True)
@@ -855,6 +857,9 @@ def main(argv=None):
             elif args.operation=='cancel-rejected-successor':
                 from studio_cancel_successor import create
                 result=create(controller,args.job_id)
+            elif args.operation=='cancel-regrant':
+                from studio_cancel_regrant import studio_entry
+                result=studio_entry(controller,args.job_id,settle_stop=args.settle)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
             elif args.operation=='clear-queue':

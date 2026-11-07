@@ -31,7 +31,9 @@ def cancel_id(root,job,gate=None):
             or request['job_id']!=job['job_id'] or request['configuration_sha256']!=job['configuration_sha256']
             or any(request[k]!=value[k] for k in ('terminal_id','run_id','generation'))):
         raise ValueError('Exact expired unconsumed CANCEL_REJECTED required')
-    return value['request_id']
+    # A new grant in the human channel may add one later stop per generation (studio_cancel_regrant).
+    from studio_cancel_regrant import current_stop
+    return current_stop(root,gate,value)
 
 
 def create(controller,job_id):

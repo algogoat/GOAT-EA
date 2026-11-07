@@ -148,13 +148,20 @@ const declared=text=>[...text.matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].
 assert.deepEqual(declared(read('GOAT V1.49.mq5').toString('utf8')),declared(git(['show',B50_SOURCE+':GOAT V1.49.mq5']).toString('utf8')),'no input added to the entrypoint');
 checks++;
 
-// 6. The tree is B51's identity (the assembly, as A4 stamped B50's): its sources are exactly the compile closure and
-// each hashes to the tree; the build ID and marker are B51's own, once each.
-const b51=JSON.parse(read('candidate-builds/beta17-B51/identity.json').toString('utf8').replace(/^﻿/,''));
+// 6. B51's identity is its own commit's (the assembly, GOAT-EA#293 head b4844b2e; goatai#2750 6702775712), as
+// test_b50_no_drift.cjs proves B50-alpha's own commit: every identity source hashes to that commit's blob as it checks
+// out, the identity file is unchanged, the tree descends from it, and its sources are the tree's compile closure. Later
+// B51-line changes (GOAT-EA#292) differ from it only in marked lines (sections 3-4); the tree keeps B51's build ID and
+// marker, once each, until the next assembly stamps its own.
+const B51_SOURCE='b4844b2e';
+git(['merge-base','--is-ancestor',B51_SOURCE,'HEAD']);   // throws unless the working tree descends from B51's identity commit
+const b51Raw=git(['show',B51_SOURCE+':candidate-builds/beta17-B51/identity.json']);
+const b51=JSON.parse(b51Raw.toString('utf8').replace(/^﻿/,''));
+assert.deepEqual(JSON.parse(read('candidate-builds/beta17-B51/identity.json').toString('utf8').replace(/^﻿/,'')),b51,'B51\'s identity file is unchanged');
 assert.equal(b51.build_id+' '+b51.build_marker,'V1.49-BETA17-51 B51');
 assert.equal(b51.supersedes_candidate,'beta17-B50');
 assert.deepEqual(Object.keys(b51.sources).sort(),closure(),'B51\'s identity names exactly the compile closure');
-for(const [f,h] of Object.entries(b51.sources)) assert.equal(sha(read(f)),h,'B51 identity source: '+f);
+for(const [f,h] of Object.entries(b51.sources)) assert.equal(sha(checkedOut(f,git(['show',B51_SOURCE+':'+f]))),h,'B51 identity source at '+B51_SOURCE+': '+f);
 const mainText=read('GOAT V1.49.mq5').toString('utf8');
 assert.equal(mainText.split('\r\n').filter(l=>l===IDENTITY_LINES[0]).length,1,'the build ID is B51\'s');
 assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "B51"').length,1,'the marker is B51\'s');

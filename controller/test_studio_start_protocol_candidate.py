@@ -41,8 +41,13 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # own identity. It differs from B50 in exactly scripts/test_b51_no_drift.cjs's CHANGED files (every changed line
         # marked there, the build ID line its one allowance), its compile closure is B50's, and every source hashes to the tree.
         self.assertEqual(sorted(identity['consolidates']), ['B51.1a', 'B51.1b', 'B51.1c', 'B51.c1'])
+        # Its sources hash to its own commit (GOAT-EA#293 head b4844b2e, checked out with CRLF as .gitattributes does):
+        # later B51-line changes such as GOAT-EA#292 differ from it only in the guard's marked lines, until the next
+        # assembly stamps its own identity (as B50's sources are checked at 32df4eb below).
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            blob = subprocess.run(['git', 'show', 'b4844b2e:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+            blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+            self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B51 commit)')
         b50 = json.loads((RETAINED_B50 / 'identity.json').read_text(encoding='utf-8'))
         b51_guard = (ROOT / 'scripts/test_b51_no_drift.cjs').read_text(encoding='utf-8')
         b51_changed = json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b51_guard, re.M)[1].replace("'", '"') + ']')

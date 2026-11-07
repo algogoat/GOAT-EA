@@ -174,6 +174,10 @@ switching the rule off. Reason code
 sequence trades; use fixed lots or raise Max_Seq_Trades. Single-trade risk sizing
 isn't available yet. We'll say so in the release notes when it ships." With fewer than 2 trades the EA's planned loss path
 is empty, so its lot solver climbs to the broker's maximum volume.
+On a B50 build, a SET whose only reachable `Engine_Mode` is `Engine_Single` is not
+refused: the single never runs that solver, but sizes `Risk` from its own stop
+(`Single_SL_ATR`), floored and never above the risk. A SET that can reach the grid
+engine is refused as above.
 
 **The EA's own init refusals, for every strategy (`EA_INIT_REFUSED`).** The same
 shared validator mirrors every `OnInit` refusal of the EA that depends only on input

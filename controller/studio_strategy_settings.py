@@ -273,6 +273,13 @@ def lowest_reachable(encoded, definition):
     return current if ladder is None else min(current, ladder[0])
 
 
+def only_reaches(encoded, definition, target):
+    """True only when target is the one value encoded can run: the current value, with no active ladder or a ladder
+    that starts and stops at target. Any other ladder counts as reaching another value."""
+    current, ladder = _reachable(encoded, definition)
+    return current == target and (ladder is None or ladder[0] == ladder[2] == target)
+
+
 def check_risk_sizing(values, schema):
     """Unconditional money-safety rule for every strategy the controller validates or stages.
 
@@ -281,7 +288,14 @@ def check_risk_sizing(values, schema):
     climbs to the broker's maximum volume. Any reachable combination is refused: the current value,
     every value of an active ladder and the first field of a dormant N tuple. A value missing from a
     partial SET is the EA's declared default. Fails closed when a schema with Mode_Lots no longer
-    names RiskperSeq or Max_Seq_Trades, so a rename can never switch the rule off silently."""
+    names RiskperSeq or Max_Seq_Trades, so a rename can never switch the rule off silently.
+
+    B50 (single-trade engine): a SET whose only reachable Engine_Mode is Engine_Single never runs that solver.
+    GoatSingleOpen sizes RiskperSeq from the single's own stop: Risk / (Size_SL x tick value / tick size), floored to
+    the volume step, capped at the volume maximum and refused below the volume minimum; Single_SL_ATR > 0 is an OnInit
+    rule, and a single never adds a grid level. So such a SET is not refused here. A schema without an Engine_Single
+    choice, a missing Engine_Mode (the declared default, Engine_Grid) and any ladder that can reach another engine keep
+    the refusal unchanged."""
     inputs = schema['inputs']
     lots, trades = inputs.get('Mode_Lots'), inputs.get('Max_Seq_Trades')
     if lots is None:
@@ -295,6 +309,12 @@ def check_risk_sizing(values, schema):
             return values[name]
         from studio_template_tools import schema_default
         return schema_default(name, definition, schema.get('defines'))
+    def single_only():   # read only once the grid rule would refuse, so every other SET is checked exactly as before
+        engine = inputs.get('Engine_Mode')
+        engines = (engine or {}).get('enum_choices') or {}
+        return ('Engine_Single' in engines
+                and only_reaches(value('Engine_Mode', engine), engine, Fraction(engines['Engine_Single'])))
     if (can_reach(value('Mode_Lots', lots), lots, Fraction(choices['RiskperSeq']))
-            and lowest_reachable(value('Max_Seq_Trades', trades), trades) <= 1):
+            and lowest_reachable(value('Max_Seq_Trades', trades), trades) <= 1
+            and not single_only()):
         raise ValueError(RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE)

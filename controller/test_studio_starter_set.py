@@ -13,7 +13,7 @@ import unittest
 from campaign_ledger import sha
 from studio_installation import contracts
 from studio_research_authority import LOCAL_FILE_OPERATIONS, OPERATIONS, READ_OPERATIONS, authority, operation
-from studio_strategy_settings import read_values
+from studio_strategy_settings import check_risk_sizing, read_values
 from studio_template_tools import (RISK_SIZING_CODE, RISK_SIZING_MESSAGE, STARTER_SHAPES, build_set, schema_default,
                                    signal_modes, starter_set, validate_raw, validate_set)
 from unittest.mock import patch
@@ -237,6 +237,46 @@ class BuildFromStarterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
             self.build(single['output']['path'], {'Mode_Lots': '2', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if 'variant' in p.name), [])
+
+    def test_single_engine_sizes_risk_from_its_stop_so_one_trade_is_accepted(self):
+        # B50 (Claude-Mac goatai#2750 6702285189, ruling 1): GoatSingleOpen sizes RiskperSeq from the single's own stop
+        # and never runs the grid solver, so a SET whose only engine is Engine_Single passes with one trade.
+        single = self.starter('single')
+        changes = {'Engine_Mode': '1', 'Single_SL_ATR': '2.0', 'Mode_Lots': '2', 'Risk': '100.0',
+                   'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'}
+        ok = self.build(single['output']['path'], changes, output='single-engine.set')
+        self.assertEqual(ok['validation']['active_axes'], {'RSI_Period': 3})
+        values = read_values(Path(ok['output']['path']).read_bytes())
+        self.assertEqual((values['Engine_Mode'], values['Mode_Lots'], values['Max_Seq_Trades']), ('1', '2', '1'))
+        self.assertTrue(validate_set(ok['output']['path'], self.schema, self.policy))
+        for name, encoded in (('Max_Seq_Trades', '3||1||1||5||Y'), ('Mode_Lots', '2||0||1||2||N'), ('Engine_Mode', '1||1||1||1||Y')):
+            with self.subTest(name=name, encoded=encoded):
+                check_risk_sizing(values | {name: encoded}, self.schema)
+
+    def test_risk_sizing_that_can_reach_the_grid_engine_is_still_refused(self):
+        # The negative of the test above: the same one-trade RiskperSeq SET refused wherever the grid can run, by value,
+        # by the declared default (Engine_Grid), by a dormant tuple or ladder, and on a schema that renames Engine_Single.
+        single = self.starter('single')
+        changes = {'Single_SL_ATR': '2.0', 'Mode_Lots': '2', 'Risk': '100.0', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'}
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):   # the starter's Engine_Mode is the default, Engine_Grid
+            self.build(single['output']['path'], changes, output='grid.set')
+        self.assertFalse((self.root / 'grid.set').exists())
+        ok = self.build(single['output']['path'], changes | {'Engine_Mode': '1'}, output='single-engine.set')
+        values = read_values(Path(ok['output']['path']).read_bytes())
+        for encoded in ('0', '0||1||1||1||N', '1||0||1||1||Y', '0||0||1||1||Y'):
+            with self.subTest(encoded=encoded), self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE):
+                check_risk_sizing(values | {'Engine_Mode': encoded}, self.schema)
+        partial = {name: value for name, value in values.items() if name != 'Engine_Mode'}   # a partial SET runs the default
+        with self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE):
+            check_risk_sizing(partial, self.schema)
+        renamed = copy.deepcopy(self.schema)
+        choices = renamed['inputs']['Engine_Mode']['enum_choices']
+        choices['Engine_One'] = choices.pop('Engine_Single')
+        with self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE):
+            check_risk_sizing(values, renamed)
+        without = copy.deepcopy(self.schema); del without['inputs']['Engine_Mode']
+        with self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE):
+            check_risk_sizing(values, without)
 
     # ---- Claude-Mac's review of f584b85a: each bypass of the max-lot guard, now refused for every SET
     def test_bypass_1_dormant_mode_lots_tuple_is_read_as_mt5_reads_it(self):

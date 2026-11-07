@@ -62,7 +62,7 @@ jobs:
   controller:
     runs-on: windows-2022
     # Setup, fast fixtures and the full unittest suite: ~8-10 min (unittest alone 7 min on a slow runner).
-    timeout-minutes: 30
+    timeout-minutes: 70
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"

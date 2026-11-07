@@ -13,7 +13,9 @@
 //   exactly NEW_INPUTS, in order, at the very end (ruling, goatai#2587 6501903173). That is this guard's one explicit
 //   allowance. B49b's inputs will slot in between B50-alpha's and these when the two lines merge: the merge updates
 //   the allowance to name them (names are what matter), never this file's NEW_INPUTS;
-// - the build identity is still B50-alpha's (V1.49-BETA17-50, marker B50): the assembly PR stamps beta-1's, as A4 did.
+// - the tree is B51's identity (candidate-builds/beta17-B51/identity.json, the assembly, as A4 was B50's; goatai#2750
+//   6702775712): every source hashes to it, its sources are exactly the compile closure, and the build ID and marker
+//   are its own. The build ID line is the one unmarked change (IDENTITY_LINES).
 // test_b50_no_drift.cjs now proves B50-alpha's own commit, so the chain B49a -> B50 -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B51 change is marked, listed and reviewable. Neutrality with
 // the new inputs at their defaults is proven by scripts/test_b51_parity.cjs (the converted OnTick region of B50-alpha
@@ -30,6 +32,7 @@ const REMOVED={
   'if(!PersistLive() || Active) return false;',
   'Alert(adopted);',
   'else',
+  '#define   GOAT_BUILD_ID "V1.49-BETA17-50"','#define   GOAT_BUILD_MARKER "B50"',                                     // the assembly: the build identity
   'if(Engine_Mode==Engine_Single && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;}',
  ],
  'GOATStudioSettingTypes.mqh':[
@@ -41,6 +44,9 @@ const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only','Single_BE
 const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false'],
  Single_BE_ATR:['input','double','0.0'],Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0'],
  Single_Partial_ATR:['input','double','0.0'],Single_Partial_Fraction:['input','double','0.0'],Single_Partial_BE:['input','bool','false']};
+// The assembly: the build ID line (exact text in GOAT V1.49.mq5) is the one unmarked change: its value "V1.49-BETA17-51"
+// is the build's name, so it cannot carry the marker inside the string; the marker line carries "B51" in its value.
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-51"'];
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
@@ -110,7 +116,7 @@ for(const f of CHANGED){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B50-alpha line(s) is unmarked');
   for(const n of added){
    const text=lines[n-1];
-   assert.ok(/B51/.test(text)||inBlock[n-1],f+':'+n+' changed since B50-alpha without a B51 marker: '+text.trim());
+   assert.ok(/B51/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)),f+':'+n+' changed since B50-alpha without a B51 marker: '+text.trim());
   }
  }
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[])].sort(),f+': the B50-alpha lines removed are exactly REMOVED');
@@ -142,10 +148,16 @@ const declared=text=>[...text.matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].
 assert.deepEqual(declared(read('GOAT V1.49.mq5').toString('utf8')),declared(git(['show',B50_SOURCE+':GOAT V1.49.mq5']).toString('utf8')),'no input added to the entrypoint');
 checks++;
 
-// 6. The build identity is still B50-alpha's: the assembly stamps beta-1's (as A4 stamped B50's).
+// 6. The tree is B51's identity (the assembly, as A4 stamped B50's): its sources are exactly the compile closure and
+// each hashes to the tree; the build ID and marker are B51's own, once each.
+const b51=JSON.parse(read('candidate-builds/beta17-B51/identity.json').toString('utf8').replace(/^﻿/,''));
+assert.equal(b51.build_id+' '+b51.build_marker,'V1.49-BETA17-51 B51');
+assert.equal(b51.supersedes_candidate,'beta17-B50');
+assert.deepEqual(Object.keys(b51.sources).sort(),closure(),'B51\'s identity names exactly the compile closure');
+for(const [f,h] of Object.entries(b51.sources)) assert.equal(sha(read(f)),h,'B51 identity source: '+f);
 const mainText=read('GOAT V1.49.mq5').toString('utf8');
-assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_ID "V1.49-BETA17-50"').length,1,'the build ID is B50-alpha\'s until the assembly');
-assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "B50"').length,1,'the marker is B50-alpha\'s until the assembly');
+assert.equal(mainText.split('\r\n').filter(l=>l===IDENTITY_LINES[0]).length,1,'the build ID is B51\'s');
+assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "B51"').length,1,'the marker is B51\'s');
 checks++;
 
 console.log('b51_no_drift: '+checks+' checks passed (B50-alpha '+B50_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+'; new inputs: '+NEW_INPUTS.join(', ')+')');

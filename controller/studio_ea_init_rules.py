@@ -86,7 +86,7 @@ _TRIM = ' \t\r\n'
 
 
 def _desc_keys(text):
-    """ExtractFunctionKeysFromInputString (GOAT V1.49.mq5:8370): key/value pairs of the `@{...}` section."""
+    """ExtractFunctionKeysFromInputString (GOAT V1.49.mq5:8444): key/value pairs of the `@{...}` section."""
     at = text.find('@')
     if at < 0:
         return []

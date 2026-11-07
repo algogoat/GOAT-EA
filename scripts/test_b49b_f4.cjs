@@ -189,7 +189,7 @@ const timeline=[T0,T0+1,T0+2,T0+62,T0+122,T0+3722,T0+7322,T0+7323,T0+86400+7323,
  assert.ok(!/TimeTradeServer/.test(f4block+tick),'the PC\'s clock is never the timer\'s');
  // Only a real OnTick event stamps; OnInit forgets the tick first (a re-init keeps the EA's globals) and right after its
  // own OnTick() call.
- assert.equal(bodyOf(main,'void OnTick()').replace(/\/\/.*$/gm,'').replace(/\s+/g,''),'GoatNoTickStamp();GoatFeedGuardStamp();GoatTickBody();GoatTraceBoundary();','OnTick stamps, then runs the tick');
+ assert.equal(bodyOf(main,'void OnTick()').replace(/\/\/.*$/gm,'').replace(/\s+/g,''),'ulongtiming_tick=GoatTimingStart();GoatNoTickStamp();GoatFeedGuardStamp();GoatTickBody();GoatTraceBoundary();GoatTimingTick(timing_tick);','OnTick stamps, then runs the tick');
  const init=bodyOf(main,'int OnInit()'),initCode=init.replace(/\/\/.*$/gm,'').trim();
  assert.ok(initCode.startsWith('GoatNoTickForget();'),'OnInit forgets the tick first');
  assert.match(init,/\n   OnTick\(\); Sleep\(50\);\n   GoatNoTickForget\(\);/,'and right after its own OnTick() call');

@@ -6725,7 +6725,7 @@ bool GoatCloseRejected(const uint retcode,const bool counted,const ulong ticket,
   }
 bool GoatStatusLive(void)
   {
-   return(GoatFeedGuardLive() && MAGIC1>0);
+   return((GoatFeedGuardLive() || GoatTimingLive()) && MAGIC1>0); // LAG-T: timing alone writes the file too
   }
 string GoatStatusText(void)
   {
@@ -6740,7 +6740,7 @@ string GoatStatusText(void)
          +"\nclose_owed="+(g_GoatCloseOwed ? "1" : "0")+"\nclose_owed_since="+IntegerToString((long)g_GoatCloseOwedSince)
          +"\nclosed="+IntegerToString(closed)+"\nclose_errors="+IntegerToString(closeErrors)
          +"\ntsl_modifies="+IntegerToString(TSLmodifieds)+"\ntsl_modify_errors="+IntegerToString(TSLmodifyErrors)
-         +"\npositions_account="+IntegerToString(PositionsTotal())+"\n";
+         +"\npositions_account="+IntegerToString(PositionsTotal())+"\n"+GoatTimingText(); // LAG-T: "" unless Diag_TickTiming
   }
 // From the timer. It never touches trading: a failed write logs once and freezes nothing, unlike the restart state file.
 void GoatStatusFlush(void)
@@ -6759,10 +6759,69 @@ void GoatStatusFlush(void)
    g_GoatStatusFailLogged=true;
   }
 // B49b:end lag-a
+// B49b:begin lag-t
+// LAG-T, read-only timing (Diag_TickTiming, default Off): where a chart's time goes, so the bench can show whether per-tick
+// work is the bottleneck at all before group B is ever turned on. Whether a terminal falls behind because of the EA's work or
+// because of its host is not proven. It reads a microsecond clock around OnTick, OnTimer and six sections of GoatTickBody,
+// keeps counters, adds them to the status file and logs one line a minute. It sends nothing, selects nothing and sets no
+// trading state. Off, each call is one input compare. Live trading charts only (GoatManageOnlyLive); with it on and the other
+// flags off the chart trades as the base, plus the file and the log line. busy_pct is this chart's share of one core: a
+// terminal's EAs each run on their own thread, so sum the charts and compare with the host's CPU, and with feed_age_s.
+#define GOAT_TIMING_SLOTS 7   // 0 per-second block, 1 minute block, 2 trailing, 3 signals, 4 exits (close pump, MLPS), 5 grid and sequence, 6 OnTimer
+#define GOAT_TIMING_LOG_MS 60000
+ulong g_GoatTimingSlotUS[GOAT_TIMING_SLOTS],g_GoatTimingSlotCalls[GOAT_TIMING_SLOTS];
+ulong g_GoatTimingTicks=0,g_GoatTimingTickUS=0,g_GoatTimingTickMaxUS=0;
+ulong g_GoatTimingWindowMs=0,g_GoatTimingWindowUS=0,g_GoatTimingWindowTicks=0;
+bool GoatTimingLive(void)
+  {
+   return(Diag_TickTiming==GoatFix_On && GoatManageOnlyLive());
+  }
+ulong GoatTimingStart(void)
+  {
+   return(GoatTimingLive() ? GetMicrosecondCount() : 0);
+  }
+void GoatTimingSlot(const int slot,const ulong started_us)
+  {
+   if(started_us==0) return;
+   ulong spent_us=GetMicrosecondCount()-started_us;
+   g_GoatTimingSlotUS[slot]+=spent_us; g_GoatTimingSlotCalls[slot]++;
+   if(slot==6) g_GoatTimingWindowUS+=spent_us;
+  }
+void GoatTimingTick(const ulong started_us)
+  {
+   if(started_us==0) return;
+   ulong spent_us=GetMicrosecondCount()-started_us;
+   g_GoatTimingTicks++; g_GoatTimingTickUS+=spent_us; g_GoatTimingWindowTicks++; g_GoatTimingWindowUS+=spent_us;
+   if(spent_us>g_GoatTimingTickMaxUS) g_GoatTimingTickMaxUS=spent_us;
+  }
+string GoatTimingText(void)
+  {
+   if(!GoatTimingLive()) return "";
+   string slot_names[GOAT_TIMING_SLOTS]={"second","minute","trailing","signal","exits","sequence","timer"};
+   string timing_text="timing_ticks="+IntegerToString((long)g_GoatTimingTicks)+"\ntiming_tick_us="+IntegerToString((long)g_GoatTimingTickUS)+"\ntiming_tick_max_us="+IntegerToString((long)g_GoatTimingTickMaxUS)+"\n";
+   for(int s=0;s<GOAT_TIMING_SLOTS;s++)
+      timing_text+="timing_"+slot_names[s]+"_us="+IntegerToString((long)g_GoatTimingSlotUS[s])+"\ntiming_"+slot_names[s]+"_calls="+IntegerToString((long)g_GoatTimingSlotCalls[s])+"\n";
+   return timing_text;
+  }
+// From the timer: one line a minute, the window's busy share against the feed age it ran at.
+void GoatTimingFlush(void)
+  {
+   if(!GoatTimingLive()) return;
+   ulong now_ms=GetTickCount64();
+   if(g_GoatTimingWindowMs==0) {g_GoatTimingWindowMs=now_ms; return;}
+   if(now_ms-g_GoatTimingWindowMs<GOAT_TIMING_LOG_MS) return;
+   ulong window_ms=now_ms-g_GoatTimingWindowMs;
+   Print(StringFormat("GOAT tick timing: symbol=%s window_ms=%I64u ticks=%I64u busy_pct=%.2f tick_max_us=%I64u feed_age_s=%d positions_account=%d",
+      _Symbol,window_ms,g_GoatTimingWindowTicks,100.0*(double)g_GoatTimingWindowUS/((double)window_ms*1000.0),g_GoatTimingTickMaxUS,GoatFeedAge(GoatServerClock()),PositionsTotal()));
+   g_GoatTimingWindowMs=now_ms; g_GoatTimingWindowUS=0; g_GoatTimingWindowTicks=0;
+  }
+// B49b:end lag-t
 void OnTimer(void)
   {
+   ulong timing_timer=GoatTimingStart(); // B49b (LAG-T)
    GoatTimerBody();
    GoatTraceTimer();
+   GoatTimingSlot(6,timing_timer); // B49b (LAG-T)
   }
 
 void GoatTimerBody(void)
@@ -6779,6 +6838,7 @@ void GoatTimerBody(void)
    GoatStateFlush(); GoatManageOnlyTimer(); // B49b (F1): the state file when it changed; manage-only's licence retry and its end
    GoatNoTickTimer(); // B49b (F4): exits without a tick (live trading charts only)
    GoatStatusFlush(); // B49b (LAG-A): the feed-age status file (at most every GOAT_STATUS_WRITE_MS; live trading charts only)
+   GoatTimingFlush(); // B49b (LAG-T): one timing line a minute
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)
@@ -7111,10 +7171,12 @@ void HandleBiasExitSell(const int sells)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
   {
+   ulong timing_tick=GoatTimingStart(); // B49b (LAG-T)
    GoatNoTickStamp(); // B49b (F4): a real tick event (OnInit's own OnTick() call is forgotten right after it)
    GoatFeedGuardStamp(); // B49b (LAG-A): the no-tick clock counts from the server clock, never a stale tick
    GoatTickBody();
    GoatTraceBoundary();
+   GoatTimingTick(timing_tick); // B49b (LAG-T)
   }
 
 void GoatTickBody()
@@ -7184,6 +7246,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    if(IsNewMinute())
    {
+    ulong timing_minute=GoatTimingStart(); // B49b (LAG-T)
     if(Mode=="EXPORT" && !MQLInfoInteger(MQL_OPTIMIZATION))
     {
      static double LastEquity=0,LastBalance=0,LastBid=bid*1.1,LastAsk=ask*1.1; // avoid divide by zero
@@ -7508,11 +7571,13 @@ void GoatTickBody()
          }
        else BiasDisplayFunction(true,clrGold,idx);
       }
+    GoatTimingSlot(1,timing_minute); // B49b (LAG-T)
    }
 //-------------------------------------------------------------------------
    if(IsNewSecond())
    {
     GoatFeedClockServer(); // B49b (LAG-A): session, Friday and day-end logic on the server clock
+    ulong timing_second=GoatTimingStart(); // B49b (LAG-T)
     int k;
          if(stm_cur.day_of_week==1)                         k=0;
     else if(stm_cur.day_of_week==2)                         k=1;
@@ -7754,12 +7819,14 @@ void GoatTickBody()
      DashboardBusSendStatus(dashboard_status);
     }
   //PartialClose();
+    GoatTimingSlot(0,timing_second); // B49b (LAG-T)
     GoatFeedClockFeed(); // B49b (LAG-A)
    }
    if(g_GoatNoTickRun) return; // B49b (F4): the no-tick timer runs only the per-second block above: never trails, signals or enters
 //-------------------------------------------------------------------------
    if(CheckTrailingLockTPNow())// && Active)
    {
+    ulong timing_trailing=GoatTimingStart(); // B49b (LAG-T)
     if(Seq_Buy.Active && bid > Seq_Buy.Level_Lock)
     {
      if(Mode_Trail==Trail_Lock_Pro) {if(bid>Seq_Buy.Level_Lock+Seq_Buy.Size_TSL)    Seq_Buy.TrailingStoploss();}
@@ -7787,6 +7854,7 @@ void GoatTickBody()
      if(Mode_Trail==Trail_Lock_Pro) {if(ask<=Seq_Sell_Virtual.Level_Lock-Seq_Sell_Virtual.Size_TSL)  Seq_Sell_Virtual.TrailingStoploss();}
      else                                                                                            Seq_Sell_Virtual.TrailingStoploss();
     }
+    GoatTimingSlot(2,timing_trailing); // B49b (LAG-T)
    }
 //-------------------------------------------------------------------------
    if(Seq_Buy.Active  && !Seq_Buy.Traded)
@@ -7815,6 +7883,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    if( CheckSignalNow() )//|| Check_Forced)
    {
+    ulong timing_signal=GoatTimingStart(); // B49b (LAG-T)
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     bool checked=false;
     Shift_Sig = 1;
@@ -7847,18 +7916,22 @@ void GoatTickBody()
      InActive=false;
     }
     if(MQLInfoInteger(MQL_VISUAL_MODE)) ChartRedraw(0);
+    GoatTimingSlot(3,timing_signal); // B49b (LAG-T)
     GoatPerformanceRecord(g_PerfSignalUS,g_PerfSignalCalls,profile_started);
    }
  //else ObjectSetText(IntegerToString(TotalText_Trade-2,2,'0')," ",Font_Size-1,"NULL",clrLime);
 //-------------------------------------------------------------------------
    static bool LastBuyTradeSignal=false,LastSellTradeSignal=false;
 
+   ulong timing_exits=GoatTimingStart(); // B49b (LAG-T)
    Seq_Buy.ClosePendingPump(); Seq_Sell.ClosePendingPump(); // B49b (F3): an end deferred until flat retries its close
    bool buyMlpsExit=false,sellMlpsExit=false;
    if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
    if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
+   GoatTimingSlot(4,timing_exits); // B49b (LAG-T)
 
    GoatDirectionGuardMaintenance(Seq_Buy.Active,Seq_Sell.Active);
+   ulong timing_sequence=GoatTimingStart(); // B49b (LAG-T)
    bool sequenceCheckNow=CheckSequenceNow();
    if(sequenceCheckNow && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
    {
@@ -7949,6 +8022,7 @@ void GoatTickBody()
      }
     }
    }
+   GoatTimingSlot(5,timing_sequence); // B49b (LAG-T)
 //-------------------------------------------------------------------------
    return;
   }

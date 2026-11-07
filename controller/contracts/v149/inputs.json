@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_sha256": "9f7bc9100224465852a76f9fcb88f8ef91bab87e250451234d16651e2d52cfbd",
+  "source_sha256": "864fb44fa52f2f4e1709d52637daec6022dfb41379c944af890f15cd47ad81c9",
   "defines": {
     "GOAT_VERSION_LABEL": "\"1.49\"",
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
@@ -1222,6 +1222,17 @@
       "dependency_audited": false
     },
     "Fix_FeedGuard": {
+      "type": "ENUM_GOAT_FIX",
+      "declaration": "sinput",
+      "default_expression": "GoatFix_Off",
+      "optimizable": false,
+      "enum_choices": {
+        "GoatFix_Off": 0,
+        "GoatFix_On": 1
+      },
+      "dependency_audited": false
+    },
+    "Diag_TickTiming": {
       "type": "ENUM_GOAT_FIX",
       "declaration": "sinput",
       "default_expression": "GoatFix_Off",

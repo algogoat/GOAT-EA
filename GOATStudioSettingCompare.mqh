@@ -50,6 +50,7 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    if(identity=="[TesterInputs]|Min_Margin_Level_PC") return value!="" && StringToDouble(value)==0.0; // B49b (F6): off, however MT5 prints 0
    if(identity=="[TesterInputs]|Fix_Clock") return value=="0"; // B49b (F4/R2): an omitted fix flag runs Off
    if(identity=="[TesterInputs]|Fix_FeedGuard") return value=="0"; // B49b (LAG-A): an omitted fix flag runs Off
+   if(identity=="[TesterInputs]|Diag_TickTiming") return value=="0"; // B49b (LAG-T): an omitted fix flag runs Off
    return false;
   }
 

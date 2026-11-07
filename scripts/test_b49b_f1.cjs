@@ -463,7 +463,7 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  assert.match(main,/    if\(StopOut_Flag_B && !g_GoatLastStopOutB\)[^\n]*\n    \{\n     HandleBiasExitBuy\(Buys\);\n    \}\n    g_GoatLastStopOutB = StopOut_Flag_B;/);
  assert.match(main,/    if\(StopOut_Flag_S && !g_GoatLastStopOutS\)[^\n]*\n    \{\n     HandleBiasExitSell\(Sells\);\n    \}\n    g_GoatLastStopOutS = StopOut_Flag_S;/);
  // OnTimer and OnDeinit, beside the restart record's flush.
- assert.match(bodyOf(main,'void OnTimer(void)'),/^\s*GoatTimerBody\(\);/,'OnTimer runs GoatTimerBody');
+ assert.match(bodyOf(main,'void OnTimer(void)'),/^\s*ulong timing_timer=GoatTimingStart\(\);[^\n]*\n\s*GoatTimerBody\(\);/,'OnTimer runs GoatTimerBody');
  assert.match(bodyOf(main,'void GoatTimerBody(void)'),/Seq_Buy\.PersistFlush\(\); Seq_Sell\.PersistFlush\(\);[^\n]*\n   GoatStateFlush\(\); GoatManageOnlyTimer\(\);/);
  assert.match(bodyOf(main,'void OnDeinit(const int reason)'),/Seq_Buy\.PersistFlush\(true\); Seq_Sell\.PersistFlush\(true\);[^\n]*\n   GoatStateFlush\(true\);/);
  // Adoption marks the direction guard's existing-sequence state (no claim: the core refuses a claim over live exposure).

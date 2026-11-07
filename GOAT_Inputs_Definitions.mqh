@@ -590,6 +590,7 @@ if(Max_Spread_Points!=0) FileWrite(FileSET_handle,"Max_Spread_Points="+(string)M
 if(Min_Margin_Level_PC!=0.0) FileWrite(FileSET_handle,"Min_Margin_Level_PC="+(string)Min_Margin_Level_PC); // B49b (F6): recorded only when set
 if(Fix_Clock!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_Clock="+(string)(int)Fix_Clock); // B49b (F4/R2): recorded only when on
 if(Fix_FeedGuard!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_FeedGuard="+(string)(int)Fix_FeedGuard); // B49b (LAG-A): recorded only when on
+if(Diag_TickTiming!=GoatFix_Off) FileWrite(FileSET_handle,"Diag_TickTiming="+(string)(int)Diag_TickTiming); // B49b (LAG-T): recorded only when on
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -833,6 +834,10 @@ sinput   ENUM_GOAT_FIX           Fix_Clock                     =                
 // B49b (LAG-A): the tester. Session, day and Friday ends on the server clock, a feed-age guard on new entries and adds, a
 // B49b (LAG-A): feed-age status file, a refused Friday close stays owed. Off reproduces B49a. Detail above GoatTimerBody.
 sinput   ENUM_GOAT_FIX           Fix_FeedGuard                 =                   GoatFix_Off;       // Fix: feed-age guard, server-time session ends, owed Friday close
+// B49b (LAG-T): read-only timing of OnTick, OnTimer and the sections of GoatTickBody, in the status file and one log line a
+// B49b (LAG-T): minute, so a bench can show whether per-tick work is the bottleneck before Fix_TickLoad is ever turned on. It
+// B49b (LAG-T): never changes a trade. Live trading charts only.
+sinput   ENUM_GOAT_FIX           Diag_TickTiming               =                   GoatFix_Off;       // Diagnostic: time spent per tick (read-only)
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

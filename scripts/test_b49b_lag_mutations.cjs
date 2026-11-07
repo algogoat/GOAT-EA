@@ -83,6 +83,23 @@ const MUTANTS=[
  ['main','the buy side is not checked','(ulong)TradeLevels[i].ticket,"TSL BUY",Trade.ResultRetcodeDescription())) TSLmodifyErrors++;','(ulong)TradeLevels[i].ticket,"TSL BUY",Trade.ResultRetcodeDescription())) {}'],
  ['main','the sell side is not checked','(ulong)TradeLevels[i].ticket,"TSL SELL",Trade.ResultRetcodeDescription())) TSLmodifyErrors++;','(ulong)TradeLevels[i].ticket,"TSL SELL",Trade.ResultRetcodeDescription())) {}'],
  ['main','the TP/SL site reads the wrong counter','TPmodifyErrors!=tp_errors_before,(ulong)TradeLevels[i].ticket,"TP/SL"','TSLmodifyErrors!=tp_errors_before,(ulong)TradeLevels[i].ticket,"TP/SL"'],
+ // Timing: off by default, read-only, counted.
+ ['header','timing defaults On','Diag_TickTiming               =                   GoatFix_Off;','Diag_TickTiming               =                   GoatFix_On;'],
+ ['main','timing ignores its flag','return(Diag_TickTiming==GoatFix_On && GoatManageOnlyLive());','return(GoatManageOnlyLive());'],
+ ['main','timing runs in the tester','return(Diag_TickTiming==GoatFix_On && GoatManageOnlyLive());','return(Diag_TickTiming==GoatFix_On);'],
+ ['main','timing reads the clock when off','return(GoatTimingLive() ? GetMicrosecondCount() : 0);','return(GetMicrosecondCount());'],
+ ['main','timing touches a trade','   g_GoatTimingTicks++; g_GoatTimingTickUS+=spent_us;','   StopOut_Flag=true; g_GoatTimingTicks++; g_GoatTimingTickUS+=spent_us;'],
+ ['main','timing arms the guard','return((GoatFeedGuardLive() || GoatTimingLive()) && MAGIC1>0);','return(GoatFeedGuardLive() && MAGIC1>0);'],
+ ['main','the status file loses the timing','+GoatTimingText();','+"";'],
+ ['main','the max is not the max','   if(spent_us>g_GoatTimingTickMaxUS) g_GoatTimingTickMaxUS=spent_us;\n','   g_GoatTimingTickMaxUS=spent_us;\n'],
+ ['main','a section counts twice in the window','   if(slot==6) g_GoatTimingWindowUS+=spent_us;\n','   g_GoatTimingWindowUS+=spent_us;\n'],
+ ['main','OnTimer is not in the window','   if(slot==6) g_GoatTimingWindowUS+=spent_us;\n',''],
+ ['main','the log is not once a minute','   if(now_ms-g_GoatTimingWindowMs<GOAT_TIMING_LOG_MS) return;\n',''],
+ ['main','the window never restarts','   g_GoatTimingWindowMs=now_ms; g_GoatTimingWindowUS=0; g_GoatTimingWindowTicks=0;\n',''],
+ ['main','busy is measured wrongly','100.0*(double)g_GoatTimingWindowUS/((double)window_ms*1000.0)','100.0*(double)g_GoatTimingWindowUS/(double)window_ms'],
+ ['main','OnTick is not timed','   GoatTimingTick(timing_tick); // B49b (LAG-T)','   // B49b (LAG-T)'],
+ ['main','the per-second block is not timed','    GoatTimingSlot(0,timing_second); // B49b (LAG-T)','    // B49b (LAG-T)'],
+ ['main','the exits are not timed','   GoatTimingSlot(4,timing_exits); // B49b (LAG-T)','   // B49b (LAG-T)'],
 //@@NEXT@@
 ];
 function runOn(texts){

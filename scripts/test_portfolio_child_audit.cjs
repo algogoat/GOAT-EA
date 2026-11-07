@@ -86,6 +86,10 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_FeedGuard=0\n'+tail,expert),true,'Off SET, B49b child with Fix_FeedGuard off');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_FeedGuard=1\n'+tail,expert),false,'Off SET, child with Fix_FeedGuard on');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Fix_FeedGuard=1\n',0,50,2,fix+'Fix_FeedGuard=1\n'+tail,expert),true,'On SET and child');passed++;
+ // B49b (LAG-T): Diag_TickTiming under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Diag_TickTiming=0\n'+tail,expert),true,'Off SET, B49b child with Diag_TickTiming off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Diag_TickTiming=1\n'+tail,expert),false,'Off SET, child with Diag_TickTiming on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Diag_TickTiming=1\n',0,50,2,fix+'Diag_TickTiming=1\n'+tail,expert),true,'On SET and child');passed++;
  // B49b (F4/R2): Fix_Clock under the same rule.
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=0\n'+tail,expert),true,'Off SET, B49b child with Fix_Clock off');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=1\n'+tail,expert),false,'Off SET, child with Fix_Clock on');passed++;

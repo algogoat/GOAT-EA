@@ -423,7 +423,7 @@ function firstTick(text,buy,sell,{ready=false}={}){
  const b=text.indexOf(TICK_END,a);assert.ok(b>a);
  const k=getSize(text,{ready,context:{}});
  Object.assign(k,{Seq_Buy:buy,Seq_Sell:sell,Seq_Buy_Virtual:{Active:false},Seq_Sell_Virtual:{Active:false},adds:[],
-  GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
+  timing_exits:0,GoatTimingStart:()=>0,GoatTimingSlot:()=>{},GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
   Sequence_Pause_Bias_B:false,Sequence_Pause_Bias_S:false,DashboardPortfolioPaused:false,DashboardTradeAllowed:()=>true,
   Mode_Lots_Prog:0,Lots_Prog_CumPartial:5,Lots_Prog_PeakSmart:6,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
   RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,OP_BUY:0,OP_SELL:1,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,Trades_Skipped_Bias_S:0,

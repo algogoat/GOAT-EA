@@ -9,3 +9,5 @@ controller/contracts/profile-fixtures/** -text
 controller/contracts/deploy-identity/** -text
 # Vendored byte-identical from goatai docs/fixtures (house feed v1.1, JCS manifestSha256): never normalise it.
 controller/contracts/house-manifest/** -text
+# The D1 hunt's preregistered design SETs, byte-identical (UTF-16LE; goatai docs/preregs/d1-hunt-20261107/SET-SHA256SUMS.sha256): never normalise them.
+scripts/fixtures/hunt-d1/** -text

@@ -151,6 +151,7 @@ function terminal({acct=account(),gv=new Map(),login=LOGIN,dataPath=DATA_A,chart
   now:500000,GetTickCount:()=>c.now,
   // DashboardEntryAllowed's other gates, open: only the guard decides here.
   g_GoatStudioMonitorRunPath:'',GoatStagedChildMayOpen:()=>true,DashboardExposureConflict:()=>false,
+  GoatEntriesHeld:()=>false,g_GoatManageOnly:0,GOAT_MANAGE_NONE:0,   // B49b PR-2 (F1 full): not manage-only (test_b49b_f1.cjs covers it)
   DashboardTradeAllowBuy:true,DashboardTradeAllowSell:true,OP_BUY:0,OP_SELL:1,
   g_GoatCidGuardReason:'',g_GoatCidGuardDetail:'',g_GoatCidGuardCheckedMs:0,g_GoatCidGuardChecked:false,
   g_GoatCidGuardClaimedMs:0,g_GoatCidGuardClaimed:false,g_GoatCidGuardFreezeLogged:[false,false]};
@@ -317,8 +318,8 @@ const M=1843920117,O=907113355,Y=1210448821;   // this chart's magic, an orphane
  t.acct.positions=[];assert.equal(t.c.GoatCidGuardRefuses(),true,'cached');assert.equal(t.c.GoatCidGuardRefuses(true),false,'forced');
  ok();}
 
-// 7. Source pins: the build identity (B51); the input header (contract pin, and GoatFindMagicByCid in it) is unchanged.
-{assert.match(main,/^#define   GOAT_BUILD_ID "V1\.49-BETA17-51"$/m);assert.match(main,/^#define   GOAT_BUILD_MARKER "B51"$/m);
+// 7. Source pins: the build identity (B53); the input header (contract pin, and GoatFindMagicByCid in it) is unchanged.
+{assert.match(main,/^#define   GOAT_BUILD_ID "V1\.49-BETA17-53"$/m);assert.match(main,/^#define   GOAT_BUILD_MARKER "B53"$/m);
  const sha=crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'))).digest('hex');
  const deps=JSON.parse(fs.readFileSync(path.join(ROOT,'controller/contracts/v149/dependencies.json'),'utf8').replace(/^\uFEFF/,''));
  assert.equal(sha,deps.header_sha256,'the input contract pins this GOAT_Inputs_Definitions.mqh (B49a changes it; test_b49a_no_drift.cjs)');
@@ -425,7 +426,7 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
  // order goes through it: OpenPosition's one caller is Add_Level, which also counts the rescue adds.
  const ADD=bodyOf(main,'   bool Add_Level(double Level_New)');
  assert.deepEqual(ADD.split('\n').filter(l=>l.trim()&&!/^\s*\/\//.test(l)).slice(0,2).map(l=>l.trim().slice(0,40)),
-  ['if(TimeCurrent()>Expiry) {Alert("This ve','if(!Virtual && GoatCidGuardAddFrozen(dir']);
+  ['if(TimeCurrent()>Expiry) {if(GoatExpiryM','if(!Virtual && GoatCidGuardAddFrozen(dir']);   // B49b PR-2 (F1 full): live, an expired build adds nothing (test_b49b_f1.cjs)
  assert.ok(ADD.includes('    if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: '));
  assert.ok(ADD.includes('OpenPosition(dir,MAGIC1,')&&ADD.includes('BiasRescuePositiveAdds++'));
  // B50 (A1): the single's entry, GoatSingleOpen, is OpenPosition's other caller; it consults the freeze first too.

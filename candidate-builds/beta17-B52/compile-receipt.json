@@ -1,0 +1,25 @@
+{
+  "schema": "goat-ea-hotfix-build-v1",
+  "compile_started_at": "2026-11-07T15:04:26.8492210Z",
+  "compiler_sha256": "cf2750bde55d98a1f3b4e56bcdd4f59300d0cff5caa6760985f7ef2c2cc12229",
+  "compiler_mode": "/portable, IDLE, outside every terminal folder; B47 include root copied hash-equal (compile-ea.ps1 9891B694)",
+  "source_head": "the commit that adds this folder (its parent e3cdcb8b18a7926f24153f8ebb2f26bcf94eb2c5 is the compiled tree; only this folder, the pinned-build row, the build notes and the tests bound to this identity differ)",
+  "source_sha256": "2b889745541da00b786df6fc22b8bca4e0e14d6958c9c12eb9d0243ad6b4a438",
+  "staged_source_sha256": "2b889745541da00b786df6fc22b8bca4e0e14d6958c9c12eb9d0243ad6b4a438",
+  "header_sha256": "b5c462ed82ffba6f820a15a0e3ae4fcc3e0cbbfed3794bec28834980bbae7be4",
+  "closure_files": 42,
+  "outcome": "COMPILE_OK",
+  "result_line": "Result: 0 errors, 0 warnings, 44418 ms elapsed, cpu='X64 Regular'",
+  "metaeditor_process_exit_code": 1,
+  "stage_cleaned": true,
+  "runtime_output_overwritten": false,
+  "output": {
+    "sha256": "e108b09a53cacf43f85eafd7d4026555b1f566ace01411cca877a51c18287acd",
+    "bytes": 2677594
+  },
+  "reproducibility": "MetaEditor output is not byte-reproducible; this is the one binary to use. Equivalence to the reviewed tree (claude-pc/b51-live 5fb5c175, GOAT-EA#296) is by source closure: the closure differs only in the GOAT_BUILD_ID and GOAT_BUILD_MARKER defines, which studio_equivalence normalizes.",
+  "native_qualification": "NONE: not run in the tester or on a chart yet; the drills in README.md are owed before go-live",
+  "do_not_install": true,
+  "superseded_by": "beta17-B53",
+  "do_not_install_reason": "B49b F6's OnInit refusal (Mode_Lots=RiskperSeq with Max_Seq_Trades<=1) was unconditional, so this binary refuses every RiskperSeq single at OnInit, every D1 hunt single among them (found by Codex on GOAT-EA#296, 4502334956). Superseded by beta17-B53 (V1.49-BETA17-53); studio_installed_build pins no row for this binary, so an installed e108b09a is INSTALLED_BUILD_UNKNOWN."
+}

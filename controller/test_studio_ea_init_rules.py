@@ -122,6 +122,11 @@ class PortedRuleTests(RuleCase):
                                           dict(Engine_Mode='0', Ledger_Mode='1', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5')),
         'SINGLE_PARTIAL_NEEDS_POSITION_JOIN': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Ledger_Mode='1', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5'),
                                                dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Ledger_Mode='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5')),
+        # B52 (the final build's review, P3): the benchmark never runs under the first-order gate (Gate_AtFirstOrder = 1).
+        'RANDOM_DIRECTION_WITH_FIRST_ORDER_GATE': (dict(Random_Direction='true', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0',
+                                                        Single_Flat_Only='true', Gate_Recheck='0'),
+                                                   dict(Random_Direction='true', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0',
+                                                        Single_Flat_Only='true', Gate_Recheck='1')),
     }
 
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
@@ -154,7 +159,7 @@ class PortedRuleTests(RuleCase):
         b51 = {'RANDOM_DIRECTION_WITHOUT_SINGLE', 'RANDOM_SEED_NEGATIVE', 'RANDOM_DIRECTION_ONE_DIRECTION', 'RANDOM_DIRECTION_WITHOUT_FLAT_ONLY',
                'SINGLE_FLAT_ONLY_WITHOUT_SINGLE', 'SINGLE_BE_TRAIL_NEGATIVE', 'SINGLE_TRAIL_START_WITHOUT_DISTANCE', 'SINGLE_EXITS_WITHOUT_SINGLE',
                'SINGLE_PARTIAL_NEGATIVE', 'SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE', 'SINGLE_PARTIAL_INCOMPLETE', 'SINGLE_PARTIAL_BE_WITHOUT_PARTIAL',
-               'SINGLE_PARTIAL_WITHOUT_SINGLE', 'SINGLE_PARTIAL_NEEDS_POSITION_JOIN'}
+               'SINGLE_PARTIAL_WITHOUT_SINGLE', 'SINGLE_PARTIAL_NEEDS_POSITION_JOIN', 'RANDOM_DIRECTION_WITH_FIRST_ORDER_GATE'}
         self.assertEqual({rule['id'] for rule in applicable_rules(alpha)}, {rule['id'] for rule in EA_INIT_RULES} - b51)
         for lost in ('Random_Direction', 'Random_Seed', 'Single_Trail_ATR', 'Single_Partial_BE', 'Single_Partial_ATR', 'Ledger_Mode'):
             with self.subTest(lost=lost):
@@ -163,7 +168,7 @@ class PortedRuleTests(RuleCase):
                     applicable_rules(damaged)
 
     def test_the_ny_session_mirrors_the_eas_parse(self):
-        # GOAT V1.49.mq5:4452-4463: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
+        # GOAT V1.49.mq5:5055-5066: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
         for good in ('09:30-16:00', '9:30-16:00', '00:00-23:59', '22:00-06:30', '23:59-00:00'):
             with self.subTest(good=good):
                 self.passes(NY_Session=good)
@@ -180,14 +185,31 @@ class PortedRuleTests(RuleCase):
     def test_smart_rescue_with_fixed_lots_is_refused_with_the_ea_alert(self):
         message = self.refused('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', Mode_Bias_Exit='1', Mode_Lots='0', Risk='500.0')
         self.assertEqual(message, EA_INIT_CODE + ': the EA refuses this SET at initialization. Rule '
-                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4344) fails for '
+                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4947) fails for '
                          'Mode_Bias_Exit=1 (BiasExit_SmartRescue), Mode_Lots=0 (FixedLots). EA alert: '
                          '"Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0."')
         self.passes(Mode_Bias_Exit='1', Mode_Lots='2', Risk='500.0')
         self.passes(Mode_Bias_Exit='0', Mode_Lots='0')
 
+    def test_the_single_trade_risk_per_sequence_refusal_is_decided_before_the_init_rules(self):
+        # B49b (F6): the EA's OnInit refusal is listed NOT_PORTED because check_risk_sizing refuses the pair first.
+        from studio_strategy_settings import RISK_SIZING_CODE
+        for trades in ('1', '0', '4||1||1||6||Y'):
+            with self.subTest(trades=trades), self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE + ': '):
+                validate_strategy(self.values(Mode_Lots='2', Max_Seq_Trades=trades), self.schema)
+        self.passes(Mode_Lots='2', Max_Seq_Trades='2')
+        self.passes(Mode_Lots='0', Max_Seq_Trades='1')
+        # B52 (Codex GOAT-EA#296 4502334956): a single sizes RiskperSeq from its own stop, so the EA refuses the pair for the
+        # grid engine only, and check_risk_sizing passes a SET that reaches only Engine_Single (every hunt single).
+        self.passes(Mode_Lots='2', Max_Seq_Trades='1', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0')
+        with self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE + ': '):
+            validate_strategy(self.values(Mode_Lots='2', Max_Seq_Trades='1', Engine_Mode='0'), self.schema)
+        ea = [line for line in (REPO / EA_SOURCE).read_text(encoding='utf-8-sig').split('\n') if 'Max_Seq_Trades<=1' in line]
+        self.assertEqual(len(ea), 1)
+        self.assertIn('if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1)', ea[0])
+
     def test_rrr_derivations_feed_the_lp_tp_rule_as_in_the_ea(self):
-        # SL/LP mode derives LP = SL*RRR = 0.5, which line 4390 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
+        # SL/LP mode derives LP = SL*RRR = 0.5, which line 4993 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
         self.refused('LP_AND_TP_BOTH_DISABLED', Mode_RRR='2', RRR='0.05', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         self.passes(Mode_RRR='2', RRR='2.0', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         # SL/TP mode derives TP = SL*RRR when TP is zero.
@@ -247,7 +269,7 @@ class OptimizationRangeTests(RuleCase):
 
     def test_too_many_combinations_is_refused_with_a_clear_message(self):
         message = self.refused_unchecked(Grid_Size='10.0||1.0||1.0||' + str(MAX_COMBINATIONS + 1) + '.0||Y')
-        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:4387) cannot be checked: the optimization ranges of Grid_Size '
+        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:4990) cannot be checked: the optimization ranges of Grid_Size '
                       'give more than 10,000 combinations', message)
         message = self.refused_unchecked(Lock_Profit_Size='10.0||1.0||1.0||200.0||Y', TP_Pips='2.0||1.0||1.0||100.0||Y')
         self.assertIn('LP_AND_TP_BOTH_DISABLED', message)
@@ -290,7 +312,7 @@ class DataDownloadTests(RuleCase):
         for value, label in (('1', 'Download_News'), ('2', 'Download_Bias'), ('3', 'Download_NewsBias')):
             with self.subTest(label=label):
                 message = self.refused('DATA_DOWNLOAD_MODE_REMOVES_EA', Mode_Download=value)
-                self.assertIn('(GOAT V1.49.mq5:3943,3960) fails for Mode_Download=%s (%s)' % (value, label), message)
+                self.assertIn('(GOAT V1.49.mq5:4545,4562) fails for Mode_Download=%s (%s)' % (value, label), message)
                 self.assertIn('EA alert: "News History download is not allowed in this mode / Bias History download is '
                               'not allowed in this mode"', message)
                 self.assertIn('use Download_Disabled', message)
@@ -301,13 +323,13 @@ AI_ON = dict(Mode_Bias='2', Bias_Protocol='2')           # the header defaults: 
 
 
 class TesterInitRuleTests(RuleCase):
-    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:3845, refused in the tester only."""
+    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:4446, refused in the tester only."""
     def refused_in_tester(self, **changes):
         with self.assertRaises(ValueError) as caught:
             check_tester_init(self.values(**changes), self.schema)
         message = str(caught.exception)
         self.assertTrue(message.startswith(TESTER_INIT_CODE + ': '), message)
-        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:3845)', message)
+        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:4446)', message)
         self.assertIn('EA alert: "Live Control Tower bias is unavailable in tester, optimization, and forward contexts. '
                       'Select BiasProtocol_LegacyRecorded or disable AI bias."', message)
         return message
@@ -330,7 +352,7 @@ class TesterInitRuleTests(RuleCase):
             with self.subTest(model=model):
                 with self.assertRaises(ValueError) as caught:
                     check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema, from_date='2007.03.10')
-                self.assertIn('Rule NY_CLOCK_TEST_BEFORE_2007 (GOAT V1.49.mq5:4450)', str(caught.exception))
+                self.assertIn('Rule NY_CLOCK_TEST_BEFORE_2007 (GOAT V1.49.mq5:5053)', str(caught.exception))
                 check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema, from_date='2007.03.11')
                 check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema)   # no FromDate: not checked
         check_tester_init(self.values(Server_Clock_Model='0', **ny), self.schema, from_date='2005.01.03')   # NYClose
@@ -504,13 +526,18 @@ class InventoryTests(unittest.TestCase):
         # rule, GOAT-EA#273 P3), the netting account and two indicator handles (not ported).
         # B51 (beta-1a) added six: five input refusals (ported) and the benchmark on a live chart (not ported); beta-1b
         # three input refusals (ported). Section 8.3-8.4 added seven: six input refusals (ported) and the demo gate (not ported).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (78, 8, 82))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 48)
+        # B49b (F7 SIG-01) adds six indicator-handle INIT_FAILED returns (NOT_PORTED: indicator runtime).
+        # B49b (F6) adds the RiskperSeq single-trade INIT_PARAMETERS_INCORRECT (NOT_PORTED: check_risk_sizing decides it).
+        # B49b (F1 full) adds the live manage-only INIT_FAILED after adoption (NOT_PORTED: licence and expiry, live only).
+        # The merged line (B50 + B51 with B49b) carries both sets. B52 (its review) adds two: the benchmark under the
+        # first-order gate (ported) and the New York clock on a live chart (not ported: run context).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (88, 8, 92))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 50)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (43, 2, 37))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (44, 2, 46))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
-        self.assertEqual(sorted(self.removals - set(self.returns)), [3833, 3943, 3960, 4235])
+        self.assertEqual(sorted(self.removals - set(self.returns)), [4434, 4545, 4562, 4837])
 
     def test_each_listed_line_still_carries_its_condition_text(self):
         for kind, name, lines, anchor in self.entries():

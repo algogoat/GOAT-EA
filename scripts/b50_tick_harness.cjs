@@ -70,6 +70,16 @@ function loadSources(ref,overrides={}){
  return files;
 }
 
+// B52 (the final build's review, P1): the final build refuses the New York clock on a live chart at OnInit. Tests that
+// exercise the live New York clock's code (still in the source) build from the entrypoint without that one refusal;
+// test_b50_clock.cjs proves the refusal itself.
+const B52_LIVE_NY_REFUSAL=/^[^\n]*Clock_Mode==Clock_NewYork && !MQLInfoInteger\(MQL_TESTER\)[^\n]*\n/m;
+function withoutLiveNYRefusal(source){
+ const files=source&&source.files?{...source.files}:loadSources(typeof source==='string'?source:undefined);
+ files[MAIN]=files[MAIN].replace(B52_LIVE_NY_REFUSAL,'');
+ return {files};
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Preprocessor: inline the INLINED includes, honour conditionals, collect object-like macros.
 function preprocess(files){
@@ -443,7 +453,7 @@ const API_CONSTANTS={POSITION_TYPE_BUY:0,POSITION_TYPE_SELL:1,ORDER_TYPE_BUY:0,O
  INIT_SUCCEEDED:0,INIT_FAILED:1,INIT_PARAMETERS_INCORRECT:2,TIME_DATE:1,TIME_MINUTES:2,TIME_SECONDS:4,
  MQL_PROGRAM_NAME:900001,MQL_TESTER:900002,MQL_OPTIMIZATION:900003,MQL_FORWARD:900004,MQL_VISUAL_MODE:900005,MQL_PROGRAM_PATH:900006,MQL_DLLS_ALLOWED:900007};
 // By-reference scalar arguments of the MT5 API (the converted call passes a box, the model writes box.v).
-const API_REFS={GlobalVariableGet:n=>n===2?[1]:[],StringReplace:()=>[0],StringTrimLeft:()=>[0],StringTrimRight:()=>[0],StringToUpper:()=>[0],
+const API_REFS={GoatSetupRead:()=>[1],GlobalVariableGet:n=>n===2?[1]:[],StringReplace:()=>[0],StringTrimLeft:()=>[0],StringTrimRight:()=>[0],StringToUpper:()=>[0],
  StringToLower:()=>[0],SymbolInfoInteger:n=>n===3?[2]:[],SymbolInfoDouble:n=>n===3?[2]:[],SymbolInfoString:n=>n===3?[2]:[],
  HistoryDealGetInteger:n=>n===3?[2]:[],HistoryDealGetDouble:n=>n===3?[2]:[],PositionGetDouble:n=>n===2?[1]:[],PositionGetInteger:n=>n===2?[1]:[],
  OrderCalcMargin:n=>n===5?[4]:[],OrderCalcProfit:n=>n===6?[5]:[]};
@@ -479,6 +489,10 @@ function mockFunctions(w){
   GOATUsingControlTowerBias:()=>!!w.controlTower,
   SetTypeFillingBySymbol:nop,FillingCheckAndSet:nop,GetRetcodeID:()=>'',
   GoatDeployNotice:s=>{w.alerts.push(String(s));},
+  // B52 (the final build's review): the state file's atomic write, over the Common files of the model (w.files, path ->
+  // text). Every call is counted (w.stateWrites); w.stateWriteFails refuses it. The text it writes is the EA's own
+  // (GoatStateFlush, GoatStateText and the sections run as written), and GoatStateRead reads it back through GoatSetupRead.
+  GoatStateWrite:(p,body)=>{w.stateWrites=(w.stateWrites||0)+1;if(w.stateWriteFails)return false;w.files.set(String(p),String(body));return true;},
  };
 }
 
@@ -570,6 +584,10 @@ function terminalModel(w,K){
    const {ticket,deal}=open(req.type,req.volume,req.price,req.sl,req.tp,req.magic,req.comment);
    Object.assign(res,{retcode:10009,order:ticket,deal,volume:req.volume,price:req.price,bid:w.bid,ask:w.ask});return true;},
   OrderCheck:()=>true,
+  // The final build (B49b merged in): the terminal API only B49b's fixes call. B50 and B51 fixtures run them Off, where they
+  // are never called, so they are not modelled: a fixture that reaches one fails here instead of reading a made-up answer.
+  OrderCalcMargin:()=>{throw new Error('b50_tick_harness: OrderCalcMargin is not modelled (B49b F6, Min_Margin_Level_PC)');},
+  SymbolInfoSessionTrade:()=>{throw new Error('b50_tick_harness: SymbolInfoSessionTrade is not modelled (B49b LAG-A, Fix_FeedGuard)');},
   // symbol, account, terminal
   Symbol:()=>sym,Period:()=>w.period,Point:()=>w.point,Digits:()=>w.digits,_Symbol:sym,_Point:w.point,_Digits:w.digits,
   SymbolInfoDouble:(s,k,box)=>{const v=symD(k);if(box){box.v=v;return true;}return v;},
@@ -619,7 +637,9 @@ function terminalModel(w,K){
   Print:(...a)=>{w.logs.push(a.map(String).join(''));},PrintFormat:(f,...a)=>{w.logs.push(String(f)+' '+a.map(String).join(','));},
   Alert:(...a)=>{w.alerts.push(a.map(String).join(''));},ExpertRemove:()=>{w.removed=true;},Sleep:()=>{},GetLastError:()=>w.lastError||0,ResetLastError:()=>{w.lastError=0;},
   PlaySound:()=>true,SendNotification:()=>true,MessageBox:()=>1,EventSetTimer:()=>true,EventSetMillisecondTimer:()=>true,EventKillTimer:()=>{},
-  IsStopped:()=>false,FileWrite:()=>0,FileClose:()=>{},FileOpen:()=>-1,FileIsExist:()=>false,
+  IsStopped:()=>false,FileWrite:()=>0,FileClose:()=>{},FileOpen:()=>-1,FileIsExist:p=>w.files.has(String(p)),
+  // B52: the Common files of the model (w.files): GOATSetupControl.mqh's GoatSetupRead (body by reference) and FolderCreate.
+  GoatSetupRead:(p,body)=>{if(!w.files.has(String(p)))return false;body.v=w.files.get(String(p));return true;},FolderCreate:()=>true,
   // values
   ...mathAndStrings(),
   // modelled objects
@@ -681,7 +701,10 @@ function __cast_string(x){return __numberString(x);}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Code generation: every free function reachable from the roots (plus every class), converted once per source.
-const ROOTS=['GoatTickBody','GoatTradeTransactionBody','WriteSet','SignalEntryTrigger','UpdateCurrentSignals','GetSize','OpenPosition','CloseAllPositions'];
+const ROOTS=['GoatTickBody','GoatTradeTransactionBody','WriteSet','SignalEntryTrigger','UpdateCurrentSignals','GetSize','OpenPosition','CloseAllPositions',
+ 'GoatStateFlush'];   // B52: the timer's state flush (timer(), below), when the source has one
+// B52: the timer calls timer() runs, in the order GoatTimerBody makes them (read from the source, so a reorder shows).
+const TIMER_CALLS=['GoatStateFlush','GoatSingleAccountWatch'];
 const B50_ROOTS=/^(GoatSingle\w+|GoatSignalAll|GoatNY\w+)$/;   // A1-A3 add bodies to these; they are converted when defined
 // OnInit slices the harness runs for a fixture (token patterns: start inclusive, end inclusive).
 const ONINIT_SLICES=[
@@ -689,6 +712,9 @@ const ONINIT_SLICES=[
  ['sizes',['if','(','1',')','{','Grid_Min_'],['SL_Pips_','=','SL_Pips',';']],
  ['buyen',['if','(','Mode_Trade','==','Long_and_Short','||','Mode_Trade','==','Long',')','Buy_EN'],null],
  ['lots',['StartingEquity','=','AccountInfoDouble'],['ArrayResize','(','Position_Durations',',','0',')',';']],
+ // B52: OnInit's restart adoption, as written, for a fixture with fx.adopt (the ledger owners, the adoptions, the state
+ // file's restore). Optional: a source before B49b has no GoatStateRestore, and the harness adopts by hand there.
+ ['adopt',['GoatLedgerOwnerReset','(',')',';'],['GoatStateRestore','(',')',';'],'optional'],
 ];
 const sliceCache=new Map();
 function compile(files){
@@ -718,10 +744,10 @@ function compile(files){
  const onInit=unit.functions.get('OnInit')[0];
  const slices={};
  const find=(body,pat,from=0)=>{for(let i=from;i<=body.length-pat.length;i++)if(pat.every((v,k)=>body[i+k].v===v))return i;return -1;};
- for(const [name,start,end] of ONINIT_SLICES){
-  const a=find(onInit.body,start);if(a<0)throw new Error('OnInit slice '+name+' not found');
+ for(const [name,start,end,optional] of ONINIT_SLICES){
+  const a=find(onInit.body,start);if(a<0){if(optional)continue;throw new Error('OnInit slice '+name+' not found');}
   let b;
-  if(end){const e=find(onInit.body,end,a);if(e<0)throw new Error('OnInit slice '+name+' has no end');b=e+end.length;
+  if(end){const e=find(onInit.body,end,a);if(e<0){if(optional)continue;throw new Error('OnInit slice '+name+' has no end');}b=e+end.length;
    let d=0;for(let k=a;k<b-1;k++){if(isOp(onInit.body[k],'('))d++;if(isOp(onInit.body[k],')'))d--;}
    for(;!(d===0&&isOp(onInit.body[b-1],';'));b++){const x=onInit.body[b];if(isOp(onInit.body[b-1],'('))d++;if(isOp(onInit.body[b-1],')'))d--;if(d===0&&isOp(x,';')){b++;break;}}}   // to the end of that statement
   else{b=a;while(!isOp(onInit.body[b],';'))b++;b++;let e=b;while(!isOp(onInit.body[e],';'))e++;b=e+1;}   // the if and its else (two statements)
@@ -773,7 +799,9 @@ function compile(files){
  let script;
  try{script=new vm.Script(code,{filename:'b50_tick_harness_generated.js'});}
  catch(e){fs.writeFileSync(path.join(require('node:os').tmpdir(),'b50_harness_failed.js'),code);throw e;}
- const out={unit,code,script,constants,globals,macros:pp.macros,functions:[...want].sort(),slices:Object.keys(slices)};
+ const timerFn=unit.functions.get('GoatTimerBody'),timerOrder=[];
+ if(timerFn)timerFn[0].body.forEach((t,i,body)=>{if(t.t==='id'&&TIMER_CALLS.includes(t.v)&&isOp(body[i+1],'(')&&want.has(t.v)&&!timerOrder.includes(t.v))timerOrder.push(t.v);});
+ const out={unit,code,script,constants,globals,macros:pp.macros,functions:[...want].sort(),slices:Object.keys(slices),timerOrder};
  sliceCache.set(key,out);return out;
 }
 
@@ -785,6 +813,7 @@ function externs(w){
   g_trace_current_sequence:0,g_direction_guard_send_attempted:false,g_direction_guard_denied:false,
   g_GoatStudioMonitorRunPath:'',g_GoatStudioReadOnlyMonitor:false,g_GoatPanelUnavailable:false,g_GoatGateStateRead:false,g_GoatGateState:{},
   g_GoatCidGuardReason:'',
+  GOAT_EXPORT_RANK_ARFxSR:0,GOAT_EXPORT_RANK_PF:1,   // the final build: Tester.mqh's export ranks (B49b F8), as it defines them
   News:{TodaysNewsList:[],Init:()=>{},IsNewsTime:(s,th,idx)=>{idx.length=0;return !!(w.news&&w.news(w.time,w));}},
   Bias:{Init:()=>{},GetCurentBiasScore:()=>w.bias?w.bias(w.time,w):-999},
   GOATBiasWireV2:inert(),PanelDialog:inert(),TesterDialog:inert(),DashboardDialog:inert(),
@@ -803,7 +832,7 @@ function build(source,fx={}){
   balance:100000,login:12345678,marginMode:2,serverOffset:2,period:1,chartId:128604373052183041,
   tester:fx.tester??true,optimization:!!fx.optimization,visual:false,time:fx.start??(Date.UTC(2026,9,5,0,0,0)/1000),
   bid:fx.bid??1.1,ask:Number(((fx.bid??1.1)+spread).toFixed(5)),positions:[],deals:[],pending:[],nextTicket:5000000,nextDeal:9000000,gv:new Map(),
-  trace:[],logs:[],alerts:[],handleNames:{},handleIds:{},maCount:0,indicator:fx.indicator||(()=>undefined),series:fx.series||null,news:fx.news||null,bias:fx.bias||null,
+  trace:[],logs:[],alerts:[],files:new Map(),handleNames:{},handleIds:{},maCount:0,indicator:fx.indicator||(()=>undefined),series:fx.series||null,news:fx.news||null,bias:fx.bias||null,
   controlTower:false,...(fx.world||{})};
  w.newHandle=name=>{const h=10+Object.keys(w.handleNames).length;w.handleNames[h]=name;w.handleIds[name]=h;return h;};
  const api=terminalModel(w,C.constants);
@@ -832,7 +861,8 @@ function build(source,fx={}){
  const OP_BUY=Number(C.macros.get('OP_BUY').body),OP_SELL=Number(C.macros.get('OP_SELL').body);   // object macros (0, 1)
  ctx.Seq_Buy.Init(OP_BUY,false);ctx.Seq_Sell.Init(OP_SELL,false);
  if(Math.abs(ctx.Delay_Trade)>0){ctx.Seq_Buy_Virtual.Init(OP_BUY,true);ctx.Seq_Sell_Virtual.Init(OP_SELL,true);}
- if(fx.adopt){fx.adopt(ctx,w);ctx.Seq_Buy.AdoptOpenPositions();ctx.Seq_Sell.AdoptOpenPositions();}
+ // The restart adoption: OnInit's own lines when the source has them (B52: then the state file's restore runs too).
+ if(fx.adopt){fx.adopt(ctx,w);if(typeof ctx.__oninit_adopt==='function')ctx.__oninit_adopt();else{ctx.Seq_Buy.AdoptOpenPositions();ctx.Seq_Sell.AdoptOpenPositions();}}
  const pump=()=>{let guard=0;while(w.pending.length){if(++guard>10000)throw new Error('transaction loop');const deal=w.pending.shift();
   const trans={...MQL_STRUCT_FIELDS.MqlTradeTransaction,type:C.constants.TRADE_TRANSACTION_DEAL_ADD,deal,symbol:w.symbol};
   ctx.GoatTradeTransactionBody(trans,{...MQL_STRUCT_FIELDS.MqlTradeRequest},{...MQL_STRUCT_FIELDS.MqlTradeResult});}};
@@ -840,9 +870,12 @@ function build(source,fx={}){
  // One tick at server time t: the broker's SL/TP fills first, then OnTick's body, then the trade transactions.
  const px=v=>Number(Number(v).toFixed(w.digits));   // MT5 quotes are normalized to the symbol's digits
  const tick=(t,bid,ask)=>{w.time=t;w.bid=px(bid);w.ask=px(ask??bid+spread);api.__brokerFills();pump();ctx.GoatTickBody();pump();};
- return {ctx,w,C,tick,pump,setInput,
+ // B52: one OnTimer pass at server time t (the quote unchanged): the state flush and the account watch, in GoatTimerBody's
+ // order (C.timerOrder). Nothing else of the timer is modelled.
+ const timer=t=>{if(t!==undefined)w.time=t;for(const n of C.timerOrder){ctx[n]();pump();}};
+ return {ctx,w,C,tick,timer,pump,setInput,
   // a path of [t,bid] points, one tick each
   run:path=>{for(const [t,bid,ask] of path)tick(t,bid,ask);return w.trace;}};
 }
 
-module.exports={ROOT,MAIN,HEADER,readSource,loadSources,preprocess,tokenize,expandMacros,parseUnit,Converter,matchClose,isId,isOp,splitTop,compile,build,API_CONSTANTS};
+module.exports={ROOT,MAIN,HEADER,readSource,loadSources,withoutLiveNYRefusal,preprocess,tokenize,expandMacros,parseUnit,Converter,matchClose,isId,isOp,splitTop,compile,build,API_CONSTANTS};

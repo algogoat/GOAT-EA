@@ -36,7 +36,9 @@ SOURCE = 'ea_binary_sha256'
 MAX_STATUS_BYTES = 256 * 1024
 MAX_BUILD_CHARS = 96
 
-# binary.sha256 -> build_id of every candidate-builds/*/identity.json (test_studio_installed_build keeps them equal).
+# binary.sha256 -> build_id of every candidate-builds/*/identity.json (test_studio_installed_build keeps them equal), less a
+# candidate whose compile-receipt.json says do_not_install: B52 (V1.49-BETA17-52, e108b09a) refuses every RiskperSeq single
+# at OnInit (Codex GOAT-EA#296 4502334956), so it is not pinned and an installed copy is INSTALLED_BUILD_UNKNOWN.
 PINNED_BUILDS = {
     '7f03c9bae1e6367f0cff731f5ad1fa95599ca6e54ea5d8fb592efb85067e07df': 'V1.49-BETA17-38',
     '27226cfb61c02d066c7eabc0a598b0762b0ed055752ea9f14c5a7e2a01d5f517': 'V1.49-BETA17-39',
@@ -50,6 +52,7 @@ PINNED_BUILDS = {
     '220a87257300c32c354243c8208f08f58dba90dcdd26b78c4472d385e56c1cd7': 'V1.49-BETA17-49',
     '8364a37121b01d7ce2f59668c2d1f7300c693ab2c9d49a3a89b6d7568544a795': 'V1.49-BETA17-50',
     '58623845018e37c917c32bc5599c1ff16ae14575777a49b337ed8ba44be3d95a': 'V1.49-BETA17-51',
+    '4733511303cf216f8ec513556abc89f492176063001dd77c8405c79a995cc068': 'V1.49-BETA17-53',
     'e7e1c97f92f3ee1a58f46539336bb9baa63e203077dd218b21a82f05da2dfebc': 'V1.49-EA-EXPERIENCE-33',
     'f05a63c7a72a980d0ab442ba143be4241efcd2f96819bb7432e729e0b3800a33': 'V1.49-NDX-SYMBOL-MAP-31',
     '57e4062c354ab6feb9ecc3a65af3a072e02cedfe257d6f5d23eb34d64734758f': 'V1.49-START-PROTOCOL-ROUTE-30',

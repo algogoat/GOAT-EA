@@ -43,7 +43,11 @@ const MUTANTS=[
  ['a zero ATR is accepted','   if(!MathIsValidNumber(b50_atr) || b50_atr<=0.0 || b50_atr>=EMPTY_VALUE)','   if(!MathIsValidNumber(b50_atr) || b50_atr>=EMPTY_VALUE)'],
  ['a refusal is logged on every tick','   if(b50_logged[side]==code) return;\n',''],
  // Add_Level's order.
- ['the expiry is not checked','."); ExpertRemove(); return false;} // as Add_Level','."); ExpertRemove();} // as Add_Level'],
+ // The final build: the single's expiry line also consults B49b F1's manage-only (live only; never in the tester), so the
+ // anchor names the merged line.
+ ...(MAIN.includes('// B51 (merge with B49b F1): as Add_Level')
+  ?[['the expiry is not checked','."); ExpertRemove(); return false;} // B51 (merge with B49b F1): as Add_Level','."); ExpertRemove();} // B51 (merge with B49b F1): as Add_Level']]
+  :[['the expiry is not checked','."); ExpertRemove(); return false;} // as Add_Level','."); ExpertRemove();} // as Add_Level']]),
  ['manage-only is not consulted','   if(s.ManageOnlyFrozen(s.Level_Count+1)) return false;','   ;'],
  ['a denial keeps its sizes','      s.Size_Grid=s.Size_Lock=s.Size_TP=s.Size_SL=s.Size_TSL=1234.5;\n',''],
  ['the position does not join the ledger','{s.LedgerAddPosition((ulong)LastOrderTicket); s.AccumulateSequenceDealPL((ulong)LastDealTicket);}','{s.AccumulateSequenceDealPL((ulong)LastDealTicket);}'],

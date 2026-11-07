@@ -1,0 +1,22 @@
+{
+  "schema": "goat-ea-hotfix-build-v1",
+  "compile_started_at": "2026-11-07T05:38:36.6748859Z",
+  "compiler_sha256": "cf2750bde55d98a1f3b4e56bcdd4f59300d0cff5caa6760985f7ef2c2cc12229",
+  "compiler_mode": "/portable, IDLE, outside every terminal folder; B47 include root copied hash-equal (compile-ea.ps1 9891B694)",
+  "source_head": "the commit that adds this folder (its parent tree is the compiled tree; only this folder, the pinned-build row and the guard differ)",
+  "source_sha256": "2694222c7c49dee57bc3b9566a016f6f4a7c834e51c13ac7ce7862871c969309",
+  "staged_source_sha256": "2694222c7c49dee57bc3b9566a016f6f4a7c834e51c13ac7ce7862871c969309",
+  "header_sha256": "8431ae6c38feaf9ca303c0d549c6ed82d69283044ac2949571c04a71ed913197",
+  "closure_files": 42,
+  "outcome": "COMPILE_OK",
+  "result_line": "Result: 0 errors, 0 warnings, 32134 ms elapsed, cpu='X64 Regular'",
+  "metaeditor_process_exit_code": 1,
+  "stage_cleaned": true,
+  "runtime_output_overwritten": false,
+  "output": {
+    "sha256": "58623845018e37c917c32bc5599c1ff16ae14575777a49b337ed8ba44be3d95a",
+    "bytes": 2568360
+  },
+  "reproducibility": "MetaEditor output is not byte-reproducible; this is the one binary to use. Equivalence to 41e1fb9f (GOAT-EA#289) is by source closure: the closure differs only in the GOAT_BUILD_ID and GOAT_BUILD_MARKER defines, which studio_equivalence normalizes.",
+  "native_qualification": "PARTIAL: one tester partial-close check (Model 4, random and 2000 ms execution delay) on T3; not a native qualification"
+}

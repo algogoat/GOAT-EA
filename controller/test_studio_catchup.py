@@ -619,6 +619,28 @@ class RetestInputsCheckTests(CatchupCase):
         with self.assertRaisesRegex(ValueError, "report shows input\\(s\\) off the config's pin: Dashboard_Resume_Saved set false, ran true"):
             sc.check_retest_inputs(configured, exported, dict(report, Dashboard_Resume_Saved='true'), schema)
 
+    def test_an_input_the_ea_writes_only_off_its_default_may_be_omitted_at_that_default(self):
+        """D1 hunt 2026-11-07: the B50/B51 EA writes inputs added after B49a only off their default (the append-only SET
+        rule), so every sequence catch-up refused Engine_Mode, Clock_Mode, NY_Session, Random_Seed ... An omission passes
+        only when the config set the readable default; another value, or an unreadable default, still refuses."""
+        added = dict(Engine_Mode=dict(type='ENUM_ENGINE_MODE', default_expression='Engine_Grid', enum_choices=dict(Engine_Grid=0, Engine_Single=1)),
+                     NY_Session=dict(type='string', default_expression='"09:30-16:00"'), Random_Direction=dict(type='bool', default_expression='false'),
+                     Single_BE_ATR=dict(type='double', default_expression='0.0'), Lots_Input=dict(type='double'))
+        schema = dict(inputs={name: dict(type='double' if name != 'Mode_Operation' else 'int') for name in VALUES} | added)
+        defaults = dict(Engine_Mode='0||0||1||1||N', NY_Session='09:30-16:00', Random_Direction='false', Single_BE_ATR='0')
+        configured = dict(VALUES, EA_Desc='C1', **defaults)
+        exported = dict(VALUES, EA_Desc='C1')
+        self.assertEqual(sc.check_retest_inputs(configured, exported, None, schema), 3)
+        for name, other in (('Engine_Mode', '1'), ('NY_Session', '08:00-16:00'), ('Random_Direction', 'true'), ('Single_BE_ATR', '0.75')):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "export does not list input\\(s\\) the run set: " + name):
+                sc.check_retest_inputs(dict(configured, **{name: other}), exported, None, schema)
+        with self.assertRaisesRegex(ValueError, "export does not list input\\(s\\) the run set: Lots_Input"):   # no readable default
+            sc.check_retest_inputs(configured, {k: v for k, v in exported.items() if k != 'Lots_Input'}, None, schema)
+        report = dict(VALUES, Engine_Mode='0', NY_Session='09:30-16:00', Random_Direction='false', Single_BE_ATR='0.00000000')
+        self.assertEqual(sc.check_retest_inputs(configured, exported, report, schema), 7)       # the 4 omitted ones via A
+        with self.assertRaisesRegex(ValueError, "report shows input\\(s\\) off the config's pin: Engine_Mode set 0, ran 1"):
+            sc.check_retest_inputs(configured, exported, dict(report, Engine_Mode='1'), schema)
+
     def test_a_package_prepared_before_the_pins_is_refused_before_any_launch(self):
         """Codex P1 on #252: an older package would reuse its unpinned config. Seed, catch-up and hold-up all refuse it
         (structured, prepare_again) before any process effect; a freshly prepared package passes."""

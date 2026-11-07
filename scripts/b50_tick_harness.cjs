@@ -19,7 +19,8 @@
 //   act at once; a position whose SL or TP the price reaches is filled by the "broker" before the tick), indicator
 //   buffers by handle name (ATR, ATR_MA, RSI, MA0.., ADX, BB, MACD) and series from the fixture, GlobalVariables, the
 //   freeze level (world.freezeLevel, default 0) and a refused PositionModify (world.rejectModify(ticket,sl,tp,w) true:
-//   retcode world.modifyRetcode, default 10016; B51 beta-1b), the
+//   retcode world.modifyRetcode, default 10016; world.modifyReturnsTrue: the call still returns true, as when the server
+//   rejects a structurally valid request; B51 beta-1b), the
 //   clock (TimeGMT is the server time in the tester, server - serverOffset h live), and the trade transaction pumped once
 //   per deal after the tick (as MT5 runs OnTradeTransaction after OnTick). Every OrderSend, PositionModify, close and
 //   broker fill lands in world.trace, in order.
@@ -499,7 +500,7 @@ function terminalModel(w,K){
  const ctrade=()=>{const o={magic:0,retcode:0,deal:0};Object.assign(o,{
   SetExpertMagicNumber:m=>{o.magic=m;},SetDeviationInPoints:()=>{},SetTypeFilling:()=>{},SetTypeFillingBySymbol:()=>true,SetAsyncMode:()=>{},LogLevel:()=>{},
   PositionModify:(t,sl,tp)=>{w.trace.push({op:'PositionModify',ticket:t,sl,tp,time:w.time});const p=pos(t);if(!p){o.retcode=10013;return false;}
-   if(w.rejectModify&&w.rejectModify(t,sl,tp,w)){o.retcode=w.modifyRetcode??10016;return false;}   // B51 (beta-1b): a broker that refuses a modify
+   if(w.rejectModify&&w.rejectModify(t,sl,tp,w)){o.retcode=w.modifyRetcode??10016;return !!w.modifyReturnsTrue;}   // B51 (beta-1b): a broker that refuses a modify
    p.sl=sl;p.tp=tp;o.retcode=10009;return true;},
   PositionClose:(t)=>{const p=pos(t);w.trace.push({op:'PositionClose',ticket:t,volume:p?p.volume:0,time:w.time});if(!p){o.retcode=10013;return false;}o.deal=close(p,p.volume,3,undefined,o.magic);o.retcode=10009;return true;},
   PositionClosePartial:(t,v)=>{const p=pos(t);w.trace.push({op:'PositionClosePartial',ticket:t,volume:v,time:w.time});if(!p){o.retcode=10013;return false;}o.deal=close(p,v,3,undefined,o.magic);o.retcode=10009;return true;},

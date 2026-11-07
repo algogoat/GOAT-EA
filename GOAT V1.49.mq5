@@ -7675,7 +7675,10 @@ bool GoatSingleModifySend(SEQUENCE &s,const ulong tk,const double sl,const doubl
    CTrade b51_trade;
    if(Ledger_Mode==Ledger_PositionJoin) b51_trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
    TSLmodifieds++;                                          // the run's trailing counters (TSL_Modified, TSLs) count a single's moves too
-   if(b51_trade.PositionModify(tk,sl,cur_tp))
+   // True from PositionModify only means the request went through: the server can still reject it, and only the retcode
+   // says so (review of GOAT-EA#287). Anything else takes the failure path; POSITION_SL is read again at the next check, so
+   // a stop that did move (a TRADE_RETCODE_NO_CHANGES or PLACED answer) sends nothing more.
+   if(b51_trade.PositionModify(tk,sl,cur_tp) && b51_trade.ResultRetcode()==TRADE_RETCODE_DONE)
      {
       if(b51_k>=0)
         {

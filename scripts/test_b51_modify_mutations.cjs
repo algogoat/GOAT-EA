@@ -50,7 +50,11 @@ const MUTANTS=[
  ['the trailing distance is the start','b51_px-Single_Trail_ATR*b51_atr : b51_px+Single_Trail_ATR*b51_atr','b51_px-Single_Trail_Start_ATR*b51_atr : b51_px+Single_Trail_Start_ATR*b51_atr'],
  ['the ATR is the stop size (not divided by Single_SL_ATR)','   double b51_atr=s.Size_SL/Single_SL_ATR;','   double b51_atr=s.Size_SL;'],
  ['the ATR is the forming bar\'s','   double b51_atr=s.Size_SL/Single_SL_ATR;','   double b51_atr_buf[]; double b51_atr=(CopyBuffer(ATR_MA_handle,0,0,1,b51_atr_buf)==1 ? b51_atr_buf[0] : 0.0);'],
- ['the TP is not kept','   if(b51_trade.PositionModify(tk,sl,cur_tp))','   if(b51_trade.PositionModify(tk,sl,0.0))'],
+ ['the TP is not kept','b51_trade.PositionModify(tk,sl,cur_tp)','b51_trade.PositionModify(tk,sl,0.0)'],
+ // The retcode decides (review of GOAT-EA#287): a call that returns true while the server rejects it is a failure.
+ ['a true return is a success whatever the retcode',' && b51_trade.ResultRetcode()==TRADE_RETCODE_DONE)',')'],
+ ['any retcode but a rejection is a success','b51_trade.ResultRetcode()==TRADE_RETCODE_DONE)','b51_trade.ResultRetcode()!=10016)'],
+ ['a partial fill code counts for a modify','b51_trade.ResultRetcode()==TRADE_RETCODE_DONE)','(b51_trade.ResultRetcode()==TRADE_RETCODE_DONE || b51_trade.ResultRetcode()==TRADE_RETCODE_DONE_PARTIAL))'],
  ['no minimum step for the trailing','      if(!b51_be_move && b51_gain<b51_min_step-b51_eps) continue;\n','\n'],
  // The count, the slots and the tickets.
  ['a success does not clear the count','         b51_tk[b51_k]=0; b51_fails[b51_k]=0; b51_next[b51_k]=0;\n','\n'],

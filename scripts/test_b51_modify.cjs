@@ -206,6 +206,26 @@ const reject=(W,pred=()=>true)=>{W.w.rejectModify=(t,sl,tp,w)=>pred(t,w);W.w.mod
  ok();
 }
 
+// 6b. A server rejection the call reports as true (review of GOAT-EA#287): only the retcode counts. Nothing is recorded,
+//     it logs, counts and backs off like any failure, and no success line or cleared count comes of it.
+for(const retcode of [10004,10006,10016,10021,10025,10008,10010]){
+ const W=world({inputs:{Single_BE_ATR:1}});const p=opened(W);
+ W.w.rejectModify=()=>true;W.w.modifyRetcode=retcode;W.w.modifyReturnsTrue=true;
+ W.run(ticks([[0,1.10110],[1300,1.10110]]));
+ assert.equal(W.w.positions[0].sl,p.sl,retcode+': the broker stop did not move');
+ assert.equal(W.ctx.Seq_Buy.TradeLevels[0].sl,p.sl,retcode+': the level keeps the broker\'s stop');assert.equal(W.ctx.Seq_Buy.Level_SL,p.sl,retcode+': Level_SL too');
+ const f=fails(W),times=mods(W).map(x=>x.time-T0);assert.equal(f.length,times.length,retcode+': one line per attempt');
+ assert.deepEqual(times.slice(0,10),[0,1,2,3,4,5,10,40,100,160],retcode+': the back-off runs ('+times.slice(0,10)+')');
+ assert.equal(field(f[0],'retcode'),String(retcode));assert.equal(field(f[4],'consecutive'),'5','the count is kept');assert.equal(field(f[4],'backoff'),'1s');
+ assert.equal(W.w.logs.filter(l=>/Single SL modify recovered/.test(l)).length,0,retcode+': never a recovery');
+ assert.equal(W.ctx.TSLmodifyErrors,times.length,retcode+': each counts as an error');
+ // It heals: one accepted move, recorded, and the count clears.
+ W.w.rejectModify=null;W.w.modifyReturnsTrue=false;W.run(ticks([[1300,1.10110],[1400,1.10110]]));
+ assert.equal(W.w.positions[0].sl,p.open);assert.equal(W.ctx.Seq_Buy.Level_SL,p.open,'recorded once it moved');
+ assert.equal(W.w.logs.filter(l=>/Single SL modify recovered/.test(l)).length,1,'one recovery line');
+ ok();
+}
+
 // 7. The back-off: 5 attempts a second apart, then waits of 1, 5, 30 and 60 s; one line per attempt, none in a wait.
 function schedule(start,until){const t=[];let at=start,n=0;while(at<=until){t.push(at);n++;at+=n<5?1:(n===5?1:(n===6?5:(n===7?30:60)));}return t;}
 {

@@ -324,6 +324,9 @@ chart restarts with is the one it ran.)
   break-even).
 
 **Failure handling (register row P-b49b-tsl-modify-failure-diagnose-backoff), from day one.** `GoatSingleModifySend`:
+- success is `PositionModify` returning true **and** `TRADE_RETCODE_DONE`: the call also returns true when the server rejects a
+  valid request. Any other retcode takes this failure path and nothing is recorded (review of GOAT-EA#287). `POSITION_SL` is read
+  again at each check, so a stop that did move sends nothing more;
 - every failed `PositionModify` logs one line: `ticket, bid, ask, stops_level, freeze_level, sl, tp, requested_sl,
   retcode, consecutive`;
 - from the `GOAT_SINGLE_MODIFY_FAIL_LIMIT` (5)-th consecutive failure on a ticket, it waits `GOAT_SINGLE_BACKOFF_1_S`

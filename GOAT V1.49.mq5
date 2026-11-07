@@ -7989,6 +7989,7 @@ void GoatSinglePartialClose(SEQUENCE &s,const int b51_slot,const ulong tk,const 
    bool b51_open_end=(b51_done || b51_ret==0 || b51_ret==TRADE_RETCODE_TIMEOUT || b51_ret==TRADE_RETCODE_ERROR || b51_ret==TRADE_RETCODE_PLACED);
    if(b51_open_end) b51_wait=GOAT_SINGLE_PARTIAL_OPEN_WAIT_S;
    g_GoatPartialNext[b51_slot]=TimeCurrent()+b51_wait;
+   g_GoatPartialReadNext[b51_slot]=0;   // this send may fill: the next check reads the history, whatever the earlier wait left
    Print(s.Desc,(b51_open_end ? ": Single partial close unconfirmed: ticket=" : ": Single partial close failed: ticket="),IntegerToString((long)tk)," bid=",DoubleToString(bid,_Digits)," ask=",DoubleToString(ask,_Digits),
          " volume=",DoubleToString(b51_vol,2)," close=",DoubleToString(b51_cut,2)," retcode=",IntegerToString(b51_ret),
          " consecutive=",IntegerToString(b51_count)," backoff=",IntegerToString(b51_wait),"s");
@@ -8122,12 +8123,12 @@ void GoatSingleAdoptedDisarm(const int b51_dir)
    if(Engine_Mode!=Engine_Single) return;
    g_GoatSingleArmed[Reverse_Seq ? 1-b51_dir : b51_dir]=false;
   }
-// From GoatSingleOpen: adopt positions loaded since, on both sides, as Single_Flat_Only reads both. True: do not open.
+// From GoatSingleOpen: adopt positions loaded since, on both sides, as Single_Flat_Only and Allow_Opposite_Seq read both. True: do not open.
 bool GoatSingleAdoptLate(const int b51_dir)
   {
    bool b51_buy=Seq_Buy.AdoptOpenPositions();
    bool b51_sell=Seq_Sell.AdoptOpenPositions();
-   if(Single_Flat_Only && (b51_buy || b51_sell)) return true;
+   if((Single_Flat_Only || !Allow_Opposite_Seq) && (b51_buy || b51_sell)) return true;
    return (b51_dir==OP_SELL ? b51_sell : b51_buy);
   }
 void GoatSingleAccountRemove(const string b51_why)

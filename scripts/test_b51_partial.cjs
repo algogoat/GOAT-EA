@@ -177,6 +177,10 @@ for(const retcode of [10004,10006,10018,10021,10025]){
  assert.equal(W.ctx.PcloseErrors,0,'a lagging view is no failure');assert.equal(lines(W,/partial close failed/).length,0);assert.equal(lines(W,/partial close unconfirmed/).length,1);
  W.w.positions[0].volume=1.67;W.run(ticks([[3,1.10110],[10,1.10110]]));
  assert.equal(closes(W).length,1,'the fill shows up: no second send');assert.equal(W.ctx.GoatSinglePartialDone(p.ticket),true,'recognised within seconds, inside the 120 s wait');assert.equal(lines(W,/already done/).length,1);assert.equal(W.w.positions[0].sl,p.open,'and the stop moves');
+ // Refused at 0 s, a timeout at 5 s, the fill visible at 7 s: the read timer restarts at each failed send, so the stop moves in seconds.
+ const TO=world({inputs:PBE0,world:{rejectPartial:()=>true,partialRetcode:10006}});const tp=opened(TO);TO.run([[T0,1.10110]]);TO.w.partialRetcode=10012;TO.run(ticks([[1,1.10110],[7,1.10110]]));
+ assert.deepEqual(closes(TO).map(x=>x.time-T0),[0,5],'refused, then a timeout');TO.w.positions[0].volume=1.67;TO.run(ticks([[7,1.10110],[15,1.10110]]));
+ assert.equal(closes(TO).length,2,'no third send');assert.equal(TO.ctx.GoatSinglePartialDone(tp.ticket),true,'recognised within seconds');assert.equal(TO.w.positions[0].sl,tp.open,'the stop moved, not at +65 s');
  // A read during the wait never sends: nothing goes before the 120 s, every 5 s it only reads.
  let rd=0;const RW=world({world:{rejectPartial:()=>true,partialReturnsTrue:true,partialRetcode:10009}});opened(RW);RW.run([[T0,1.10110]]);RW.w.rejectHistory=()=>{rd++;return false;};RW.run(ticks([[1,1.10110],[100,1.10110]]));
  assert.equal(closes(RW).length,1);assert.ok(rd>=18&&rd<=21,'a read every 5 s in the wait: '+rd);
@@ -636,6 +640,17 @@ const GOOD={accountError:0,connected:1,login:12345678,balance:100000,accountTrad
  // Single_Flat_Only: a late buy holds a sell signal too. Without it, the sell may open beside it, as hedging allows.
  const SF=world({inputs:{...inputs,Single_Flat_Only:true},tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});SF.run([[state.time+1,1.1005]]);load(SF.ctx,SF.w);
  assert.equal(SF.ctx.GoatSingleOpen(SF.ctx.Seq_Sell,SF.w.bid),false,'flat-only: no sell beside a late buy');assert.equal(SF.ctx.Seq_Buy.Adopted,true,'it adopts the buy');assert.equal(sends(SF).length,0);
+ // A late sell and a buy signal under Single_Flat_Only, the mirror.
+ const sa=world({inputs,tester:false,fastSpeed:false,rsi:80});opened(sa,1);
+ const sst={positions:JSON.parse(JSON.stringify(sa.w.positions)),deals:JSON.parse(JSON.stringify(sa.w.deals)),gv:[...sa.w.gv],next:[sa.w.nextTicket,sa.w.nextDeal],balance:sa.w.balance};
+ const sload=(ctx,w)=>{w.positions.push(...JSON.parse(JSON.stringify(sst.positions)));w.deals.push(...JSON.parse(JSON.stringify(sst.deals)));for(const [k,v] of sst.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=sst.next;w.balance=sst.balance;};
+ const SB=world({inputs:{...inputs,Single_Flat_Only:true},tester:false,fastSpeed:false,start:sa.w.time,bid:sa.w.bid,rsi:50,adopt:()=>{}});SB.run([[sa.w.time+1,1.1000]]);sload(SB.ctx,SB.w);
+ assert.equal(SB.ctx.GoatSingleOpen(SB.ctx.Seq_Buy,SB.w.ask),false,'flat-only: no buy beside a late sell');assert.equal(SB.ctx.Seq_Sell.Adopted,true,'it adopts the sell');assert.equal(sends(SB).length,0);
+ // Allow_Opposite_Seq off holds it too: no sell beside a late buy, and no buy beside a late sell.
+ const AO=world({inputs:{...inputs,Allow_Opposite_Seq:false},tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});AO.run([[state.time+1,1.1005]]);load(AO.ctx,AO.w);
+ assert.equal(AO.ctx.GoatSingleOpen(AO.ctx.Seq_Sell,AO.w.bid),false,'Allow_Opposite_Seq off: no sell beside a late buy');assert.equal(AO.ctx.Seq_Buy.Adopted,true);assert.equal(sends(AO).length,0);
+ const AS=world({inputs:{...inputs,Allow_Opposite_Seq:false},tester:false,fastSpeed:false,start:sa.w.time,bid:sa.w.bid,rsi:50,adopt:()=>{}});AS.run([[sa.w.time+1,1.1000]]);sload(AS.ctx,AS.w);
+ assert.equal(AS.ctx.GoatSingleOpen(AS.ctx.Seq_Buy,AS.w.ask),false,'Allow_Opposite_Seq off: no buy beside a late sell');assert.equal(AS.ctx.Seq_Sell.Adopted,true);assert.equal(sends(AS).length,0);
  const NF=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});NF.run([[state.time+1,1.1005]]);load(NF.ctx,NF.w);
  assert.equal(NF.ctx.GoatSingleOpen(NF.ctx.Seq_Sell,NF.w.bid),true,'no flat-only: the sell opens');assert.equal(NF.ctx.Seq_Buy.Adopted,true,'and the buy is managed');
  // An adopted single used up its episode: when it ends with the signal still true, no second single; a new episode opens one.

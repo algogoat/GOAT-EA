@@ -486,7 +486,7 @@ The broker's flag is all the EA can read. This build is internal only; it must b
   since an unread margin mode answers 0, netting.
 - **`GoatSingleOpen`**, a single's only way to a position, on every attempt: not ready, or pending, sends nothing. It logs once per
   reason code and leaves the episode armed, so a dropped connection recovers by itself. Below the `cid_duplicate` freeze it adopts any
-  position the terminal loaded late, on both sides since `Single_Flat_Only` reads both, rather than open beside it.
+  position the terminal loaded late, on both sides since `Single_Flat_Only` and `Allow_Opposite_Seq` read both, rather than open beside it.
 - **`AdoptOpenPositions`**, for a single: held until a demo reading. An adopted single has used up its signal episode, so that signal
   (the other one under `Reverse_Seq`) is disarmed until it reads false, and its end does not open a second single.
 - **`GoatSinglePartial`**: a partial needs a ready account too. A single already running keeps its exits and stops on an unknown one.

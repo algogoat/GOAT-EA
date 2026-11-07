@@ -204,13 +204,26 @@ finish result), the reply says what is known:
 - the next step is the V1.49 upgrade in GOAT > Terminals, then a support report naming
   the batch, with `RESUME_V148_CANCEL_LATCHED` in `errorCodes`.
 
-`--settle` says this in `next_action` and `escalate_to`. `batch-resume` and `continue`
-(both lanes) refuse `RESUME_V148_CANCEL_LATCHED` with the same sentence before they write
-anything, rather than spend a start MT5 would claim and refuse.
+`--settle` says this in `next_action` and `escalate_to`. Every route that prepares the
+remaining work refuses `RESUME_V148_CANCEL_LATCHED` with the same sentence, before it
+writes anything, rather than spend a start MT5 would claim and refuse:
+- `batch-resume`, both lanes (`verify_resumable`);
+- `batch-continue` and the owner lane's `continue` (`studio_fast_lane.continue_batch`,
+  checked before any retirement or release);
+- `resume-batch` (`studio_batch.resume_batch`, beside the closed-batch refusal).
+
+The check is keyed on the version recorded with the stop: the receipt's `ea_version`
+when `finish` recorded it, from the finish result the pause is bound to, else the job's
+completion in the store. It fails closed. A re-grant batch whose version cannot be read
+refuses `RESUME_STOP_VERSION_UNKNOWN` with a support report as the next step. A re-grant
+batch is known by its pause record, or by its re-grant links when that record cannot be
+read.
 
 **Known limit:** on a V1.48 EA a controller stop leaves `GOAT_BatchCancelled` set; GOAT
 cannot resume that batch's remaining members. This predates the re-grant and holds for
-every V1.48 pause→resume. Only re-grant-stopped batches are refused up front.
+every V1.48 pause→resume. Only re-grant-stopped batches are refused up front. No guard
+yet stops `run-batch` from starting a new batch on that MT5 after such a stop; MT5 would
+claim that start and refuse it.
 
 **Identity.** One stop per new grant recorded in the human channel:
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked

@@ -280,6 +280,11 @@ class StrandedFixture(PauseFixture):
         for unproven in ('press Start', 'Global Variable', 'batch-resume continues'):
             self.assertNotIn(unproven, text)
 
+    def tree(self):
+        """Every file under the controller state with its bytes' hash: a refusal that writes nothing leaves it equal."""
+        return sorted((str(path.relative_to(self.c.root)), hashlib.sha256(path.read_bytes()).hexdigest())
+                      for path in self.c.root.rglob('*') if path.is_file())
+
     def raised_by(self, call):
         """The exception call raised, or None: any other exception than a Refusal is an assertion failure, not an error."""
         try:
@@ -1521,13 +1526,61 @@ class ResumeLatchTests(StrandedFixture):
 
     def test_continue_refuses_before_writing_anything(self):
         self.paused()
-        before = sorted(str(p.relative_to(self.c.root)) for p in self.c.root.rglob('*'))
+        before = self.tree()
         from studio_fast_lane import continue_batch
         raised = self.raised_by(lambda: continue_batch(self.c, 'g6'))
         self.assertIsInstance(raised, Refusal, repr(raised))
         self.assertEqual(raised.code, 'RESUME_V148_CANCEL_LATCHED')
-        self.assertEqual(sorted(str(p.relative_to(self.c.root)) for p in self.c.root.rglob('*')), before)
+        self.assertEqual(self.tree(), before)
         self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
+
+    def assertEveryRouteRefuses(self, code):
+        """resume_batch (resume-batch), verify_resumable (batch-resume) and continue: the same refusal, nothing written."""
+        from studio_batch import resume_batch
+        from studio_fast_lane import continue_batch
+        before = self.tree()
+        for name, call in (('resume_batch', lambda: resume_batch(self.c, 'g6', 'g6-r1')),
+                           ('continue', lambda: continue_batch(self.c, 'g6'))):
+            with self.subTest(route=name):
+                raised = self.raised_by(call)
+                self.assertIsInstance(raised, Refusal, repr(raised))
+                self.assertEqual(raised.code, code, str(raised))
+                self.assertIn('Nothing was prepared.', str(raised))
+                self.assertEqual(self.tree(), before)
+        self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
+
+    def finished_while_pausing(self):
+        """Finished by a plain finish after the re-grant stop: the pause record stays pausing, with no result bound."""
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        self.c.reconcile('g6')
+        finish(self.c, 'g6')
+        record = pause.load(self.c.root, 'g6')
+        self.assertEqual((record['state'], record.get('result_path')), ('pausing', None))
+
+    def test_a_record_still_pausing_after_a_plain_finish_refuses_from_the_store(self):
+        self.finished_while_pausing()
+        self.assertEqual(self.c.job('g6')['completion']['ea_version'], '1.48')
+        self.assertEveryRouteRefuses('RESUME_V148_CANCEL_LATCHED')
+
+    def test_an_unreadable_pause_record_refuses_from_its_regrant_links(self):
+        self.paused()
+        pause.path(self.c.root, 'g6').write_bytes(b'{"cut by a reboot')
+        self.assertEveryRouteRefuses('RESUME_V148_CANCEL_LATCHED')
+
+    def test_a_changed_finish_result_refuses_from_the_store(self):
+        record = self.paused()
+        result = Path(record['result_path']); result.write_bytes(result.read_bytes() + b' ')
+        self.assertEveryRouteRefuses('RESUME_V148_CANCEL_LATCHED')
+
+    def test_a_version_nothing_records_refuses_by_name(self):
+        record = self.paused()
+        result = Path(record['result_path']); result.write_bytes(result.read_bytes() + b' ')
+        self.edit_job(completion=dict(self.c.job('g6')['completion'], ea_version=None))
+        self.assertEveryRouteRefuses('RESUME_STOP_VERSION_UNKNOWN')
+        raised = self.raised_by(lambda: pause.verify_resumable(self.c, 'g6'))
+        self.assertEqual(raised.code, 'RESUME_STOP_VERSION_UNKNOWN')
+        self.assertIn('support report naming batch g6', str(raised))
 
     def agent(self):
         class Terminal(demo_fixtures.Process):
@@ -1535,18 +1588,24 @@ class ResumeLatchTests(StrandedFixture):
         return DemoAgent(self.f.path, process=Terminal(), mt5=self.mt5, clock=lambda: self.now)
 
     def assertOwnerLaneRefusesBeforeWriting(self, call):
-        """Owner lane: refused before any release, STOP clear or successor ID is written."""
+        """Owner lane: refused before any release, STOP clear or successor ID is written. Past the guard the verbs read
+        the live broker and process inventory; those reads fail fast here, so a missing guard fails in seconds."""
         self.paused()
         agent = self.agent()
         agent.state_root.mkdir(parents=True, exist_ok=True)
         stop = agent.state_root / 'STOP'; write_json(stop, dict(actor='demo_agent'))
         record = pause.load(self.c.root, 'g6')
-        raised = self.raised_by(lambda: call(agent))
+        before = self.tree()
+        reached = AssertionError('reached a live MT5 read past the V1.48 refusal')
+        with patch.object(DemoAgent, '_refresh_readback', side_effect=reached), \
+                patch.object(DemoAgent, '_broker', side_effect=reached):
+            raised = self.raised_by(lambda: call(agent))
         self.assertIsInstance(raised, Refusal, repr(raised))
         self.assertEqual(raised.code, 'RESUME_V148_CANCEL_LATCHED')
         self.assertTrue(stop.exists())
+        self.assertEqual(self.tree(), before)
+        self.assertNotIn('resume_batch_id', pause.load(self.c.root, 'g6'))
         self.assertEqual(pause.load(self.c.root, 'g6'), record)
-        self.assertNotIn('resume_batch_id', record)
         self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
 
     def test_owner_lane_batch_resume_refuses_before_writing(self):
@@ -1632,12 +1691,28 @@ class MonitorNotReportingTests(StrandedFixture):
 class StudioEntryTests(CustomerLane, StrandedFixture):
     """goat.exe studio cancel-regrant, end to end through goat_studio.main on the real store, gate and bridge."""
 
-    def cli(self, *extra, operation='cancel-regrant'):
+    def studio(self, *args):
         from goat_studio import main as studio_main
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = studio_main(['--installation', str(self.f.path), operation, '--job-id', 'g6', *extra])
+            code = studio_main(['--installation', str(self.f.path), *args])
         return code, json.loads(out.getvalue())
+
+    def cli(self, *extra, operation='cancel-regrant'):
+        return self.studio(operation, '--job-id', 'g6', *extra)
+
+    def test_resume_batch_refuses_after_a_v148_stop_and_writes_nothing(self):
+        """The public resume-batch route (studio_batch.resume_batch), not only batch-resume, carries the refusal."""
+        self.published()
+        self.assertEqual(self.settle_cli()[1]['result']['status'], 'paused')
+        before = self.tree()
+        code, reply = self.studio('resume-batch', '--source-batch-id', 'g6', '--batch-id', 'g6-r1')
+        if self.c.install['ea_version'] == '1.48':
+            self.assertEqual((code, reply.get('refusal_code')), (2, 'RESUME_V148_CANCEL_LATCHED'), reply.get('error'))
+            self.assertEqual(self.tree(), before)
+            self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
+        else:
+            self.assertNotEqual(reply.get('refusal_code'), 'RESUME_V148_CANCEL_LATCHED', reply)
 
     def published(self):
         """The customer command's stop, consumed by MT5: the state --settle acts on."""

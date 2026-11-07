@@ -676,7 +676,7 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
     end_state = journal.get('end_state') or dict(status='not_applicable', reason=journal.get('start_route'))
     next_action = 'Finished members and their results are kept; batch-resume continues the unfinished members.'
     extra = {}
-    if (finished.get('result') or {}).get('ea_version') == '1.48':   # the EA that consumed this stop (studio_finish)
+    if (finished.get('result') or {}).get('ea_version') == '1.48':   # the receipt's EA when finish recorded the stop
         from studio_batch_pause import V148_CANCEL_FLAG, V148_REMAINING, v148_next, v148_support
         next_action = (('Every member finished and its results are kept; nothing remains to run. ' + V148_CANCEL_FLAG
                         + ', so GOAT cannot start another batch on this MT5 on a V1.48 EA.') if record['state'] == 'finished'

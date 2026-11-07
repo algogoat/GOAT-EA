@@ -950,8 +950,8 @@ class DemoAgent:
         # Read-only, before any terminal effect or STOP clear: a refusal an unchanged retry repeats ends here.
         previous = self._previous_attempt(job)
         self._refuse_unfixable_retry(batch_id, previous)
-        from studio_batch_pause import load as load_pause, refuse_v148_cancel_latch
-        refuse_v148_cancel_latch(load_pause(self.root, batch_id, quiet=True))
+        from studio_batch_pause import refuse_v148_cancel_latch
+        refuse_v148_cancel_latch(self.root, batch_id, job=job)
         if unactivated_hint(self.root, job):
             self.retire_unactivated(batch_id)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
@@ -2987,7 +2987,9 @@ class DemoAgent:
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
-        refuse_v148_cancel_latch(record)            # read-only, before any release, STOP clear or successor ID is written
+        # Read-only, before any release, STOP clear or successor ID is written.
+        refuse_v148_cancel_latch(self.root, batch_id,
+                                 job=next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None))
         from studio_batch_close import refuse_closed
         refuse_closed(self.root, batch_id)          # closed (batch-pause-close): never resumes, nothing is released
         # A reserved successor that never ran (retired unactivated / never started, or

@@ -35,6 +35,8 @@ const js=text=>text.replace(/\(long\)([\w.]+)\/(\d+)/g,'Math.floor($1/$2)').repl
  .replace(new RegExp('\\b'+TYPE+'\\s+(?=\\w)','g'),'let ').replace(/\blet (\w+)\[\]/g,'let $1=[]')
  .replace(/\((?:long|int|uint|ulong|double|datetime|bool)\)/g,'');
 const struct=t=>{const d=new Date(t*1000);return {sec:d.getUTCSeconds(),min:d.getUTCMinutes(),hour:d.getUTCHours(),day:d.getUTCDate(),day_of_week:d.getUTCDay(),mon:d.getUTCMonth()+1};};
+// A fixture array as MQL5 treats one: an index out of range removes the EA.
+const bounded=a=>new Proxy(a,{get(t,p,r){if(typeof p==='string'&&/^-?\d+$/.test(p)&&(+p<0||+p>=t.length))throw new Error('array out of range: '+p);return Reflect.get(t,p,r);},set(t,p,v,r){if(typeof p==='string'&&/^-?\d+$/.test(p)&&(+p<0||+p>=t.length))throw new Error('array out of range: '+p);return Reflect.set(t,p,v,r);}});
 const FX={0:[[79200,86400]],1:[[0,86400]],2:[[0,86400]],3:[[0,86400]],4:[[0,86400]],5:[[0,79200]],6:[]};
 const FNS=[
  ['bool GoatManageOnlyLive()',''],
@@ -62,7 +64,7 @@ const HELPERS=['IsNewSecond','IsNewDay'];
 function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timing=0,tickload=0,minLevel=0}={}){
  const list=[];for(let i=0;i<positions;i++)list.push({ticket:11+i,symbol:'EURUSD',magic:7,type:i%2,volume:0.1});
  const b={MQL_TESTER:6,MQL_OPTIMIZATION:61,MQL_FORWARD:62,Operation_Standard:0,Operation_Batch:1,Operation_Dash:2,Mode_Operation:0,Mode:'',
-  Fix_FeedGuard:flag,Diag_TickTiming:timing,Fix_TickLoad:tickload,GOAT_TICK_LOAD_HOLD_MS:0,GOAT_TICK_LOAD_SLOTS:0,GOAT_TRAIL_FAIL_LIMIT:0,g_GoatTickLoadMs:Array(6).fill(0),g_GoatTrailFails:[0,0],g_GoatTrailNextMs:[0,0],Fix_Clock:0,g_GoatTimingSlotUS:Array(7).fill(0),g_GoatTimingSlotCalls:Array(7).fill(0),g_GoatTimingTicks:0,g_GoatTimingTickUS:0,g_GoatTimingTickMaxUS:0,g_GoatTimingWindowMs:0,g_GoatTimingWindowUS:0,g_GoatTimingWindowTicks:0,GOAT_TIMING_SLOTS:7,GOAT_TIMING_LOG_MS:0,us:0,GetMicrosecondCount:null,GoatFix_Off:0,GoatFix_On:1,GOAT_FEED_AGE_GUARD_S:0,GOAT_CLOSE_OWED_RETRY_MS:0,GOAT_STATUS_VERSION:0,GOAT_STATUS_WRITE_MS:0,
+  Fix_FeedGuard:flag,Diag_TickTiming:timing,Fix_TickLoad:tickload,GOAT_TICK_LOAD_HOLD_MS:0,GOAT_TICK_LOAD_SLOTS:0,GOAT_TRAIL_FAIL_LIMIT:0,g_GoatTickLoadMs:Array(6).fill(0),g_GoatTrailFails:[0,0],g_GoatTrailNextMs:[0,0],Fix_Clock:0,g_GoatTimingSlotUS:bounded(Array(7).fill(0)),g_GoatTimingSlotCalls:bounded(Array(7).fill(0)),g_GoatTimingTicks:0,g_GoatTimingTickUS:0,g_GoatTimingTickMaxUS:0,g_GoatTimingWindowMs:0,g_GoatTimingWindowUS:0,g_GoatTimingWindowTicks:0,GOAT_TIMING_SLOTS:7,GOAT_TIMING_LOG_MS:0,us:0,GetMicrosecondCount:null,GoatFix_Off:0,GoatFix_On:1,GOAT_FEED_AGE_GUARD_S:0,GOAT_CLOSE_OWED_RETRY_MS:0,GOAT_STATUS_VERSION:0,GOAT_STATUS_WRITE_MS:0,
   GOAT_NO_TICK_BACKOFF_MIN_MS:60000,GOAT_NO_TICK_BACKOFF_MAX_MS:900000,
   g_GoatServerNow:0,g_GoatFeedTmSaved:0,g_GoatFeedStmSaved:null,g_GoatFeedAgeS:-1,g_GoatFeedHeldLogged:false,g_GoatFeedLogMs:0,g_GoatCloseOwed:false,g_GoatCloseOwedStop:false,g_GoatCloseFridayFired:false,
   g_GoatCloseOwedSince:0,g_GoatCloseOwedNextMs:0,g_GoatCloseOwedBackoffMs:0,g_GoatCloseOwedQuoteMs:0,g_GoatCloseOwedStopTime:0,g_GoatCloseRealStop:false,g_GoatFeedSynced:false,g_GoatFeedInitDone:true,g_GoatEntriesWereHeld:false,g_GoatClockSkewS:0,g_GoatClockFloorS:0,g_GoatClockFloorSet:false,g_GoatClockSlowLogged:false,g_GoatClockSlowHeld:false,g_GoatClockSlowSinceMs:0,GOAT_CLOSE_OWED_SETTLE_MS:0,GOAT_CLOCK_SLOW_LOG_S:0,GOAT_CLOCK_SLOW_HOLD_S:0,GOAT_CLOCK_SLOW_HOLD_MS:0,g_GoatStatusWrittenMs:0,g_GoatStatusFailLogged:false,g_GoatLastTickMs:0,g_GoatLastTickTime:0,g_GoatStateWriteError:0,
@@ -416,6 +418,7 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  ok();}
 
 {// 13. Read-only by construction, and each section is measured once, where it runs.
+ for(const slot of [-2,-1,7,8]){const t=chart({timing:1,flag:0});t.us=100;t.GoatTimingSlot(slot,50);assert.deepEqual([...t.g_GoatTimingSlotCalls],Array(7).fill(0),'a slot out of range writes nothing: '+slot);}
  const block=main.slice(main.indexOf('// B49b:begin lag-t'),main.indexOf('// B49b:end lag-t')).replace(/\/\/.*$/gm,'');
  assert.ok(!/OrderSend|PositionModify|PositionClose|PositionSelect|PositionGetTicket|HistorySelect|FileOpen|GoatStateWrite|CloseAllPositions|StopOut_Flag|Add_Level|End_Sequence|GlobalVariableSet/.test(block),'no trade, selection, file or stop call');
  for(const m of block.replace(/"(?:\\.|[^"\\\n])*"/g,'""').matchAll(/(?:^|[;{\s])([A-Za-z_]\w*)(?:\[\w+\])?\s*(?:\+=|=(?!=)|\+\+)/gm)){

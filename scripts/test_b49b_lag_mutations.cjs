@@ -143,6 +143,7 @@ const MUTANTS=[
  ['main','the log is not once a minute','   if(now_ms-g_GoatTimingWindowMs<GOAT_TIMING_LOG_MS) return;\n',''],
  ['main','the window never restarts','   g_GoatTimingWindowMs=now_ms; g_GoatTimingWindowUS=0; g_GoatTimingWindowTicks=0;\n',''],
  ['main','busy is measured wrongly','100.0*(double)g_GoatTimingWindowUS/((double)window_ms*1000.0)','100.0*(double)g_GoatTimingWindowUS/(double)window_ms'],
+ ['main','a timing slot is not bounds-checked','if(started_us==0 || slot<0 || slot>=GOAT_TIMING_SLOTS) return;','if(started_us==0) return;'],
  ['main','OnTick is not timed','   GoatTimingTick(timing_tick); // B49b (LAG-T)','   // B49b (LAG-T)'],
  ['main','the per-second block is not timed','    GoatTimingSlot(0,timing_second); // B49b (LAG-T)','    // B49b (LAG-T)'],
  ['main','the exits are not timed','   GoatTimingSlot(4,timing_exits); // B49b (LAG-T)','   // B49b (LAG-T)'],

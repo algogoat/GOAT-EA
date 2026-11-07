@@ -6908,7 +6908,7 @@ ulong GoatTimingStart(void)
   }
 void GoatTimingSlot(const int slot,const ulong started_us)
   {
-   if(started_us==0) return;
+   if(started_us==0 || slot<0 || slot>=GOAT_TIMING_SLOTS) return;
    ulong spent_us=GetMicrosecondCount()-started_us;
    g_GoatTimingSlotUS[slot]+=spent_us; g_GoatTimingSlotCalls[slot]++;
    if(slot==6) g_GoatTimingWindowUS+=spent_us;

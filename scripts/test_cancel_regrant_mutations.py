@@ -66,7 +66,8 @@ MUTATIONS = [
     ('cancel_id ignores the link', 'studio_cancel_successor.py', "return current_stop(root,gate,value)", "return value['request_id']"),
     # Finding 1: nothing irreversible before finish's own refusals are read
     ('finish preflight removed', R, "    _finish_preflight(controller, job)\n", ""),
-    ('report verdict ignored', R, "    if not reports_verified(reports):\n        rows =", "    if False:\n        rows ="),
+    ('report verdict ignored', R, "    if not (reports is None or reports['status'] in ('report_pair_verified', 'report_batch_verified')):\n        rows =",
+     "    if False:\n        rows ="),
     ('preflight reads the queue before the stop', R, "after_stop = ['native_cancelled' if member['status'] in ('native_pending', 'native_queued', 'native_ongoing')\n                      else member['status'] for member in native['members']]",
      "after_stop = [member['status'] for member in native['members']]"),
     ('missing native queue accepted', R, "        if native.get('status') == 'native_evidence_missing':", "        if False:"),
@@ -81,7 +82,8 @@ MUTATIONS = [
     ('backup hash not checked', 'native_control_transaction.py', "if digest(raw) != item['before_sha256']:", "if False:"),
     ('lost report treated as a retry', R, "if all(row['status'] == 'reports_changing' for row in unverified):", "if True:"),
     ('changing report treated as lost', R, "if all(row['status'] == 'reports_changing' for row in unverified):", "if False:"),
-    ('finish still gates reports', 'studio_finish.py', "    if not reports_verified(reports):\n", "    if False:\n"),
+    ('finish still gates reports', 'studio_finish.py',
+     "    if not (reports is None or reports['status'] in ('report_pair_verified','report_batch_verified')):\n", "    if False:\n"),
     # Finding 2: settle does what the revoked driver would
     ('settle skips reconcile', R, "            controller.reconcile(job_id)\n", "            pass\n"),
     ('settle skips the end state', R, "    _end_state(controller, job_id, record, path, time, end_state_fn)\n", ""),

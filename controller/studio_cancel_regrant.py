@@ -80,10 +80,6 @@ def _escalation(code):
                                  send='support.submitReport, only after the user approved the preview'))
 
 
-def _link_path(root, attempt, generation):
-    return safe_path(Path(root) / 'cancel-successors' / (attempt + '.regrant-' + str(generation) + '.json'))
-
-
 def _links(root, attempt):
     folder = safe_path(Path(root) / 'cancel-successors')
     found = []
@@ -221,7 +217,7 @@ def _finish_preflight(controller, job):
     are, so this is finish's own report gate on the queue as it will be. No rewrite can produce a missing report.
     """
     from native_control_transaction import restorable
-    from studio_finish import member_reports, reports_verified
+    from studio_finish import member_reports
     from studio_native_gate import _read_gate_evidence
     from studio_native_observe import observe
     from studio_report_bridge import check_retirable
@@ -251,7 +247,8 @@ def _finish_preflight(controller, job):
         raise
     except READ_ERRORS as error:
         _refuse('REGRANT_FINISH_WOULD_REFUSE', 'Finish would refuse this batch: ' + str(error)[:200] + '.')
-    if not reports_verified(reports):
+    # Mirrors studio_finish.finish's report check exactly, so this refuses what finish would refuse.
+    if not (reports is None or reports['status'] in ('report_pair_verified', 'report_batch_verified')):
         rows = reports.get('members') or [reports]
         unverified = [dict(index=row.get('index'), symbol=row.get('symbol'), status=row['status'], missing=row.get('missing'),
                            reason=row.get('reason')) for row in rows
@@ -501,7 +498,8 @@ def publish(controller, job_id, *, now=None):
                                                generation=state['generation'], request_id=link['request_id'])
                 except PauseRefused as error:
                     _refuse('REGRANT_PAUSE_NOT_REARMABLE', str(error))
-                target = _link_path(controller.root, link['attempt_id'], link['generation'])
+                target = safe_path(Path(controller.root) / 'cancel-successors'
+                                   / (link['attempt_id'] + '.regrant-' + str(link['generation']) + '.json'))
                 if not target.exists():
                     write_json(target, link)
                 # No stale permit can answer the prior stop once its link is on disk.

@@ -28,10 +28,6 @@ def member_reports(controller,job,package,statuses):
     return observe_reports(package,job['configuration'],controller.schema,member_statuses=statuses)
 
 
-def reports_verified(reports):
-    return reports is None or reports['status'] in ('report_pair_verified','report_batch_verified')
-
-
 def finish(controller,job_id,*,expected_generation=None):
     if expected_generation is not None and controller.state()['generation']!=expected_generation:
         raise ValueError('Controller generation changed before finish')
@@ -69,7 +65,7 @@ def finish(controller,job_id,*,expected_generation=None):
     outcomes={'native_completed':'completed','native_cancelled':'cancelled','native_error':'failed'}
     if native['status'] not in outcomes: raise ValueError('Native queue is not finished; reconcile, do not reset')
     reports=member_reports(controller,job,package,[member['status'] for member in native['members']])
-    if not reports_verified(reports):
+    if not (reports is None or reports['status'] in ('report_pair_verified','report_batch_verified')):
         raise ValueError('Completed queue members still require verified report pairs')
     research_outcomes,research_error=_research_outcomes(native)
     result=dict(schema_version=1,member_outcomes=native['members'],attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],

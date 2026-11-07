@@ -19,6 +19,15 @@ string GoatStudioSettingType(const string key)
    if(key=="Single_Exit_Opposite") return "bool";
    if(key=="NY_Session") return "string";
    // B50:end b50-types
+   if(key=="Fix_MoneyVolume") return "int"; // B49b (F7): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Gate_Recheck") return "int"; // B49b (F5): an appended ENUM_GATE_RECHECK sinput (never an optimization axis)
+   if(key=="Fix_ClosePath") return "int"; // B49b (F3): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Max_Spread_Points") return "int"; // B49b (F6): an appended int sinput (never an optimization axis)
+   if(key=="Min_Margin_Level_PC") return "double"; // B49b (F6): an appended double sinput (never an optimization axis)
+   if(key=="Fix_Clock") return "int"; // B49b (F4/R2): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Fix_FeedGuard") return "int"; // B49b (LAG-A): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Diag_TickTiming") return "int"; // B49b (LAG-T): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Fix_TickLoad") return "int"; // B49b (LAG-B): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
    if(key=="Random_Direction") return "bool"; // B51 (beta-1a): the benchmark switch, an sinput (never an optimization axis)
    if(key=="Single_Flat_Only") return "bool"; // B51 (beta-1a): the flat-only eligibility, an sinput (never an optimization axis)
    if(key=="Random_Seed") return "int";       // B51 (beta-1a): the benchmark seed, an optimization axis (a seed sweep)

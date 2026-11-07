@@ -379,9 +379,12 @@ function restart({dropSizes=false}={}){
  }
  const main=H.readSource(undefined,H.MAIN);
  assert.match(main,/if\(Single_BE_ATR<0\.0 \|\| Single_Trail_Start_ATR<0\.0 \|\| Single_Trail_ATR<0\.0\) \{Alert\("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR cannot be negative\."\); return INIT_PARAMETERS_INCORRECT;\}/);
- // TrailingStoploss stays B50-alpha's, byte for byte.
+ // TrailingStoploss stays B50-alpha's, byte for byte. The final build: B49b changed it (F3's modify log, LAG-A's rejection
+ // read, LAG-B's per-ticket back-off; scripts/test_b49b_no_drift.cjs), so there it is B49b's own (claude-pc/b49b 808ff728), byte for byte:
+ // B51 still never touches it.
  const body=(text,sig)=>{const a=text.indexOf(sig);let d=0,i=text.indexOf('{',a);for(;i<text.length;i++){if(text[i]==='{')d++;if(text[i]==='}'){d--;if(!d)break;}}return text.slice(a,i+1);};
- assert.equal(body(main,'   void TrailingStoploss()'),body(H.readSource(B50_ALPHA,H.MAIN),'   void TrailingStoploss()'),'TrailingStoploss is untouched');
+ const withB49b=main.includes('bool GoatTrailHeld(const ulong ticket)');
+ assert.equal(body(main,'   void TrailingStoploss()'),body(H.readSource(withB49b?'808ff728fcbfb3734b09a866b4ff2e5ae856f3da':B50_ALPHA,H.MAIN),'   void TrailingStoploss()'),'TrailingStoploss is untouched');
  ok();
 }
 

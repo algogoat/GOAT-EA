@@ -570,6 +570,10 @@ function terminalModel(w,K){
    const {ticket,deal}=open(req.type,req.volume,req.price,req.sl,req.tp,req.magic,req.comment);
    Object.assign(res,{retcode:10009,order:ticket,deal,volume:req.volume,price:req.price,bid:w.bid,ask:w.ask});return true;},
   OrderCheck:()=>true,
+  // The final build (B49b merged in): the terminal API only B49b's fixes call. B50 and B51 fixtures run them Off, where they
+  // are never called, so they are not modelled: a fixture that reaches one fails here instead of reading a made-up answer.
+  OrderCalcMargin:()=>{throw new Error('b50_tick_harness: OrderCalcMargin is not modelled (B49b F6, Min_Margin_Level_PC)');},
+  SymbolInfoSessionTrade:()=>{throw new Error('b50_tick_harness: SymbolInfoSessionTrade is not modelled (B49b LAG-A, Fix_FeedGuard)');},
   // symbol, account, terminal
   Symbol:()=>sym,Period:()=>w.period,Point:()=>w.point,Digits:()=>w.digits,_Symbol:sym,_Point:w.point,_Digits:w.digits,
   SymbolInfoDouble:(s,k,box)=>{const v=symD(k);if(box){box.v=v;return true;}return v;},
@@ -785,6 +789,7 @@ function externs(w){
   g_trace_current_sequence:0,g_direction_guard_send_attempted:false,g_direction_guard_denied:false,
   g_GoatStudioMonitorRunPath:'',g_GoatStudioReadOnlyMonitor:false,g_GoatPanelUnavailable:false,g_GoatGateStateRead:false,g_GoatGateState:{},
   g_GoatCidGuardReason:'',
+  GOAT_EXPORT_RANK_ARFxSR:0,GOAT_EXPORT_RANK_PF:1,   // the final build: Tester.mqh's export ranks (B49b F8), as it defines them
   News:{TodaysNewsList:[],Init:()=>{},IsNewsTime:(s,th,idx)=>{idx.length=0;return !!(w.news&&w.news(w.time,w));}},
   Bias:{Init:()=>{},GetCurentBiasScore:()=>w.bias?w.bias(w.time,w):-999},
   GOATBiasWireV2:inert(),PanelDialog:inert(),TesterDialog:inert(),DashboardDialog:inert(),

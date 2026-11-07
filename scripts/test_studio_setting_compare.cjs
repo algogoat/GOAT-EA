@@ -80,6 +80,43 @@ for(const [from,to,key] of [['Random_Direction=false','Random_Direction=true','R
  ['Single_Partial_ATR=0.0||0.0||0.5||2.0||N','Single_Partial_ATR=0.0||0.5||0.5||2.0||Y','Single_Partial_ATR'],['Single_Partial_Fraction=0','Single_Partial_Fraction=0.5','Single_Partial_Fraction'],
  ['Single_Partial_BE=false','Single_Partial_BE=true','Single_Partial_BE']])
  compare(w,a+'\nLedger_Mode=0'+b50Defaults+b51Defaults.replace(from,to),false,key);
+// B49b (F7): Fix_MoneyVolume, appended after Ledger_Mode, under the same rule (an omitted flag runs Off, never On).
+assert.ok(!/Fix_MoneyVolume/.test(w));
+compare(w,a+'\nFix_MoneyVolume=0\n',true);
+compare(w,a+'\nFix_MoneyVolume=1\n',false,'Fix_MoneyVolume');
+compare(w,a+'\nFix_MoneyVolume=0||0||1||1||Y\n',false,'Fix_MoneyVolume');
+// B49b (F5): Gate_Recheck, the same rule.
+assert.ok(!/Gate_Recheck/.test(w));
+compare(w,a+'\nGate_Recheck=0\n',true);
+compare(w,a+'\nGate_Recheck=1\n',false,'Gate_Recheck');
+// B49b (F3): Fix_ClosePath, the same rule.
+compare(w,a+'\nFix_ClosePath=0\n',true);
+compare(w,a+'\nFix_ClosePath=1\n',false,'Fix_ClosePath');
+// B49b (F6): the pre-trade caps; an omitted cap is accepted only at 0 (off), however MT5 prints it.
+compare(w,a+'\nMax_Spread_Points=0\n',true);
+compare(w,a+'\nMax_Spread_Points=30\n',false,'Max_Spread_Points');
+compare(w,a+'\nMin_Margin_Level_PC=0\n',true);
+compare(w,a+'\nMin_Margin_Level_PC=0.00\n',true);
+compare(w,a+'\nMin_Margin_Level_PC=150.0\n',false,'Min_Margin_Level_PC');
+// B49b (LAG-A): Fix_FeedGuard, the fix-flag rule.
+compare(w,a+'\nFix_FeedGuard=0\n',true);
+compare(w,a+'\nFix_FeedGuard=1\n',false,'Fix_FeedGuard');
+// B49b (LAG-T): Diag_TickTiming, the fix-flag rule.
+compare(w,a+'\nDiag_TickTiming=0\n',true);
+compare(w,a+'\nDiag_TickTiming=1\n',false,'Diag_TickTiming');
+// B49b (LAG-B): Fix_TickLoad, the fix-flag rule.
+compare(w,a+'\nFix_TickLoad=0\n',true);
+compare(w,a+'\nFix_TickLoad=1\n',false,'Fix_TickLoad');
+// B49b (F4/R2): Fix_Clock, the fix-flag rule.
+compare(w,a+'\nFix_Clock=0\n',true);
+compare(w,a+'\nFix_Clock=1\n',false,'Fix_Clock');
+// The merged line (B50 + B51 with B49b): MT5 reports B50's, B49b's and B51's inputs in the header's order, each at its
+// default for a SET written before them; that is accepted, and a fix flag on or a cap set the SET never asked for is refused.
+const b49bDefaults='Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=0\nMax_Spread_Points=0\nMin_Margin_Level_PC=0.00\nFix_Clock=0\nFix_FeedGuard=0\nDiag_TickTiming=0\nFix_TickLoad=0\n';
+compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults,true);
+for(const [from,to,key] of [['Fix_MoneyVolume=0','Fix_MoneyVolume=1','Fix_MoneyVolume'],['Max_Spread_Points=0','Max_Spread_Points=30','Max_Spread_Points'],
+ ['Fix_FeedGuard=0','Fix_FeedGuard=1','Fix_FeedGuard'],['Fix_TickLoad=0','Fix_TickLoad=1','Fix_TickLoad']])
+ compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults.replace(from,to)+b51Defaults,false,key);
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

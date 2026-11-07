@@ -17,12 +17,13 @@ struct SRowDefinition
    string Inputs; // e.g. "10,1.0,0.02" for 3 input values
    double Score;  // custom score
    bool forward_seen; // this kept back pass was found in the forward report
+   bool forward_mismatch; // B49b (F8 OPT-04): its forward row repeated the pass or disagreed on the back result or inputs
 
    SRowDefinition()
    {
       pass=-1; back_result=0; back_profit=0; back_PF=0; back_RF=0; back_SR=0; back_DD_pc=0; back_trades=0;
       forward_result=0; forward_profit=0; forward_PF=0; forward_RF=0; forward_SR=0; forward_DD_pc=0; forward_trades=0;
-      Inputs=""; Score=0; forward_seen=false;
+      Inputs=""; Score=0; forward_seen=false; forward_mismatch=false; // B49b (F8 OPT-04)
    }
    SRowDefinition(const SRowDefinition &src)
    {
@@ -33,6 +34,7 @@ struct SRowDefinition
       Inputs=src.Inputs;
       Score=src.Score;
       forward_seen=src.forward_seen;
+      forward_mismatch=src.forward_mismatch; // B49b (F8 OPT-04)
    }
 };
 //+------------------------------------------------------------------+
@@ -227,13 +229,13 @@ public:
                discarded++; continue;
             }
             // A pass seen twice is not a clean merge: its forward values are overwritten.
-            if(Rows[bPos].forward_seen) forwardMismatches++;
+            if(Rows[bPos].forward_seen) {forwardMismatches++; Rows[bPos].forward_mismatch=true;} // B49b (F8 OPT-04)
             else {Rows[bPos].forward_seen=true; forwardMatched++;}
             Rows[bPos].forward_result=ExtractDataAsDouble(FileReadString(hForward));
             double tmpBackResult=ExtractDataAsDouble(FileReadString(hForward));
             if(Rows[bPos].back_result!=tmpBackResult)
             {
-               forwardMismatches++;
+               forwardMismatches++; Rows[bPos].forward_mismatch=true; // B49b (F8 OPT-04)
                LogOrPrint(reportMode,"❌ Back result mismatch in forward xml. Pass="+(string)pass,_K,_N,_S);
                //return false;
             }
@@ -264,7 +266,7 @@ public:
             }
             if(Inputsforward!=Rows[bPos].Inputs)
             {
-               forwardMismatches++;
+               forwardMismatches++; Rows[bPos].forward_mismatch=true; // B49b (F8 OPT-04)
                LogOrPrint(reportMode,"❌ Inputs mismatch in back vs. forward. Pass="+(string)pass,_K,_N,_S);
                LogOrPrint(reportMode,"Forward Inputs="+Inputsforward,_K,_N,_S);
                LogOrPrint(reportMode,"Back    Inputs="+Rows[bPos].Inputs,_K,_N,_S);
@@ -279,6 +281,15 @@ public:
                                                    Rows[bPos].back_RF    ,Rows[bPos].forward_RF,
                                                    Rows[bPos].back_SR    ,Rows[bPos].forward_SR,
                                                    Rows[bPos].back_trades,Rows[bPos].forward_trades, startD,endD,forwardD);
+            // B49b:begin f8-mismatch
+            // F8 OPT-04: B49a only counted a mismatch and still scored the row, so it could reach the Combined and
+            // Unique exports. A mismatched row now scores 0, below GOAT_XML_MIN_COMBINED_SCORE, and is never exported.
+            if(Rows[bPos].forward_mismatch)
+            {
+               Rows[bPos].Score=0;
+               LogOrPrint(reportMode,"❌ Forward row rejected (mismatch), score 0. Pass="+(string)pass,_K,_N,_S);
+            }
+            // B49b:end f8-mismatch
          }
          else
          {

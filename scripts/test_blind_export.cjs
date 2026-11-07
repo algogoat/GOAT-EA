@@ -182,9 +182,11 @@ const midnight=t=>t-t%DAY;
  assert.ok(!/BlindExport/.test(unit(header,'void WriteSet(string desc)')),'WriteSet never writes it');
  assert.ok(!/BlindExport/.test(header),'the input header (contract pin) is unchanged by it');
  assert.match(audit,/"GOAT_FitnessRunNonce","BlindExport"\};\n   string declared_values\[7\]=\{"false","","0","0","4","0","false"\};/,'the child audit accepts it at its default only');
- assert.match(main,/fwdRangeMeta\+\(BlindExport \? ",blind=1" : ""\)\+"\}\\n"/,'blind=1 rides in the export run meta only when on');
+ // B49b (F8): rank=pf follows it in the meta (test_b49b_f8.cjs).
+ assert.match(main,/fwdRangeMeta\+\(BlindExport \? ",blind=1" : ""\)\+\(ExportRank==GOAT_EXPORT_RANK_PF \? ",rank=pf" : ""\)\+"\}\\n"/,'blind=1 rides in the export run meta only when on');
  assert.match(main,/if\(names\[i\]=="blind" && values\[i\]=="1"\) \{g_GoatBlindExport=true;/);
- assert.match(main,/if\(g_GoatBlindExport\) WriteSet\(GoatBlindDesc\(desc\)\);\n\s+else\s+WriteSet\(desc\+"\\n; EXPORT blind:0 ranked:full_span sr:mt5_stat"\);/);
+ // B49b (F8): the export-format stamp line follows the B44 stamp in both (test_b49b_f8.cjs).
+ assert.match(main,/if\(g_GoatBlindExport\) WriteSet\(GoatBlindDesc\(desc\)\+"\\n"\+GoatExportFormatLine\(\)\);[^\n]*\n\s+else\s+WriteSet\(desc\+"\\n; EXPORT blind:0 ranked:full_span sr:mt5_stat\\n"\+GoatExportFormatLine\(\)\);/);
  assert.match(main,/    if\(g_GoatBlindExport\) metrix=GoatRankMetrix\(\);[^\n]*\n    newFile \+= metrix\+".csv";/,'a blind export is named by its window metrics');
  assert.match(main,/GoatRankTick\(\); \/\/ B44 item 5/);
  const store=unit(main,'int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)');
@@ -192,7 +194,8 @@ const midnight=t=>t-t%DAY;
  assert.match(store,/expArr\[n\]\.sr       = \(BlindExport \? rank_sr  : FetchMetric\(exports\[0\],"SR"\)\);/);
  assert.match(store,/expArr\[n\]\.arf      = \(BlindExport \? rank_arf : FetchMetric\(exports\[0\],"ARF"\)\);/);
  const tester=norm(fs.readFileSync(path.join(ROOT,'Tester.mqh'),'utf8'));
- assert.match(unit(tester,'void SortAndTrimExports(const int keepTop,const double minARF,const double minSR,ExportRecord &expArr[])'),/expArr\[i\]\.arf \* expArr\[i\]\.sr/,'the trim ranks on the stored (fit+FWD when blind) ARF x SR');
+ // B49b (F8 OPT-01): passing rows first, then ExportRank's key; ARFxSR (the default) is the stored ARF x SR.
+ assert.match(unit(tester,'bool   GoatExportBefore(const ExportRecord &a,const ExportRecord &b,const double minARF,const double minSR,const int rank)'),/rank==GOAT_EXPORT_RANK_PF \? a\.pf>b\.pf : a\.arf\*a\.sr>b\.arf\*b\.sr/,'the trim ranks on the stored (fit+FWD when blind) ARF x SR');
  ok();}
 // FetchMetric (Tester.mqh), converted: the exporter reads a file name's metrics with it.
 const tester=norm(fs.readFileSync(path.join(ROOT,'Tester.mqh'),'utf8'));
@@ -248,7 +251,12 @@ let compared=false;
 try{
  const old=norm(execFileSync('git',['show',B43_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
  compared=true;
- const exporter=unit(main,'bool StartExporter(bool reportMode)').replace('+(BlindExport ? ",blind=1" : "")','');
+ // B49b (F8, test_b49b_f8.cjs): its ExportRank setting, rank=pf meta and bounded tester wait are taken out too.
+ const f8=s=>s.replace(/\n[^\n]*ExportRank  = GoatExportRankSetting[^\n]*/,'').replace(/\n[^\n]*if\(ExportRank<0\)[^\n]*/,'').replace(/\n[^\n]*g_GoatExporterRank=ExportRank;[^\n]*/,'')
+  .replace(/\n[^\n]*ulong readyDeadline=[^\n]*/,'').replace(/\n[^\n]*if\(GetTickCount64\(\)>readyDeadline\)[^\n]*/,'')
+  .replace('+(ExportRank==GOAT_EXPORT_RANK_PF ? ",rank=pf" : "")','').replace(' // B49b (F8): rank=pf stamps the export','')
+  .replace(/,ExportRank\); \/\/ B49b \(F8 OPT-01\)/g,');');
+ const exporter=f8(unit(main,'bool StartExporter(bool reportMode)')).replace('+(BlindExport ? ",blind=1" : "")','');
  assert.equal(exporter,unit(old,'bool StartExporter(bool reportMode)'));
  let store=unit(main,'int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)');
  const a=store.indexOf('   // B44 item 5: with BlindExport'),b=store.indexOf('   if(profit>0)');

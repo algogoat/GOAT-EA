@@ -68,6 +68,13 @@ const METHODS=[
  ['UpdateLockTPSL',['count=0'],'   void UpdateLockTPSL(int count=0)'],
  ['SizesUnavailable',[],'   bool SizesUnavailable()'],
  ['EnforceSequenceMLPS',['context'],'   bool EnforceSequenceMLPS(const string context)'],
+ // B49b (PR-0): the start-distance refusal over the real solver path, and the adopted TP.
+ ['TighterTakeProfit',['first_tp','second_tp'],'   double TighterTakeProfit(const double first_tp,const double second_tp)'],
+ ['StartDistancesUnavailable',[],'   bool StartDistancesUnavailable()'],
+ ['BuildDistances',[],'   void BuildDistances()'],
+ ['FindCumLoss',[],'   double FindCumLoss()'],
+ ['EvalLossForStart',['L0'],'   double EvalLossForStart(double L0)'],
+ ['SolveStartLotsByRisk',['targetLoss'],'   double SolveStartLotsByRisk(double targetLoss)'],
 ];
 const FLUSH_MS=Number((main.match(/^#define GOAT_SQ_FLUSH_MS (\d+)$/m)||[])[1]);assert.equal(FLUSH_MS,5000);
 const UPDATE_GUARD='    if(Adopted && !AdoptSizes) return; // B49a (F1-lite): an adopted basket without its frozen sizes keeps its broker SL/TP';
@@ -96,7 +103,7 @@ function sequence(t,{dir=0,virtual=false}={}){
  const c={...K,GoatSingleAdoptHeld:()=>false,GoatSingleAdoptedDisarm:()=>{},MAGIC1:M,_Symbol:SYM,dir,Virtual:virtual,Desc:'Trend '+(dir?'Sell':'Buy'),Ledger_Mode:t.ledger,Mode_Operation:t.mode,
   Max_Seq_Levels:64,Max_Seq_Trades:10,Lock_Profit_Flexibility:1.0,Mode_Lots_Prog:5,_Digits:5,GOAT_SQ_FLUSH_MS:FLUSH_MS,TradeLevels:levels,
   LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,Level_Count:0,Trades_Count:0,Level_Last:0,Level_SL:0,
-  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,
+  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,GoatModifyRejected:()=>false,GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},
   Size_Grid:1234.5,Size_Lock:1234.5,Size_TP:1234.5,Size_SL:1234.5,Size_TSL:1234.5,
   get LastTradeCountBuy(){return t.counts.buy;},set LastTradeCountBuy(v){t.counts.buy=v;},
   get LastTradeCountSell(){return t.counts.sell;},set LastTradeCountSell(v){t.counts.sell=v;},
@@ -112,7 +119,7 @@ function sequence(t,{dir=0,virtual=false}={}){
   PositionsTotal:()=>t.positions.length,PositionGetTicket:i=>{sel=t.positions[i];return sel?sel.ticket:0;},
   PositionSelectByTicket:tk=>{sel=t.positions.find(p=>p.ticket===tk)||null;return !!sel;},
   PositionGetInteger:k=>sel[k],PositionGetString:k=>sel[k],PositionGetDouble:k=>sel[k],
-  CTrade:()=>({SetExpertMagicNumber:()=>{},PositionModify:(tk,sl,tp)=>{const p=t.positions.find(x=>x.ticket===tk);t.modifies.push({ticket:tk,from:p.sl,sl,tp});p.sl=sl;p.tp=tp;return true;}}),
+  CTrade:()=>({SetExpertMagicNumber:()=>{},ResultRetcode:()=>10009,ResultRetcodeDescription:()=>'done',PositionModify:(tk,sl,tp)=>{const p=t.positions.find(x=>x.ticket===tk);t.modifies.push({ticket:tk,from:p.sl,sl,tp});p.sl=sl;p.tp=tp;return true;}}),
   HistorySelect:(from,to)=>{history=t.deals.filter(d=>d.msc/1000>=from&&d.msc/1000<=to).map(d=>d.ticket);return true;},
   HistoryDealsTotal:()=>history.length,HistoryDealGetTicket:i=>history[i]??0,
   HistoryDealGetInteger:(d,k)=>t.deals.find(x=>x.ticket===d)[k],HistoryDealGetDouble:(d,k)=>t.deals.find(x=>x.ticket===d)[k],
@@ -120,6 +127,12 @@ function sequence(t,{dir=0,virtual=false}={}){
   // EnforceSequenceMLPS: the sequence's P/L (realized + open) is modelled; a breach closes the basket.
   GOAT_ATR_UNAVAILABLE:Number.MAX_VALUE,Sequence_MLPS_Hard_Close:true,Risk:500,g_PerformanceProfileTester:false,GoatPerformanceRecord:()=>{},g_PerfMLPSUS:0,g_PerfMLPSCalls:0,
   OpenPL:0,CurrentSequencePL:()=>c.SequenceRealizedPL+c.OpenPL,CloseSequencePositions:why=>{t.closes.push(why);},
+  // B49b (PR-0): the lot arrays, the per-side refusal log flags (an MQL global: zero-initialized), the solver's math.
+  Distances:[],LotsRaw:[],LotsNorm:[],LotsCum:[],StartLots:0,PeakLots:0,PeakCumLots:0,ScaleFactor:0,
+  g_goat_start_distances_logged:[false,false],ArrayInitialize:(a,v)=>{a.fill(v);},MathFloor:Math.floor,MathAbs:Math.abs,DBL_MAX:Number.MAX_VALUE,
+  Fix_ClosePath:0,GoatFix_Off:0,GoatFix_On:1,Trailing:false,   // B49b PR-3 (F3): UpdateLockTPSL's scoped never-loosen (section 16)
+  // B49b PR-2 (F1 full): ManageOnlyFrozen also reads manage-only and the state file's write state (test_b49b_f1.cjs runs them).
+  g_GoatManageOnly:0,GOAT_MANAGE_NONE:0,g_GoatStateFailed:false,GoatManageOnlyReason:()=>'none',GuardRealStarted:false,
  };
  vm.createContext(c);
  vm.runInContext(METHODS.map(([n,a,s])=>fn(n,a,bodyOf(main,s))).join(''),c);
@@ -168,12 +181,12 @@ const addLevel=s=>{s.Level_Count++;s.Trades_Count++;s.PersistLevels();};
 // A basket mid-way (CumPartial: level 1 partly harvested at a loss) whose terminal stops; the stops are at the levels'
 // computed SL or tighter (a trailed one), as the EA left them.
 const SIZES=[0.0012,0.0008,0,0.0030,0.0004];
-function midBasket({sl=[0,0,0],ledger=1}={}){
- const t=terminal({ledger,positions:[pos(1002,{msc:T0+60000,open:1.0985,volume:0.2,sl:sl[1]}),pos(1001,{msc:T0,open:1.1,volume:0.05,sl:sl[0]}),
-  pos(1003,{msc:T0+120000,open:1.0970,volume:0.3,sl:sl[2]})]});
+function midBasket({sl=[0,0,0],tp=[0,0,0],ledger=1,sizes=SIZES}={}){
+ const t=terminal({ledger,positions:[pos(1002,{msc:T0+60000,open:1.0985,volume:0.2,sl:sl[1],tp:tp[1]}),pos(1001,{msc:T0,open:1.1,volume:0.05,sl:sl[0],tp:tp[0]}),
+  pos(1003,{msc:T0+120000,open:1.0970,volume:0.3,sl:sl[2],tp:tp[2]})]});
  for(const [p,msc] of [[1001,T0],[1002,T0+60000],[1003,T0+120000]]) deal(t,{entry:0,type:0,magic:M,position:p,msc,commission:-3.5});
  deal(t,{entry:1,type:1,magic:M,position:1001,msc:T0+150000,profit:-40,commission:-1});   // the harvest
- const before=sequence(t);startSequence(before,t,1001,SIZES);addLevel(before);addLevel(before);
+ const before=sequence(t);startSequence(before,t,1001,sizes);addLevel(before);addLevel(before);
  before.SequenceRealizedPL=-51.5;t.now+=FLUSH_MS;before.PersistFlush();   // the join ledger: 3 entry commissions + the harvest
  t.modifies.length=0;t.alerts.length=0;t.logs.length=0;
  return t;
@@ -412,7 +425,7 @@ function firstTick(text,buy,sell,{ready=false}={}){
  const b=text.indexOf(TICK_END,a);assert.ok(b>a);
  const k=getSize(text,{ready,context:{}});
  Object.assign(k,{Seq_Buy:buy,Seq_Sell:sell,Seq_Buy_Virtual:{Active:false},Seq_Sell_Virtual:{Active:false},adds:[],
-  GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
+  timing_exits:0,GoatTimingStart:()=>0,GoatTimingSlot:()=>{},GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
   Sequence_Pause_Bias_B:false,Sequence_Pause_Bias_S:false,DashboardPortfolioPaused:false,DashboardTradeAllowed:()=>true,
   Mode_Lots_Prog:0,Lots_Prog_CumPartial:5,Lots_Prog_PeakSmart:6,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
   RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,OP_BUY:0,OP_SELL:1,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,Trades_Skipped_Bias_S:0,
@@ -470,6 +483,105 @@ function firstTick(text,buy,sell,{ready=false}={}){
  assert.deepEqual([us.AdoptMatched,us.Trades_Count],[false,2],'unmatched: the live count (its record\'s C=3 is not this basket\'s)');
  // The end deletes C with the rest.
  ls.PersistEnd();assert.equal(low.gv.has(key('C')),false);
+ ok();}
+
+// 14. B49b PR-0, P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266 6430221100): a pips Grid_Size with an ATR
+//     Grid_Min_/Grid_Max_ while the ATR indicator is not ready (CopyBuffer failing). The real GetSize answers the
+//     sentinel for GRID_VALID, the real BuildDistances stores it (Distances[1] = EMPTY_VALUE, finite; later ones
+//     infinite), and the real solver settles on the minimum volume. The start is refused, logged once per side, and
+//     keeps no sizing; once the buffer fills the same start solves to its risk volume. The lot ladder (BuildRawLots and
+//     its scaling) is modelled as standing lots L0, 2xL0, 3xL0, ...; the solver, its loss and the distances are the EA's.
+const VMIN=0.01,VSTEP=0.01,VMAX=100,PER_UNIT=100000;   // EURUSD on a USD account: $1 per 0.00001 per lot
+function solverSequence({dir=0,trades=4,ready=false}={}){
+ const s=sequence(terminal(),{dir}),g=getSize(main,{ready,active:false});
+ Object.assign(g,{Grid_Size:15,Grid_Min_:-0.5,Grid_Max_:-6});        // a 15-pip base grid clamped to 0.5-6 x ATR
+ Object.assign(s,{Max_Seq_Trades:trades,GRID:121,GRID_VALID:124,GetSize:(...a)=>g.GetSize(...a),Size_Grid:0.0015,Size_SL:0.003,
+  SymbolInfoDouble:(sym,k)=>({VMIN,VMAX,VSTEP})[k],SYMBOL_VOLUME_MIN:'VMIN',SYMBOL_VOLUME_MAX:'VMAX',SYMBOL_VOLUME_STEP:'VSTEP',
+  NormalizedLots:v=>Math.round(v/VSTEP)*VSTEP,PriceValuePerPointPerLot:()=>PER_UNIT,GetMicrosecondCount:()=>0,g_PerfLotSolverUS:0,g_PerfLotSolverCalls:0,
+  BuildRawLots:()=>{},ScaleRawLots:()=>{},BuildNormalizedLots:()=>{},
+  BuildCumulativeLots:()=>{s.LotsCum.length=0;for(let i=0;i<s.Max_Seq_Trades;i++)s.LotsCum.push(s.StartLots*(i+1));}});
+ s.Print=(...a)=>s.logs.push(a.join(''));s.logs=[];
+ return {s,g};
+}
+{const {s,g}=solverSequence();
+ const cold=s.SolveStartLotsByRisk(500);
+ assert.equal(cold,VMIN,'the solver settles on the minimum volume: the under-sized start the row describes');
+ assert.equal(s.Distances[1],Number.MAX_VALUE,'the sentinel distance');assert.equal(s.Distances[2],Infinity,'then infinite');
+ assert.equal(s.StartDistancesUnavailable(),true,'refused');
+ assert.deepEqual(s.logs,['GOAT sizes: start_refused reason=grid_distance_unavailable side=BUY symbol=EURUSD (RiskperSeq needs every grid distance and the ATR indicator is not ready: no order; the next start solves again)']);
+ assert.deepEqual([s.Size_Grid,s.Size_SL,s.StartLots,s.Distances.length,s.LotsCum.length],[1234.5,1234.5,0,0,0],'no sizing kept (a denied candidate)');
+ s.Size_Grid=0.0015;s.SolveStartLotsByRisk(500);assert.equal(s.StartDistancesUnavailable(),true);assert.equal(s.logs.length,1,'logged once per side');
+ // Two trades: the only distance is the sentinel itself, which is finite; still refused.
+ const two=solverSequence({trades:2}).s;two.SolveStartLotsByRisk(500);
+ assert.deepEqual([two.Distances.length,Number.isFinite(two.Distances[1])],[2,true]);assert.equal(two.StartDistancesUnavailable(),true,'the finite sentinel is refused too');
+ const nan=solverSequence().s;nan.Distances.push(0,0.001,NaN);assert.equal(nan.StartDistancesUnavailable(),true,'a NaN distance too');
+ // The buffer fills: the same start solves to its risk volume and goes ahead; the log is re-armed.
+ g.ready=true;s.Size_Grid=0.0015;const solved=s.SolveStartLotsByRisk(500);
+ assert.ok(solved>VMIN*10,'solved to the risk volume: '+solved);assert.ok(s.Distances.every(Number.isFinite)&&s.Distances[1]<0.01,'real distances');
+ assert.ok(Math.abs(s.EvalLossForStart(solved)-500)<500*0.05,'its planned loss is the risk');
+ assert.equal(s.StartDistancesUnavailable(),false,'goes ahead');assert.equal(s.g_goat_start_distances_logged[0],false,'re-armed');
+ assert.equal(s.Size_Grid,0.0015,'its sizing stays');
+ // A sell logs on its own side; an active sequence (never at a start) keeps its sizing.
+ const sell=solverSequence({dir:1}).s;sell.g_goat_start_distances_logged=[true,false];sell.SolveStartLotsByRisk(500);
+ assert.equal(sell.StartDistancesUnavailable(),true);assert.equal(sell.logs.length,1,'the buy flag does not silence the sell');assert.match(sell.logs[0],/side=SELL/);
+ const act=solverSequence().s;act.Active=act.Traded=true;act.SolveStartLotsByRisk(500);act.StartDistancesUnavailable();assert.equal(act.Size_Grid,0.0015);
+ // Where it sits: right after the solver at the first level, before the ladder is built and before any order.
+ const ADD=bodyOf(main,'   bool Add_Level(double Level_New)');
+ const GUARD='      if(Mode_Lots==RiskperSeq && StartDistancesUnavailable()) return false; // B49b: P-B49b-start-nonfinite-distances (Claude-Mac GOAT-EA#266)';
+ assert.ok(ADD.includes('      else if(Mode_Lots==RiskperSeq)     Lots_Calc = StartLots = SolveStartLotsByRisk(Risk);\n'+GUARD+'\n\n      BuildRawLots(StartLots);'),'right after the solver');
+ assert.ok(ADD.indexOf(GUARD)<ADD.indexOf('OpenPosition('),'before any order');
+ assert.equal((main.match(/StartDistancesUnavailable\(\)/g)||[]).length,2,'defined once, called once');
+ ok();}
+
+// 15. B49b PR-0, P-B49b-adopt-rescue-tp (Claude-Mac GOAT-EA#266 6429693333): with the lock off, a bias rescue moves the
+//     TP to its break-even price, which is nearer than the normal TP. After a restart the matched restore recomputes the
+//     normal TP from the frozen sizes; each position keeps the nearer of its broker TP and that one, so the rescue TP
+//     stays. A basket on its normal TP is unchanged; a farther broker TP comes in to the normal one.
+{const LOCKOFF=[0.0012,0,0.0025,0.0030,0.0004],NORMAL=Number((ENTRY+0.0025).toFixed(5)),RESCUE=1.0990;
+ assert.ok(RESCUE<NORMAL,'the rescue break-even TP is nearer (a buy)');
+ const t=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[RESCUE,RESCUE,RESCUE],sizes:LOCKOFF}),s=sequence(t);s.AdoptOpenPositions();
+ assert.deepEqual([s.AdoptMatched,s.AdoptSizes,s.Level_TP],[true,true,NORMAL],'matched, and the recomputed TP is the normal one');
+ assert.deepEqual(t.modifies,[],'no modify loosens the rescue TP');assert.deepEqual(t.positions.map(p=>p.tp),[RESCUE,RESCUE,RESCUE]);
+ const n=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[NORMAL,NORMAL,NORMAL],sizes:LOCKOFF});sequence(n).AdoptOpenPositions();
+ assert.deepEqual(n.modifies,[],'a basket on its normal TP is unchanged');
+ const far=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[1.1100,NORMAL,0],sizes:LOCKOFF});sequence(far).AdoptOpenPositions();
+ assert.deepEqual(far.modifies.map(m=>[m.ticket,m.tp]).sort(),[[1001,NORMAL],[1003,NORMAL]],'a farther or missing broker TP comes in to the normal one');
+ // A sell keeps the higher of the two.
+ const sellT=terminal({positions:[pos(2001,{type:1,open:1.1,sl:1.1030,tp:1.0990,msc:T0})]});deal(sellT,{entry:0,type:1,magic:M,position:2001,msc:T0,commission:-3.5});
+ const sb=sequence(sellT,{dir:1});startSequence(sb,sellT,2001,LOCKOFF);sellT.modifies.length=0;
+ const sa=sequence(sellT,{dir:1});sa.AdoptOpenPositions();assert.equal(sa.Level_TP,1.0975);
+ assert.deepEqual(sellT.modifies,[],'a sell rescue TP above the normal one stays');
+ // Lock and TP both off: the rescue's break-even TP is the only TP the basket ever had. The frozen sizes give none (0);
+ // B49a would send 0 and delete it, an adopted basket keeps it.
+ const off=midBasket({sl:[COMPUTED,COMPUTED,COMPUTED],tp:[RESCUE,RESCUE,RESCUE],sizes:[0.0012,0,0,0.0030,0.0004]});sequence(off).AdoptOpenPositions();
+ assert.deepEqual(off.modifies,[],'no TP from the sizes: the broker TP stays');
+ assert.ok(bodyOf(main,'   void UpdateLockTPSL(int count=0)').includes('       if(Adopted) Level_TP_ = TighterTakeProfit(PositionGetDouble(POSITION_TP),Level_TP_);'));
+ ok();}
+
+// 16. B49b PR-3 (F3 D2, Fix_ClosePath): a running (not adopted) basket's UpdateLockTPSL never loosens a broker SL. B49a
+//     writes the computed SL onto every position: over a trailed stop that moves it back (and with no SL size it writes
+//     the level SL as it stands, 0 on a basket that never had one, deleting the trailed stop). Off is B49a.
+{const TRAILED=1.0990;
+ const run=(fix,trailing=true)=>{const t=midBasket({sl:[TRAILED,TRAILED,TRAILED]}),s=sequence(t);s.AdoptOpenPositions();
+  s.Adopted=false;s.Trailing=trailing;s.Fix_ClosePath=fix;t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);return t;};
+ const off=run(0);
+ assert.deepEqual(off.modifies.map(m=>[m.from,m.sl]),[[TRAILED,COMPUTED],[TRAILED,COMPUTED],[TRAILED,COMPUTED]],'B49a: the trailed stop is moved back to the computed SL');
+ const on=run(1);assert.deepEqual(on.modifies,[],'Fix_ClosePath: the trailed stop stays');
+ // Claude-Mac GOAT-EA#276 P1: the grid's averaged re-placement is the strategy, not a defect. Not trailing, not rescuing,
+ // a non-zero computed SL: after an add or a harvest every SL moves to the new averaged level even when that is looser,
+ // with the flag on exactly as B49a (a basket pinned at its first, tightest SL would stop out early).
+ const avg=run(1,false);
+ assert.deepEqual(avg.modifies.map(m=>[m.from,m.sl]),off.modifies.map(m=>[m.from,m.sl]),'averaging re-placement: as B49a');
+ // No SL size and no level SL: B49a sends SL 0 (the trailed stop is deleted); the fix keeps it.
+ const zero=fix=>{const t=midBasket({sl:[TRAILED,TRAILED,TRAILED],sizes:[0.0012,0.0008,0,0,0.0004]}),s=sequence(t);s.AdoptOpenPositions();
+  s.Adopted=false;s.Level_SL=0;s.Fix_ClosePath=fix;t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);return t;};
+ assert.deepEqual(zero(0).modifies.map(m=>m.sl),[0,0,0],'B49a: SL 0 deletes the trailed stop');
+ assert.deepEqual(zero(1).modifies,[],'Fix_ClosePath: kept');
+ // A looser broker SL still comes in to the computed one (the rule only forbids loosening).
+ const t=midBasket(),s=sequence(t);s.AdoptOpenPositions();s.Adopted=false;s.Fix_ClosePath=1;
+ t.positions.forEach(p=>{p.sl=1.0800;});t.modifies.length=0;s.UpdateLockTPSL(s.Trades_Count);
+ assert.deepEqual(t.modifies.map(m=>m.sl),[COMPUTED,COMPUTED,COMPUTED],'tightened');
+ assert.ok(bodyOf(main,'   void UpdateLockTPSL(int count=0)').includes('       if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_);'));
  ok();}
 
 console.log(JSON.stringify({passed,test:'restart_adopt'}));

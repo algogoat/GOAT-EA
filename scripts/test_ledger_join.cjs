@@ -89,7 +89,8 @@ function common(acct,mode){
 function sequence(acct,mode,text=main){
  const c={...common(acct,mode),SequenceRealizedPL:0,LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,ended:[],
   Strat:'Trend',dir:0,Virtual:false,Desc:'',Retrace_Triggered:false,Level_Retrace:0,BiasRescueBEProtected:false,BiasRescuePositiveAdds:0,
-  BiasRescueBEPrice:0,BiasRescueSLPrice:0,Level_Count:0,TradeLevels:[]};
+  BiasRescueBEPrice:0,BiasRescueSLPrice:0,Level_Count:0,TradeLevels:[],
+  GoatManageOnlyLive:()=>true};   // B49b PR-2 (F1 full): a live chart (Init keeps a running sequence's state; test_b49b_f1.cjs)
  c.End_Sequence=d=>{c.ended.push(d);c.Active=c.Traded=false;};
  vm.createContext(c);
  const methods=text===main?SEQ_METHODS:SEQ_METHODS.filter(([n])=>n==='ClosedDealPL'||n==='AccumulateSequenceDealPL');
@@ -106,6 +107,7 @@ function chart(acct,mode,text=main){
   g_GoatStudioReadOnlyMonitor:false,GOATDeviceActivationOnly:()=>false,GoatDirectionGuardDeal:()=>{},
   open:{buy:0,sell:0},FindNumberOfPositions:(op)=>op===0?g.open.buy:g.open.sell,LastTradeCountBuy:0,LastTradeCountSell:0,
   MQLInfoInteger:()=>0,DashboardBusRollClosedBuckets:()=>{},dt_Back_OOS:0,dt_Fwrd_OOS:0,dt_FWD_start:0,dt_FWD_end:0,
+  GoatFwdDay:()=>false,   // B49b (F8 R16, test_b49b_f8.cjs): no FWD window here (dt_FWD_* are 0), as B49a's comparison
   trd_BOOS:0,trd_FOOS:0,trd_IS:0,trd_FWD:0,
   DStartTime:DAY0,PL_Total:0,DStartLocalLoss:0};
  vm.createContext(g);
@@ -234,11 +236,15 @@ function dailyFixture(mode,text=main){
 {assert.match(header,/enum ENUM_LEDGER_MODE\n  \{\n   Ledger_Legacy=0, +\/\/ Legacy \(magic only\)\n   Ledger_PositionJoin=1  \/\/ Position join\n  \};\nsinput   ENUM_LEDGER_MODE        Ledger_Mode                   =                 Ledger_Legacy;/);
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
  assert.equal(inputs.indexOf('Ledger_Mode'),114,'appended after B47\'s 114 header inputs');
+ assert.equal(inputs[inputs.indexOf('Trade_December')+1],'Ledger_Mode','appended right after B47\'s last input');
  // B50 (A0) appends its twelve after it (scripts/test_b50_no_drift.cjs pins them).
  assert.deepEqual(inputs.slice(115,127),['Engine_Mode','Single_SL_ATR','Single_TP_ATR','Single_TP_R','Single_Exit_Opposite','Single_Time_Stop_Bars',
   'Single_Time_Stop_TF','Clock_Mode','Server_Clock_Model','Server_UTC_Offset','NY_Session','Rollover_Block_Minutes'],'then B50\'s');
+ // B49b appends its per-fix flags after B50-alpha's (test_b49b_no_drift.cjs NEW_INPUTS; Claude-Mac 6433854745 ruling 6).
+ assert.deepEqual(inputs.slice(127,136),['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC','Fix_Clock','Fix_FeedGuard',
+  'Diag_TickTiming','Fix_TickLoad'],'then B49b\'s flags');
  // B51 (B50-beta-1) appends its own at the very end (scripts/test_b51_no_drift.cjs pins them).
- assert.equal(inputs[127],'Random_Direction','then B51\'s');
+ assert.equal(inputs[136],'Random_Direction','then B51\'s');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the
@@ -289,10 +295,13 @@ function dailyFixture(mode,text=main){
 //     SET is B47's bytes exactly (an omitted Ledger_Mode reads as Legacy: the controller's APPENDED_INPUTS, the child
 //     audit's Legacy default). WriteSet's last lines run here, with the same tail cut from B47's header as the control.
 {const writeSet=bodyOf(header,'void WriteSet(string desc)');
- // B50 (A0) writes its own lines after this one; they are tested in scripts/test_b50_parity.cjs (the WriteSet golden).
- const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.includes('// B50:begin b50-writeset')?text.indexOf('// B50:begin b50-writeset'):text.indexOf('FileClose(FileSET_handle);'));
- const run=(text,mode)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
-  FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
+ // B50 (A0) and B51 write their own blocks in this tail; they are tested in scripts/test_b50_parity.cjs and
+ // scripts/test_b51_parity.cjs (the WriteSet goldens), so they are cut here. B49b's flags follow B50's block.
+ const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'))
+  .replace(/\/\/ (B50|B51):begin (\S+)[^\n]*\n[\s\S]*?\/\/ \1:end \2[^\n]*\n/g,'');
+ // B49b (F7): Fix_MoneyVolume is written under the same rule (only when on), after Ledger_Mode.
+ const run=(text,mode,fix=0,gate=0,close=0,spread=0,margin=0,clock=0)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
+  Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,Gate_Recheck:gate,Gate_Legacy:0,Gate_AtFirstOrder:1,Fix_ClosePath:close,Max_Spread_Points:spread,Min_Margin_Level_PC:margin,Fix_Clock:clock,Fix_TickLoad:0,Diag_TickTiming:0,Fix_FeedGuard:0,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
  assert.deepEqual(run(writeSet,0),['Trade_December=true'],'Legacy: no Ledger_Mode line, as B47');
  assert.deepEqual(run(writeSet,1),['Trade_December=true','Ledger_Mode=1'],'PositionJoin: recorded');
  const headerB47=clean(execFileSync('git',['show',B47_SOURCE+':GOAT_Inputs_Definitions.mqh'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));
@@ -301,6 +310,23 @@ function dailyFixture(mode,text=main){
  const line=writeSet.split('\n').find(l=>l.includes('"Ledger_Mode="'));assert.ok(line&&/^if\(Ledger_Mode!=Ledger_Legacy\) /.test(line),line);
  assert.deepEqual(run(writeSet.replace('if(Ledger_Mode!=Ledger_Legacy) ',''),0),['Trade_December=true','Ledger_Mode=0'],'mutant: ungated');
  assert.equal(writeSet.indexOf(line)<writeSet.indexOf('FileClose(FileSET_handle);'),true,'written before the file closes');
+ assert.deepEqual(run(writeSet,0,1),['Trade_December=true','Fix_MoneyVolume=1'],'B49b: a fix flag on is recorded');
+ assert.deepEqual(run(writeSet,1,1),['Trade_December=true','Ledger_Mode=1','Fix_MoneyVolume=1'],'after Ledger_Mode');
+ assert.deepEqual(run(writeSet.replace('if(Fix_MoneyVolume!=GoatFix_Off) ',''),0,0),['Trade_December=true','Fix_MoneyVolume=0'],'mutant: ungated fix flag');
+ assert.deepEqual(run(writeSet,1,1,1),['Trade_December=true','Ledger_Mode=1','Fix_MoneyVolume=1','Gate_Recheck=1'],'B49b (F5): Gate_Recheck recorded, last');
+ assert.deepEqual(run(writeSet,0,0,0),['Trade_December=true'],'all at their defaults: B47\'s bytes');
+ assert.deepEqual(run(writeSet.replace('if(Gate_Recheck!=Gate_Legacy) ',''),0,0,0),['Trade_December=true','Gate_Recheck=0'],'mutant: ungated Gate_Recheck');
+ assert.deepEqual(run(writeSet,0,0,0,1),['Trade_December=true','Fix_ClosePath=1'],'B49b (F3): Fix_ClosePath recorded when on');
+ assert.deepEqual(run(writeSet.replace('if(Fix_ClosePath!=GoatFix_Off) ',''),0,0,0,0),['Trade_December=true','Fix_ClosePath=0'],'mutant: ungated Fix_ClosePath');
+ // B49b (F6): the pre-trade caps are recorded only when set (0 = off stays B49a's bytes).
+ assert.deepEqual(run(writeSet,0,0,0,0,30,150),['Trade_December=true','Max_Spread_Points=30','Min_Margin_Level_PC=150'],'B49b (F6): both caps recorded when set');
+ assert.deepEqual(run(writeSet,0,0,0,0,0,0),['Trade_December=true'],'B49b (F6): off, no lines');
+ assert.deepEqual(run(writeSet.replace('if(Max_Spread_Points!=0) ',''),0),['Trade_December=true','Max_Spread_Points=0'],'mutant: ungated Max_Spread_Points');
+ assert.deepEqual(run(writeSet.replace('if(Min_Margin_Level_PC!=0.0) ',''),0),['Trade_December=true','Min_Margin_Level_PC=0'],'mutant: ungated Min_Margin_Level_PC');
+ // B49b (F4/R2): Fix_Clock, recorded only when on, last.
+ assert.deepEqual(run(writeSet,0,0,0,0,0,0,1),['Trade_December=true','Fix_Clock=1'],'B49b (F4/R2): Fix_Clock recorded when on');
+ assert.deepEqual(run(writeSet,1,1,1,1,30,150,1).slice(-1),['Fix_Clock=1'],'after every earlier flag');
+ assert.deepEqual(run(writeSet.replace('if(Fix_Clock!=GoatFix_Off) ',''),0),['Trade_December=true','Fix_Clock=0'],'mutant: ungated Fix_Clock');
  ok();}
 
 console.log(JSON.stringify({passed,test:'ledger_join'}));

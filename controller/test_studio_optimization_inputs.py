@@ -9,7 +9,8 @@ B50_EXPLICIT=('Single_SL_ATR=0.0||0.0||0||0.0||N\r\nSingle_TP_ATR=0.0||0.0||0||0
  'Single_Exit_Opposite=false||false||0||false||N\r\nSingle_Time_Stop_Bars=0||0||0||0||N\r\nSingle_Time_Stop_TF=0||0||0||0||N\r\n'
  'Rollover_Block_Minutes=0||0||0||0||N\r\n')
 
-B51_EXPLICIT='Random_Seed=1||1||0||1||N\r\n'   # B51 (beta-1a): the benchmark seed (Random_Direction is an sinput)
+B51_EXPLICIT=('Random_Seed=1||1||0||1||N\r\n'   # B51 (beta-1a): the benchmark seed (Random_Direction is an sinput)
+ 'Single_BE_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_Start_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_ATR=0.0||0.0||0||0.0||N\r\n')   # beta-1b
 
 class OptimizationInputsTests(unittest.TestCase):
  def setUp(self):

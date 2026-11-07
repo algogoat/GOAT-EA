@@ -128,7 +128,7 @@ function adoptedBasket(){
   expect:(t,w)=>w.alerts.some(a=>/adopted \d+ open position/.test(a))&&(has(t,'PositionClose')||has(t,'BrokerStop')||has(t,'BrokerTake'))};
 }
 const ALL=[...Object.entries(FIXTURES),['adopted_basket',adoptedBasket()],['adopted_single',adoptedSingle()]];
-const BETA_OFF={Random_Seed:1,Single_Flat_Only:false};   // this tree's B50-beta inputs, at their defaults (spelt out)
+const BETA_OFF={Random_Seed:1,Single_Flat_Only:false,Single_BE_ATR:0,Single_Trail_Start_ATR:0,Single_Trail_ATR:0};   // this tree's B50-beta inputs, at their defaults (spelt out)
 function worldFor(source,fx,fastSpeed,extra={}){return H.build(source,{...fx,inputs:{...fx.inputs,...(source===undefined?extra:{})},fastSpeed,tester:fx.tester??true});}
 const runs={};
 for(const [name,fx0] of ALL){
@@ -156,6 +156,9 @@ const killed=[];
   ['the random branch ignores Random_Direction',swap(main,'     if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_BUY); else','     if(Engine_Mode==Engine_Single) GoatSingleRandomEntry(OP_BUY); else'),['single_stop_tp','single_reverse']],
   ['flat-only leaks into flags off',main.split('if(Engine_Mode==Engine_Single && Single_Flat_Only && !GoatSingleBothFree())').join('if(Engine_Mode==Engine_Single && !GoatSingleBothFree())'),['single_pairs']],
   ['the random branch is taken for the sell signal flags off',swap(main,'     if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_SELL); else','     if(Engine_Mode==Engine_Single || Random_Direction) GoatSingleRandomEntry(OP_SELL); else'),['single_exits']],
+  // beta-1b: the modify runs with its inputs at 0 (break-even at 0 ATR in favour moves the stop to the entry).
+  ['the break-even ignores Single_BE_ATR=0',swap(main,'      bool   b51_be=(Single_BE_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-b51_eps);','      bool   b51_be=(b51_favour>=Single_BE_ATR*b51_atr-b51_eps);')
+   .replace('   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || (!(Single_BE_ATR>0.0) && !(Single_Trail_ATR>0.0))) return;','   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0)) return;'),['single_stop_tp','single_reverse']],
  ];
  for(const [what,text,fixtures] of mutants){
   const files=H.loadSources(undefined,{[H.MAIN]:text});
@@ -191,11 +194,12 @@ function writeSet(source,inputs={}){
  W.ctx.FileWrite=(h,...a)=>{lines.push(a.map(String).join(''));return 1;};W.ctx.FileClose=()=>{};
  W.ctx.FileSET_handle=7;W.ctx.WriteSet('; GOAT harness');return lines;
 }
-const CHANGED_SET={Random_Direction:[true,'Random_Direction=true'],Random_Seed:[42,'Random_Seed=42'],Single_Flat_Only:[true,'Single_Flat_Only=true']};
+const CHANGED_SET={Random_Direction:[true,'Random_Direction=true'],Random_Seed:[42,'Random_Seed=42'],Single_Flat_Only:[true,'Single_Flat_Only=true'],
+ Single_BE_ATR:[1.25,'Single_BE_ATR=1.25'],Single_Trail_Start_ATR:[2,'Single_Trail_Start_ATR=2'],Single_Trail_ATR:[0.5,'Single_Trail_ATR=0.5']};
 {const base=writeSet(B50_ALPHA),tree=writeSet(undefined);
  assert.ok(base.length>120,'WriteSet wrote the SET ('+base.length+' lines)');
  assert.deepEqual(tree,base,'a default SET is B50-alpha\'s');
- assert.equal(tree.filter(l=>/^(Random_Direction|Random_Seed|Single_Flat_Only)=/.test(l)).length,0);
+ assert.equal(tree.filter(l=>/^(Random_Direction|Random_Seed|Single_Flat_Only|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR)=/.test(l)).length,0);
  // An alpha SET with the single engine on is alpha's too.
  const singleOn={Engine_Mode:'Engine_Single',Single_SL_ATR:1.5,Single_TP_R:2};
  assert.deepEqual(writeSet(undefined,singleOn),writeSet(B50_ALPHA,singleOn),'a B50-alpha single SET is B50-alpha\'s');

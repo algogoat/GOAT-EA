@@ -71,10 +71,12 @@ for(const [from,to,key] of [['Engine_Mode=0','Engine_Mode=1','Engine_Mode'],['Si
  compare(w,a+'\nLedger_Mode=0'+b50Defaults.replace(from,to),false,key);
 // B51 (B50-beta-1a): the B50-beta inputs, appended at the end, likewise: the defaults (the seed as a dormant N tuple) are
 // accepted; a benchmark run or another seed the SET never asked for, or an active seed axis, is refused.
-const b51Defaults='Random_Direction=false\nRandom_Seed=1||1||1||10||N\nSingle_Flat_Only=false\n';
+const b51Defaults='Random_Direction=false\nRandom_Seed=1||1||1||10||N\nSingle_Flat_Only=false\nSingle_BE_ATR=0.0||0.0||0.5||2.0||N\nSingle_Trail_Start_ATR=0\nSingle_Trail_ATR=0.0\n';
 compare(w,a+'\nLedger_Mode=0'+b50Defaults+b51Defaults,true);
 for(const [from,to,key] of [['Random_Direction=false','Random_Direction=true','Random_Direction'],['Random_Seed=1||1||1||10||N','Random_Seed=2','Random_Seed'],
- ['Random_Seed=1||1||1||10||N','Random_Seed=1||1||1||10||Y','Random_Seed'],['Single_Flat_Only=false','Single_Flat_Only=true','Single_Flat_Only']])
+ ['Random_Seed=1||1||1||10||N','Random_Seed=1||1||1||10||Y','Random_Seed'],['Single_Flat_Only=false','Single_Flat_Only=true','Single_Flat_Only'],['Single_BE_ATR=0.0||0.0||0.5||2.0||N','Single_BE_ATR=1.0','Single_BE_ATR'],
+ ['Single_BE_ATR=0.0||0.0||0.5||2.0||N','Single_BE_ATR=0.0||0.5||0.5||2.0||Y','Single_BE_ATR'],['Single_Trail_Start_ATR=0','Single_Trail_Start_ATR=2','Single_Trail_Start_ATR'],
+ ['Single_Trail_ATR=0.0','Single_Trail_ATR=0.5','Single_Trail_ATR']])
  compare(w,a+'\nLedger_Mode=0'+b50Defaults+b51Defaults.replace(from,to),false,key);
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');

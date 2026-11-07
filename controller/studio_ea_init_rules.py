@@ -392,7 +392,7 @@ EA_INIT_RULES = (
           'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
           'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
           lambda v: _bad_ny_session(v['NY_Session'])),
-    # B51 (beta-1a): the random-direction benchmark (GOAT V1.49.mq5:4481-4492). A schema without these appended inputs
+    # B51 (beta-1a, beta-1b): the random-direction benchmark and the single's break-even and trailing (GOAT V1.49.mq5:4481-4495). A schema without these appended inputs
     # (B50-alpha and earlier) belongs to a build without the rules (applicable_rules, APPENDED_GROUPS).
     _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [4486], 'Random_Direction && Engine_Mode!=Engine_Single',
           ['Random_Direction', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
@@ -416,6 +416,22 @@ EA_INIT_RULES = (
           'Single_Flat_Only && Engine_Mode!=Engine_Single',
           'Initialization Failed: Single_Flat_Only needs the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: bool(v['Single_Flat_Only']) and not _single(v)),
+    _rule('SINGLE_BE_TRAIL_NEGATIVE', [4492], 'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
+          ['Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'], {},
+          'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
+          'Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR cannot be negative.',
+          lambda v: v['Single_BE_ATR'] < 0.0 or v['Single_Trail_Start_ATR'] < 0.0 or v['Single_Trail_ATR'] < 0.0),
+    _rule('SINGLE_TRAIL_START_WITHOUT_DISTANCE', [4493], 'Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0)',
+          ['Single_Trail_Start_ATR', 'Single_Trail_ATR'], {},
+          'Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0) (review of GOAT-EA#287, P3-10)',
+          'Initialization Failed: Single_Trail_Start_ATR needs Single_Trail_ATR > 0 (a trailing start without a distance).',
+          lambda v: v['Single_Trail_Start_ATR'] > 0.0 and not v['Single_Trail_ATR'] > 0.0),
+    _rule('SINGLE_EXITS_WITHOUT_SINGLE', [4494],
+          'Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0)',
+          ['Engine_Mode', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'], {'Engine_Mode': ['Engine_Single']},
+          'Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0) (review of GOAT-EA#287, P3-10)',
+          'Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need the single-trade engine (Engine_Mode=Engine_Single).',
+          lambda v: not _single(v) and (v['Single_BE_ATR'] > 0.0 or v['Single_Trail_Start_ATR'] > 0.0 or v['Single_Trail_ATR'] > 0.0)),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -494,11 +510,11 @@ NOT_PORTED = (
     # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
     dict(lines=(4491,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
          reason='run context (live chart)'),
-    dict(lines=(4563,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4566,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4564,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4572,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4577,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4567,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4575,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4580,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

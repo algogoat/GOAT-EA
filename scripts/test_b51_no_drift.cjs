@@ -30,9 +30,10 @@ const REMOVED={
   '+"Single_SL_ATR|Single_TP_ATR|Single_TP_R|Single_Exit_Opposite|Single_Time_Stop_Bars|Single_Time_Stop_TF|Rollover_Block_Minutes|"; // B50 (A0): the B50 optimization axes (NY_Session is a string, never one)', // beta-1a: the list continues with the B51 axes
  ],
 };
-// The B50-beta-1 inputs, appended at the very end in this order (beta-1a).
-const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only'];
-const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false']};
+// The B50-beta-1 inputs, appended at the very end in this order (beta-1a, then beta-1b).
+const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only','Single_BE_ATR','Single_Trail_Start_ATR','Single_Trail_ATR'];
+const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false'],
+ Single_BE_ATR:['input','double','0.0'],Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0']};
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

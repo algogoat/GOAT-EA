@@ -34,7 +34,7 @@ verify(active,'wrong',false,'description');verify(active.replace('RSI_Period=2\r
 {const pool=fs.readFileSync(path.join(root,'controller/fixtures/oosc/r8/deploy/R1696f82a0d700d5c7279/USDCHF/GOAT V1.49 USDCHF,M1_Trds=198_Prf=1990_DD=415_PF=3.82_SR=8.73_ARF=0.295.set')).toString('utf16le').replace(/^\uFEFF/,'');
  // B51 (B50-beta-1a): the benchmark seed is an appended axis too, written the same way (Random_Direction is an sinput).
  const B50={Single_SL_ATR:'0.0',Single_TP_ATR:'0.0',Single_TP_R:'0.0',Single_Exit_Opposite:'false',Single_Time_Stop_Bars:'0',Single_Time_Stop_TF:'0',Rollover_Block_Minutes:'0',
-  Random_Seed:'1'};
+  Random_Seed:'1',Single_BE_ATR:'0.0',Single_Trail_Start_ATR:'0.0',Single_Trail_ATR:'0.0'};   // beta-1b: the break-even and trailing axes
  const desc=pool.match(/^EA_Desc=(.*?)\r?$/m)[1];
  for(const n of Object.keys(B50)) assert.ok(!pool.includes('\n'+n+'='),'the pool SET predates '+n);
  assert.deepEqual(names.filter(n=>!pool.includes('\n'+n+'=')).sort(),Object.keys(B50).sort(),'it carries every other axis');

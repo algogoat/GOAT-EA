@@ -1,7 +1,20 @@
-B52 (to be `V1.49-BETA17-52`; the ID, marker, compile and pin come at its assembly) is the final build: B50-alpha
-with GOAT-EA#292 (B51, `claude-mac/b50-alpha` 4fc885cf) merged with B49b and GOAT-EA#290 (`claude-pc/b49b` 808ff728),
-on `claude-pc/b51-live`, plus the fixes from the independent read of that merge (goatai#2750 6705041540) and from the
-second read of those fixes. **Draft notes:** nothing here is compiled, qualified or admitted yet.
+B52 (`V1.49-BETA17-52`) is the final build: B51 (B50-alpha with GOAT-EA#292, `claude-mac/b50-alpha`) merged with B49b
+and GOAT-EA#290 (`claude-pc/b49b` 808ff728) on `claude-pc/b51-live`, plus the fixes from two independent reads of that merge
+(goatai#2750 6705041540) and GOAT-EA#294 (controller only). Reviewed as GOAT-EA#296. **Not yet qualified:** no tester
+or chart run of this binary, no admission row; live use is demo only, after the drills below.
+
+**Build**
+- `GOAT_BUILD_ID` is `V1.49-BETA17-52`, marker `B52`. Against the reviewed tree (`claude-pc/b51-live` 5fb5c175) the compile
+  closure differs in those two defines only; `studio_equivalence` normalizes exactly those two.
+- **Compiled once** from e3cdcb8b with the pinned portable MetaEditor (sha256 `cf2750bd…`), Idle, outside every
+  terminal folder, B47's include root copied hash-equal: `Result: 0 errors, 0 warnings, 44418 ms elapsed, cpu='X64 Regular'`, 42-file closure.
+- `GOAT V1.49.ex5`: sha256 **`e108b09a53cacf43f85eafd7d4026555b1f566ace01411cca877a51c18287acd`**, 2,677,594 bytes. MetaEditor output is not
+  byte-reproducible, so this is the one binary to use.
+- Entrypoint `GOAT V1.49.mq5` sha256 `2b889745…` (pinned in `controller/contracts/v149/dependencies.json`),
+  input header `b5c462ed…` (B50-alpha's 127 inputs, B49b's 9, then B51's 9: 145).
+- `controller/studio_installed_build.py` pins this binary as `V1.49-BETA17-52`.
+
+**Not done.** No native qualification, no externals manifest, no admission row. The root `GOAT V1.49.ex5` is unchanged.
 
 **The review fixes (B52-marked lines in `GOAT V1.49.mq5`; tests `scripts/test_b52_review.cjs` and its mutations)**
 - P1: the New York clock is refused on every live chart at OnInit (INIT_FAILED), whatever the feed guard. Its day end,

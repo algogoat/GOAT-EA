@@ -10,17 +10,23 @@ const MUTANTS=[
  // P2: the deferred adoption.
  [REVIEW,'the file is rewritten while an adoption waits','   if(GoatAdoptPending()) return; // B52','   // B52'],
  [REVIEW,'a running sequence does not hold its side','((!Seq_Buy.Active && FindNumberOfPositions(OP_BUY,MAGIC1)>0)','((FindNumberOfPositions(OP_BUY,MAGIC1)>0)'],
- [REVIEW,'an adoption waits without the single\'s hold','   if(!GoatSingleAdoptHeld()) return false;\n   return ((!Seq_Buy.Active','   return ((!Seq_Buy.Active'],
+ // The second read: the wait is OnInit's deferral, not the account's reading (P2-1, P2-2), and the single engine's only.
+ [REVIEW,'the wait reads the account, not the deferral (B52 as first sent)','   if(Engine_Mode!=Engine_Single || !g_GoatSingleAccountPending) return false;','   if(!GoatSingleAdoptHeld()) return false;'],
+ [REVIEW,'the wait outlives the deferral (any orphan holds every write)','   if(Engine_Mode!=Engine_Single || !g_GoatSingleAccountPending) return false;','   if(Engine_Mode!=Engine_Single) return false;'],
+ [REVIEW,'the grid engine waits too','   if(Engine_Mode!=Engine_Single || !g_GoatSingleAccountPending) return false;','   if(!g_GoatSingleAccountPending) return false;'],
+ [REVIEW,'OnInit\'s adoptions keep an earlier mark','     g_GoatStateRestored=false; // B52 (second read P3)','     // B52 (second read P3)'],
  [REVIEW,'the sell side never waits','|| (!Seq_Sell.Active && FindNumberOfPositions(OP_SELL,MAGIC1)>0));','|| false);'],
  [REVIEW,'a late restore ignores OnInit\'s pass','   if(!g_GoatStateRestored) return;\n   string keys[],values[];','   string keys[],values[];'],
  [REVIEW,'a late restore writes both sides','   if(dir==OP_BUY) Seq_Buy.StateRestore(keys,values); else Seq_Sell.StateRestore(keys,values);','   Seq_Buy.StateRestore(keys,values); Seq_Sell.StateRestore(keys,values);'],
  [REVIEW,'OnInit\'s pass is never marked','   g_GoatStateRestored=true; // B52','   // B52'],
  [REVIEW,'a late adoption keeps no state','    GoatStateRestoreLate(dir); // B52','    // B52'],
- [REVIEW,'an unadopted position is not held at OnInit','   if(!holding && FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) holding=true; // B52','   // B52'],
+ [REVIEW,'an unadopted position is not held at OnInit','   if(!holding && Engine_Mode==Engine_Single && FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) holding=true; // B52','   // B52'],
+ [REVIEW,'the grid engine counts an orphan at OnInit','   if(!holding && Engine_Mode==Engine_Single && FindNumberOfPositions','   if(!holding && FindNumberOfPositions'],
  // P2: Gate_Recheck reads B50's entry block.
  [F5,'the first-order gate ignores the clock block','   if(g_GoatEntryBlocked)                         return "clock_blocked"; // B52','   // B52'],
  // P1 and P3: the OnInit refusals.
  [CLOCK,'the New York clock trades a live chart','   if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {','   if(false) {'],
+ [CLOCK,'the New York clock is refused in the tester too','   if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {','   if(Clock_Mode==Clock_NewYork && true) {'],
  [REVIEW,'the benchmark runs under the first-order gate','   if(Random_Direction && Gate_Recheck==Gate_AtFirstOrder) {','   if(false) {'],
  // Claude-Mac's ask: a held single opens nothing and keeps its episode armed. Two edits each: the start path's own hold
  // (DashboardEntryAllowed) refuses before the single is reached, so a regression has to pass it to show.

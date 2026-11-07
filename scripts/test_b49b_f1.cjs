@@ -88,6 +88,7 @@ const pending=files=>[...files.keys()].filter(k=>k.endsWith('.pending'));
 const K={OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FORWARD:3,Operation_Standard:0,Operation_Report:5,Operation_Batch:6,Operation_Dash:7,
  GOAT_MANAGE_NONE:NONE,GOAT_MANAGE_LICENCE_DOWN:DOWN,GOAT_MANAGE_LICENCE_REFUSED:REFUSED,GOAT_MANAGE_EXPIRED:EXPIRED,GOAT_MANAGE_CREDENTIAL:CRED,
  GOAT_LICENCE_RETRY_MS:RETRY_MS,INIT_SUCCEEDED:0,INIT_FAILED:1,GOAT_BUILD_ID:'B49b-test',
+ Engine_Mode:0,Engine_Single:1,   // the final build: the grid engine (B52's single-engine rule in GoatManageOnlyAfterAdopt is test_b52_review.cjs's)
  GOAT_STATE_VERSION:VERSION,GOAT_SQ_FLUSH_MS:FLUSH_MS,LICENSE_VALID:VALID,FILE_COMMON:4096,ACCOUNT_LOGIN:'login',ACCOUNT_NAME:'name',ACCOUNT_SERVER:'server',
  TIME_DATE:1,URL_Web:'https://goatedge.ai',Expiry:1798675200,MAGIC1:1843920117,_Symbol:'EURUSD',_Digits:5};
 const common=t=>({GoatAdoptPending:()=>!!t.adoptPending,GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},GoatEntriesHeld:()=>false,GoatCloseOwedText:()=>'',GoatCloseOwedRestore:()=>{},IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),StringToDouble:s=>Number(s)||0,

@@ -4209,11 +4209,13 @@ bool GoatStateWrite(const string path,const string body)
   }
 // B52:begin b52-adopt-pending
 // Review P2 on the final build: an open position of this magic and symbol on a side with no running sequence, while the
-// single engine holds its adoption back for a demo reading (GoatSingleAdoptHeld). Meanwhile the state file is not rewritten
-// (the position's section would be lost), and OnInit's manage-only counts the position as held.
+// single engine's OnInit deferral lasts (g_GoatSingleAccountPending: from OnInit until GoatSingleAccountWatch has seen the
+// account settle; while it lasts the watch adopts on every demo reading). Meanwhile the state file is not rewritten (the
+// position's section would be lost). The second read (P2-1, P2-2): the deferral itself, never the account's current
+// reading, which turns demo one timer pass before the watch adopts, and after the settling reads a disconnect too.
 bool GoatAdoptPending()
   {
-   if(!GoatSingleAdoptHeld()) return false;
+   if(Engine_Mode!=Engine_Single || !g_GoatSingleAccountPending) return false;
    return ((!Seq_Buy.Active && FindNumberOfPositions(OP_BUY,MAGIC1)>0) || (!Seq_Sell.Active && FindNumberOfPositions(OP_SELL,MAGIC1)>0));
   }
 // From AdoptOpenPositions: a sequence adopted after OnInit's GoatStateRestore takes back its own section (all or nothing,
@@ -4356,7 +4358,7 @@ int GoatManageOnlyAfterAdopt()
   {
    if(g_GoatManageOnly==GOAT_MANAGE_NONE) return -1;
    bool holding=(Seq_Buy.Active || Seq_Sell.Active);
-   if(!holding && FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) holding=true; // B52 (review P2): an open position not adopted yet (a single waits for a demo reading) is held too, as GoatManageOnlyTimer counts it
+   if(!holding && Engine_Mode==Engine_Single && FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) holding=true; // B52 (review P2): an open single not adopted yet (it waits for a demo reading) is held too, as GoatManageOnlyTimer counts it; the grid engine keeps B49b's rule
    if(!holding && g_GoatManageOnly==GOAT_MANAGE_EXPIRED) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED;}
    if(!holding && g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) {Sleep(20000); return INIT_FAILED;}
    if(!holding && g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)
@@ -5179,6 +5181,7 @@ int OnInit()
 
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)
+     g_GoatStateRestored=false; // B52 (second read P3): OnInit's own adoptions restore nothing late; GoatStateRestore, next, restores them and marks the pass (a re-init that skips this block keeps it)
      Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions(); // B49a (F1-lite): a restart adopts its open baskets, manage-only (live charts only)
      GoatStateRestore(); // B49b (F1): the state file's retrace/rescue/trailing/deferred-close sections for the matched baskets; its day section waits for the first tick
      if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}

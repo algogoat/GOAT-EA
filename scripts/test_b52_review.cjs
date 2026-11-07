@@ -2,7 +2,10 @@
 // - P2, an open single adopted after OnInit (it waits for a demo reading): GoatAdoptPending, the state file is never
 //   rewritten while one waits (GoatStateFlush), it takes back its own state section once adopted (GoatStateRestoreLate,
 //   from AdoptOpenPositions; GoatStateRestore marks OnInit's pass), and OnInit's manage-only counts it as held
-//   (GoatManageOnlyAfterAdopt), as GoatManageOnlyTimer already does;
+//   (GoatManageOnlyAfterAdopt), as GoatManageOnlyTimer already does, for the single engine only;
+// - the second read (P2-1, P2-2): the wait is OnInit's deferral (g_GoatSingleAccountPending), not the account's current
+//   reading. On the harness's timer path (GoatTimerBody's order) and on a tick, a pre-sync restart keeps the single's
+//   section through the sync; after the settling an orphan position with a disconnect still lets every flush through;
 // - P3, Random_Direction with Gate_Recheck=Gate_AtFirstOrder is refused at OnInit (INIT_PARAMETERS_INCORRECT);
 // - Claude-Mac's ask: a single held by the feed guard (GoatEntriesHeld) opens nothing and keeps its signal episode armed,
 //   so it opens once when the hold lifts with the signal still true, on the real OnTick path (scripts/b50_tick_harness.cjs).
@@ -33,14 +36,16 @@ const run=(names,ctx)=>{vm.createContext(ctx);vm.runInContext(names,ctx);return 
 
 // ---------------------------------------------------------------- 1. GoatAdoptPending
 {
- const pending=({held=true,buy=false,sell=false,buys=0,sells=0}={})=>run(fn('GoatAdoptPending',[],bodyOf(main,'bool GoatAdoptPending()')),
-  {OP_BUY:0,OP_SELL:1,MAGIC1:77,GoatSingleAdoptHeld:()=>held,Seq_Buy:{Active:buy},Seq_Sell:{Active:sell},
+ const pending=({deferred=true,engine=1,buy=false,sell=false,buys=0,sells=0}={})=>run(fn('GoatAdoptPending',[],bodyOf(main,'bool GoatAdoptPending()')),
+  {OP_BUY:0,OP_SELL:1,MAGIC1:77,Engine_Mode:engine,Engine_Single:1,g_GoatSingleAccountPending:deferred,Seq_Buy:{Active:buy},Seq_Sell:{Active:sell},
+   GoatSingleAdoptHeld:()=>assert.fail('the wait never reads the account\'s current state (second read P2-1)'),
    FindNumberOfPositions:(op,m)=>{assert.equal(m,77,'this magic');return op===0?buys:op===1?sells:buys+sells;}}).GoatAdoptPending();
  assert.equal(pending({buys:1}),true,'a buy waits for its adoption');
  assert.equal(pending({sells:2}),true,'a sell too');
  assert.equal(pending({buys:1,buy:true}),false,'a running buy sequence holds its own positions');
  assert.equal(pending({buys:1,buy:true,sells:1}),true,'the sell side still waits');
- assert.equal(pending({held:false,buys:1}),false,'no hold (the grid, the tester, a demo reading): nothing waits');
+ assert.equal(pending({deferred:false,buys:1,sells:1}),false,'after the settling (or never deferred): an orphan never holds a write (second read P2-2)');
+ assert.equal(pending({engine:0,buys:1}),false,'the grid engine: nothing waits');
  assert.equal(pending(),false,'no position: nothing waits');
  ok();
 }
@@ -64,6 +69,12 @@ const run=(names,ctx)=>{vm.createContext(ctx);vm.runInContext(names,ctx);return 
  const adopt=bodyOf(main,'   bool AdoptOpenPositions()');
  const at=adopt.indexOf('GoatStateRestoreLate(dir);');assert.ok(at>0,'AdoptOpenPositions calls GoatStateRestoreLate(dir)');
  assert.ok(adopt.indexOf('GoatSingleAdoptedDisarm(dir);')<at&&at<adopt.lastIndexOf('return true;'),'after the disarm, before its success');
+ // Second read P3-6: OnInit's own adoption block clears the mark first, so its adoptions restore nothing late (and a
+ // re-init path that reached it could not restore twice); GoatStateRestore, right after, restores and marks again.
+ const init=bodyOf(main,'int OnInit()').split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('//'));
+ const k=init.findIndex(l=>l.startsWith('Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();'));assert.ok(k>0,'OnInit adopts');
+ assert.match(init[k-1],/^g_GoatStateRestored=false;/,'the mark is cleared right before OnInit\'s adoptions');
+ assert.match(init[k+1],/^GoatStateRestore\(\);/,'and GoatStateRestore follows them');
  ok();
 }
 
@@ -77,16 +88,16 @@ const run=(names,ctx)=>{vm.createContext(ctx);vm.runInContext(names,ctx);return 
     GoatStateWrite:()=>{t.writes++;return true;},Print:()=>{},Alert:()=>{},g_GoatStateWriteError:0});
   c.GoatStateFlush();c.GoatStateFlush(true);return t.writes;};
  assert.equal(flush(false),1,'no adoption waits: the file is written');
- assert.equal(flush(true),0,'an adoption waits: never rewritten, not even forced (OnDeinit)');
+ assert.equal(flush(true),0,'OnInit\'s deferral with an unadopted position: never rewritten, not even forced (OnDeinit), so the old file keeps its section');
  ok();
 }
 
 // ---------------------------------------------------------------- 4. OnInit's manage-only counts an unadopted position as held
 {
  const NONE=define('GOAT_MANAGE_NONE'),REFUSED=define('GOAT_MANAGE_LICENCE_REFUSED'),EXPIRED=define('GOAT_MANAGE_EXPIRED'),CRED=define('GOAT_MANAGE_CREDENTIAL');
- const after=(state,positions,active=false)=>{const t={announced:0,sleeps:[],activations:0,alerts:[]};
+ const after=(state,positions,active=false,engine=1)=>{const t={announced:0,sleeps:[],activations:0,alerts:[]};
   const c=run(fn('GoatManageOnlyAfterAdopt',[],bodyOf(main,'int GoatManageOnlyAfterAdopt()')),
-   {t,g_GoatManageOnly:state,GOAT_MANAGE_NONE:NONE,GOAT_MANAGE_EXPIRED:EXPIRED,GOAT_MANAGE_LICENCE_REFUSED:REFUSED,GOAT_MANAGE_CREDENTIAL:CRED,
+   {t,Engine_Mode:engine,Engine_Single:1,g_GoatManageOnly:state,GOAT_MANAGE_NONE:NONE,GOAT_MANAGE_EXPIRED:EXPIRED,GOAT_MANAGE_LICENCE_REFUSED:REFUSED,GOAT_MANAGE_CREDENTIAL:CRED,
     Seq_Buy:{Active:active},Seq_Sell:{Active:false},OP_BUYSELL:2,MAGIC1:77,FindNumberOfPositions:(op,m)=>{assert.deepEqual([op,m],[2,77]);return positions;},
     INIT_FAILED:1,INIT_SUCCEEDED:0,Alert:s=>t.alerts.push(s),TimeToString:String,Expiry:0,TIME_DATE:1,URL_Web:'u',Sleep:ms=>t.sleeps.push(ms),Print:()=>{},
     GOATDeviceActivationBegin:()=>{t.activations++;return true;},AccountInfoInteger:()=>1,ACCOUNT_LOGIN:1,GOAT_BUILD_ID:'B52-test',
@@ -101,6 +112,10 @@ const run=(names,ctx)=>{vm.createContext(ctx);vm.runInContext(names,ctx);return 
  assert.equal(after(CRED,0)[0],0,'nothing to manage: a rejected credential starts the replacement');
  assert.equal(after(EXPIRED,0,true)[0],-1,'a running sequence: held, as before');
  assert.equal(after(NONE,1)[0],-1,'not manage-only: init goes on');
+ // The grid engine keeps B49b's rule (second read P3-1): an orphan on a live re-init changes nothing there.
+ assert.equal(after(EXPIRED,1,false,0)[0],1,'grid: an expired build with only an orphan fails, as B49b');
+ assert.deepEqual(after(REFUSED,1,false,0)[1].sleeps,[20000],'grid: a refused licence waits 20 s and fails');
+ assert.equal(after(CRED,1,false,0)[0],0,'grid: a rejected credential starts the replacement');
  ok();
 }
 
@@ -139,17 +154,70 @@ const sends=W=>W.w.trace.filter(x=>x.op==='OrderSend');
  ok();
 }
 
-// ---------------------------------------------------------------- 7. A deferred adoption takes back its state section (live)
-{
+// ---------------------------------------------------------------- 7. A pre-sync restart keeps the single's section through the sync
+// The harness's timer (GoatTimerBody's order: the flush, then the account watch) and its file model: the EA's own text is
+// written, read back and restored (GoatStateFlush, GoatStateRead, GoatStateRestore, GoatStateRestoreLate, StateRestore).
+// Second read P2-1: when the account's first demo reading lands on a timer pass, the flush runs before the watch adopts.
+const RETRACE=1.0987,ADDS=3;   // markers in the single's section (nothing a single reads)
+const PATHS=W=>[...W.w.files.keys()].filter(p=>/^GOAT\\State\\/.test(p));
+function liveSingle(){   // a settled live demo with one open buy single and its state file written
  const a=single({tester:false,fastSpeed:false});a.run(path_(MON,[[2*H1,1.1000],[2*H1+120,1.1000]]));assert.equal(sends(a).length,1,'live: a single opened');
- const state={positions:JSON.parse(JSON.stringify(a.w.positions)),deals:JSON.parse(JSON.stringify(a.w.deals)),gv:[...a.w.gv],next:[a.w.nextTicket,a.w.nextDeal],time:a.w.time};
+ Object.assign(a.ctx.Seq_Buy,{Level_Retrace:RETRACE,BiasRescuePositiveAdds:ADDS});
+ a.timer(a.w.time+1);assert.equal(PATHS(a).length,1,'the timer wrote the state file');
+ assert.match(a.w.files.get(PATHS(a)[0]),/\nB\.level_retrace=1\.09870000\n[\s\S]*\nB\.rescue_positive_adds=3\n/,'with the single\'s section');
+ return a;
+}
+function restartPreSync(a){   // the terminal restarts before the account has synchronized, the single still open
+ const state={positions:JSON.parse(JSON.stringify(a.w.positions)),deals:JSON.parse(JSON.stringify(a.w.deals)),gv:[...a.w.gv],files:[...a.w.files],
+  next:[a.w.nextTicket,a.w.nextDeal],time:a.w.time+60};
  const W=single({tester:false,fastSpeed:false,start:state.time,bid:1.1000,accountSettled:false,world:{preSync:true},
-  adopt:(ctx,w)=>{w.positions.push(...state.positions);w.deals.push(...state.deals);for(const [k,v] of state.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=state.next;}});
- assert.equal(W.ctx.Seq_Buy.Active,false,'the account reads unknown (pre-sync): the open single waits for its adoption');
- assert.deepEqual(W.w.lateRestores||[],[],'nothing adopted, nothing restored');
- W.w.preSync=false;W.run(path_(state.time-7,[[20,1.1000],[100,1.1000]]));
- assert.equal(W.ctx.Seq_Buy.Active,true,'the first demo reading adopts it');
- assert.deepEqual(W.w.lateRestores,[0],'and it takes back its own (buy) state section');
+  adopt:(ctx,w)=>{w.positions.push(...state.positions);w.deals.push(...state.deals);for(const [k,v] of state.gv)w.gv.set(k,v);for(const [k,v] of state.files)w.files.set(k,v);[w.nextTicket,w.nextDeal]=state.next;}});
+ assert.equal(W.ctx.g_GoatSingleAccountPending,true,'OnInit defers the single (the account reads unknown)');
+ assert.equal(W.ctx.Seq_Buy.Active,false,'the open single waits for its adoption');
+ assert.equal(W.ctx.g_GoatStateRestored,true,'OnInit\'s GoatStateRestore ran');
+ W.tick(state.time+1,1.1000);   // as OnInit's own OnTick: the new-day block stamps the day, so flushes are allowed
+ assert.ok(W.ctx.g_GoatStateDay>0,'the day is stamped');assert.equal(W.ctx.Seq_Buy.Active,false,'still pre-sync');
+ W.timer(state.time+2);assert.equal(W.w.stateWrites||0,0,'pre-sync: the file is not rewritten');
+ W.w.preSync=false;   // the account synchronizes: it reads as a demo from here on
+ return {W,t:state.time+3,file:PATHS(W)[0],before:W.w.files.get(PATHS(W)[0])};
+}
+const restored=(W,what)=>{
+ assert.equal(W.ctx.Seq_Buy.Active,true,what+': adopted on the first demo reading');
+ assert.equal(W.ctx.Seq_Buy.Level_Retrace,RETRACE,what+': the single\'s retrace is back');
+ assert.equal(W.ctx.Seq_Buy.BiasRescuePositiveAdds,ADDS,what+': and its counters');
+};
+{
+ const a=liveSingle();
+ // Timer first: the flush (still deferred, the single unadopted: skipped), then the watch adopts and restores.
+ {const {W,t,file,before}=restartPreSync(a);
+  W.timer(t);
+  assert.equal(W.w.files.get(file),before,'timer first: the flush before the watch did not rewrite the file');
+  restored(W,'timer first');
+  W.timer(t+6);assert.equal(W.w.stateWrites,1,'the next pass writes');
+  assert.match(W.w.files.get(file),/\nB\.level_retrace=1\.09870000\n/,'and the single\'s section is in it');}
+ // Tick first: the tick's watch adopts before anything is written.
+ {const {W,t,file,before}=restartPreSync(a);
+  W.tick(t,1.1000);assert.equal(W.w.files.get(file),before);
+  restored(W,'tick first');
+  W.timer(t+1);assert.match(W.w.files.get(file),/\nB\.level_retrace=1\.09870000\n/,'tick first: the next flush keeps the section');}
+ // The order the harness ran is the tree's (GoatTimerBody: the flush, then the watch).
+ assert.deepEqual(a.C.timerOrder,['GoatStateFlush','GoatSingleAccountWatch'],'GoatTimerBody flushes before the watch');
+ ok();
+}
+
+// ---------------------------------------------------------------- 8. After the settling, an orphan never stops a write (P2-2)
+{
+ const S=liveSingle();
+ assert.equal(S.ctx.g_GoatSingleAccountPending,false,'settled');
+ const p=S.w.positions[0];S.w.positions.push({...p,ticket:p.ticket+77,identifier:p.ticket+77,type:1});   // a sell of this magic no sequence runs
+ assert.equal(S.ctx.Seq_Sell.Active,false);
+ Object.assign(S.w,{connected:0,accountTradeAllowed:0});   // and the account reads as not tradeable (a disconnect)
+ const writes=S.w.stateWrites,file=PATHS(S)[0];
+ S.ctx.Seq_Buy.Level_Retrace=1.2345;S.timer(S.w.time+6);
+ assert.equal(S.w.stateWrites,writes+1,'the timer\'s flush still writes');
+ assert.match(S.w.files.get(file),/\nB\.level_retrace=1\.23450000\n/,'with the running single\'s section');
+ S.ctx.Seq_Buy.Level_Retrace=1.3456;S.ctx.GoatStateFlush(true);   // OnDeinit's forced flush
+ assert.match(S.w.files.get(file),/\nB\.level_retrace=1\.34560000\n/,'and OnDeinit\'s forced flush too');
  ok();
 }
 

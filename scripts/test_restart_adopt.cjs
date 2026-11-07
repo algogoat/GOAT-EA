@@ -285,7 +285,8 @@ const ENTRY=(1.1*0.05+1.0985*0.2+1.0970*0.3)/0.55, COMPUTED=Number((ENTRY-0.0030
  assert.ok(ADD.includes('        if(LastOrderTicket>0) {if(PersistStartMsc==0) PersistStart((ulong)LastOrderTicket); else PersistLevels();} // B49a (F1-lite): the first real level starts the restart record, each later one updates its level count'));
  assert.equal(firstStatement(bodyOf(main,'   void UpdateLockTPSL(int count=0)')),UPDATE_GUARD);
  assert.equal(firstStatement(bodyOf(main,'   void TrailingStoploss()')),UPDATE_GUARD);
- assert.ok(main.includes('                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);\n     GoatLedgerOwnerReset();'
+ // The final build: B52 clears the late-restore mark between the two (test_b52_review.cjs proves that line).
+ assert.ok(main.replace(/\n     g_GoatStateRestored=false; \/\/ B52 [^\n]*/,'').includes('                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);\n     GoatLedgerOwnerReset();'
   +' // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)\n     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();'),
   'OnInit adopts right after the sequences\' Init (and F2\'s owner-cache reset)');
  // OnInit, and for a single (docs/b50/B50_ALPHA_DESIGN.md 8.4) B51's account watch and GoatSingleOpen, for positions loaded late.

@@ -151,7 +151,7 @@ function terminal({acct=account(),gv=new Map(),login=LOGIN,dataPath=DATA_A,chart
   now:500000,GetTickCount:()=>c.now,
   // DashboardEntryAllowed's other gates, open: only the guard decides here.
   g_GoatStudioMonitorRunPath:'',GoatStagedChildMayOpen:()=>true,DashboardExposureConflict:()=>false,
-  g_GoatManageOnly:0,GOAT_MANAGE_NONE:0,   // B49b PR-2 (F1 full): not manage-only (test_b49b_f1.cjs covers it)
+  GoatEntriesHeld:()=>false,g_GoatManageOnly:0,GOAT_MANAGE_NONE:0,   // B49b PR-2 (F1 full): not manage-only (test_b49b_f1.cjs covers it)
   DashboardTradeAllowBuy:true,DashboardTradeAllowSell:true,OP_BUY:0,OP_SELL:1,
   g_GoatCidGuardReason:'',g_GoatCidGuardDetail:'',g_GoatCidGuardCheckedMs:0,g_GoatCidGuardChecked:false,
   g_GoatCidGuardClaimedMs:0,g_GoatCidGuardClaimed:false,g_GoatCidGuardFreezeLogged:[false,false]};

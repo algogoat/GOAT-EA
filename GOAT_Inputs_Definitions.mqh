@@ -589,6 +589,7 @@ if(Fix_ClosePath!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_ClosePath="+(string
 if(Max_Spread_Points!=0) FileWrite(FileSET_handle,"Max_Spread_Points="+(string)Max_Spread_Points); // B49b (F6): recorded only when set
 if(Min_Margin_Level_PC!=0.0) FileWrite(FileSET_handle,"Min_Margin_Level_PC="+(string)Min_Margin_Level_PC); // B49b (F6): recorded only when set
 if(Fix_Clock!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_Clock="+(string)(int)Fix_Clock); // B49b (F4/R2): recorded only when on
+if(Fix_FeedGuard!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_FeedGuard="+(string)(int)Fix_FeedGuard); // B49b (LAG-A): recorded only when on
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -828,6 +829,10 @@ sinput   double                  Min_Margin_Level_PC           =                
 // B49a's one-field compare either way, so On never changes when signals, sequences or trailing are sampled. The no-tick
 // timer itself (F4) is live-only and has no input.
 sinput   ENUM_GOAT_FIX           Fix_Clock                     =                   GoatFix_Off;       // Fix: OnTick's second/minute/day blocks from the full time
+// B49b (LAG-A): the lag hotfix's safeguards, right whatever makes a terminal fall behind; live trading charts only, never
+// B49b (LAG-A): the tester. Session, day and Friday ends on the server clock, a feed-age guard on new entries and adds, a
+// B49b (LAG-A): feed-age status file, a refused Friday close stays owed. Off reproduces B49a. Detail above GoatTimerBody.
+sinput   ENUM_GOAT_FIX           Fix_FeedGuard                 =                   GoatFix_Off;       // Fix: feed-age guard, server-time session ends, owed Friday close
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

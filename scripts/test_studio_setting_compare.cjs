@@ -75,6 +75,9 @@ compare(w,a+'\nMax_Spread_Points=30\n',false,'Max_Spread_Points');
 compare(w,a+'\nMin_Margin_Level_PC=0\n',true);
 compare(w,a+'\nMin_Margin_Level_PC=0.00\n',true);
 compare(w,a+'\nMin_Margin_Level_PC=150.0\n',false,'Min_Margin_Level_PC');
+// B49b (LAG-A): Fix_FeedGuard, the fix-flag rule.
+compare(w,a+'\nFix_FeedGuard=0\n',true);
+compare(w,a+'\nFix_FeedGuard=1\n',false,'Fix_FeedGuard');
 // B49b (F4/R2): Fix_Clock, the fix-flag rule.
 compare(w,a+'\nFix_Clock=0\n',true);
 compare(w,a+'\nFix_Clock=1\n',false,'Fix_Clock');

@@ -109,7 +109,7 @@ function chart(acct,mode,text=main){
   MQLInfoInteger:()=>0,DashboardBusRollClosedBuckets:()=>{},dt_Back_OOS:0,dt_Fwrd_OOS:0,dt_FWD_start:0,dt_FWD_end:0,
   GoatFwdDay:()=>false,   // B49b (F8 R16, test_b49b_f8.cjs): no FWD window here (dt_FWD_* are 0), as B49a's comparison
   trd_BOOS:0,trd_FOOS:0,trd_IS:0,trd_FWD:0,
-  DStartTime:DAY0,PL_Total:0,DStartLocalLoss:0};
+  DStartTime:DAY0,PL_Total:0,DStartLocalLoss:0,GoatFeedGuardLive:()=>false};
  vm.createContext(g);
  let code=fn('DashboardBusRebuildClosedStats',[],bodyOf(text,'void DashboardBusRebuildClosedStats(void)'))
   +fn('GoatTradeTransactionBody',['trans','request','result'],bodyOf(text,'void GoatTradeTransactionBody('))
@@ -235,7 +235,7 @@ function dailyFixture(mode,text=main){
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
  // B49b appends its per-fix flags after it (test_b49b_no_drift.cjs NEW_INPUTS): Ledger_Mode is B49a's last input.
  assert.equal(inputs[inputs.indexOf('Trade_December')+1],'Ledger_Mode','appended right after B47\'s last input');
- assert.deepEqual(inputs.slice(inputs.indexOf('Ledger_Mode')+1).filter(n=>!['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC','Fix_Clock'].includes(n)),[],'only B49b\'s flags follow it');
+ assert.deepEqual(inputs.slice(inputs.indexOf('Ledger_Mode')+1).filter(n=>!['Fix_MoneyVolume','Gate_Recheck','Fix_ClosePath','Max_Spread_Points','Min_Margin_Level_PC','Fix_Clock','Fix_FeedGuard'].includes(n)),[],'only B49b\'s flags follow it');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the
@@ -289,7 +289,7 @@ function dailyFixture(mode,text=main){
  const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'));
  // B49b (F7): Fix_MoneyVolume is written under the same rule (only when on), after Ledger_Mode.
  const run=(text,mode,fix=0,gate=0,close=0,spread=0,margin=0,clock=0)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
-  Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,Gate_Recheck:gate,Gate_Legacy:0,Gate_AtFirstOrder:1,Fix_ClosePath:close,Max_Spread_Points:spread,Min_Margin_Level_PC:margin,Fix_Clock:clock,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
+  Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,Gate_Recheck:gate,Gate_Legacy:0,Gate_AtFirstOrder:1,Fix_ClosePath:close,Max_Spread_Points:spread,Min_Margin_Level_PC:margin,Fix_Clock:clock,Fix_FeedGuard:0,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};
  assert.deepEqual(run(writeSet,0),['Trade_December=true'],'Legacy: no Ledger_Mode line, as B47');
  assert.deepEqual(run(writeSet,1),['Trade_December=true','Ledger_Mode=1'],'PositionJoin: recorded');
  const headerB47=clean(execFileSync('git',['show',B47_SOURCE+':GOAT_Inputs_Definitions.mqh'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));

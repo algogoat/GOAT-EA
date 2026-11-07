@@ -82,6 +82,10 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Max_Spread_Points=30\n'+tail,expert),false,'Off SET, child with a spread cap');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Min_Margin_Level_PC=150\n'+tail,expert),false,'Off SET, child with a margin floor');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Min_Margin_Level_PC=150\n',0,50,2,fix+'Min_Margin_Level_PC=150.0\n'+tail,expert),true,'Set SET and child, as numbers');passed++;
+ // B49b (LAG-A): Fix_FeedGuard under the same rule.
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_FeedGuard=0\n'+tail,expert),true,'Off SET, B49b child with Fix_FeedGuard off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_FeedGuard=1\n'+tail,expert),false,'Off SET, child with Fix_FeedGuard on');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Fix_FeedGuard=1\n',0,50,2,fix+'Fix_FeedGuard=1\n'+tail,expert),true,'On SET and child');passed++;
  // B49b (F4/R2): Fix_Clock under the same rule.
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=0\n'+tail,expert),true,'Off SET, B49b child with Fix_Clock off');passed++;
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,fix+'Fix_Clock=1\n'+tail,expert),false,'Off SET, child with Fix_Clock on');passed++;

@@ -203,7 +203,7 @@ const timeline=[T0,T0+1,T0+2,T0+62,T0+122,T0+3722,T0+7322,T0+7323,T0+86400+7323,
  const between=tick.slice(server,second).split('\n').slice(1);let depth=0;const top=[];
  for(const line of between){const code=line.replace(/\/\*.*?\*\//g,'').replace(/\/\/.*$/,'').replace(/"[^"]*"/g,'');const t=code.trim();
   if(depth===0&&t&&t!=='{'&&t!=='}')top.push(t);depth+=(code.match(/\{/g)||[]).length-(code.match(/\}/g)||[]).length;}
- assert.deepEqual(top.filter(t=>!/^if\(IsNew(Day|Minute)\(\)\)$/.test(t)),['GoatRankTick();','GoatFeedGuardTick();','GoatFeedClockServer();','GoatFeedClockFeed();','static double MinuteLowEquity = DBL_MAX;','if(!g_GoatNoTickRun) MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));'],'ungated statements between the clock and the per-second block; the minute\'s low equity counts real ticks only');
+ assert.deepEqual(top.filter(t=>!/^if\(IsNew(Day|Minute)\(\)\)$/.test(t)),['GoatRankTick();','GoatFeedGuardTick();','GoatEntriesHoldWatch();','GoatFeedClockServer();','GoatFeedClockFeed();','static double MinuteLowEquity = DBL_MAX;','if(!g_GoatNoTickRun) MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));'],'ungated statements between the clock and the per-second block; the minute\'s low equity counts real ticks only');
  const timer=bodyOf(main,'void GoatTimerBody(void)');
  assert.ok(timer.includes('GoatNoTickTimer();'),'the timer body runs the no-tick check');
  assert.ok(timer.indexOf('GoatNoTickTimer();')>timer.indexOf('GOATDeviceActivationTimer();'),'after the activation-only return');

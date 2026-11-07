@@ -105,7 +105,8 @@ function adoptedSingle(){
  assert.equal(first.w.positions.length,1,'the single before the restart');
  const state={positions:JSON.parse(JSON.stringify(first.w.positions)),deals:JSON.parse(JSON.stringify(first.w.deals)),gv:[...first.w.gv],
   next:[first.w.nextTicket,first.w.nextDeal],balance:first.w.balance,time:first.w.time,bid:first.w.bid};
- return {tester:false,inputs,indicator:rsi([[0,25]]),start:state.time,bid:state.bid,
+ // The signal reads false after the restart: with it still true, B50-alpha opened a second single in the episode, which B51 no longer does (test_b51_partial, live charts only).
+ return {tester:false,inputs,indicator:rsi([[0,50]]),start:state.time,bid:state.bid,
   adopt:(ctx,w)=>{w.positions.push(...JSON.parse(JSON.stringify(state.positions)));w.deals.push(...JSON.parse(JSON.stringify(state.deals)));
    for(const [k,v] of state.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=state.next;w.balance=state.balance;},
   path:path(state.time-2*H1-600-7,[[2*H1+620,1.1005],[4*H1,1.1040],[5*H1,1.1040]]),

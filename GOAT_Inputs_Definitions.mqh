@@ -874,12 +874,16 @@ datetime g_GoatRandomEpisodeBar[2]={0,0};
 datetime g_GoatRandomOrdinalBar[2]={0,0};   // the chart bar of the signal's last recorded episode
 int      g_GoatRandomOrdinal[2]={0,0};      // that episode's ordinal among the signal's episodes on that bar (0, 1, ...)
 int      g_GoatRandomSignal[2]={0,1};
-// B51 globals (sections 8.3 and 8.4). g_GoatSingleAccountPending: OnInit could not read the account, so no single opens
-// until GoatSingleAccountWatch has verified it. g_GoatSingleInitTick: OnInit's own OnTick is running, on cached quotes.
+// B51 globals (sections 8.3 and 8.4). g_GoatSingleAccountPending: a live chart opens nothing until GoatSingleAccountWatch has
+// seen the account settle as a demo. g_GoatSingleDemoSinceMs: when its demo reading began (0: it is not reading as a demo).
+// g_GoatSingleInitTick: OnInit's own OnTick is running, on cached quotes. g_GoatSingleQuotesStale: the last check refused them.
 enum ENUM_GOAT_ACCOUNT_STATE {GOAT_ACCOUNT_NOT_DEMO=-1,GOAT_ACCOUNT_UNKNOWN=0,GOAT_ACCOUNT_DEMO_OK=1};
 bool     g_GoatSingleAccountPending=false;
 bool     g_GoatSingleAccountRemoved=false;
 bool     g_GoatSingleInitTick=false;
+ulong    g_GoatSingleDemoSinceMs=0;
+long     g_GoatSingleDemoLogin=0;       // the login of that reading: the read after the settling must agree
+bool     g_GoatSingleQuotesStale=false;
 // B51:end b51-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments

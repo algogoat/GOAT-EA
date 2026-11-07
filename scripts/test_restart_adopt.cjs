@@ -275,9 +275,9 @@ const ENTRY=(1.1*0.05+1.0985*0.2+1.0970*0.3)/0.55, COMPUTED=Number((ENTRY-0.0030
  assert.ok(main.includes('                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);\n     GoatLedgerOwnerReset();'
   +' // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)\n     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();'),
   'OnInit adopts right after the sequences\' Init (and F2\'s owner-cache reset)');
- // OnInit, and B51's GoatSingleAccountWatch for an account unread at OnInit (a single only; docs/b50/B50_ALPHA_DESIGN.md 8.4).
- assert.equal((main.match(/\.AdoptOpenPositions\(\)/g)||[]).length,4,'adoption: OnInit, and the single\'s account watch');
- assert.equal((bodyOf(main,'void GoatSingleAccountWatch()').match(/\.AdoptOpenPositions\(\)/g)||[]).length,2,'adoption: the account watch');
+ // OnInit, and for a single (docs/b50/B50_ALPHA_DESIGN.md 8.4) B51's account watch and GoatSingleOpen, for positions loaded late.
+ assert.equal((main.match(/\.AdoptOpenPositions\(\)/g)||[]).length,5,'adoption: OnInit, and the single\'s account watch and open');
+ assert.equal((bodyOf(main,'bool GoatSingleAccountWatch()').match(/\.AdoptOpenPositions\(\)/g)||[]).length,2,'adoption: the account watch');
  assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('   GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)\n   Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush();'),'the timer flushes');
  assert.ok(bodyOf(main,'void OnDeinit(const int reason)').includes('   Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true);'),'OnDeinit forces it');
  const END=bodyOf(main,'   void End_Sequence(string desc)');

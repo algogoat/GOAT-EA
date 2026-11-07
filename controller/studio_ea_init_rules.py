@@ -543,11 +543,11 @@ NOT_PORTED = (
     # B51 (section 8.4): Engine_Single refuses a live account positively read as not demo; a SET cannot show the account.
     dict(lines=(4508,), anchor='b51_account==GOAT_ACCOUNT_NOT_DEMO', condition='Engine_Single outside the tester on an account read as not demo',
          reason='run context (account mode, connection)'),
-    dict(lines=(4583,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(4587,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4584,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4592,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4597,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4588,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4596,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4601,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

@@ -142,6 +142,7 @@ for(const [name,fx0] of ALL){
    assert.deepEqual(after.w.trace,before.w.trace,label+': B51 flags off trades exactly as B50-alpha (OrderSend, PositionModify, closes, broker fills)');
    assert.deepEqual(after.w.positions,before.w.positions,label+': the same positions at the end');
    assert.equal(after.w.balance,before.w.balance,label+': the same balance');
+   assert.equal(after.ctx.Positions,before.ctx.Positions,label+': the run\'s position count is B50-alpha\'s');assert.deepEqual([...after.ctx.Position_Durations],[...before.ctx.Position_Durations],label+': and its durations');
    runs[label]=before.w.trace.length;ok();
   }
  }

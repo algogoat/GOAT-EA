@@ -27,6 +27,7 @@ const ADDED=[];
 // Every B50-alpha line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
  'GOAT V1.49.mq5':[
+  'else',
   'if(Engine_Mode==Engine_Single && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;}',
  ],
  'GOATStudioSettingTypes.mqh':[

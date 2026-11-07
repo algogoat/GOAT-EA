@@ -1,0 +1,22 @@
+{
+  "schema": "goat-ea-hotfix-build-v1",
+  "compile_started_at": "2026-11-07T17:08:17.4424352Z",
+  "compiler_sha256": "cf2750bde55d98a1f3b4e56bcdd4f59300d0cff5caa6760985f7ef2c2cc12229",
+  "compiler_mode": "/portable, IDLE, outside every terminal folder; B47 include root copied hash-equal (compile-ea.ps1 9891B694)",
+  "source_head": "the commit that adds this folder (its parent d2e4be4671237e8531b86e7b193057062f8b3d6c is the compiled tree; only this folder, the pinned-build row, the build notes and the tests bound to this identity differ)",
+  "source_sha256": "8c7d28992365a7dc6f13f2384bd2529f3f8249429b5ed1a0bcb4ff0838b46e2d",
+  "staged_source_sha256": "8c7d28992365a7dc6f13f2384bd2529f3f8249429b5ed1a0bcb4ff0838b46e2d",
+  "header_sha256": "b5c462ed82ffba6f820a15a0e3ae4fcc3e0cbbfed3794bec28834980bbae7be4",
+  "closure_files": 42,
+  "outcome": "COMPILE_OK",
+  "result_line": "Result: 0 errors, 0 warnings, 33392 ms elapsed, cpu='X64 Regular'",
+  "metaeditor_process_exit_code": 1,
+  "stage_cleaned": true,
+  "runtime_output_overwritten": false,
+  "output": {
+    "sha256": "4733511303cf216f8ec513556abc89f492176063001dd77c8405c79a995cc068",
+    "bytes": 2678442
+  },
+  "reproducibility": "MetaEditor output is not byte-reproducible; this is the one binary to use. Equivalence to the re-read tree (claude-pc/b51-live 1391c78, GOAT-EA#296) is by source closure: the closure differs only in the GOAT_BUILD_ID and GOAT_BUILD_MARKER defines, which studio_equivalence normalizes.",
+  "native_qualification": "NONE: not run in the tester or on a chart yet; the drills in README.md are owed before go-live"
+}

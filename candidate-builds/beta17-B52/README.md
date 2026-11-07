@@ -1,3 +1,5 @@
+**SUPERSEDED: DO NOT INSTALL.** B49b F6's OnInit refusal (Mode_Lots=RiskperSeq with Max_Seq_Trades<=1) was unconditional, so this binary refuses every RiskperSeq single at OnInit, every D1 hunt single among them (found by Codex on GOAT-EA#296, 4502334956). It is superseded by `candidate-builds/beta17-B53/` (`V1.49-BETA17-53`), the same reviewed tree with Codex's three fixes. `controller/studio_installed_build.py` pins no row for this binary (`e108b09a`), so an installed copy resolves as `INSTALLED_BUILD_UNKNOWN`. The folder stays as the record of what was built; its identity is proven at its own commit (a98ea439).
+
 B52 (`V1.49-BETA17-52`) is the final build: B51 (B50-alpha with GOAT-EA#292, `claude-mac/b50-alpha`) merged with B49b
 and GOAT-EA#290 (`claude-pc/b49b` 808ff728) on `claude-pc/b51-live`, plus the fixes from two independent reads of that merge
 (goatai#2750 6705041540) and GOAT-EA#294 (controller only). Reviewed as GOAT-EA#296. **Not yet qualified:** no tester

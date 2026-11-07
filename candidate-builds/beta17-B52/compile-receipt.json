@@ -18,5 +18,8 @@
     "bytes": 2677594
   },
   "reproducibility": "MetaEditor output is not byte-reproducible; this is the one binary to use. Equivalence to the reviewed tree (claude-pc/b51-live 5fb5c175, GOAT-EA#296) is by source closure: the closure differs only in the GOAT_BUILD_ID and GOAT_BUILD_MARKER defines, which studio_equivalence normalizes.",
-  "native_qualification": "NONE: not run in the tester or on a chart yet; the drills in README.md are owed before go-live"
+  "native_qualification": "NONE: not run in the tester or on a chart yet; the drills in README.md are owed before go-live",
+  "do_not_install": true,
+  "superseded_by": "beta17-B53",
+  "do_not_install_reason": "B49b F6's OnInit refusal (Mode_Lots=RiskperSeq with Max_Seq_Trades<=1) was unconditional, so this binary refuses every RiskperSeq single at OnInit, every D1 hunt single among them (found by Codex on GOAT-EA#296, 4502334956). Superseded by beta17-B53 (V1.49-BETA17-53); studio_installed_build pins no row for this binary, so an installed e108b09a is INSTALLED_BUILD_UNKNOWN."
 }

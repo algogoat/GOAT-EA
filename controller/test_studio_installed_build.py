@@ -32,14 +32,25 @@ def epoch(text):
 
 class PinnedTableTests(unittest.TestCase):
     def test_table_is_exactly_the_pinned_candidate_identities(self):
-        derived = {}
+        # Less a candidate whose compile receipt says do_not_install (B52, e108b09a: it refuses every RiskperSeq single at
+        # OnInit, Codex GOAT-EA#296 4502334956). Its binary is in no table, so an installed copy is INSTALLED_BUILD_UNKNOWN.
+        derived, refused = {}, {}
         for path in sorted((ROOT / 'candidate-builds').glob('*/identity.json')):
             identity = json.loads(path.read_text(encoding='utf-8-sig'))
             binary = path.parent / identity['binary']['name']
             self.assertEqual(hashlib.sha256(binary.read_bytes()).hexdigest(), identity['binary']['sha256'], path.parent.name)
             self.assertNotIn(identity['binary']['sha256'], derived, path.parent.name)
+            receipt = path.parent / 'compile-receipt.json'
+            if receipt.is_file() and json.loads(receipt.read_text(encoding='utf-8-sig')).get('do_not_install') is True:
+                refused[identity['binary']['sha256']] = identity['build_id']
+                continue
             derived[identity['binary']['sha256']] = identity['build_id']
         self.assertEqual(ib.PINNED_BUILDS, derived)
+        self.assertEqual(refused, {'e108b09a53cacf43f85eafd7d4026555b1f566ace01411cca877a51c18287acd': 'V1.49-BETA17-52'})
+        for sha in refused:
+            self.assertNotIn(sha, ib.PINNED_BUILDS)
+            self.assertNotIn(sha, ib.PRE_B38_EXCLUDED)
+        self.assertNotIn('V1.49-BETA17-52', ib.PINNED_BUILDS.values(), 'no binary is pinned under the superseded build\'s name')
         self.assertEqual(ib.PINNED_BUILDS[B43_SHA], 'V1.49-BETA17-43')
 
     def test_one_resolver_reads_the_activation_status_build(self):

@@ -14,8 +14,8 @@
 //   allowance. B49b's inputs will slot in between B50-alpha's and these when the two lines merge: the merge updates
 //   the allowance to name them (names are what matter), never this file's NEW_INPUTS;
 // - B51's identity (candidate-builds/beta17-B51/identity.json, the assembly, as A4 was B50's; goatai#2750 6702775712) is
-//   proven at its own commit, and its sources are exactly the compile closure. The tree is now the final build's, B52's
-//   identity (see below); its build ID line is the one unmarked change (IDENTITY_LINES).
+//   proven at its own commit, and its sources are exactly the compile closure. The tree is now the final build's, B53's
+//   identity (see below); its two identity lines are the one unmarked change (IDENTITY_LINES).
 // test_b50_no_drift.cjs now proves B50-alpha's own commit, so the chain B49a -> B50 -> tree is checked end to end.
 // The final build (B50 + B51 with B49b: the merge of claude-pc/b49b 808ff728, GOAT-EA#290 at c5e2fee1) carries B49b's changes too.
 // Against B50-alpha they are accepted exactly as B49b's tree has them: B49B_CHANGED names B49b's other files; a line
@@ -25,9 +25,10 @@
 // which B52's assembly replaces). B49b's inputs sit between B50-alpha's and NEW_INPUTS with B49b's own definitions (the
 // allowance names them; NEW_INPUTS is unchanged). B51's identity is its assembly commit's tree (b4844b2), and the tree
 // differs from it in exactly CHANGED and B49B_CHANGED (the entrypoint also carries GOAT-EA#292's follow-ups). The final
-// build's review fixes carry the marker "B52". B52's assembly (as #293 was B51's) makes the tree B52's identity
-// (candidate-builds/beta17-B52/identity.json): every source hashes to it, its sources are exactly the compile closure, and
-// the build ID and marker are its own; its build ID line is now the one unmarked change (IDENTITY_LINES).
+// build's review fixes, and Codex's on GOAT-EA#296, carry the marker "B52". B52's assembly (a98ea439) is proven at its own
+// commit and is superseded, never installed: its binary refused every RiskperSeq single at OnInit. B53's assembly makes the
+// tree B53's identity (candidate-builds/beta17-B53/identity.json): every source hashes to it, its sources are exactly the
+// compile closure, and the build ID and marker are its own (IDENTITY_LINES, the one unmarked change).
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B51 change is marked, listed and reviewable. Neutrality with
 // the new inputs at their defaults is proven by scripts/test_b51_parity.cjs (the converted OnTick region of B50-alpha
 // and of this tree on the same fixtures, single and grid, and the WriteSet golden) and, natively, by the tester parity.
@@ -71,10 +72,12 @@ const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only','Single_BE
 const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false'],
  Single_BE_ATR:['input','double','0.0'],Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0'],
  Single_Partial_ATR:['input','double','0.0'],Single_Partial_Fraction:['input','double','0.0'],Single_Partial_BE:['input','bool','false']};
-// The assembly: the build ID line (exact text in GOAT V1.49.mq5) is the one unmarked change: its value is the build's
-// name, so it cannot carry the marker inside the string; the marker line carries it in its value. B51's assembly stamped
-// "V1.49-BETA17-51" and "B51"; B52's (the final build) replaces both with its own.
-const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-52"'];
+// The assembly: the build identity lines (exact text in GOAT V1.49.mq5) are the unmarked change: the build ID's value is the
+// build's name, so it cannot carry the marker inside the string. B51's assembly stamped "V1.49-BETA17-51" and "B51"; B52's
+// replaced both; B53's (the final build after Codex on GOAT-EA#296: B52's binary refused every RiskperSeq single) replaces
+// them again, ID and marker, since "B53" is no marker the lines carry.
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-53"','#define   GOAT_BUILD_MARKER "B53"'];
+const B52_IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-52"','#define   GOAT_BUILD_MARKER "B52"'];   // replaced by B53's assembly
 const B51_IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-51"','#define   GOAT_BUILD_MARKER "B51"'];   // replaced by B52's assembly
 // Codex on GOAT-EA#296: the B49b lines B52 replaces, verbatim as B49b's tree has them (each is checked to be one B49b
 // added and the tree no longer to have; its replacement carries the marker "B52"): F6's OnInit refusal, now the grid
@@ -241,8 +244,8 @@ assert.deepEqual(Object.keys(b51.sources).filter(f=>sha(read(f))!==b51.sources[f
 // B52's assembly (the final build, as #293 stamped B51's; its commit B52_SOURCE): B52's identity is its own commit's, as
 // B51's is above. Its sources are exactly the compile closure and each hashes to that commit's blob as it checks out
 // (CRLF, as .gitattributes does); the identity file is unchanged; the build ID and marker are B52's own, once each, and it
-// supersedes B51. The fixes since (Codex on GOAT-EA#296, before the B52 binary is rebuilt) differ from it in exactly
-// B52_LATER_CHANGED, every changed line marked "B52" (section 4). The next assembly binds the tree to its own identity again.
+// supersedes B51. B52 is retained, superseded and never installed (its compile receipt says do_not_install). What came
+// after it (Codex's fixes on GOAT-EA#296, marked "B52", and B53's identity lines) differs from it in exactly B52_LATER_CHANGED.
 const B52_SOURCE='a98ea4393ff2c18c0a3e94482b6ea23fb2fd5be9';
 const B52_LATER_CHANGED=['GOAT V1.49.mq5'];
 git(['merge-base','--is-ancestor',B52_SOURCE,'HEAD']);   // throws unless the working tree descends from B52's identity commit
@@ -253,10 +256,18 @@ assert.equal(b52.supersedes_candidate,'beta17-B51');
 assert.deepEqual(Object.keys(b52.sources).sort(),closure(),'B52\'s identity names exactly the compile closure');
 for(const [f,h] of Object.entries(b52.sources)) assert.equal(sha(checkedOut(f,git(['show',B52_SOURCE+':'+f]))),h,'B52 identity source at '+B52_SOURCE.slice(0,8)+': '+f);
 assert.deepEqual(Object.keys(b52.sources).filter(f=>sha(read(f))!==b52.sources[f]).sort(),[...B52_LATER_CHANGED].sort(),'the tree differs from B52\'s identity in exactly B52_LATER_CHANGED');
+assert.equal(JSON.parse(read('candidate-builds/beta17-B52/compile-receipt.json').toString('utf8').replace(/^\uFEFF/,'')).do_not_install,true,'B52 is marked do-not-install');
+// B53's assembly (as #293 stamped B51's): the tree is B53's identity. Its sources are exactly the compile closure and each
+// hashes to the tree (checked out as CRLF, as .gitattributes does); the build ID and marker are B53's own, once each, B52's
+// and B51's are gone, and it supersedes B52.
+const b53=JSON.parse(read('candidate-builds/beta17-B53/identity.json').toString('utf8').replace(/^\uFEFF/,''));
+assert.equal(b53.build_id+' '+b53.build_marker,'V1.49-BETA17-53 B53');
+assert.equal(b53.supersedes_candidate,'beta17-B52');
+assert.deepEqual(Object.keys(b53.sources).sort(),closure(),'B53\'s identity names exactly the compile closure');
+for(const [f,h] of Object.entries(b53.sources)) assert.equal(sha(read(f)),h,'B53 identity source: '+f);
 const mainText=read('GOAT V1.49.mq5').toString('utf8');
-assert.equal(mainText.split('\r\n').filter(l=>l===IDENTITY_LINES[0]).length,1,'the build ID is B52\'s');
-assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "B52"').length,1,'the marker is B52\'s');
-for(const l of B51_IDENTITY_LINES) assert.equal(mainText.split('\r\n').filter(x=>x===l).length,0,'B51\'s identity line is gone: '+l);
+for(const l of IDENTITY_LINES) assert.equal(mainText.split('\r\n').filter(x=>x===l).length,1,'B53\'s identity line, once: '+l);
+for(const l of [...B52_IDENTITY_LINES,...B51_IDENTITY_LINES]) assert.equal(mainText.split('\r\n').filter(x=>x===l).length,0,'an earlier identity line is gone: '+l);
 checks++;
 
 console.log('b51_no_drift: '+checks+' checks passed (B50-alpha '+B50_SOURCE+', changed: '+CHANGED.join(', ')+'; with B49b '+B49B_SOURCE.slice(0,8)+': '+B49B_CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+'; new inputs: '+NEW_INPUTS.join(', ')+')');

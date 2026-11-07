@@ -5,7 +5,7 @@
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawn}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),MAIN=path.join(ROOT,'GOAT V1.49.mq5');
 const SOURCE=fs.readFileSync(MAIN,'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');
-const REVIEW='test_b52_review.cjs',F5='test_b49b_f5.cjs',CLOCK='test_b50_clock.cjs';
+const REVIEW='test_b52_review.cjs',F5='test_b49b_f5.cjs',CLOCK='test_b50_clock.cjs',HUNT='test_hunt_sets_init.cjs';
 const MUTANTS=[
  // P2: the deferred adoption.
  [REVIEW,'the file is rewritten while an adoption waits','   if(GoatAdoptPending()) return; // B52','   // B52'],
@@ -30,6 +30,7 @@ const MUTANTS=[
  [REVIEW,'the benchmark runs under the first-order gate','   if(Random_Direction && Gate_Recheck==Gate_AtFirstOrder) {','   if(false) {'],
  // Codex on GOAT-EA#296: F6's refusal is the grid's only (4502334956); F5's exemption is a real order, not Traded (4502419410).
  [REVIEW,'a one-trade RiskperSeq single is refused at OnInit','   if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {','   if(Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {'],
+ [HUNT,'F6 refuses every RiskperSeq single again (the D1 hunt SETs)','   if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {','   if(Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {'],
  [F5,'the first-order exemption is Traded again','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || GuardRealStarted) return false;','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;'],
  // Claude-Mac's ask: a held single opens nothing and keeps its episode armed. Two edits each: the start path's own hold
  // (DashboardEntryAllowed) refuses before the single is reached, so a regression has to pass it to show.
@@ -50,7 +51,7 @@ function runOn(test,text){
  });
 }
 (async()=>{
- for(const test of [REVIEW,F5,CLOCK]){const base=await runOn(test,SOURCE);assert.equal(base.status,0,test+': the unmutated test passes on the scratch source: '+base.stderr);}
+ for(const test of [REVIEW,F5,CLOCK,HUNT]){const base=await runOn(test,SOURCE);assert.equal(base.status,0,test+': the unmutated test passes on the scratch source: '+base.stderr);}
  for(const m of MUTANTS)for(const [from] of edits(m)){const n=SOURCE.split(from).length-1;assert.equal(n,1,`mutant "${m[1]}": its anchor must occur exactly once (found ${n})`);}
  let next=0,killed=0;const survivors=[];
  const worker=async()=>{while(next<MUTANTS.length){const m=MUTANTS[next++],[test,label]=m;

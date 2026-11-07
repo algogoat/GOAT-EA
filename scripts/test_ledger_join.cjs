@@ -235,8 +235,10 @@ function dailyFixture(mode,text=main){
  const inputs=[...header.replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].map(m=>m[1]);
  assert.equal(inputs.indexOf('Ledger_Mode'),114,'appended after B47\'s 114 header inputs');
  // B50 (A0) appends its twelve after it (scripts/test_b50_no_drift.cjs pins them).
- assert.deepEqual(inputs.slice(115),['Engine_Mode','Single_SL_ATR','Single_TP_ATR','Single_TP_R','Single_Exit_Opposite','Single_Time_Stop_Bars',
+ assert.deepEqual(inputs.slice(115,127),['Engine_Mode','Single_SL_ATR','Single_TP_ATR','Single_TP_R','Single_Exit_Opposite','Single_Time_Stop_Bars',
   'Single_Time_Stop_TF','Clock_Mode','Server_Clock_Model','Server_UTC_Offset','NY_Session','Rollover_Block_Minutes'],'then B50\'s');
+ // B51 (B50-beta-1) appends its own at the very end (scripts/test_b51_no_drift.cjs pins them).
+ assert.equal(inputs[127],'Random_Direction','then B51\'s');
  ok();}
 
 // 8. Claude-Mac GOAT-EA#265 P2-1: a fee-charging broker's DEAL_FEE counts wherever the join sums (the ledger, the

@@ -14,13 +14,16 @@
 //   from B49a in exactly CHANGED and ADDED, and the build ID and marker are its own. The build ID line is the one
 //   unmarked change (IDENTITY_LINES).
 // Replaces test_b49a_no_drift.cjs as the tree's guard; that one now proves B49a's own commit (65fde12).
+// B51 (B50-beta-1a): B50-alpha's tree is merged (32df4eb, GOAT-EA#278) and B50-beta builds on it, so this guard now
+// proves B50-alpha's own tree, read from that commit, and that the working tree descends from it.
+// scripts/test_b51_no_drift.cjs proves the working tree against B50-alpha, so the chain B49a -> B50 -> tree is checked.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B50 change is marked, listed and reviewable. Neutrality with
 // the new inputs at their defaults is proven by scripts/test_b50_parity.cjs (the converted OnTick region of B49a and
 // of this tree on the same fixtures, and the WriteSet golden) and, natively, by the tester parity on Banker (flags off,
 // B50 against B49a 220a8725, identical deal tables on the 48 templates and sampled exports).
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
-const ROOT=path.join(__dirname,'..'),B49A_SOURCE='65fde12';
+const ROOT=path.join(__dirname,'..'),B49A_SOURCE='65fde12',B50_SOURCE='32df4eb';
 // Each item PR adds the files it changes or adds, so the review sees the list grow.
 const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingCompare.mqh','GOATPortfolioChildAudit.mqh',
  'GOATOptimizationInputs.mqh'];   // GOAT-EA#269 P1: the B50 axes a SET omits are written and verified at their defaults
@@ -52,11 +55,14 @@ const NEW_DEFAULTS={Engine_Mode:['sinput','ENUM_ENGINE_MODE','Engine_Grid'],Sing
 // A4: the build ID line (exact text in GOAT V1.49.mq5) is the one unmarked change: its value "V1.49-BETA17-50" is the
 // build's name, so it cannot carry the marker inside the string; the marker line carries "B50" in its value.
 const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-50"'];
-const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
 // .mq5/.mqh check out as CRLF (.gitattributes), so a blob hashes as the tree would.
 const checkedOut=(name,data)=>/\.mq[5h]$/.test(name)?Buffer.from(data.toString('utf8').replace(/\r\n/g,'\n').replace(/\n/g,'\r\n'),'utf8'):data;
+// B51 (beta-1a): B50-alpha's files as its commit checks them out (the working tree is a B50-beta descendant).
+const read=f=>checkedOut(f,git(['show',B50_SOURCE+':'+f]));
+const existsAtB50=f=>{try{git(['cat-file','-e',B50_SOURCE+':'+f]);return true;}catch{return false;}};
+git(['merge-base','--is-ancestor',B50_SOURCE,'HEAD']);   // throws unless the working tree descends from B50-alpha
 const b49a=JSON.parse(read('candidate-builds/beta17-B49a/identity.json'));
 let checks=0;
 
@@ -74,7 +80,7 @@ function closure(){
  while(todo.length){
   const f=todo.pop();if(seen.has(f))continue;seen.add(f);
   const text=read(f).toString('utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');
-  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(fs.existsSync(path.join(ROOT,inc)))todo.push(inc);}
+  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(existsAtB50(inc))todo.push(inc);}
  }
  return [...seen].sort();
 }
@@ -107,7 +113,7 @@ function markedBlocks(lines){
 for(const f of CHANGED){
  const lines=read(f).toString('utf8').replace(/^﻿/,'').split(/\r\n/);
  const inBlock=markedBlocks(lines);
- const diff=git(['diff','--no-color','--no-ext-diff','-U0',B49A_SOURCE,'--',f]).toString('utf8').split('\n');
+ const diff=git(['diff','--no-color','--no-ext-diff','-U0',B49A_SOURCE,B50_SOURCE,'--',f]).toString('utf8').split('\n');
  let newLine=0,hunk=null;const hunks=[],removedLines=[];
  for(const line of diff){
   const h=line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
@@ -180,4 +186,4 @@ assert.equal((mainText.match(/#define\s+GOAT_BUILD_(?:ID|MARKER)\b/g)||[]).lengt
 assert.equal(deps.main_sha256,b50.sources['GOAT V1.49.mq5'],'the contract pins the identity\'s entrypoint');
 checks++;
 
-console.log('b50_no_drift: '+checks+' checks passed (B49a '+B49A_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');
+console.log('b50_no_drift: '+checks+' checks passed (B49a '+B49A_SOURCE+' -> B50 '+B50_SOURCE+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+')');

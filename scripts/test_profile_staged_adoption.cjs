@@ -309,6 +309,7 @@ function run(src=readSources()){
     MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
     Mode_Trade:0,Long_and_Short:0,Long:1,Short:2,Delay_Trade:0,Allow_Opposite_Seq:true,MathAbs:Math.abs,ask:1.2,bid:1.19,
     Engine_Mode:0,Engine_Single:1,g_GoatSingleArmed:[true,true],   // B50 (A1): the grid engine (the single's branches: test_b50_single.cjs)
+    Random_Direction:false,g_GoatRandomEpisodeBar:[0,0],   // B51 (beta-1a): no benchmark (test_b51_random.cjs)
     Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
     // B44 item 4: the AI gate log is Print-only (test_ai_gate_log.cjs); here it only has to exist.
     GoatGateActiveMask:()=>0,GoatGateLog:()=>{},
@@ -359,9 +360,10 @@ function run(src=readSources()){
     GetSize:()=>0.001,GRID_VALID:1,Sequence_Pause_News:false,Sequence_Pause_Bias_B:false,DashboardPortfolioPaused:false,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,ask:1.09});
    vm.runInContext('(function(){'+js(manage)+'})()',w.c);
    assert.deepEqual(w.opened,['buy'],'an existing sequence keeps adding levels');assert.deepEqual(w.gateCalls,[],'management never consults the gate');ok();}
-  // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger and the promotion.
+  // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger, B51's random-direction
+  // single entry (GoatSingleRandomEntry, test_b51_random.cjs) and the promotion.
   {const callers=src.main.split('\n').filter(l=>/DashboardEntryAllowed\(/.test(l)&&!/^bool DashboardEntryAllowed/.test(l)).map(l=>l.trim().slice(0,40));
-   assert.equal(callers.length,6);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
+   assert.equal(callers.length,7);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
    for(const unit of ['void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('GoatStagedChildMayOpen'),unit);
    ok();}
   // Dashboard side: the marker is written only after the child's ack of the dispatched exposure policy.

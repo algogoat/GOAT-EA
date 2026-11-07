@@ -119,7 +119,7 @@ class RealSchemaPinningTests(unittest.TestCase):
         source, pinned = read_values(self.template.encode('utf-16')), read_values(rendered.encode('utf-16'))
         # B50 (A0, GOAT-EA#269 P1): the complete template omits the B50 axes, which are pinned at their defaults, fixed.
         b50 = {'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite', 'Single_Time_Stop_Bars', 'Single_Time_Stop_TF',
-               'Rollover_Block_Minutes'}
+               'Rollover_Block_Minutes'} | {'Random_Seed'}   # B51 (B50-beta-1): the appended B50-beta axes likewise
         self.assertEqual(set(pinned), set(source) | b50)
         self.assertFalse(b50 & set(source))
         for name in b50:

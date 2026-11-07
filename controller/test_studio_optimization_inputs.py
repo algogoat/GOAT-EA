@@ -9,6 +9,8 @@ B50_EXPLICIT=('Single_SL_ATR=0.0||0.0||0||0.0||N\r\nSingle_TP_ATR=0.0||0.0||0||0
  'Single_Exit_Opposite=false||false||0||false||N\r\nSingle_Time_Stop_Bars=0||0||0||0||N\r\nSingle_Time_Stop_TF=0||0||0||0||N\r\n'
  'Rollover_Block_Minutes=0||0||0||0||N\r\n')
 
+B51_EXPLICIT='Random_Seed=1||1||0||1||N\r\n'   # B51 (beta-1a): the benchmark seed (Random_Direction is an sinput)
+
 class OptimizationInputsTests(unittest.TestCase):
  def setUp(self):
   self.repo=Path(__file__).resolve().parent.parent
@@ -41,7 +43,7 @@ class OptimizationInputsTests(unittest.TestCase):
   text=path.read_bytes().decode('utf-16')
   self.assertNotIn('Single_SL_ATR',text)
   native=explicit_optimization_inputs(text,self.schema)
-  self.assertTrue(native.endswith(B50_EXPLICIT))
+  self.assertTrue(native.endswith(B50_EXPLICIT+B51_EXPLICIT))
   self.assertEqual(explicit_optimization_inputs(native,self.schema),native,'idempotent')
   values=read_values(native.encode('utf-16'))
   axes={k for k,v in read_values(path.read_bytes()).items() if k in self.schema['inputs'] and v.endswith('||Y')}

@@ -32,7 +32,9 @@ verify(active,'wrong',false,'description');verify(active.replace('RSI_Period=2\r
 // omits the seven B50 axes. The native config writes each one explicitly at its default, fixed (N), so a stale Y flag in
 // the terminal's tester profile is cleared, and OnTesterInit accepts the SET; without those lines it is refused.
 {const pool=fs.readFileSync(path.join(root,'controller/fixtures/oosc/r8/deploy/R1696f82a0d700d5c7279/USDCHF/GOAT V1.49 USDCHF,M1_Trds=198_Prf=1990_DD=415_PF=3.82_SR=8.73_ARF=0.295.set')).toString('utf16le').replace(/^\uFEFF/,'');
- const B50={Single_SL_ATR:'0.0',Single_TP_ATR:'0.0',Single_TP_R:'0.0',Single_Exit_Opposite:'false',Single_Time_Stop_Bars:'0',Single_Time_Stop_TF:'0',Rollover_Block_Minutes:'0'};
+ // B51 (B50-beta-1a): the benchmark seed is an appended axis too, written the same way (Random_Direction is an sinput).
+ const B50={Single_SL_ATR:'0.0',Single_TP_ATR:'0.0',Single_TP_R:'0.0',Single_Exit_Opposite:'false',Single_Time_Stop_Bars:'0',Single_Time_Stop_TF:'0',Rollover_Block_Minutes:'0',
+  Random_Seed:'1'};
  const desc=pool.match(/^EA_Desc=(.*?)\r?$/m)[1];
  for(const n of Object.keys(B50)) assert.ok(!pool.includes('\n'+n+'='),'the pool SET predates '+n);
  assert.deepEqual(names.filter(n=>!pool.includes('\n'+n+'=')).sort(),Object.keys(B50).sort(),'it carries every other axis');
@@ -41,7 +43,7 @@ verify(active,'wrong',false,'description');verify(active.replace('RSI_Period=2\r
  const explicit=c.GoatStudioExplicitOptimizationInputs(pool);
  for(const [n,d] of Object.entries(B50)) assert.ok(explicit.includes('\r\n'+n+'='+d+'||'+d+'||0||'+d+'||N\r\n'),'explicit line for '+n);
  stale();load(explicit);verify(pool,desc,true);
- for(const n of Object.keys(B50)) assert.deepEqual(native.get(n).slice(0,2),[false,0],n+' fixed at its default');
+ for(const [n,d] of Object.entries(B50)) assert.deepEqual(native.get(n).slice(0,2),[false,num(d)],n+' fixed at its default');
  assert.equal(c.GoatStudioExplicitOptimizationInputs(explicit),explicit,'idempotent');
  // A SET that carries a B50 axis keeps its own tuple and gains no second line for it.
  const own=pool.replace('\r\nEA_Desc=','\r\nSingle_SL_ATR=1.0||0.5||0.5||2.0||Y\r\nEA_Desc=');

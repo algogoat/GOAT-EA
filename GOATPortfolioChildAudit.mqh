@@ -221,6 +221,18 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(!GoatChildAuditAdd(names,values,b50_names[n],b50_values[n])) return false;found=true;}
    }
    // B50:end b50-audit
+   // B51:begin b51-audit
+   // B51 (B50-beta): the same rule for the B50-beta inputs, appended at the end of the inputs.
+   string b51_names[3]={"Random_Direction","Random_Seed","Single_Flat_Only"};
+   string b51_values[3]={"false","1","false"};
+   for(int b51_n=0;b51_n<3;b51_n++)
+   {
+      bool b51_found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]==b51_names[b51_n]) b51_found=true;
+      for(int j=0;j<ArraySize(actual_names) && !b51_found;j++) if(actual_names[j]==b51_names[b51_n])
+      {if(!GoatChildAuditAdd(names,values,b51_names[b51_n],b51_values[b51_n])) return false;b51_found=true;}
+   }
+   // B51:end b51-audit
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

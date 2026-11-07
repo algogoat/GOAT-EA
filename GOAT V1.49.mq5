@@ -4478,6 +4478,18 @@ int OnInit()
       if(ATR_MA_handle == INVALID_HANDLE) {Print("iMA-on-ATR failed (single-trade engine). err=",GetLastError()," ATR_handle=",ATR_handle); return(INIT_FAILED);}
      }
 // B50:end b50-init
+// B51:begin b51-init
+   // B51 (beta-1a): the random-direction benchmark runs only with the single-trade engine, only in the strategy tester
+   // (a coin-flip side never trades a live chart), only with a non-negative seed, both directions open and the flat-only
+   // eligibility; Single_Flat_Only only with the single-trade engine.
+   g_GoatRandomEpisodeBar[0]=g_GoatRandomEpisodeBar[1]=0; g_GoatRandomOrdinalBar[0]=g_GoatRandomOrdinalBar[1]=0; g_GoatRandomOrdinal[0]=g_GoatRandomOrdinal[1]=0; g_GoatRandomSignal[0]=OP_BUY; g_GoatRandomSignal[1]=OP_SELL; // a live re-init keeps EA globals
+   if(Random_Direction && Engine_Mode!=Engine_Single)   {Alert("Initialization Failed: Random_Direction needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(Random_Seed<0)                                    {Alert("Initialization Failed: Random_Seed cannot be negative."); return INIT_PARAMETERS_INCORRECT;}
+   if(Random_Direction && Mode_Trade!=Long_and_Short)   {Alert("Initialization Failed: Random_Direction needs Mode_Trade=Long_and_Short (a coin flip needs both sides)."); return INIT_PARAMETERS_INCORRECT;}
+   if(Random_Direction && !Single_Flat_Only)            {Alert("Initialization Failed: Random_Direction needs Single_Flat_Only=true (the same eligibility for both arms)."); return INIT_PARAMETERS_INCORRECT;}
+   if(Single_Flat_Only && Engine_Mode!=Engine_Single)   {Alert("Initialization Failed: Single_Flat_Only needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(Random_Direction && !MQLInfoInteger(MQL_TESTER))  {Alert("Initialization Failed: Random_Direction is a strategy-tester benchmark; it never trades a live chart."); return INIT_FAILED;}
+// B51:end b51-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
                                   //EMA2_handle    = iMA    (Symbol(),EMA_TF,EMA2_Period,0,EMA_Method,EMA_Price);
@@ -7332,14 +7344,17 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
    {
+    if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0) GoatSingleRandomRecord(OP_BUY); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&Sequence_New_Bias_B)
     {
      int gate_active_b=GoatGateActiveMask();
+     if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_BUY); else // B51 (beta-1a): the benchmark's coin-flip side for this buy-signal episode (same timing and gates)
      if(Reverse_Seq)
      {
       //virtual or real sequences not open, correct direction, no open trades in the same direction from other charts
        if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
       {
+       if(Engine_Mode==Engine_Single && Single_Flat_Only && !GoatSingleBothFree()) {} else // B51 (beta-1a): Single_Flat_Only: a single opens only while both sides are free
        if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_BUY] && (Allow_Opposite_Seq || !Seq_Buy.Traded) && GoatSingleOpen(Seq_Sell,bid)) g_GoatSingleArmed[OP_BUY]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per buy-signal episode
        if(MathAbs(Delay_Trade)>0)                      Seq_Sell_Virtual.Add_Level(bid);
        else if(Allow_Opposite_Seq || !Seq_Buy.Traded)  Seq_Sell.Add_Level(bid);
@@ -7347,6 +7362,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
      }
       else if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
      {
+      if(Engine_Mode==Engine_Single && Single_Flat_Only && !GoatSingleBothFree()) {} else // B51 (beta-1a): Single_Flat_Only: a single opens only while both sides are free
       if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_BUY] && (Allow_Opposite_Seq || !Seq_Sell.Traded) && GoatSingleOpen(Seq_Buy,ask)) g_GoatSingleArmed[OP_BUY]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per buy-signal episode
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
@@ -7362,6 +7378,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
    }
    else LastBuySignal=false;
    if(!LastBuySignal) g_GoatSingleArmed[OP_BUY]=true; // B50 (A1): the combined buy signal reads false, so the next buy-signal episode may open a single
+   if(!LastBuySignal) g_GoatRandomEpisodeBar[OP_BUY]=0; // B51 (beta-1a): the episode ends; the next one records its own start bar
 //-------------------------------------------------------------------------
    if(//!Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short)
          ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_SELL)
@@ -7371,13 +7388,16 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
    {
+    if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_SELL]==0) GoatSingleRandomRecord(OP_SELL); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&Sequence_New_Bias_S)
     {
      int gate_active_s=GoatGateActiveMask();
+     if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_SELL); else // B51 (beta-1a): the benchmark's coin-flip side for this sell-signal episode (same timing and gates)
      if(Reverse_Seq)
      {
        if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
       {
+       if(Engine_Mode==Engine_Single && Single_Flat_Only && !GoatSingleBothFree()) {} else // B51 (beta-1a): Single_Flat_Only: a single opens only while both sides are free
        if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_SELL] && (Allow_Opposite_Seq || !Seq_Sell.Traded) && GoatSingleOpen(Seq_Buy,ask)) g_GoatSingleArmed[OP_SELL]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per sell-signal episode
        if(MathAbs(Delay_Trade)>0)                      Seq_Buy_Virtual.Add_Level(ask);
        else if(Allow_Opposite_Seq || !Seq_Sell.Traded) Seq_Buy.Add_Level(ask);
@@ -7385,6 +7405,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
      }
       else if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
      {
+      if(Engine_Mode==Engine_Single && Single_Flat_Only && !GoatSingleBothFree()) {} else // B51 (beta-1a): Single_Flat_Only: a single opens only while both sides are free
       if(Engine_Mode==Engine_Single) {if(g_GoatSingleArmed[OP_SELL] && (Allow_Opposite_Seq || !Seq_Buy.Traded) && GoatSingleOpen(Seq_Sell,bid)) g_GoatSingleArmed[OP_SELL]=false;} else // B50 (A1): a single opens at once (no virtual leg), one per sell-signal episode
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
@@ -7400,6 +7421,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
    }
    else LastSellSignal=false;
    if(!LastSellSignal) g_GoatSingleArmed[OP_SELL]=true; // B50 (A1): the combined sell signal reads false, so the next sell-signal episode may open a single
+   if(!LastSellSignal) g_GoatRandomEpisodeBar[OP_SELL]=0; // B51 (beta-1a): the episode ends; the next one records its own start bar
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // B50:begin b50-single-open
@@ -7532,6 +7554,79 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
    return true;
   }
 // B50:end b50-single-open
+// B51:begin b51-random
+// B51 (beta-1a; docs/b50/B50_ALPHA_DESIGN.md section 8.1): the random-direction benchmark (rulings of the reviews of
+// GOAT-EA#286). The comparison is the strategy (Engine_Single, Single_Flat_Only, Random_Direction off) against the
+// benchmark (Engine_Single, Single_Flat_Only, Random_Direction on): the same signal timing, the same sizing and exits,
+// and the same eligibility; only the side is drawn.
+// - Eligibility (Single_Flat_Only, GoatSingleBothFree): a single may open only while both sides are free (no running
+//   single and no virtual sequence on either side) and the dashboard permits both sides. Random_Direction requires it
+//   (OnInit), because any rule that looks at one side would make whether an episode trades depend on the draw: with a
+//   single open on side X, a draw for X would be blocked and a draw for the other side would open, so the trades opened
+//   during an overlap would always be against the running single (a counter-trend bias in a trend).
+// - The decision is made first, at alpha's moment for the signal (SignalEntryTrigger's Single branch, after the news and
+//   bias gates and the episode's arm flag) and before the draw, from those side-free conditions only; the draw cannot
+//   change it. Then the draw only picks the side: GoatSingleRandomSide(Random_Seed, episode-start bar, signal, ordinal),
+//   where the episode-start bar is the open time of the signal bar (PERIOD_CURRENT at shift Shift_Sig) of the episode's
+//   first signal check, and the ordinal counts this signal's episodes recorded on that chart bar (0, 1, ...; reset on a
+//   new bar), so two episodes of one signal inside one chart bar (an indicator timeframe finer than the chart) draw
+//   independently (GoatSingleRandomRecord, called from SignalEntryTrigger; g_GoatRandomEpisodeBar is cleared on the
+//   signal's false edge). One draw per episode, the same in every tick model, on every replay and on a retry after a
+//   refused order (a refusal after the decision, such as the CID freeze, the direction guard or a failed order, keeps
+//   the episode armed with that draw, as alpha keeps it armed). Nothing is consumed by the draw.
+// - The exits: the opposite-signal exit reads the opening episode's signal (GoatSingleSignalExits), as the strategy's
+//   single of that episode would. Entries can still diverge from the strategy's: the time stop is the same, but a stop
+//   or TP depends on the side, so a random single can end earlier or later and the occupancy that follows differs.
+// MathRand and MathSrand are never read or seeded here: OnInit's MathSrand(GetTickCount()) and the tester magic
+// (MathRand()+9) own that stream, and a benchmark must not perturb it or depend on it.
+// GoatSingleRandomSide(seed,bar,signal,ordinal): 0 = buy, 1 = sell, the low bit of SplitMix64 (Steele, Lea and Flood
+// 2014; Vigna's splitmix64.c, whose first output for the state 0 is 0xE220A8397B1DCDAF) of the state
+// (ulong)seed XOR (ulong)bar XOR ((ulong)signal << 62) XOR ((ulong)ordinal << 40): a seed and a bar time stay below
+// 2^32, so the ordinal (bits 40+) and the signal (bit 62) never overlap them, and a buy-signal and a sell-signal
+// episode, or two episodes of one signal, starting on the same bar draw independently: z=state+0x9E3779B97F4A7C15; z=(z^(z>>30))*0xBF58476D1CE4E5B9; z=(z^(z>>27))*0x94D049BB133111EB;
+// z^=z>>31; side=z&1. Pure and stateless; ulong arithmetic wraps modulo 2^64. Each 64-bit constant is built from its
+// two 32-bit halves, so no literal exceeds the long range. OnInit refuses a negative seed (no sign-extension question).
+int GoatSingleRandomSide(const int seed,const datetime bar,const int signal,const int ordinal)
+  {
+   ulong b51_z=((ulong)seed)^((ulong)bar)^(((ulong)signal)<<62)^(((ulong)ordinal)<<40);
+   b51_z+=((((ulong)0x9E3779B9)<<32)|((ulong)0x7F4A7C15));
+   b51_z=(b51_z^(b51_z>>30))*((((ulong)0xBF58476D)<<32)|((ulong)0x1CE4E5B9));
+   b51_z=(b51_z^(b51_z>>27))*((((ulong)0x94D049BB)<<32)|((ulong)0x133111EB));
+   b51_z^=(b51_z>>31);
+   return (int)(b51_z&1);
+  }
+// GoatSingleRandomRecord(signal): an episode of this signal starts (its first signal check, driven by closed indicator
+// and chart bars): record its start bar, the chart's closed bar, and its ordinal among this signal's episodes recorded
+// on that bar (0 for the first; review of GOAT-EA#286 round 3, P1-A). A failed bar read records nothing.
+void GoatSingleRandomRecord(const int signal)
+  {
+   datetime b51_bar=iTime(_Symbol,PERIOD_CURRENT,(int)(Shift_Sig));
+   if(b51_bar<=0) return;
+   if(b51_bar==g_GoatRandomOrdinalBar[signal]) g_GoatRandomOrdinal[signal]++;
+   else {g_GoatRandomOrdinalBar[signal]=b51_bar; g_GoatRandomOrdinal[signal]=0;}
+   g_GoatRandomEpisodeBar[signal]=b51_bar;
+  }
+// Single_Flat_Only's rule, the same for the strategy's single and the benchmark's: both sides free and permitted.
+bool GoatSingleBothFree()
+  {
+   return(!Seq_Buy.Active && !Seq_Sell.Active && !Seq_Buy_Virtual.Active && !Seq_Sell_Virtual.Active
+          && DashboardEntryAllowed(OP_BUY) && DashboardEntryAllowed(OP_SELL));
+  }
+// GoatSingleRandomEntry(signal): SignalEntryTrigger's Single branch for one signal episode (signal = OP_BUY or OP_SELL,
+// the signal's direction) when Random_Direction is on, in place of alpha's branches for that episode.
+void GoatSingleRandomEntry(const int signal)
+  {
+   if(!g_GoatSingleArmed[signal]) return;                         // one position per signal episode, as alpha
+   if(!GoatSingleBothFree()) return;                              // the decision, before the draw: both sides free (Single_Flat_Only)
+   datetime b51_bar=g_GoatRandomEpisodeBar[signal];               // the episode-start signal bar, never the tick's time
+   if(b51_bar<=0) {GoatSingleRefusal(signal,7,(signal==OP_BUY ? Seq_Buy.Desc : Seq_Sell.Desc),"random direction: no signal-bar time"); return;}
+   int  b51_side=GoatSingleRandomSide(Random_Seed,b51_bar,signal,g_GoatRandomOrdinal[signal]); // the draw only picks the side
+   bool b51_opened=false;
+   if(b51_side==OP_BUY) b51_opened=GoatSingleOpen(Seq_Buy,ask);
+   else                 b51_opened=GoatSingleOpen(Seq_Sell,bid);
+   if(b51_opened) {g_GoatRandomSignal[b51_side]=signal; g_GoatSingleArmed[signal]=false;} // a refused order keeps the episode armed (alpha) and its draw
+  }
+// B51:end b51-random
 void CloseAllPositions(int OP,int magic=0)
   {
    CTrade m_trade;
@@ -8165,6 +8260,16 @@ void GoatSingleSignalExits(bool &checked)
    bool b50_rev=Reverse_Seq;
    bool b50_long =(b50_rev ? GoatSignalAll(OP_SELL) : GoatSignalAll(OP_BUY));  // the signal that opens a buy
    bool b50_short=(b50_rev ? GoatSignalAll(OP_BUY)  : GoatSignalAll(OP_SELL)); // the signal that opens a sell
+// B51:begin b51-exit
+   // B51 (beta-1a, review of GOAT-EA#286 P1-2): a random single exits against the signal of the episode that opened it,
+   // not against its side, so it exits exactly when alpha's single of that episode would.
+   if(Random_Direction)
+     {
+      if(Seq_Buy.Traded  && GoatSignalAll(1-g_GoatRandomSignal[OP_BUY])  && !GoatSignalAll(g_GoatRandomSignal[OP_BUY]))  Seq_Buy.CloseSequencePositions("Single Exit: opposite signal");
+      if(Seq_Sell.Traded && GoatSignalAll(1-g_GoatRandomSignal[OP_SELL]) && !GoatSignalAll(g_GoatRandomSignal[OP_SELL])) Seq_Sell.CloseSequencePositions("Single Exit: opposite signal");
+      return;
+     }
+// B51:end b51-exit
    if(Seq_Buy.Traded  && b50_short && !b50_long)  Seq_Buy.CloseSequencePositions("Single Exit: opposite signal");
    if(Seq_Sell.Traded && b50_long  && !b50_short) Seq_Sell.CloseSequencePositions("Single Exit: opposite signal");
   }

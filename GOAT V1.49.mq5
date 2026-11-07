@@ -1890,6 +1890,7 @@ class SEQUENCE
           : "No matching record: MLPS sees open P/L only")+". "+(sizes ? "Lock/TP/SL and trailing resume from the frozen sizes."
           : "The EA leaves this basket's broker SL/TP untouched.");
     Alert(adopted); GoatSingleAdoptedDisarm(dir); // B51 (section 8.4): the adopted single used up its signal episode
+    GoatStateRestoreLate(dir); // B52 (review P2): adopted after OnInit (a single waits for a demo reading), it takes back its state section as OnInit's GoatStateRestore does
     return true;
    }
 // B49a:end f1-lite
@@ -4162,6 +4163,7 @@ uint   g_GoatStateWrittenMs=0;
 long   g_GoatStateDay=0;                   // the server day (days since 1970) of the day state; 0 before the first tick
 bool   g_GoatDayRestorePending=false;
 string g_GoatDayKeys[],g_GoatDayValues[];  // the file's lines, kept for the first tick's new-day block
+bool   g_GoatStateRestored=false;          // B52 (review P2): OnInit's GoatStateRestore has run, so an adoption after it restores its own section
 string GoatStatePath()
   {
    return "GOAT\\State\\"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\\"+IntegerToString(MAGIC1)+"_"+_Symbol+".txt";
@@ -4205,10 +4207,30 @@ bool GoatStateWrite(const string path,const string body)
    FileDelete(temporary,FILE_COMMON);
    return false;
   }
+// B52:begin b52-adopt-pending
+// Review P2 on the final build: an open position of this magic and symbol on a side with no running sequence, while the
+// single engine holds its adoption back for a demo reading (GoatSingleAdoptHeld). Meanwhile the state file is not rewritten
+// (the position's section would be lost), and OnInit's manage-only counts the position as held.
+bool GoatAdoptPending()
+  {
+   if(!GoatSingleAdoptHeld()) return false;
+   return ((!Seq_Buy.Active && FindNumberOfPositions(OP_BUY,MAGIC1)>0) || (!Seq_Sell.Active && FindNumberOfPositions(OP_SELL,MAGIC1)>0));
+  }
+// From AdoptOpenPositions: a sequence adopted after OnInit's GoatStateRestore takes back its own section (all or nothing,
+// keyed to its restart record, as there); at OnInit itself GoatStateRestore does it.
+void GoatStateRestoreLate(const int dir)
+  {
+   if(!g_GoatStateRestored) return;
+   string keys[],values[];
+   if(!GoatStateRead(keys,values)) return;
+   if(dir==OP_BUY) Seq_Buy.StateRestore(keys,values); else Seq_Sell.StateRestore(keys,values);
+  }
+// B52:end b52-adopt-pending
 // From the timer, at most every GOAT_SQ_FLUSH_MS (force: at once, OnDeinit): the file, when its text changed.
 void GoatStateFlush(const bool force=false)
   {
    if(!GoatStateLive() || g_GoatStateDay==0) return;
+   if(GoatAdoptPending()) return; // B52 (review P2): never rewrite the file while an open position waits for its adoption (its section would be lost)
    if(!force && GetTickCount()-g_GoatStateWrittenMs<GOAT_SQ_FLUSH_MS) return;
    string text=GoatStateText();
    text+=GoatCloseOwedText(); // B49b (LAG-A): "" unless a Friday close is owed
@@ -4256,6 +4278,7 @@ bool GoatStateRead(string &keys[],string &values[])
 // first tick's new-day block (GoatStateDayRestore).
 void GoatStateRestore()
   {
+   g_GoatStateRestored=true; // B52 (review P2): from here on an adoption takes back its own section (AdoptOpenPositions)
    g_GoatDayRestorePending=false;
    if(!GoatStateLive()) return;
    string keys[],values[];
@@ -4333,6 +4356,7 @@ int GoatManageOnlyAfterAdopt()
   {
    if(g_GoatManageOnly==GOAT_MANAGE_NONE) return -1;
    bool holding=(Seq_Buy.Active || Seq_Sell.Active);
+   if(!holding && FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0) holding=true; // B52 (review P2): an open position not adopted yet (a single waits for a demo reading) is held too, as GoatManageOnlyTimer counts it
    if(!holding && g_GoatManageOnly==GOAT_MANAGE_EXPIRED) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED;}
    if(!holding && g_GoatManageOnly==GOAT_MANAGE_LICENCE_REFUSED) {Sleep(20000); return INIT_FAILED;}
    if(!holding && g_GoatManageOnly==GOAT_MANAGE_CREDENTIAL)
@@ -5091,6 +5115,8 @@ int OnInit()
         }
      }
 // B51:end b51-init
+   if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: the New York clock is tester-only in this build (its day end, Friday close and no-tick exits are not yet integrated with B49b's live protections); use Clock_Server on a live chart."); return INIT_FAILED;} // B52 (review P1): must be tested before live use
+   if(Random_Direction && Gate_Recheck==Gate_AtFirstOrder) {Alert("Initialization Failed: Random_Direction cannot run with Gate_Recheck=Gate_AtFirstOrder (the first-order gate reads the signal's side; the draw can pick the other)."); return INIT_PARAMETERS_INCORRECT;} // B52 (review P3)
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
                                   //EMA2_handle    = iMA    (Symbol(),EMA_TF,EMA2_Period,0,EMA_Method,EMA_Price);
@@ -8647,6 +8673,7 @@ string GoatFirstOrderGateReason(const int pos_dir,const bool opposite_traded)
    if(pos_dir==OP_SELL && !(Mode_Trade==Long_and_Short || Mode_Trade==Short)) return "mode_trade";
    if(!Allow_Opposite_Seq && opposite_traded)     return "opposite_sequence";
    if(!DashboardEntryAllowed(pos_dir))            return "dashboard_entry";
+   if(g_GoatEntryBlocked)                         return "clock_blocked"; // B52 (review P2): B50's rollover block and a live CLOCK MISMATCH, as the signal block and the virtual promotion read it
    return "";
   }
 // Under Gate_AtFirstOrder a Reverse_Seq signal starts the opposite position, so SignalEntryTrigger's bias pre-gate and its

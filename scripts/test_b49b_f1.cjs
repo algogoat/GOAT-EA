@@ -90,7 +90,7 @@ const K={OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FOR
  GOAT_LICENCE_RETRY_MS:RETRY_MS,INIT_SUCCEEDED:0,INIT_FAILED:1,GOAT_BUILD_ID:'B49b-test',
  GOAT_STATE_VERSION:VERSION,GOAT_SQ_FLUSH_MS:FLUSH_MS,LICENSE_VALID:VALID,FILE_COMMON:4096,ACCOUNT_LOGIN:'login',ACCOUNT_NAME:'name',ACCOUNT_SERVER:'server',
  TIME_DATE:1,URL_Web:'https://goatedge.ai',Expiry:1798675200,MAGIC1:1843920117,_Symbol:'EURUSD',_Digits:5};
-const common=t=>({GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},GoatEntriesHeld:()=>false,GoatCloseOwedText:()=>'',GoatCloseOwedRestore:()=>{},IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),StringToDouble:s=>Number(s)||0,
+const common=t=>({GoatAdoptPending:()=>!!t.adoptPending,GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},GoatEntriesHeld:()=>false,GoatCloseOwedText:()=>'',GoatCloseOwedRestore:()=>{},IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),StringToDouble:s=>Number(s)||0,
  StringToInteger:s=>Math.trunc(Number(s)||0),StringFind:(s,x)=>s.indexOf(x),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.substr(a,n),
  StringSplit:(s,sep,arr)=>{arr.length=0;arr.push(...s.split(sep));return arr.length;},TimeToString:v=>'D'+v,
  ArraySize:a=>a.length,ArrayResize:(a,n)=>{while(a.length<n)a.push('');a.length=n;return n;},ArrayCopy:(d,s)=>{d.length=0;d.push(...s);return s.length;},

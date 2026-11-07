@@ -141,9 +141,11 @@ function markedBlocks(lines,tag='B51'){   // the final build: B49b's blocks are 
  return inBlock;
 }
 const count=list=>list.reduce((m,t)=>m.set(t,(m.get(t)||0)+1),new Map());
+// The final build's review fixes (B52: the independent read of the merge, goatai#2750 6705041540) are marked "B52" or sit
+// in "// B52:begin" blocks, and are accepted as B51's are; they only add lines.
 for(const f of ALL_CHANGED){
  const lines=read(f).toString('utf8').replace(/^﻿/,'').split(/\r\n/);
- const inBlock=markedBlocks(lines),inB49b=markedBlocks(lines,'B49b');
+ const inBlock=markedBlocks(lines),inB49b=markedBlocks(lines,'B49b'),inB52=markedBlocks(lines,'B52');
  const b49bText=atB49b(f),b49bLines=new Set(b49bText===null?[]:b49bText.split('\r\n'));
  const diff=git(['diff','--no-color','--no-ext-diff','-U0',B50_SOURCE,'--',f]).toString('utf8').split('\n');
  let newLine=0,hunk=null;const hunks=[],removedLines=[];
@@ -159,7 +161,7 @@ for(const f of ALL_CHANGED){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B50-alpha line(s) is unmarked');
   for(const n of added){
    const text=lines[n-1];
-   if(/B51/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)))continue;
+   if(/B51|B52/.test(text)||inBlock[n-1]||inB52[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)))continue;
    // The final build: otherwise it is a B49b change, exactly as B49b's own tree has it.
    assert.ok((/B49b/.test(text)||inB49b[n-1])&&b49bLines.has(text),f+':'+n+' changed since B50-alpha without a B51 marker or as B49b\'s own marked line: '+text.trim());
   }

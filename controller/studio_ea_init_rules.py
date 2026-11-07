@@ -74,7 +74,7 @@ def _mql_split_count(text, separator):
 
 
 def _bad_session(text):
-    # GOAT V1.49.mq5:4545-4550. parts/hm are declared `string parts[2], hm[2]`; the documented StringSplit
+    # GOAT V1.49.mq5:4569-4574. parts/hm are declared `string parts[2], hm[2]`; the documented StringSplit
     # count is mirrored (see the PR inventory for the static-array caveat).
     if _mql_split_count(text, '-') != 2:
         return True
@@ -86,7 +86,7 @@ _TRIM = ' \t\r\n'
 
 
 def _desc_keys(text):
-    """ExtractFunctionKeysFromInputString (GOAT V1.49.mq5:10978): key/value pairs of the `@{...}` section."""
+    """ExtractFunctionKeysFromInputString (GOAT V1.49.mq5:11005): key/value pairs of the `@{...}` section."""
     at = text.find('@')
     if at < 0:
         return []
@@ -136,7 +136,7 @@ def _mql_time(value):
 
 
 def _export_dates(desc):
-    """(is EXPORT, {name: datetime|0|None}) as OnInit lines 4456-4486 read them from EA_Desc."""
+    """(is EXPORT, {name: datetime|0|None}) as OnInit lines 4480-4510 read them from EA_Desc."""
     pairs = _desc_keys(desc)
     mode = ''
     for name, value in pairs:
@@ -175,7 +175,7 @@ def _fwd_end_before_start(start, end):
     return _set(start) and _set(end) and end < start
 
 
-# ---- the lot/exit/RRR chain (GOAT V1.49.mq5:4629-4645, 4895-4969) --------------------------------------------
+# ---- the lot/exit/RRR chain (GOAT V1.49.mq5:4653-4669, 4919-4993) --------------------------------------------
 def _risk_per_seq(v):
     return v['Mode_Lots'] == v.choice('Mode_Lots', 'RiskperSeq')
 
@@ -189,32 +189,32 @@ def _rrr_on(v):
 
 
 def _tp_size(v):
-    return v['TP_Pips'] * v['Lock_Profit_Size']          # TP_Pips_ = TP_Pips*LP_Size_ (line 4634)
+    return v['TP_Pips'] * v['Lock_Profit_Size']          # TP_Pips_ = TP_Pips*LP_Size_ (line 4658)
 
 
 def _lp_tp_both_disabled(v):
-    """Line 4969 after the RRR block may have derived TP, SL or LP, and lines 4967-4968 zero sizes under 1."""
+    """Line 4993 after the RRR block may have derived TP, SL or LP, and lines 4991-4992 zero sizes under 1."""
     lp = v['Lock_Profit_Size']
     tp = v['TP_Pips'] * lp
     if _rrr_on(v):
         rrr = v['RRR']
         if rrr <= 0:
-            return False                                  # refused earlier (4927/4928); 4969 is not reached
+            return False                                  # refused earlier (4951/4952); 4993 is not reached
         sl = v['SL_Pips']
         if v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP'):
             if sl != 0:
                 if tp != 0:
-                    return False                          # refused at 4933
+                    return False                          # refused at 4957
                 tp = sl * rrr
             elif tp == 0:
-                return False                              # refused at 4939
+                return False                              # refused at 4963
         elif v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP'):
             if sl != 0:
                 if lp != 0:
-                    return False                          # refused at 4946
+                    return False                          # refused at 4970
                 lp = sl * rrr
             elif lp == 0:
-                return False                              # refused at 4952
+                return False                              # refused at 4976
     if -1.0 < lp < 1.0:
         lp = 0
     if -1.0 < tp < 1.0:
@@ -228,7 +228,7 @@ def _rule(rule_id, lines, anchor, inputs, enums, condition, alert, predicate, no
 
 
 def _download_removes_ea(v):
-    """OnInit lines 4504-4537: a News download removes the EA at 4519 (unless NewsBias), any Bias download at 4536."""
+    """OnInit lines 4528-4561: a News download removes the EA at 4543 (unless NewsBias), any Bias download at 4560."""
     mode = v['Mode_Download']
     news = mode in (v.choice('Mode_Download', 'Download_News'), v.choice('Mode_Download', 'Download_NewsBias'))
     bias = mode in (v.choice('Mode_Download', 'Download_Bias'), v.choice('Mode_Download', 'Download_NewsBias'))
@@ -236,7 +236,7 @@ def _download_removes_ea(v):
 
 
 def _tester_control_tower_bias(v):
-    """OnInit 4417: test context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias() (GOATAIWireV2.mqh:640);
+    """OnInit 4441: test context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias() (GOATAIWireV2.mqh:640);
     the DemoRaw protocol only exists, and only counts, when the build defines GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED,
     which the schema shows by declaring that enum label."""
     if v['Mode_Bias'] == v.choice('Mode_Bias', 'Bias_Disabled'):
@@ -248,7 +248,7 @@ def _tester_control_tower_bias(v):
 
 
 def _bad_ny_session(text):
-    """B50 (A0), GOAT V1.49.mq5:5029-5040: NY_Session is HH:MM-HH:MM, hours 0-23 written with one or two digits,
+    """B50 (A0), GOAT V1.49.mq5:5053-5064: NY_Session is HH:MM-HH:MM, hours 0-23 written with one or two digits,
     minutes 0-59 with two (the EA round-trips each part through StringToInteger/IntegerToString), start != end."""
     if _mql_split_count(text, '-') != 2:
         return True
@@ -274,190 +274,198 @@ RRR_CHAIN = ('Mode_RRR', 'RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size')
 
 # In OnInit order: the first rule that fails is the one the EA reports.
 EA_INIT_RULES = (
-    _rule('EXPORT_FOOS_NOT_AFTER_BOOS', [4491], 'dt_Fwrd_OOS<=dt_Back_OOS', ['EA_Desc'], {},
+    _rule('EXPORT_FOOS_NOT_AFTER_BOOS', [4515], 'dt_Fwrd_OOS<=dt_Back_OOS', ['EA_Desc'], {},
           'EA_Desc @{mode=EXPORT}: dt_BOOS_end!=0 && dt_FOOS_start!=0 && dt_FOOS_start<=dt_BOOS_end',
           'EXPORT: dt_FOOS_start:<date> must be after dt_BOOS_end',
           _export_rule('dt_BOOS_end', 'dt_FOOS_start', _foos_not_after_boos)),
-    _rule('EXPORT_FWD_HALF_GIVEN', [4492], '(dt_FWD_start!=0 || dt_FWD_end!=0) && (dt_FWD_start==0 || dt_FWD_end==0)',
+    _rule('EXPORT_FWD_HALF_GIVEN', [4516], '(dt_FWD_start!=0 || dt_FWD_end!=0) && (dt_FWD_start==0 || dt_FWD_end==0)',
           ['EA_Desc'], {}, 'EA_Desc @{mode=EXPORT}: exactly one of dt_FWD_start/dt_FWD_end set',
           'EXPORT: dt_FWD_start and dt_FWD_end must both be provided',
           _export_rule('dt_FWD_start', 'dt_FWD_end', _fwd_half_given)),
-    _rule('EXPORT_FWD_END_BEFORE_START', [4493], 'dt_FWD_end<dt_FWD_start', ['EA_Desc'], {},
+    _rule('EXPORT_FWD_END_BEFORE_START', [4517], 'dt_FWD_end<dt_FWD_start', ['EA_Desc'], {},
           'EA_Desc @{mode=EXPORT}: dt_FWD_start!=0 && dt_FWD_end!=0 && dt_FWD_end<dt_FWD_start',
           'EXPORT: dt_FWD_end:<date> must be after dt_FWD_start',
           _export_rule('dt_FWD_start', 'dt_FWD_end', _fwd_end_before_start)),
-    _rule('DATA_DOWNLOAD_MODE_REMOVES_EA', [4519, 4536], 'History download is not allowed in this mode', ['Mode_Download'],
+    _rule('DATA_DOWNLOAD_MODE_REMOVES_EA', [4543, 4560], 'History download is not allowed in this mode', ['Mode_Download'],
           {'Mode_Download': ['Download_Disabled', 'Download_News', 'Download_Bias', 'Download_NewsBias']},
           'Mode_Download in (Download_News, Download_Bias, Download_NewsBias): ExpertRemove() in OnInit',
           'News History download is not allowed in this mode / Bias History download is not allowed in this mode',
           _download_removes_ea,
           note=('In the tester the EA prints that and removes itself; on a live chart it downloads the data files and '
-                'then removes itself (ExpertRemove, GOAT V1.49.mq5:4519/4536). Mode_Download is the "Data Download '
+                'then removes itself (ExpertRemove, GOAT V1.49.mq5:4543/4560). Mode_Download is the "Data Download '
                 'Mode for Backtest" data tool, never a strategy setting: use Download_Disabled.')),
-    _rule('SESSION_FORMAT', [4545, 4547, 4550], 'Session format must be HH:MM-HH:MM', SESSION_INPUTS, {},
+    _rule('SESSION_FORMAT', [4569, 4571, 4574], 'Session format must be HH:MM-HH:MM', SESSION_INPUTS, {},
           'Active_Time_ASIA/EU/US: StringSplit(s,\'-\')!=2, or either half StringSplit(h,\':\')!=2',
           'Session format must be HH:MM-HH:MM', lambda v: any(_bad_session(v[name]) for name in SESSION_INPUTS)),
-    _rule('RISK_PER_SEQUENCE_RISK_TOO_LOW', [4899], 'Mode_Lots == RiskperSeq && Risk<10', ['Mode_Lots', 'Risk'],
+    _rule('RISK_PER_SEQUENCE_RISK_TOO_LOW', [4923], 'Mode_Lots == RiskperSeq && Risk<10', ['Mode_Lots', 'Risk'],
           {'Mode_Lots': ['RiskperSeq']}, 'Mode_Lots==RiskperSeq && Risk<10',
           'Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low.',
           lambda v: _risk_per_seq(v) and v['Risk'] < 10),
-    _rule('MLPS_HARD_CLOSE_RISK_TOO_LOW', [4901], 'Sequence_MLPS_Hard_Close && Risk<10.0',
+    _rule('MLPS_HARD_CLOSE_RISK_TOO_LOW', [4925], 'Sequence_MLPS_Hard_Close && Risk<10.0',
           ['Sequence_MLPS_Hard_Close', 'Risk'], {}, 'Sequence_MLPS_Hard_Close && Risk<10.0',
           'Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10.',
           lambda v: v['Sequence_MLPS_Hard_Close'] and v['Risk'] < 10.0),
-    _rule('SMART_PEAK_RISK_TOO_LOW', [4907], 'Smart Peak requires Risk/MLPS amount of at least 10',
+    _rule('SMART_PEAK_RISK_TOO_LOW', [4931], 'Smart Peak requires Risk/MLPS amount of at least 10',
           ['Mode_Lots_Prog', 'Risk'], {'Mode_Lots_Prog': ['Lots_Prog_PeakSmart']},
           'Mode_Lots_Prog==Lots_Prog_PeakSmart && Risk<10.0',
           'Initialization Failed: Smart Peak requires Risk/MLPS amount of at least 10.',
           lambda v: _peak_smart(v) and v['Risk'] < 10.0),
-    _rule('SMART_PEAK_PERCENT_RANGE', [4912],
+    _rule('SMART_PEAK_PERCENT_RANGE', [4936],
           'Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0',
           ['Mode_Lots_Prog', 'Peak_Smart_Release_PC', 'Peak_Smart_Max_Close_PC'], {'Mode_Lots_Prog': ['Lots_Prog_PeakSmart']},
           'Mode_Lots_Prog==Lots_Prog_PeakSmart && (Peak_Smart_Release_PC or Peak_Smart_Max_Close_PC outside 0..100)',
           'Initialization Failed: Smart Peak inputs must use 0-100 percent ranges.',
           lambda v: _peak_smart(v) and (v['Peak_Smart_Release_PC'] < 0.0 or v['Peak_Smart_Release_PC'] > 100.0
                                         or v['Peak_Smart_Max_Close_PC'] < 0.0 or v['Peak_Smart_Max_Close_PC'] > 100.0)),
-    _rule('SMART_RESCUE_MAX_ADDS_BELOW_MINUS_ONE', [4915], 'Bias_Exit_Max_Exposure_Adds<-1',
+    _rule('SMART_RESCUE_MAX_ADDS_BELOW_MINUS_ONE', [4939], 'Bias_Exit_Max_Exposure_Adds<-1',
           ['Bias_Exit_Max_Exposure_Adds'], {}, 'Bias_Exit_Max_Exposure_Adds<-1',
           'Initialization Failed: Smart Rescue max positive adds cannot be less than -1.',
           lambda v: v['Bias_Exit_Max_Exposure_Adds'] < -1),
-    _rule('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', [4921], 'Mode_Lots!=RiskperSeq || Risk<=0.0',
+    _rule('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', [4945], 'Mode_Lots!=RiskperSeq || Risk<=0.0',
           ['Mode_Bias_Exit', 'Mode_Lots', 'Risk'],
           {'Mode_Bias_Exit': ['BiasExit_SmartRescue'], 'Mode_Lots': ['RiskperSeq']},
           'Mode_Bias_Exit==BiasExit_SmartRescue && (Mode_Lots!=RiskperSeq || Risk<=0.0)',
           'Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0.',
           lambda v: v['Mode_Bias_Exit'] == v.choice('Mode_Bias_Exit', 'BiasExit_SmartRescue')
           and (not _risk_per_seq(v) or v['Risk'] <= 0.0)),
-    _rule('RRR_NEGATIVE', [4927], 'if(RRR<0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
+    _rule('RRR_NEGATIVE', [4951], 'if(RRR<0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
           'Mode_RRR!=RRR_Disabled && RRR<0', 'Initialization Failed: Risk/Reward ratio cannot be negative',
           lambda v: _rrr_on(v) and v['RRR'] < 0),
-    _rule('RRR_ZERO', [4928], 'if(RRR==0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
+    _rule('RRR_ZERO', [4952], 'if(RRR==0)', ['Mode_RRR', 'RRR'], {'Mode_RRR': ['RRR_Disabled']},
           'Mode_RRR!=RRR_Disabled && RRR==0', 'Initialization Failed: Risk/Reward ratio is enabled but RRR=0',
           lambda v: _rrr_on(v) and v['RRR'] == 0),
-    _rule('RRR_SL_TP_BOTH_SET', [4933], 'Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
+    _rule('RRR_SL_TP_BOTH_SET', [4957], 'Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
           ['Mode_RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_TP']},
           'Mode_RRR==RRR_SL_TP && SL_Pips!=0 && TP_Pips*Lock_Profit_Size!=0',
           'Initialization Failed: Risk/Reward mode is SL/TP, but neither TP nor SL is zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP') and v['SL_Pips'] != 0 and _tp_size(v) != 0),
-    _rule('RRR_SL_TP_BOTH_ZERO', [4939], 'Risk/Reward mode is SL/TP, but both TP and SL are zero',
+    _rule('RRR_SL_TP_BOTH_ZERO', [4963], 'Risk/Reward mode is SL/TP, but both TP and SL are zero',
           ['Mode_RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_TP']},
           'Mode_RRR==RRR_SL_TP && SL_Pips==0 && TP_Pips*Lock_Profit_Size==0',
           'Initialization Failed: Risk/Reward mode is SL/TP, but both TP and SL are zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_TP') and v['SL_Pips'] == 0 and _tp_size(v) == 0),
-    _rule('RRR_SL_LP_BOTH_SET', [4946], 'Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
+    _rule('RRR_SL_LP_BOTH_SET', [4970], 'Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
           ['Mode_RRR', 'SL_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_LP']},
           'Mode_RRR==RRR_SL_LP && SL_Pips!=0 && Lock_Profit_Size!=0',
           'Initialization Failed: Risk/Reward mode is SL/LP, but neither LP nor SL is zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP') and v['SL_Pips'] != 0 and v['Lock_Profit_Size'] != 0),
-    _rule('RRR_SL_LP_BOTH_ZERO', [4952], 'Risk/Reward mode is SL/LP, but both LP and SL are zero',
+    _rule('RRR_SL_LP_BOTH_ZERO', [4976], 'Risk/Reward mode is SL/LP, but both LP and SL are zero',
           ['Mode_RRR', 'SL_Pips', 'Lock_Profit_Size'], {'Mode_RRR': ['RRR_SL_LP']},
           'Mode_RRR==RRR_SL_LP && SL_Pips==0 && Lock_Profit_Size==0',
           'Initialization Failed: Risk/Reward mode is SL/LP, but both LP and SL are zero',
           lambda v: v['Mode_RRR'] == v.choice('Mode_RRR', 'RRR_SL_LP') and v['SL_Pips'] == 0 and v['Lock_Profit_Size'] == 0),
-    _rule('GRID_SIZE_TOO_SMALL', [4964], 'Grid_Size >-0.5 && Grid_Size <0.5', ['Grid_Size'], {},
+    _rule('GRID_SIZE_TOO_SMALL', [4988], 'Grid_Size >-0.5 && Grid_Size <0.5', ['Grid_Size'], {},
           'Grid_Size>-0.5 && Grid_Size<0.5', 'Initialization Failed: Pip Gap Size too small or zero',
           lambda v: -0.5 < v['Grid_Size'] < 0.5),
-    _rule('LP_AND_TP_BOTH_DISABLED', [4969], 'LP_Size_  ==0   && TP_Pips_  ==0', RRR_CHAIN,
+    _rule('LP_AND_TP_BOTH_DISABLED', [4993], 'LP_Size_  ==0   && TP_Pips_  ==0', RRR_CHAIN,
           {'Mode_RRR': ['RRR_Disabled', 'RRR_SL_TP', 'RRR_SL_LP']},
-          'after the RRR block and the |x|<1 -> 0 normalisation of lines 4967-4968: LP_Size_==0 && TP_Pips_==0',
+          'after the RRR block and the |x|<1 -> 0 normalisation of lines 4991-4992: LP_Size_==0 && TP_Pips_==0',
           'Initialization Failed: Both LP and TP cannot be zero/disabled.', _lp_tp_both_disabled),
-    # B50 (A0): the single-trade engine and the New York clock (GOAT V1.49.mq5:5018-5057). A schema without these
+    # B50 (A0): the single-trade engine and the New York clock (GOAT V1.49.mq5:5042-5081). A schema without these
     # appended inputs belongs to a build without the rules (applicable_rules).
-    _rule('SINGLE_SL_ATR_NOT_POSITIVE', [5022], 'Engine_Mode==Engine_Single && Single_SL_ATR<=0.0',
+    _rule('SINGLE_SL_ATR_NOT_POSITIVE', [5046], 'Engine_Mode==Engine_Single && Single_SL_ATR<=0.0',
           ['Engine_Mode', 'Single_SL_ATR'], {'Engine_Mode': ['Engine_Single']},
           'Engine_Mode==Engine_Single && Single_SL_ATR<=0.0',
           'Initialization Failed: the single-trade engine needs Single_SL_ATR > 0.',
           lambda v: _single(v) and v['Single_SL_ATR'] <= 0.0),
-    _rule('SINGLE_TP_NEGATIVE', [5023], 'Single_TP_ATR<0.0 || Single_TP_R<0.0', ['Single_TP_ATR', 'Single_TP_R'], {},
+    _rule('SINGLE_TP_NEGATIVE', [5047], 'Single_TP_ATR<0.0 || Single_TP_R<0.0', ['Single_TP_ATR', 'Single_TP_R'], {},
           'Single_TP_ATR<0.0 || Single_TP_R<0.0',
           'Initialization Failed: Single_TP_ATR and Single_TP_R cannot be negative.',
           lambda v: v['Single_TP_ATR'] < 0.0 or v['Single_TP_R'] < 0.0),
-    _rule('SINGLE_TIME_STOP_BARS_NEGATIVE', [5024], 'Single_Time_Stop_Bars<0', ['Single_Time_Stop_Bars'], {},
+    _rule('SINGLE_TIME_STOP_BARS_NEGATIVE', [5048], 'Single_Time_Stop_Bars<0', ['Single_Time_Stop_Bars'], {},
           'Single_Time_Stop_Bars<0', 'Initialization Failed: Single_Time_Stop_Bars cannot be negative.',
           lambda v: v['Single_Time_Stop_Bars'] < 0),
-    _rule('ROLLOVER_BLOCK_NEGATIVE', [5025], 'Rollover_Block_Minutes<0', ['Rollover_Block_Minutes'], {},
+    _rule('ROLLOVER_BLOCK_NEGATIVE', [5049], 'Rollover_Block_Minutes<0', ['Rollover_Block_Minutes'], {},
           'Rollover_Block_Minutes<0', 'Initialization Failed: Rollover_Block_Minutes cannot be negative.',
           lambda v: v['Rollover_Block_Minutes'] < 0),
-    _rule('SERVER_UTC_OFFSET_RANGE', [5026], 'Server_UTC_Offset<-12 || Server_UTC_Offset>14', ['Server_UTC_Offset'], {},
+    _rule('SERVER_UTC_OFFSET_RANGE', [5050], 'Server_UTC_Offset<-12 || Server_UTC_Offset>14', ['Server_UTC_Offset'], {},
           'Server_UTC_Offset<-12 || Server_UTC_Offset>14',
           'Initialization Failed: Server_UTC_Offset must be between -12 and 14.',
           lambda v: v['Server_UTC_Offset'] < -12 or v['Server_UTC_Offset'] > 14),
-    _rule('SINGLE_WITH_SMART_RESCUE', [5028], 'Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue',
+    _rule('SINGLE_WITH_SMART_RESCUE', [5052], 'Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue',
           ['Engine_Mode', 'Mode_Bias_Exit'], {'Engine_Mode': ['Engine_Single'], 'Mode_Bias_Exit': ['BiasExit_SmartRescue']},
           'Engine_Mode==Engine_Single && Mode_Bias_Exit==BiasExit_SmartRescue (Claude-Mac ruling 4)',
           'Initialization Failed: Smart Rescue cannot run with the single-trade engine (it would move the single\'s stop '
           'to rescue levels).',
           lambda v: _single(v) and v['Mode_Bias_Exit'] == v.choice('Mode_Bias_Exit', 'BiasExit_SmartRescue')),
-    _rule('NY_SESSION_FORMAT', [5040], 'NY_Session must be HH:MM-HH:MM', ['NY_Session'], {},
+    _rule('NY_SESSION_FORMAT', [5064], 'NY_Session must be HH:MM-HH:MM', ['NY_Session'], {},
           'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
           'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
           lambda v: _bad_ny_session(v['NY_Session'])),
-    # B51 (beta-1a, beta-1b, section 8.3): the random-direction benchmark, the single's break-even and trailing and its partial close (GOAT V1.49.mq5:5058-5077). A schema without these appended inputs
+    # B51 (beta-1a, beta-1b, section 8.3): the random-direction benchmark, the single's break-even and trailing and its partial close (GOAT V1.49.mq5:5082-5101). A schema without these appended inputs
     # (B50-alpha and earlier) belongs to a build without the rules (applicable_rules, APPENDED_GROUPS).
-    _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [5063], 'Random_Direction && Engine_Mode!=Engine_Single',
+    _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [5087], 'Random_Direction && Engine_Mode!=Engine_Single',
           ['Random_Direction', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
           'Random_Direction && Engine_Mode!=Engine_Single',
           'Initialization Failed: Random_Direction needs the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: bool(v['Random_Direction']) and not _single(v)),
-    _rule('RANDOM_SEED_NEGATIVE', [5064], 'Random_Seed<0', ['Random_Seed'], {}, 'Random_Seed<0',
+    _rule('RANDOM_SEED_NEGATIVE', [5088], 'Random_Seed<0', ['Random_Seed'], {}, 'Random_Seed<0',
           'Initialization Failed: Random_Seed cannot be negative.', lambda v: v['Random_Seed'] < 0),
-    _rule('RANDOM_DIRECTION_ONE_DIRECTION', [5065], 'Random_Direction && Mode_Trade!=Long_and_Short',
+    _rule('RANDOM_DIRECTION_ONE_DIRECTION', [5089], 'Random_Direction && Mode_Trade!=Long_and_Short',
           ['Random_Direction', 'Mode_Trade'], {'Mode_Trade': ['Long_and_Short']},
           'Random_Direction && Mode_Trade!=Long_and_Short (review of GOAT-EA#286, P2-3)',
           'Initialization Failed: Random_Direction needs Mode_Trade=Long_and_Short (a coin flip needs both sides).',
           lambda v: bool(v['Random_Direction']) and v['Mode_Trade'] != v.choice('Mode_Trade', 'Long_and_Short')),
-    _rule('RANDOM_DIRECTION_WITHOUT_FLAT_ONLY', [5066], 'Random_Direction && !Single_Flat_Only',
+    _rule('RANDOM_DIRECTION_WITHOUT_FLAT_ONLY', [5090], 'Random_Direction && !Single_Flat_Only',
           ['Random_Direction', 'Single_Flat_Only'], {},
           'Random_Direction && !Single_Flat_Only (re-review of GOAT-EA#286: the same eligibility for both arms)',
           'Initialization Failed: Random_Direction needs Single_Flat_Only=true (the same eligibility for both arms).',
           lambda v: bool(v['Random_Direction']) and not v['Single_Flat_Only']),
-    _rule('SINGLE_FLAT_ONLY_WITHOUT_SINGLE', [5067], 'Single_Flat_Only && Engine_Mode!=Engine_Single',
+    _rule('SINGLE_FLAT_ONLY_WITHOUT_SINGLE', [5091], 'Single_Flat_Only && Engine_Mode!=Engine_Single',
           ['Single_Flat_Only', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
           'Single_Flat_Only && Engine_Mode!=Engine_Single',
           'Initialization Failed: Single_Flat_Only needs the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: bool(v['Single_Flat_Only']) and not _single(v)),
-    _rule('SINGLE_BE_TRAIL_NEGATIVE', [5069], 'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
+    # B52 (the final build's review, P3): Gate_AtFirstOrder rechecks the bias on the side the signal reads, but the
+    # benchmark's draw can pick the other side, so the random single could open against its bias.
+    _rule('RANDOM_DIRECTION_WITH_FIRST_ORDER_GATE', [5119], 'Random_Direction && Gate_Recheck==Gate_AtFirstOrder',
+          ['Random_Direction', 'Gate_Recheck'], {'Gate_Recheck': ['Gate_AtFirstOrder']},
+          'Random_Direction && Gate_Recheck==Gate_AtFirstOrder (review of the final build, P3)',
+          'Initialization Failed: Random_Direction cannot run with Gate_Recheck=Gate_AtFirstOrder (the first-order gate reads '
+          "the signal's side; the draw can pick the other).",
+          lambda v: bool(v['Random_Direction']) and v['Gate_Recheck'] == v.choice('Gate_Recheck', 'Gate_AtFirstOrder')),
+    _rule('SINGLE_BE_TRAIL_NEGATIVE', [5093], 'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
           ['Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'], {},
           'Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0',
           'Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR cannot be negative.',
           lambda v: v['Single_BE_ATR'] < 0.0 or v['Single_Trail_Start_ATR'] < 0.0 or v['Single_Trail_ATR'] < 0.0),
-    _rule('SINGLE_TRAIL_START_WITHOUT_DISTANCE', [5070], 'Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0)',
+    _rule('SINGLE_TRAIL_START_WITHOUT_DISTANCE', [5094], 'Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0)',
           ['Single_Trail_Start_ATR', 'Single_Trail_ATR'], {},
           'Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0) (review of GOAT-EA#287, P3-10)',
           'Initialization Failed: Single_Trail_Start_ATR needs Single_Trail_ATR > 0 (a trailing start without a distance).',
           lambda v: v['Single_Trail_Start_ATR'] > 0.0 and not v['Single_Trail_ATR'] > 0.0),
-    _rule('SINGLE_EXITS_WITHOUT_SINGLE', [5071],
+    _rule('SINGLE_EXITS_WITHOUT_SINGLE', [5095],
           'Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0)',
           ['Engine_Mode', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'], {'Engine_Mode': ['Engine_Single']},
           'Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0) (review of GOAT-EA#287, P3-10)',
           'Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: not _single(v) and (v['Single_BE_ATR'] > 0.0 or v['Single_Trail_Start_ATR'] > 0.0 or v['Single_Trail_ATR'] > 0.0)),
-    _rule('SINGLE_PARTIAL_NEGATIVE', [5072], 'Single_Partial_ATR<0.0 || Single_Partial_Fraction<0.0',
+    _rule('SINGLE_PARTIAL_NEGATIVE', [5096], 'Single_Partial_ATR<0.0 || Single_Partial_Fraction<0.0',
           ['Single_Partial_ATR', 'Single_Partial_Fraction'], {},
           'Single_Partial_ATR<0.0 || Single_Partial_Fraction<0.0',
           'Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction cannot be negative.',
           lambda v: v['Single_Partial_ATR'] < 0.0 or v['Single_Partial_Fraction'] < 0.0),
-    _rule('SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE', [5073], 'Single_Partial_Fraction>=1.0',
+    _rule('SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE', [5097], 'Single_Partial_Fraction>=1.0',
           ['Single_Partial_Fraction'], {},
           'Single_Partial_Fraction>=1.0',
           'Initialization Failed: Single_Partial_Fraction must be below 1 (closing it all is not a partial close).',
           lambda v: v['Single_Partial_Fraction'] >= 1.0),
-    _rule('SINGLE_PARTIAL_INCOMPLETE', [5074], '(Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)',
+    _rule('SINGLE_PARTIAL_INCOMPLETE', [5098], '(Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)',
           ['Single_Partial_ATR', 'Single_Partial_Fraction'], {},
           '(Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)',
           'Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction need each other (a trigger and a fraction).',
           lambda v: (v['Single_Partial_ATR'] > 0.0) != (v['Single_Partial_Fraction'] > 0.0)),
-    _rule('SINGLE_PARTIAL_BE_WITHOUT_PARTIAL', [5075], 'Single_Partial_BE && !(Single_Partial_ATR>0.0)',
+    _rule('SINGLE_PARTIAL_BE_WITHOUT_PARTIAL', [5099], 'Single_Partial_BE && !(Single_Partial_ATR>0.0)',
           ['Single_Partial_BE', 'Single_Partial_ATR'], {},
           'Single_Partial_BE && !(Single_Partial_ATR>0.0)',
           'Initialization Failed: Single_Partial_BE needs Single_Partial_ATR > 0 (no partial close, nothing to move the stop on).',
           lambda v: bool(v['Single_Partial_BE']) and not v['Single_Partial_ATR'] > 0.0),
-    _rule('SINGLE_PARTIAL_WITHOUT_SINGLE', [5076], 'Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0',
+    _rule('SINGLE_PARTIAL_WITHOUT_SINGLE', [5100], 'Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0',
           ['Engine_Mode', 'Single_Partial_ATR'], {'Engine_Mode': ['Engine_Single']},
           'Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0 (the two rules above refuse the fraction and Single_Partial_BE without it)',
           'Initialization Failed: Single_Partial_ATR, Single_Partial_Fraction and Single_Partial_BE need the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: not _single(v) and v['Single_Partial_ATR'] > 0.0),
-    _rule('SINGLE_PARTIAL_NEEDS_POSITION_JOIN', [5077], 'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
+    _rule('SINGLE_PARTIAL_NEEDS_POSITION_JOIN', [5101], 'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
           ['Single_Partial_ATR', 'Ledger_Mode'], {'Ledger_Mode': ['Ledger_PositionJoin']},
           'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
           'Initialization Failed: Single_Partial_ATR needs Ledger_Mode=Ledger_PositionJoin (Ledger_Legacy would drop the partial\'s profit from the sequence).',
@@ -468,7 +476,7 @@ EA_INIT_RULES = (
 # chart and still refused in every tester pass, so validate-set (live and tester SETs alike) does not apply these;
 # batch prepare (studio_batch.prepare_batch) does, before anything is staged.
 TESTER_INIT_RULES = (
-    _rule('TESTER_CONTROL_TOWER_BIAS', [4420], 'Live Control Tower bias is unavailable in tester',
+    _rule('TESTER_CONTROL_TOWER_BIAS', [4444], 'Live Control Tower bias is unavailable in tester',
           ['Mode_Bias', 'Bias_Protocol'],
           {'Mode_Bias': ['Bias_Disabled'], 'Bias_Protocol': ['BiasProtocol_ControlTowerV2']},
           '(MQL_TESTER || MQL_OPTIMIZATION || MQL_FORWARD) && Mode_Bias!=Bias_Disabled && Bias_Protocol is '
@@ -478,7 +486,7 @@ TESTER_INIT_RULES = (
     # B50 (A0, GOAT-EA#273 P3): the New York clock under a fixed or EU DST server model applies the US DST rules of
     # 2007 on, so a test starting before 2007.03.11 is refused. It also needs the test start (FromDate, a tester
     # setting): check_tester_init applies it only when given a FromDate before that day.
-    dict(_rule('NY_CLOCK_TEST_BEFORE_2007', [5027], "TimeCurrent()<D'2007.03.11'", ['Clock_Mode', 'Server_Clock_Model'],
+    dict(_rule('NY_CLOCK_TEST_BEFORE_2007', [5051], "TimeCurrent()<D'2007.03.11'", ['Clock_Mode', 'Server_Clock_Model'],
                {'Clock_Mode': ['Clock_NewYork'], 'Server_Clock_Model': ['ServerClock_NYClose']},
                'MQL_TESTER && FromDate<2007.03.11 && Clock_Mode==Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose',
                'Initialization Failed: the New York clock with a fixed or EU DST server model needs a test start on or '
@@ -493,78 +501,82 @@ _STUDIO_SINPUTS = ('Studio_ReadOnlyMonitor/Studio_MonitorRunPath are sinputs dec
                    'input header, so they are not in the controller schema; validate_strategy refuses a SET that '
                    'names them (unknown input) and the EA default (false) never fires this rule')
 NOT_PORTED = (
-    dict(lines=(4395,), anchor='StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0', condition='read-only monitor run path outside GOAT\\', reason=_STUDIO_SINPUTS),
-    dict(lines=(4397,), anchor='Read-only Studio requires chart operation mode Optimization Studio',
+    dict(lines=(4419,), anchor='StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0', condition='read-only monitor run path outside GOAT\\', reason=_STUDIO_SINPUTS),
+    dict(lines=(4421,), anchor='Read-only Studio requires chart operation mode Optimization Studio',
          condition='Studio_ReadOnlyMonitor && (Mode_Operation!=Operation_Batch || MQL_TESTER)', reason=_STUDIO_SINPUTS + '; also run context (tester)'),
-    dict(lines=(4408,), anchor='Name Mismatch: The Bot/EA cannot be renamed',
+    dict(lines=(4432,), anchor='Name Mismatch: The Bot/EA cannot be renamed',
          condition='EA file renamed (EA_Name != Key+" V"+version): Alert then ExpertRemove()',
          reason='build identity (the .ex5 file name), not an input value'),
-    dict(lines=(4425,), anchor='Legacy recorded bias is historical/test-only',
+    dict(lines=(4449,), anchor='Legacy recorded bias is historical/test-only',
          condition='Bias_Protocol==BiasProtocol_LegacyRecorded && live chart', reason='run context: valid in the tester, refused live'),
-    dict(lines=(4433,), anchor='Demo raw AI bias is restricted to demo accounts',
+    dict(lines=(4457,), anchor='Demo raw AI bias is restricted to demo accounts',
          condition='Mode_Bias!=Bias_Disabled && DemoRaw protocol && live && account is not demo', reason='account trade mode'),
-    dict(lines=(4442,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID)',
+    dict(lines=(4466,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID)',
          condition='live, no credential, device activation cannot begin', reason='account login and credential state'),
-    dict(lines=(4452,), anchor='GOAT AI wire v2 checksum self-test failed', condition='AI wire v2 self-test fails', reason='build/runtime self-test'),
-    dict(lines=(4489,), anchor='dt_Back_OOS<TimeCurrent()', condition='EXPORT && dt_BOOS_end before the test start',
+    dict(lines=(4476,), anchor='GOAT AI wire v2 checksum self-test failed', condition='AI wire v2 self-test fails', reason='build/runtime self-test'),
+    dict(lines=(4513,), anchor='dt_Back_OOS<TimeCurrent()', condition='EXPORT && dt_BOOS_end before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4490,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
+    dict(lines=(4514,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4502,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5172)',
+    dict(lines=(4526,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5198)',
          reason='current time vs build expiry'),
-    dict(lines=(4664,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
+    dict(lines=(4688,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
          reason='run context (live chart)'),
-    dict(lines=(4678, 4682, 4683, 4685), anchor='Operation_Report',
+    dict(lines=(4702, 4706, 4707, 4709), anchor='Operation_Report',
          condition='live, licensed, Mode_Operation==Operation_Report: report dialog then always INIT_FAILED',
          reason='run context (live chart + license); the report tool ends init by design'),
-    dict(lines=(4692,), anchor='Allow DLL imports for GOAT', condition='Studio/Dashboard without DLL imports', reason='terminal setting'),
-    dict(lines=(4749,), anchor='Tester GUI creation Failed', condition='Studio GUI creation fails', reason='chart/GUI runtime'),
-    dict(lines=(4770,), anchor='Dashboard resume refused: saved state and first chart are required', condition='dashboard resume without saved state', reason='chart and saved dashboard state'),
-    dict(lines=(4787,), anchor='Wrong Chart Position', condition='dashboard not on the first chart, user declines', reason='chart layout and user choice'),
-    dict(lines=(4810, 4811), anchor='Dashboard Launch Cancelled',
-         condition='user cancels dashboard resume prompt (4811: unreachable ExpertRemove after the return)', reason='user choice'),
-    dict(lines=(4821,), anchor='No valid .set files found', condition='dashboard finds no SETs/config', reason='files on disk'),
-    dict(lines=(4829,), anchor='Dashboard GUI creation Failed', condition='dashboard GUI creation fails', reason='chart/GUI runtime'),
-    dict(lines=(4879,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true)',
+    dict(lines=(4716,), anchor='Allow DLL imports for GOAT', condition='Studio/Dashboard without DLL imports', reason='terminal setting'),
+    dict(lines=(4773,), anchor='Tester GUI creation Failed', condition='Studio GUI creation fails', reason='chart/GUI runtime'),
+    dict(lines=(4794,), anchor='Dashboard resume refused: saved state and first chart are required', condition='dashboard resume without saved state', reason='chart and saved dashboard state'),
+    dict(lines=(4811,), anchor='Wrong Chart Position', condition='dashboard not on the first chart, user declines', reason='chart layout and user choice'),
+    dict(lines=(4834, 4835), anchor='Dashboard Launch Cancelled',
+         condition='user cancels dashboard resume prompt (4835: unreachable ExpertRemove after the return)', reason='user choice'),
+    dict(lines=(4845,), anchor='No valid .set files found', condition='dashboard finds no SETs/config', reason='files on disk'),
+    dict(lines=(4853,), anchor='Dashboard GUI creation Failed', condition='dashboard GUI creation fails', reason='chart/GUI runtime'),
+    dict(lines=(4903,), anchor='GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true)',
          condition='credential rejected and replacement cannot begin', reason='license service response'),
-    dict(lines=(4885,), anchor='GOAT license service is temporarily unavailable', condition='license service unavailable', reason='license service response'),
-    dict(lines=(4890,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
+    dict(lines=(4909,), anchor='GOAT license service is temporarily unavailable', condition='license service unavailable', reason='license service response'),
+    dict(lines=(4914,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
     # B49b (F6): the EA now refuses what validate_strategy already refused, so it is decided before these rules run.
-    dict(lines=(4900,), anchor='Mode_Lots == RiskperSeq && Max_Seq_Trades<=1', condition='Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
+    dict(lines=(4924,), anchor='Mode_Lots == RiskperSeq && Max_Seq_Trades<=1', condition='Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
          reason='decided first by studio_strategy_settings.check_risk_sizing (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), over every '
                 'reachable value, before check_ea_init runs'),
-    dict(lines=(5009,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5017,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5033,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5041,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
     # B50 (A0): the single-trade engine's account and indicator refusals.
-    dict(lines=(5043,), anchor='ACCOUNT_MARGIN_MODE_RETAIL_HEDGING', condition='Engine_Single on a netting account',
+    dict(lines=(5067,), anchor='ACCOUNT_MARGIN_MODE_RETAIL_HEDGING', condition='Engine_Single on a netting account',
          reason='account margin mode'),
-    dict(lines=(5047,), anchor='iATR failed (single-trade engine)', condition='Engine_Single: iATR handle invalid',
+    dict(lines=(5071,), anchor='iATR failed (single-trade engine)', condition='Engine_Single: iATR handle invalid',
          reason='symbol/indicator runtime'),
-    dict(lines=(5055,), anchor='iMA-on-ATR failed (single-trade engine)', condition='Engine_Single: iMA-on-ATR handle invalid',
+    dict(lines=(5079,), anchor='iMA-on-ATR failed (single-trade engine)', condition='Engine_Single: iMA-on-ATR handle invalid',
          reason='symbol/indicator runtime'),
     # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
-    dict(lines=(5068,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
+    dict(lines=(5092,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
+         reason='run context (live chart)'),
+    # B52 (the final build's review, P1): the New York clock's day end, Friday close and no-tick exits are not yet
+    # integrated with B49b's live protections, so this build refuses it on a live chart; the tester runs it as before.
+    dict(lines=(5118,), anchor='the New York clock is tester-only in this build', condition='Clock_Mode==Clock_NewYork on a live chart',
          reason='run context (live chart)'),
     # B51 (section 8.4): Engine_Single refuses a live account positively read as not demo; a SET cannot show the account.
-    dict(lines=(5085,), anchor='b51_account==GOAT_ACCOUNT_NOT_DEMO', condition='Engine_Single outside the tester on an account read as not demo',
+    dict(lines=(5109,), anchor='b51_account==GOAT_ACCOUNT_NOT_DEMO', condition='Engine_Single outside the tester on an account read as not demo',
          reason='run context (account mode, connection)'),
     # B49b (F7 SIG-01): every enabled signal indicator's handle, as ATR's.
-    dict(lines=(5106,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5107,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5108,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5109,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5110,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
+    dict(lines=(5132,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5133,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5134,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5135,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5136,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
          reason='symbol/indicator runtime (the indicator file)'),
-    dict(lines=(5111,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5137,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
     # B49b (F1 full): live trading charts only (GoatManageOnlyLive); in the tester manage-only is never set.
-    dict(lines=(5172,), anchor='manage_only_init==INIT_FAILED',
+    dict(lines=(5198,), anchor='manage_only_init==INIT_FAILED',
          condition='live, a refused licence or an expired build (or a rejected credential whose replacement cannot begin) with no open basket to manage',
          reason='license service response and build expiry on a live chart'),
-    dict(lines=(5178,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(5204,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(5179,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(5187,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(5192,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(5205,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(5213,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(5218,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

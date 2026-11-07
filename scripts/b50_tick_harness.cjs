@@ -70,6 +70,16 @@ function loadSources(ref,overrides={}){
  return files;
 }
 
+// B52 (the final build's review, P1): the final build refuses the New York clock on a live chart at OnInit. Tests that
+// exercise the live New York clock's code (still in the source) build from the entrypoint without that one refusal;
+// test_b50_clock.cjs proves the refusal itself.
+const B52_LIVE_NY_REFUSAL=/^[^\n]*Clock_Mode==Clock_NewYork && !MQLInfoInteger\(MQL_TESTER\)[^\n]*\n/m;
+function withoutLiveNYRefusal(source){
+ const files=source&&source.files?{...source.files}:loadSources(typeof source==='string'?source:undefined);
+ files[MAIN]=files[MAIN].replace(B52_LIVE_NY_REFUSAL,'');
+ return {files};
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Preprocessor: inline the INLINED includes, honour conditionals, collect object-like macros.
 function preprocess(files){
@@ -479,6 +489,9 @@ function mockFunctions(w){
   GOATUsingControlTowerBias:()=>!!w.controlTower,
   SetTypeFillingBySymbol:nop,FillingCheckAndSet:nop,GetRetcodeID:()=>'',
   GoatDeployNotice:s=>{w.alerts.push(String(s));},
+  // B52 (the final build's review, P2): a sequence adopted after OnInit takes back its state-file section. The model has
+  // no state file; the call is recorded (w.lateRestores, the adopted side) so a test can see it.
+  GoatStateRestoreLate:dir=>{(w.lateRestores||(w.lateRestores=[])).push(dir);},
  };
 }
 
@@ -850,4 +863,4 @@ function build(source,fx={}){
   run:path=>{for(const [t,bid,ask] of path)tick(t,bid,ask);return w.trace;}};
 }
 
-module.exports={ROOT,MAIN,HEADER,readSource,loadSources,preprocess,tokenize,expandMacros,parseUnit,Converter,matchClose,isId,isOp,splitTop,compile,build,API_CONSTANTS};
+module.exports={ROOT,MAIN,HEADER,readSource,loadSources,withoutLiveNYRefusal,preprocess,tokenize,expandMacros,parseUnit,Converter,matchClose,isId,isOp,splitTop,compile,build,API_CONSTANTS};

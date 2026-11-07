@@ -36,6 +36,7 @@ const K={OP_BUY:0,OP_SELL:1,Long_and_Short:0,Long:1,Short:2,Gate_Legacy:0,Gate_A
 // Every gate open: what OnTick and SignalEntryTrigger require before an immediate start.
 const OPEN={Active:true,Allow_New_Sequence:true,Sequence_New_Friday:true,Sequence_New_Dec:true,DashboardPortfolioPaused:false,
  Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Mode_Trade:0,Allow_Opposite_Seq:true,
+ g_GoatEntryBlocked:false,   // B52 (the final build's review, P2): B50's rollover block and a live CLOCK MISMATCH
  trade:{0:true,1:true},entry:{0:true,1:true}};
 function gates(over={}){
  const g={...K,...OPEN,...over};
@@ -49,7 +50,8 @@ function gates(over={}){
  assert.equal(gates().GoatFirstOrderGateReason(1,false),'');
  const closed=[[{Active:false},'session'],[{Allow_New_Sequence:false},'allow_new_sequence'],[{Sequence_New_Friday:false},'friday'],
   [{Sequence_New_Dec:false},'december'],[{DashboardPortfolioPaused:true},'dashboard_paused'],[{trade:{0:false,1:true}},'dashboard_direction'],
-  [{Sequence_New_News:false},'news'],[{Sequence_New_Bias_B:false},'bias'],[{Mode_Trade:2},'mode_trade'],[{entry:{0:false,1:true}},'dashboard_entry']];
+  [{Sequence_New_News:false},'news'],[{Sequence_New_Bias_B:false},'bias'],[{Mode_Trade:2},'mode_trade'],[{entry:{0:false,1:true}},'dashboard_entry'],
+  [{g_GoatEntryBlocked:true},'clock_blocked']];
  for(const [over,reason] of closed) assert.equal(gates(over).GoatFirstOrderGateReason(0,false),reason,'buy: '+reason);
  // The position's own side: a buy ignores the sell side's bias, direction, entry permission, and the reverse.
  assert.equal(gates({Sequence_New_Bias_S:false,trade:{0:true,1:false},entry:{0:true,1:false},Mode_Trade:1}).GoatFirstOrderGateReason(0,false),'');

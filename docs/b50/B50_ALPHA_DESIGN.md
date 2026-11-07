@@ -385,7 +385,7 @@ whatever quotes are cached), a bid and an ask above 0, and on a live chart the s
 `GOAT_SINGLE_QUOTE_MAX_AGE_S` (30 s) behind `TimeTradeServer()`. That clock runs on while the feed is silent or replaying a backlog;
 `TimeCurrent` stops with it, and a tick count would miss a backlog whose ticks keep changing while hours old. The cost: a terminal clock
 over 30 s ahead of the server also reads as stale, so it holds the partial, break-even and trailing. It therefore repeats a line every
-5 minutes and shows "Stale quotes" on the dashboard row. The tester's clock is the tick's, so it reads no age, and tester trades on
+5 minutes and shows "Stale quotes" on the dashboard row, in place of Active only (paused, inactive and a CID refusal say more). The tester's clock is the tick's, so it reads no age, and tester trades on
 normal ticks do not depend on this. Exits are not gated, since the broker holds the stop and a time stop must not wait on a feed.
 
 **Volume.** `close = floor(volume x fraction / step) x step`, `remainder = volume - close`. Both must be at least
@@ -410,13 +410,14 @@ the position's one partial: the real figures are logged, and it is not topped up
 **An open outcome.** A timeout, a processing error, no reply, `TRADE_RETCODE_PLACED`, or DONE with the volume unmoved (a lagging view,
 not counted as a failure) may still fill. Each logs "unconfirmed" and waits `GOAT_SINGLE_PARTIAL_OPEN_WAIT_S` (120 s) before anything
 is sent again, because `CTrade` clamps a close to the position's volume: with a fraction of 0.5 or more, a retry and a late fill
-together close the whole position. The retry reads the history first and never goes while an order of the position is open
-(its position id, or this chart's magic, this symbol and the closing side).
+together close the whole position. The history is read every 5 s during the wait, so a fill is recognised and `Single_Partial_BE`
+moves promptly. The retry reads the history first and never goes while an order of the position is open (its position id, or this
+chart's magic, this symbol and the closing side).
 
 **A refused close.** One line per attempt: `ticket, bid, ask, volume, close, retcode, consecutive, backoff`. The wait is per
-ticket and starts at the first failure, 5 s, 30 s, then 60 s steady, with no attempt, read or line inside it. A stuck ticket logs
-once a minute, only while its trigger still holds. Below the trigger nothing is sent and the history is read once a minute, on its
-own timer, so a price that comes back retries as soon as its wait ends. Attempts and failures count in `Pclosed` and `PcloseErrors`.
+ticket and starts at the first failure, 5 s, 30 s, then 60 s steady, with no attempt or line inside it. A stuck ticket logs
+once a minute, only while its trigger still holds. The history has its own timer: every 5 s during a wait, every minute after it, and
+below the trigger nothing is sent, so a price that comes back retries as soon as its wait ends. Attempts and failures count in `Pclosed` and `PcloseErrors`.
 
 **Freezes and statistics.** `cid_duplicate` freezes the partial, as it does adds, since another chart may be closing the same position;
 stops keep moving. A partial is not a position of its own in the run's `Positions` and average duration.
@@ -442,7 +443,8 @@ more (`SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE`), one of trigger and fraction with
 one that does not, as for any init-failing pass.
 
 **Known limits.** A fill arriving more than 120 s after an open outcome, with no order of the position visible, can still meet a
-retry; at a fraction of 0.5 or more that closes the whole remainder. Nothing closes a third time. Tick and history timing are modelled,
+retry; at a fraction of 0.5 or more that closes the whole remainder. Nothing closes a third time. This must be fixed before real
+money; making an open outcome one-shot would close it, at the cost of that position's partial. Tick and history timing are modelled,
 not MT5's.
 
 ### 8.4 Engine_Single on a demo account
@@ -462,6 +464,7 @@ anything.
 - **Not demo:** a clean read with a login and any other mode. 0 is the only value an unsynced terminal was seen to answer, so this holds
   while disconnected.
 - **Unknown:** anything else, including the probed second. A demo with no balance or no trade permission stays here: it fails closed.
+  Nothing is adopted here, because adoption can send a stop modify (`UpdateLockTPSL`): the position keeps its broker SL and TP.
 
 `GoatSingleAccountReady()` then wants the demo answer unbroken for `GOAT_SINGLE_ACCOUNT_SETTLE_S` (60 s) from OnInit or any other answer,
 and a second read after that period that agrees (demo again, same login). Whether account fields stay cached through a reconnect is
@@ -478,16 +481,19 @@ The broker's flag is all the EA can read. This build is internal only; it must b
 
 **Where it applies.**
 - **OnInit** (`b51-init`): not demo is INIT_FAILED (`NOT_PORTED`: run context). Anything else on a live chart stays loaded and sets
-  `g_GoatSingleAccountPending`. INIT_FAILED on a dropout would unload the EA for good after a VPS reboot or a re-init: no adoption, and
-  the time stop, opposite exit and trailing would all stop silently. Alpha's netting refusal now runs at OnInit in the tester only,
+  `g_GoatSingleAccountPending`. INIT_FAILED on a dropout would unload the EA for good after a VPS reboot or a re-init, with no adoption
+  ever. Adoption itself runs at the first demo reading, not on an unknown one. Alpha's netting refusal now runs at OnInit in the tester only,
   since an unread margin mode answers 0, netting.
 - **`GoatSingleOpen`**, a single's only way to a position, on every attempt: not ready, or pending, sends nothing. It logs once per
-  reason code and leaves the episode armed, so a dropped connection recovers by itself. It also adopts any position of this side
-  the terminal loaded late, rather than open beside it.
-- **`GoatSinglePartial`**: a partial needs a ready account too. Exits and stops keep running on an unknown one.
+  reason code and leaves the episode armed, so a dropped connection recovers by itself. Below the `cid_duplicate` freeze it adopts any
+  position the terminal loaded late, on both sides since `Single_Flat_Only` and `Allow_Opposite_Seq` read both, rather than open beside it.
+- **`AdoptOpenPositions`**, for a single: held until a demo reading. An adopted single has used up its signal episode, so that signal
+  (the other one under `Reverse_Seq`) is disarmed until it reads false, and its end does not open a second single.
+- **`GoatSinglePartial`**: a partial needs a ready account too. A single already running keeps its exits and stops on an unknown one.
 - **`GoatSingleAccountWatch()`**, on every tick and every second: not demo removes the EA, once (`ExpertRemove`), and returns true, so the
-  tick does nothing more. A pending account, once settled, gets alpha's netting check on that settled read (netting removes the EA) and
-  `AdoptOpenPositions`. Each change of state logs the raw fields, which is the evidence for the race check.
+  tick does nothing more. A pending account adopts on its first demo reading; once settled it gets alpha's netting check on that
+  settled read (netting removes the EA). A Studio or dashboard chart never trades, so the watch does not act on it. Each change of state
+  logs the raw fields, which is the evidence for the race check.
 
 An account switch re-runs OnInit. No input or conditional reads into the state, and a test asserts that. The grid engine is not gated,
 so flags off nothing changes.

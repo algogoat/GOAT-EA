@@ -9,7 +9,7 @@ const MUTANTS=[
  // Adoption: whose positions, which record.
  ['adoption takes the other side\'s positions','     if((dir==OP_BUY && type!=POSITION_TYPE_BUY) || (dir==OP_SELL && type!=POSITION_TYPE_SELL)) continue;\n',''],
  ['adoption takes another magic\'s positions','tk==0 || PositionGetInteger(POSITION_MAGIC)!=MAGIC1 || PositionGetString','tk==0 || PositionGetString'],
- ['adoption overrides a running sequence','    if(!PersistLive() || Active) return false;\n    ulong tickets[]','    if(!PersistLive()) return false;\n    ulong tickets[]'],
+ ['adoption overrides a running sequence','    if(!PersistLive() || Active || GoatSingleAdoptHeld()) return false;','    if(!PersistLive() || GoatSingleAdoptHeld()) return false;'],
  ['every record matches','    bool matched=false;','    bool matched=true;'],
  ['the start-time rule is dropped (ticket only)','     matched=(opened[0]>=(long)rec_t && PersistRead("N",rec_n) && count<=(int)rec_n);','     matched=false;'],
  ['the count bound is dropped (Claude-Mac 6428447507)','     matched=(opened[0]>=(long)rec_t && PersistRead("N",rec_n) && count<=(int)rec_n);','     matched=(opened[0]>=(long)rec_t);'],

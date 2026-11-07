@@ -175,8 +175,15 @@ for(const retcode of [10004,10006,10018,10021,10025]){
  W.run(ticks([[0,1.10110],[3,1.10110]]));
  assert.equal(closes(W).length,1);assert.equal(W.ctx.GoatSinglePartialDone(p.ticket),false,'DONE without less volume is not done');assert.equal(mods(W).length,0);
  assert.equal(W.ctx.PcloseErrors,0,'a lagging view is no failure');assert.equal(lines(W,/partial close failed/).length,0);assert.equal(lines(W,/partial close unconfirmed/).length,1);
- W.w.positions[0].volume=1.67;W.run(ticks([[3,1.10110],[130,1.10110]]));
- assert.equal(closes(W).length,1,'the fill shows up: no second send');assert.equal(W.ctx.GoatSinglePartialDone(p.ticket),true);assert.equal(lines(W,/already done/).length,1);assert.equal(W.w.positions[0].sl,p.open);
+ W.w.positions[0].volume=1.67;W.run(ticks([[3,1.10110],[10,1.10110]]));
+ assert.equal(closes(W).length,1,'the fill shows up: no second send');assert.equal(W.ctx.GoatSinglePartialDone(p.ticket),true,'recognised within seconds, inside the 120 s wait');assert.equal(lines(W,/already done/).length,1);assert.equal(W.w.positions[0].sl,p.open,'and the stop moves');
+ // Refused at 0 s, a timeout at 5 s, the fill visible at 7 s: the read timer restarts at each failed send, so the stop moves in seconds.
+ const TO=world({inputs:PBE0,world:{rejectPartial:()=>true,partialRetcode:10006}});const tp=opened(TO);TO.run([[T0,1.10110]]);TO.w.partialRetcode=10012;TO.run(ticks([[1,1.10110],[7,1.10110]]));
+ assert.deepEqual(closes(TO).map(x=>x.time-T0),[0,5],'refused, then a timeout');TO.w.positions[0].volume=1.67;TO.run(ticks([[7,1.10110],[15,1.10110]]));
+ assert.equal(closes(TO).length,2,'no third send');assert.equal(TO.ctx.GoatSinglePartialDone(tp.ticket),true,'recognised within seconds');assert.equal(TO.w.positions[0].sl,tp.open,'the stop moved, not at +65 s');
+ // A read during the wait never sends: nothing goes before the 120 s, every 5 s it only reads.
+ let rd=0;const RW=world({world:{rejectPartial:()=>true,partialReturnsTrue:true,partialRetcode:10009}});opened(RW);RW.run([[T0,1.10110]]);RW.w.rejectHistory=()=>{rd++;return false;};RW.run(ticks([[1,1.10110],[100,1.10110]]));
+ assert.equal(closes(RW).length,1);assert.ok(rd>=18&&rd<=21,'a read every 5 s in the wait: '+rd);
  const N=world({world:{rejectPartial:()=>true,partialReturnsTrue:true,partialRetcode:10009}});opened(N);N.run(ticks([[0,1.10110],[130,1.10110]]));
  assert.deepEqual(closes(N).map(x=>x.time-T0),[0,120],'it never filled: retried after the long wait');
  // Every answer that leaves the outcome open waits 120 s, returned true or false.
@@ -419,8 +426,13 @@ for(const live of [false,true]){
  const R=world(live({},{...PBE0,Single_BE_ATR:1}));opened(R);R.w.tickAge=40;const seen=[];const send=R.ctx.DashboardBusSendStatus;R.ctx.DashboardBusSendStatus=s=>{seen.push(s);send(s);};
  R.run(ticks([[0,1.1030],[1000,1.1030]],5));
  assert.equal(closes(R).length,0);assert.equal(mods(R).length,0);assert.equal(lines(R,/are holding/).length,4,'at 0, 300, 600 and 900 s: '+lines(R,/are holding/).length);
- const src0=H.readSource(undefined,H.MAIN);assert.ok(/else if\(g_GoatSingleQuotesStale\) dashboard_status="Stale quotes";/.test(src0),'the row shows it');
- if(seen.length) assert.ok(seen.includes('Stale quotes'),'the status sent: '+[...new Set(seen)]);
+ // The dashboard row says so, and only when it would have said Active: paused, inactive and a CID refusal say more.
+ const row=(setup,age=40)=>{const W=world(live({}));opened(W);W.w.gv.set('Dashboard_ChartID',7);const sent=[];W.ctx.DashboardBusSendStatus=s=>{sent.push(s);};W.ctx.Pause_Flag=false;setup(W);W.w.tickAge=age;W.run([[T0+1,1.1005],[T0+2,1.1005]]);return sent.at(-1);};
+ assert.equal(row(()=>{},0),'Active','fresh quotes: Active');
+ assert.equal(row(()=>{}),'Stale quotes','stale quotes on an active row');
+ assert.equal(row(W=>{W.ctx.DashboardPortfolioPaused=true;}),'Paused','paused stays paused');
+ assert.equal(row(W=>{W.ctx.GoatCidGuardStatus=()=>'CID duplicate';}),'CID duplicate','a CID refusal stays');
+ assert.equal(row(W=>{W.ctx.Active=false;W.ctx.InActive=true;}),'Inactive','inactive stays inactive');
  const T=world(live({},{Single_Trail_Start_ATR:0,Single_Trail_ATR:0.5}));opened(T);T.w.tickAge=31;T.run(ticks([[0,1.1030],[60,1.1030]]));assert.equal(mods(T).length,0,'no trailing on a stale quote');
  // A failed tick read is not fresh.
  const K=world(live({}));opened(K);K.w.rejectTick=true;K.run(ticks([[0,1.1030],[20,1.1030]]));assert.equal(closes(K).length,0,'SymbolInfoTick failed');assert.equal(lines(K,/are holding/).length,1);
@@ -450,6 +462,11 @@ for(const isLive of [false,true]) for(const inputs of [{Single_BE_ATR:1},{Single
  assert.deepEqual(run(undefined),run('82c269ae35eee4b18c3d02c0e79ad605a7071127'),'break-even and trailing as at #287: '+JSON.stringify(inputs)+(isLive?' live':' tester'));
  ok();
 }
+// Tester trades carry forward from the build the D1 hunt ran on (41e1fb9f): the same trace with partials, break-even and trailing.
+for(const inputs of [PARTIAL,{...PBE0,Single_Partial_Fraction:0.6},{...PARTIAL,Single_BE_ATR:2,Single_Trail_Start_ATR:3,Single_Trail_ATR:0.5,Single_TP_R:9}]){
+ const run=source=>{const W=world({source,inputs});W.run([...OPEN,...ticks([[0,1.1012],[300,1.103],[600,1.1015],[900,1.106],[1200,1.095],[1800,1.095]],5)]);return W.w.trace;};
+ assert.deepEqual(run(undefined),run('41e1fb9f669db09cfe4b787aed057a6f1cf841cf'),'tester trades as at 41e1fb9f: '+JSON.stringify(inputs));ok();
+}
 // A partial on normal ticks in the tester: at the first tick at the trigger, then as #287's break-even and trailing would have it.
 {const W=world({inputs:{...PARTIAL,Single_BE_ATR:2}});opened(W);W.run(ticks([[0,1.1012],[60,1.1012]]));assert.equal(closes(W)[0].time,T0,'the first tick at the trigger');ok();}
 
@@ -475,6 +492,10 @@ for(const isLive of [false,true]) for(const inputs of [{Single_BE_ATR:1},{Single
   O.run(ticks([[5,1.10110],[60,1.10110]]));assert.equal(closes(O).length,1,'held by an open order');assert.equal(lines(O,/an order of this position is still open/).length,1,'one line');
   O.w.orders=[];O.run(ticks([[60,1.10110],[70,1.10110]]));assert.equal(closes(O).length,2,'gone: it sends');assert.ok(near(O.w.positions[0].volume,1.67));
  }
+ // The sell: its close is a buy of this chart; a sell of this chart holds nothing.
+ const SO=world({rsi:80});opened(SO,1);SO.w.orders=[{ticket:7,magic:SO.ctx.MAGIC1,type:0}];SO.run([[T0,1.0989]]);assert.equal(closes(SO).length,0,'a sell held by a buy-side close of this chart');assert.equal(lines(SO,/an order of this position is still open/).length,1);
+ SO.w.orders=[];SO.run(ticks([[5,1.0989],[10,1.0989]]));assert.equal(closes(SO).length,1,'gone: it sends');
+ const SQ=world({rsi:80});opened(SQ,1);SQ.w.orders=[{ticket:7,magic:SQ.ctx.MAGIC1,type:1}];SQ.run([[T0,1.0989]]);assert.equal(closes(SQ).length,1,'a sell-side order of this chart is no close of a sell');
  // Not this position's: a buy-side order of the same chart, or another chart's or symbol's close, holds nothing.
  for(const other of [{ticket:7,magic:'M',type:0},{ticket:7,magic:5,type:1},{ticket:7,magic:'M',type:1,symbol:'GBPUSD'}]){
   const Q=world({});opened(Q);Q.w.orders=[{...other,magic:other.magic==='M'?Q.ctx.MAGIC1:other.magic}];Q.run([[T0,1.10110]]);assert.equal(closes(Q).length,1,JSON.stringify(other));
@@ -487,11 +508,11 @@ for(const isLive of [false,true]) for(const inputs of [{Single_BE_ATR:1},{Single
  assert.equal(lines(G,/a late fill/).length,1);assert.equal(G.w.positions[0].sl,g.open);
  // A reply lost, then the price leaves the trigger: the history is read once the wait ends, and the stop still moves.
  const R=world({inputs:PBE,world:{lostPartialReply:()=>true}});const r=opened(R);
- R.run(ticks([[0,1.10110],[2,1.10110],[3,1.10060],[130,1.10060]]));
+ R.run(ticks([[0,1.10110],[2,1.10110],[3,1.10060],[10,1.10060]]));
  assert.equal(closes(R).length,1);assert.equal(R.ctx.GoatSinglePartialDone(r.ticket),true,'below the trigger, reconciled');assert.equal(R.w.positions[0].sl,r.open,'the remainder is protected');
  // A refusal, then the price leaves: nothing is sent below the trigger, the reads stay bounded, and it retries when due.
  let reads=0;const B=world({world:{rejectPartial:()=>true,rejectHistory:()=>{reads++;return false;}}});opened(B);B.run(ticks([[0,1.10110],[1,1.10110]]));reads=0;
- B.run(ticks([[1,1.10060],[400,1.10060]]));assert.equal(closes(B).length,1,'never below the trigger');assert.ok(reads>=6&&reads<=8,'a read a minute: '+reads);
+ B.run(ticks([[1,1.10060],[400,1.10060]]));assert.equal(closes(B).length,1,'never below the trigger');assert.ok(reads>=6&&reads<=10,'a read a minute after its wait: '+reads);
  B.w.rejectPartial=null;B.w.rejectHistory=null;const back=T0+400;B.run(ticks([[400,1.10110],[402,1.10110]]));assert.equal(closes(B).length,2,'due again: it retries at once');assert.equal(closes(B)[1].time,back,'not after the slow read');assert.ok(near(B.w.positions[0].volume,1.67));
  // cid_duplicate freezes the partial too; its stop still moves.
  const C=world({inputs:{...PARTIAL,Single_BE_ATR:1}});const cp=opened(C);C.ctx.GoatCidGuardAddFrozen=()=>true;C.run([[T0,1.1020],[T0+1,1.1020]]);assert.equal(closes(C).length,0,'frozen');assert.equal(C.w.positions[0].sl,cp.open,'the stop still moves');
@@ -581,34 +602,69 @@ const GOOD={accountError:0,connected:1,login:12345678,balance:100000,accountTrad
  // The tick that removes the EA touches nothing: a partial, a stop, a time stop and an opposite exit were all due.
  const inputs={...PBE0,Single_BE_ATR:1,Single_Trail_Start_ATR:0,Single_Trail_ATR:0.5,Single_Exit_Opposite:true,Single_Time_Stop_Bars:1,Single_Time_Stop_TF:'TF_H1'};
  const a=world({inputs,tester:false,fastSpeed:false});opened(a);
- const U=restart(a,inputs,{world:{accountError:4301,tradeMode:2}});assert.equal(U.ctx.Seq_Buy.Adopted,true);U.w.accountError=0;const n=U.w.trace.length;
+ const U=restart(a,inputs);assert.equal(U.ctx.Seq_Buy.Adopted,true);U.w.tradeMode=2;const n=U.w.trace.length;
  U.run([[T0+9000,1.1040]]);
  assert.equal(U.w.removed,true);assert.deepEqual(U.w.trace.slice(n),[],'nothing on the tick that removes it');assert.equal(U.w.positions[0].volume,a.w.positions[0].volume);
  assert.equal(U.ctx.GoatSingleAccountWatch(),true,'and it keeps saying so');
  // Unknown: exits and stops run, partials do not.
  const b=world({inputs:{...PBE0,Single_BE_ATR:1},tester:false,fastSpeed:false});const bp=opened(b);
- const Q=restart(b,{...PBE0,Single_BE_ATR:1},{world:{connected:0}});Q.run(ticks([[1,1.1030],[30,1.1030]]));
- assert.equal(closes(Q).length,0,'no partial on an unknown account');assert.equal(Q.w.positions[0].sl,bp.open,'the break-even still moves');
+ b.w.connected=0;b.run(ticks([[1,1.1030],[30,1.1030]]));
+ assert.equal(closes(b).length,0,'no partial on an unknown account');assert.equal(b.w.positions[0].sl,bp.open,'a running single\'s break-even still moves');
  ok();
 }
 {
- // A VPS reboot with a running single: stays loaded, adopted, its exits run while the account is unread, nothing opens beside it.
+ // A VPS reboot with a running single: the EA stays loaded and its broker SL and TP hold. Nothing touches the position while the
+ // account is unread, as adoption can send a stop modify. The first demo reading adopts it; opens and partials wait for the settling.
  const inputs={...PARTIAL,Single_Time_Stop_Bars:2,Single_Time_Stop_TF:'TF_H1'};
  const a=world({inputs,tester:false,fastSpeed:false});opened(a);a.run(ticks([[0,1.1005],[30,1.1005]]));
  const state={positions:JSON.parse(JSON.stringify(a.w.positions)),deals:JSON.parse(JSON.stringify(a.w.deals)),gv:[...a.w.gv],next:[a.w.nextTicket,a.w.nextDeal],balance:a.w.balance,time:a.w.time,bid:a.w.bid};
  const load=(ctx,w)=>{w.positions.push(...JSON.parse(JSON.stringify(state.positions)));w.deals.push(...JSON.parse(JSON.stringify(state.deals)));for(const [k,v] of state.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=state.next;w.balance=state.balance;};
- const U=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,world:{connected:0,accountError:4301,marginMode:0},adopt:load});
- assert.equal(U.ctx.Seq_Buy.Adopted,true,'adopted while the account is unread');assert.equal(U.ctx.g_GoatSingleAccountPending,true);
- U.run(ticks([[31,1.1005],[9000,1.1005]],20));const closed=U.w.trace.filter(x=>x.op==='PositionClose');assert.equal(closed.length,1,'the time stop still runs');assert.ok(!U.w.removed);
- // The terminal had not loaded the positions at OnInit: adopted once settled, never a second position beside them.
+ const U=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,world:{connected:0},adopt:load});
+ assert.equal(U.ctx.Seq_Buy.Active,false,'not adopted while the account is unread');assert.equal(U.ctx.g_GoatSingleAccountPending,true);
+ U.run(ticks([[31,1.1005],[40,1.1005]]));assert.equal(U.ctx.Seq_Buy.Active,false);assert.equal(U.w.trace.length,0,'nothing touches it');assert.ok(!U.w.removed);
+ U.w.connected=1;U.run([[T0+41,1.1012]]);assert.equal(U.ctx.Seq_Buy.Adopted,true,'the first demo reading adopts it, inside the settling');assert.equal(U.ctx.g_GoatSingleAccountPending,true,'still settling');
+ assert.equal(closes(U).length,0,'a partial waits for the settling');U.run(ticks([[42,1.1012],[105,1.1012]]));assert.equal(closes(U).length,1,'then it goes');
+ U.run(ticks([[105,1.1012],[9000,1.1012]],20));assert.equal(U.w.trace.filter(x=>x.op==='PositionClose').length,1,'its time stop runs');
+ // The terminal had not loaded the positions at OnInit: adopted once they read, never a second position beside them.
  const L=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,world:{connected:0},adopt:()=>{}});assert.equal(L.ctx.Seq_Buy.Active,false);
  load(L.ctx,L.w);L.w.connected=1;L.run(ticks([[31,1.1005],[150,1.1005]]));
- assert.equal(L.ctx.Seq_Buy.Adopted,true,'adopted once settled');assert.equal(sends(L).length,0,'nothing opens beside it');assert.equal(L.ctx.g_GoatSingleAccountPending,false);assert.equal(L.w.positions.length,1);
- // No signal needed: the settled watch adopts them by itself.
- const L2=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,world:{connected:0},adopt:()=>{}});load(L2.ctx,L2.w);L2.w.connected=1;L2.run(ticks([[31,1.1005],[150,1.1005]]));assert.equal(L2.ctx.Seq_Buy.Adopted,true,'adopted with no open attempt');
+ assert.equal(L.ctx.Seq_Buy.Adopted,true,'adopted');assert.equal(sends(L).length,0,'nothing opens beside it');assert.equal(L.ctx.g_GoatSingleAccountPending,false);assert.equal(L.w.positions.length,1);
+ // No signal needed: the watch adopts them by itself.
+ const L2=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,world:{connected:0},adopt:()=>{}});load(L2.ctx,L2.w);L2.w.connected=1;L2.run([[T0+31,1.1005]]);assert.equal(L2.ctx.Seq_Buy.Adopted,true,'adopted with no open attempt, on its first demo reading');
  // The positions arrive after the account has settled: GoatSingleOpen adopts them rather than open.
  const E=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});E.run([[state.time+1,1.1005]]);assert.equal(E.ctx.g_GoatSingleAccountPending,false);
  load(E.ctx,E.w);assert.equal(E.ctx.GoatSingleOpen(E.ctx.Seq_Buy,E.w.ask),false,'no second position');assert.equal(E.ctx.Seq_Buy.Adopted,true);assert.equal(sends(E).length,0);
+ // cid_duplicate comes first: frozen, it neither adopts nor opens.
+ const FZ=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});FZ.run([[state.time+1,1.1005]]);load(FZ.ctx,FZ.w);FZ.ctx.GoatCidGuardAddFrozen=()=>true;
+ assert.equal(FZ.ctx.GoatSingleOpen(FZ.ctx.Seq_Buy,FZ.w.ask),false);assert.equal(FZ.ctx.Seq_Buy.Adopted,false,'frozen: not adopted');
+ // Single_Flat_Only: a late buy holds a sell signal too. Without it, the sell may open beside it, as hedging allows.
+ const SF=world({inputs:{...inputs,Single_Flat_Only:true},tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});SF.run([[state.time+1,1.1005]]);load(SF.ctx,SF.w);
+ assert.equal(SF.ctx.GoatSingleOpen(SF.ctx.Seq_Sell,SF.w.bid),false,'flat-only: no sell beside a late buy');assert.equal(SF.ctx.Seq_Buy.Adopted,true,'it adopts the buy');assert.equal(sends(SF).length,0);
+ // A late sell and a buy signal under Single_Flat_Only, the mirror.
+ const sa=world({inputs,tester:false,fastSpeed:false,rsi:80});opened(sa,1);
+ const sst={positions:JSON.parse(JSON.stringify(sa.w.positions)),deals:JSON.parse(JSON.stringify(sa.w.deals)),gv:[...sa.w.gv],next:[sa.w.nextTicket,sa.w.nextDeal],balance:sa.w.balance};
+ const sload=(ctx,w)=>{w.positions.push(...JSON.parse(JSON.stringify(sst.positions)));w.deals.push(...JSON.parse(JSON.stringify(sst.deals)));for(const [k,v] of sst.gv)w.gv.set(k,v);[w.nextTicket,w.nextDeal]=sst.next;w.balance=sst.balance;};
+ const SB=world({inputs:{...inputs,Single_Flat_Only:true},tester:false,fastSpeed:false,start:sa.w.time,bid:sa.w.bid,rsi:50,adopt:()=>{}});SB.run([[sa.w.time+1,1.1000]]);sload(SB.ctx,SB.w);
+ assert.equal(SB.ctx.GoatSingleOpen(SB.ctx.Seq_Buy,SB.w.ask),false,'flat-only: no buy beside a late sell');assert.equal(SB.ctx.Seq_Sell.Adopted,true,'it adopts the sell');assert.equal(sends(SB).length,0);
+ // Allow_Opposite_Seq off holds it too: no sell beside a late buy, and no buy beside a late sell.
+ const AO=world({inputs:{...inputs,Allow_Opposite_Seq:false},tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});AO.run([[state.time+1,1.1005]]);load(AO.ctx,AO.w);
+ assert.equal(AO.ctx.GoatSingleOpen(AO.ctx.Seq_Sell,AO.w.bid),false,'Allow_Opposite_Seq off: no sell beside a late buy');assert.equal(AO.ctx.Seq_Buy.Adopted,true);assert.equal(sends(AO).length,0);
+ const AS=world({inputs:{...inputs,Allow_Opposite_Seq:false},tester:false,fastSpeed:false,start:sa.w.time,bid:sa.w.bid,rsi:50,adopt:()=>{}});AS.run([[sa.w.time+1,1.1000]]);sload(AS.ctx,AS.w);
+ assert.equal(AS.ctx.GoatSingleOpen(AS.ctx.Seq_Buy,AS.w.ask),false,'Allow_Opposite_Seq off: no buy beside a late sell');assert.equal(AS.ctx.Seq_Sell.Adopted,true);assert.equal(sends(AS).length,0);
+ const NF=world({inputs,tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:()=>{}});NF.run([[state.time+1,1.1005]]);load(NF.ctx,NF.w);
+ assert.equal(NF.ctx.GoatSingleOpen(NF.ctx.Seq_Sell,NF.w.bid),true,'no flat-only: the sell opens');assert.equal(NF.ctx.Seq_Buy.Adopted,true,'and the buy is managed');
+ // An adopted single used up its episode: when it ends with the signal still true, no second single; a new episode opens one.
+ const rsiAt=f=>f;let rv=25;const EP=H.build(undefined,{inputs:{...BASE,...inputs},tester:false,fastSpeed:false,indicator:indicator(()=>rv),start:state.time,bid:state.bid,adopt:load});
+ assert.equal(EP.ctx.Seq_Buy.Adopted,true);assert.equal(EP.ctx.g_GoatSingleArmed[0],false,'disarmed');
+ EP.ctx.Seq_Buy.CloseSequencePositions('test');EP.pump();EP.run(ticks([[31,1.1005],[300,1.1005]]));assert.equal(sends(EP).length,0,'the signal is still true: no second single');
+ rv=50;EP.run(ticks([[300,1.1005],[420,1.1005]]));rv=25;EP.run(ticks([[420,1.1005],[540,1.1005]]));assert.equal(sends(EP).length,1,'a new episode opens');
+ // Reversed: the buy was opened by the sell signal, so that one is disarmed.
+ const RV=world({inputs:{...inputs,Reverse_Seq:true},tester:false,fastSpeed:false,start:state.time,bid:state.bid,rsi:50,adopt:load});assert.deepEqual([RV.ctx.g_GoatSingleArmed[0],RV.ctx.g_GoatSingleArmed[1]],[true,false],'under Reverse_Seq');
+ // The grid is not held from adopting, whatever the account reads.
+ {const G=gridWorld({inputs:{EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',Mode_Bias:'Bias_Disabled',RSI_Mode:'RSI_OverBS',RSI_Level:70},tester:false,fastSpeed:false,indicator:indicator(50),world:{connected:0},
+   adopt:(ctx,w)=>{w.positions.push({ticket:5000001,identifier:5000001,symbol:'EURUSD',magic:ctx.MAGIC1,type:0,volume:0.1,open:1.1,sl:0,tp:0,time:w.time,time_msc:w.time*1000,comment:'',swap:0,commission:0});}});assert.equal(G.ctx.Seq_Buy.Adopted,true,'the grid adopts');}
+ // A Studio or dashboard chart on a netting demo never trades, so it is never removed for netting.
+ for(const mode of ['Operation_Dash','Operation_Batch']){const CH=world({...live({marginMode:0},{...PARTIAL,Mode_Operation:mode}),accountSettled:false});CH.w.time=T0;assert.equal(CH.ctx.GoatSingleAccountWatch(),false,mode);CH.w.time=T0+100;assert.equal(CH.ctx.GoatSingleAccountWatch(),false,mode);assert.ok(!CH.w.removed,mode+' stays');}
  // Netting: only on a settled read. A hedging demo whose margin mode answers 0 for a tick stays; one that keeps answering it goes.
  const M=world({...live({marginMode:0}),accountSettled:false,start:T0-300,bid:1.1});M.run(ticks([[-300,1.1],[-290,1.1]],1));assert.ok(!M.w.removed,'not unsettled');M.w.marginMode=2;M.run(ticks([[-290,1.1],[-200,1.1]],1));assert.ok(!M.w.removed,'a hedging demo stays');assert.equal(sends(M).length,1,'and trades');
  const N=world({...live({marginMode:0}),accountSettled:false,start:T0-300,bid:1.1});N.run(ticks([[-300,1.1],[-200,1.1]],1));assert.equal(N.w.removed,true,'netting, settled');assert.equal(sends(N).length,0);
@@ -626,7 +682,7 @@ const GOOD={accountError:0,connected:1,login:12345678,balance:100000,accountTrad
  // In the source: its refusal reads MQL_TESTER alone, and the gate reads no input and has no switch.
  const main=H.readSource(undefined,H.MAIN),C=H.compile(H.loadSources());
  assert.ok(main.includes('if(Random_Direction && !MQLInfoInteger(MQL_TESTER))  {Alert("Initialization Failed: Random_Direction is a strategy-tester benchmark'),'the benchmark\'s gate');
- const body=main.slice(main.indexOf('bool GoatSingleTesterContext()'));const fn=body.slice(0,body.indexOf('void GoatSingleAccountRemove('));
+ const body=main.slice(main.indexOf('int GoatSingleAccountState(string &b51_why)'));const fn=body.slice(0,body.indexOf('// Adoption can send a stop modify'));
  const inputs=C.globals.filter(g=>g.input).map(g=>g.name);assert.ok(inputs.length>100);
  for(const name of inputs) assert.ok(!new RegExp('\\b'+name+'\\b').test(fn),'the gate reads no input: '+name);
  assert.ok(!/#if/.test(fn),'no conditional can turn it off');assert.deepEqual([...new Set(fn.match(/\bg_\w+/g))],['g_GoatSingleDemoSinceMs','g_GoatSingleDemoLogin'],'the only globals it reads are the settling clock and its login');

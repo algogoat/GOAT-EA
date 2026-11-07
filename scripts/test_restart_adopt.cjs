@@ -93,7 +93,7 @@ const deal=(t,d)=>{const ticket=5000+t.deals.length+1;t.deals.push({ticket,symbo
 function sequence(t,{dir=0,virtual=false}={}){
  let sel=null,history=[];
  const levels=[];levels.objects=true;
- const c={...K,MAGIC1:M,_Symbol:SYM,dir,Virtual:virtual,Desc:'Trend '+(dir?'Sell':'Buy'),Ledger_Mode:t.ledger,Mode_Operation:t.mode,
+ const c={...K,GoatSingleAdoptHeld:()=>false,GoatSingleAdoptedDisarm:()=>{},MAGIC1:M,_Symbol:SYM,dir,Virtual:virtual,Desc:'Trend '+(dir?'Sell':'Buy'),Ledger_Mode:t.ledger,Mode_Operation:t.mode,
   Max_Seq_Levels:64,Max_Seq_Trades:10,Lock_Profit_Flexibility:1.0,Mode_Lots_Prog:5,_Digits:5,GOAT_SQ_FLUSH_MS:FLUSH_MS,TradeLevels:levels,
   LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,Level_Count:0,Trades_Count:0,Level_Last:0,Level_SL:0,
   Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,
@@ -276,7 +276,7 @@ const ENTRY=(1.1*0.05+1.0985*0.2+1.0970*0.3)/0.55, COMPUTED=Number((ENTRY-0.0030
   +' // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)\n     Seq_Buy.AdoptOpenPositions(); Seq_Sell.AdoptOpenPositions();'),
   'OnInit adopts right after the sequences\' Init (and F2\'s owner-cache reset)');
  // OnInit, and for a single (docs/b50/B50_ALPHA_DESIGN.md 8.4) B51's account watch and GoatSingleOpen, for positions loaded late.
- assert.equal((main.match(/\.AdoptOpenPositions\(\)/g)||[]).length,5,'adoption: OnInit, and the single\'s account watch and open');
+ assert.equal((main.match(/\.AdoptOpenPositions\(\)/g)||[]).length,6,'adoption: OnInit, and the single\'s account watch and open');
  assert.equal((bodyOf(main,'bool GoatSingleAccountWatch()').match(/\.AdoptOpenPositions\(\)/g)||[]).length,2,'adoption: the account watch');
  assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('   GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)\n   Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush();'),'the timer flushes');
  assert.ok(bodyOf(main,'void OnDeinit(const int reason)').includes('   Seq_Buy.PersistFlush(true); Seq_Sell.PersistFlush(true);'),'OnDeinit forces it');

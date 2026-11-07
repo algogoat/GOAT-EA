@@ -163,22 +163,39 @@ running so the grant is processed. Ask the user first: this stops the batch.
 lane, or `goat.exe studio cancel-regrant --job-id <id>` on the customer lane, publishes
 one stop. Then run the same command with `--settle` until it answers `paused` or
 `finished`; it publishes nothing, and finishes the batch and completes its pause once
-MT5 consumed the stop. `batch-resume` then continues the unfinished members. Finished
-members keep their results and every earlier stop keeps its receipts. Nothing is
-deleted, and neither step starts work. Both are allowed under owner STOP, which
-cannot clear while the batch is unresolved.
+MT5 consumed the stop. On V1.49, `batch-resume` then continues the unfinished members.
+On V1.48 it cannot (below), and `--settle` says so instead. Finished members keep their
+results and every earlier stop keeps its receipts. Nothing is deleted, and neither step
+starts work. Both are allowed under owner STOP, which cannot clear while the batch is
+unresolved.
 
-**Both lanes, both EA versions.** The two entries share every admission clause below
-and both demo proofs: the EA sample and the broker read through the MetaTrader5
-adapter. The customer entry adds the owner verb's own pre-checks: the account is not
-an Open Lab experiment login (`REGRANT_PROTECTED_ACCOUNT`) and no human request waits
-(`REGRANT_HUMAN_PENDING`). The installed EA is the receipt's, because loading the
-receipt hashes it for every studio command. It runs under the terminal lease. A live `run-batch` driver
-holds the driver gate for its whole run, so it refuses `REGRANT_BATCH_BUSY`. V1.48
-(`f771b36`) and V1.49 consume a valid stop the same way and answer with the same
-receipts. Only the batch base folder differs: `GOAT V1.48-<server>`, or V1.49's
-per-terminal and per-login folder. `controller_base` resolves it by version, so the
-stop's owner and pointer hashes are the ones that EA reads.
+**Both lanes, both EA versions.** Publication on both entries runs every admission
+clause below and both demo proofs: the EA sample and the broker read through the
+MetaTrader5 adapter. `--settle` reads no broker on either entry. `finish` proves the
+EA's demo flag, Algo off and the idle tester under the native gate. Both entries check
+the demo-only lane on publish and on settle, and refuse while a human request waits
+(`REGRANT_HUMAN_PENDING`): in the bridge's inbox or processing folder, or as the panel's
+`pending_id`. The customer entry also refuses an Open Lab experiment login
+(`REGRANT_PROTECTED_ACCOUNT`), like this lane's close-terminal, monitor-launch and
+monitor-repair; the owner verb has no such check. The installed EA is the receipt's,
+because loading the receipt hashes it for every studio command. The customer entry runs
+under the terminal lease, which a live `run-batch` holds for its whole run, so that
+driver refuses `TERMINAL_LEASE_BUSY` before any check here. `REGRANT_BATCH_BUSY` is any
+other holder of the driver gate. V1.48 (`f771b36`) and V1.49 consume a valid stop the
+same way and answer with the same receipts. Only the batch base folder differs:
+`GOAT V1.48-<server>`, or V1.49's per-terminal and per-login folder. `controller_base`
+resolves it by version, so the stop's owner and pointer hashes are the ones that EA reads.
+
+**V1.48 after the stop.** V1.48's stop sets MT5's persistent batch-cancelled flag
+(`f771b36` GOATStudioDispatch.mqh:70). Its report-capable start writes its consumed
+claim, then refuses `RESTART_RUNTIME_CHANGED` while that flag is set (:178-188). Only an
+in-place start (:216, never used on a report-capable lane) or the person's accepted
+Batch Start in the panel (Optimizer.mqh:3089) clears it. V1.49 keeps value 1 as a
+person's or legacy stop until that Start (GOATBatchCancelOrigin.mqh), so updating the EA
+does not clear it either. On a V1.48 receipt, `--settle` therefore asks for the person's
+Start in the GOAT Studio panel instead of `batch-resume`. `batch-resume` and `continue`
+of a batch a re-grant stopped refuse `RESUME_V148_CANCEL_LATCHED` before anything is
+prepared, rather than spend a start MT5 would claim and refuse.
 
 **Identity.** One stop per new grant recorded in the human channel:
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked
@@ -211,8 +228,8 @@ refuses with its reason code and sends nothing:
 | Fresh bound EA sample, tester idle, no pending restart, Algo off | `REGRANT_TESTER_NOT_IDLE`, `REGRANT_RUNTIME_NOT_VERIFIED` |
 | The EA reported this grant's owner and generation | `REGRANT_GRANT_NOT_OBSERVED` |
 | Broker and EA both report the connected, flat, paired demo with Algo off; a running tester caption refuses | `REGRANT_BROKER_NOT_IDLE_DEMO`, `REGRANT_TESTER_NOT_IDLE` |
-| No other GOAT process holds the batch, no human request waits (both entries) | `REGRANT_BATCH_BUSY`, `REGRANT_LIVE_DRIVER`, `REGRANT_HUMAN_PENDING` |
-| Customer entry: not an Open Lab experiment login (the EA hash is checked when the receipt loads) | `REGRANT_PROTECTED_ACCOUNT` |
+| No other GOAT process holds the batch (a customer `run-batch` holds the terminal lease: `TERMINAL_LEASE_BUSY`); no human request waits, also as the panel's `pending_id` | `REGRANT_BATCH_BUSY`, `REGRANT_LIVE_DRIVER`, `REGRANT_HUMAN_PENDING` |
+| Customer entry, publish and settle: not an Open Lab experiment login (the EA hash is checked when the receipt loads) | `REGRANT_PROTECTED_ACCOUNT` |
 | The pause can re-arm | `REGRANT_PAUSE_NOT_REARMABLE` |
 
 An unanswered prior stop is accepted because every controller commit revokes its
@@ -246,7 +263,7 @@ sent with `support.submitReport` only after the user approved the preview.
 | --- | --- | --- |
 | `REGRANT_ESCALATE_REPORTS_LOST` | Before any stop: a completed member has no verified pair | `finish` would refuse for good. Restoring the exact pair lets `cancel-regrant` run again. |
 | `REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME` | `consumed-` exists with no receipt, or with a receipt that does not report a stop | A reboot between the EA's claim and its receipt. Its retry answers `CANCEL_REJECTED` or `CANCEL_ALREADY_CONSUMED`, or nothing if the permit is gone. Flags and queue may be unchanged, partly changed or fully changed. `finish` rightly refuses, and another stop could double-apply. The refusal gives the claim, the receipt, the queue counts and `BatchOnGoing`. |
-| `REGRANT_ESCALATE_FINISH_REFUSED` | After a consumed stop, `finish` kept refusing for 15 minutes | A report lost after publication, or `CANCEL_SIGNAL_SENT_RECONCILE` with the queue unsaved or truncated. The stop cannot be replaced. `--settle` still retries, so fixing the cause finishes. |
+| `REGRANT_ESCALATE_FINISH_REFUSED` | After a consumed stop, `finish` kept refusing for 15 minutes while the monitor ticked with a fresh EA sample. With MT5 closed or its monitor silent, the answer is `REGRANT_MONITOR_NOT_REPORTING` (open MT5 and settle again) instead | A report lost after publication, or `CANCEL_SIGNAL_SENT_RECONCILE` with the queue unsaved or truncated. The stop cannot be replaced. `--settle` still retries, so fixing the cause finishes. |
 
 The claim check holds the native gate, which the EA holds from its claim to its receipt,
 so a stop still being processed is never mistaken for a dead one.

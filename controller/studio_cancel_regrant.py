@@ -59,10 +59,18 @@ LANES = frozenset(('demo_direct', 'native_human_control'))
 READ_ERRORS = (OSError, ValueError, KeyError, TypeError, configparser.Error)
 ESCALATE = (' Escalate it as a GOAT support report: support.prepareReport with category studio, this code in errorCodes and '
             'this whole reply as actual; show the user the preview, then support.submitReport after their yes.')
+RUNTIME_MAX_AGE_SECONDS = 20   # studio_runtime_check's own freshness bound, which finish applies under the gate
 
 
 def _refuse(code, message, **fields):
     raise Refusal(message + NOTHING_SENT, code, **fields)
+
+
+def _require_lane(session):
+    """Both entries, publish and settle: a demo-only session on one of the two demo lanes."""
+    if session.get('authority_kind') not in LANES or session.get('demo_only') is not True:
+        _refuse('REGRANT_NOT_DEMO_LANE', 'A cancellation re-grant exists only on a demo-only lane: the owner demo lane or the '
+                'customer lane.')
 
 
 def _escalation(code):
@@ -299,9 +307,25 @@ def _runtime(controller, state):
         if 'account_demo' in text:
             _refuse('REGRANT_BROKER_NOT_IDLE_DEMO', 'The EA reports this account is not a demo account.')
         _refuse('REGRANT_RUNTIME_NOT_VERIFIED', text[:200] + '.')
+    if observation.get('pending_id'):
+        # The panel journals a click in human/pending.json before its inbox copy (GOATStudioBridge.mqh SubmitHuman).
+        _refuse('REGRANT_HUMAN_PENDING', 'The GOAT Studio panel holds a TAKE CONTROL or GIVE TO AGENT the controller has not '
+                'received yet; keep the GOAT app open so serve processes it, and retry.', pending_id=observation['pending_id'])
     if observation.get('owner') != 'agent' or observation.get('generation') != state['generation']:
         _refuse('REGRANT_GRANT_NOT_OBSERVED', 'The EA has not reported this grant yet; keep serve running and retry.')
     return batch_ongoing
+
+
+def _monitor_reporting(controller, monitor):
+    """The bound monitor ticks and its EA sample is fresh: only then is a finish refusal about the batch, not about MT5."""
+    from studio_resilient_read import read_observation
+    if monitor.get('ticking') is not True:
+        return False
+    try:
+        _, modified = read_observation(controller.local / 'ui-observation.json')
+    except READ_ERRORS:
+        return False
+    return 0 <= time.time() - modified <= RUNTIME_MAX_AGE_SECONDS
 
 
 def _broker(controller):
@@ -369,10 +393,7 @@ def _escalate_claim(controller, job, request_id, dispatch):
 
 def admit(controller, job, state, *, now):
     """Every clause, under the native gate. Returns the link to use; refuses with a reason code."""
-    session = controller.session
-    if session.get('authority_kind') not in LANES or session.get('demo_only') is not True:
-        _refuse('REGRANT_NOT_DEMO_LANE', 'A cancellation re-grant exists only on a demo-only lane: the owner demo lane or the '
-                'customer lane.')
+    _require_lane(controller.session)
     intent = job.get('launch_intent') or {}
     attempt = intent.get('attempt_id')
     if job.get('status') not in ACTIVE or not isinstance(attempt, str):
@@ -498,26 +519,40 @@ def publish(controller, job_id, *, now=None):
                             'Disk when sent: ' + _disk_reading(disk) + '.')
 
 
-def studio_entry(controller, job_id, *, settle_stop=False, now=None):
-    """goat.exe studio cancel-regrant: the customer lane's entry, with the owner verb's own pre-checks
-    (DemoAgent.cancel_regrant), before admit() runs every clause and both demo proofs again.
+def _human_waiting(controller):
+    """A click not yet applied: a request in the bridge's inbox or processing folder, or the panel's pending_id."""
+    from studio_resilient_read import read_observation
+    human = controller.bridge.root / 'human'
+    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+        return True
+    try:
+        observation = read_observation(controller.local / 'ui-observation.json')[0]
+    except READ_ERRORS:
+        return False   # no readable sample: admit() and finish refuse on their own runtime checks
+    return isinstance(observation, dict) and bool(observation.get('pending_id'))
 
-    The account is not an Open Lab experiment login and no human request waits. The installed EA is the receipt's:
-    loading the receipt hashes it for every studio command (studio_installation.load_installation). A live run-batch
-    driver holds the driver gate for its whole run, so it refuses REGRANT_BATCH_BUSY here; the customer lane has no
-    detached worker. Called under the terminal lease (goat_studio TERMINAL_LEASE_OPERATIONS), so no seed, catch-up or
-    batch driver closes or relaunches MT5 meanwhile.
+
+def studio_entry(controller, job_id, *, settle_stop=False, now=None):
+    """goat.exe studio cancel-regrant: the customer lane's entry. admit() (publish) and _settle (settle) check the
+    demo-only lane for both entries; publish also proves demo from the broker and the EA sample.
+
+    Like the owner verb (DemoAgent.cancel_regrant), on publish and settle alike: no human request waits, in the
+    bridge's inbox or processing folders or as the panel's pending_id. Like this lane's other MT5-facing commands
+    (close-terminal, monitor-launch, monitor-repair), and unlike the owner verb: an Open Lab experiment login refuses.
+    The installed EA is the receipt's: loading the receipt hashes it for every studio command. Called under the
+    terminal lease (goat_studio TERMINAL_LEASE_OPERATIONS), which a live run-batch holds for its whole run, so that
+    driver refuses TERMINAL_LEASE_BUSY before anything here runs; REGRANT_BATCH_BUSY is any other driver-gate holder.
+    --settle reads no broker: finish proves the EA's demo flag, Algo off and the idle tester under the native gate.
     """
     from studio_batch_pause import observe_monitor
     from studio_onboarding import OPEN_LAB_LOGINS
     session = controller.session
-    if session.get('authority_kind') != 'native_human_control' or session.get('demo_only') is not True:
+    if session.get('authority_kind') != 'native_human_control':
         _refuse('REGRANT_NOT_DEMO_LANE', 'goat.exe studio cancel-regrant is the customer lane\'s entry; on the owner demo lane '
                 'use goat.exe demo cancel-regrant.')
     if str(session['account']['login']) in OPEN_LAB_LOGINS:
         _refuse('REGRANT_PROTECTED_ACCOUNT', 'This demo account belongs to a GOAT Open Lab experiment; agents never change it.')
-    human = controller.bridge.root / 'human'
-    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+    if _human_waiting(controller):
         _refuse('REGRANT_HUMAN_PENDING', 'A human TAKE CONTROL or GIVE TO AGENT has not been processed yet: keep the GOAT app '
                 'open so serve processes it, and retry.')
     now = time.time() if now is None else now
@@ -563,6 +598,7 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
     from studio_cancel_successor import cancel_id
     from studio_db_maintenance import after_batch
     from studio_finish import finish
+    _require_lane(controller.session)
     job, state = _read(controller, job_id)
     attempt = (job.get('launch_intent') or {}).get('attempt_id')
     gate = controller.local / 'native-gate'
@@ -609,6 +645,14 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
     except READ_ERRORS as error:
         record = step(controller, job_id, now=now, monitor=monitor, finish_error=str(error))
         waited = now - (record.get('finishing_since') or now)
+        if waited > FINISH_PATIENCE_SECONDS and not _monitor_reporting(controller, monitor):
+            # Finish cannot verify an idle tester without a fresh sample: MT5 closed or a silent monitor is fixed by
+            # opening it, so it is never escalated as a dead end (finish refused for the batch's own reasons).
+            blocker = monitor.get('blocker') or {}
+            _refuse('REGRANT_MONITOR_NOT_REPORTING', 'MT5 took this stop, and finish cannot verify the batch while MT5 or its '
+                    'GOAT monitor is not reporting' + (' (' + blocker['message'] + ')' if blocker.get('message') else '')
+                    + '. Open this MT5 normally, on its GOAT Studio chart, then run cancel-regrant --settle again.',
+                    request_id=request_id, error=str(error)[:240], monitor_blocker=monitor.get('blocker'))
         if waited > FINISH_PATIENCE_SECONDS:
             from studio_native_observe import observe
             try:
@@ -621,7 +665,7 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
                           'REGRANT_ESCALATE_FINISH_REFUSED', request_id=request_id, error=str(error)[:240], waited_seconds=round(waited),
                           receipt=dispatch.get('receipt', {}).get('status'), native_queue=queue,
                           **_escalation('REGRANT_ESCALATE_FINISH_REFUSED'))
-        return dict(summary, status='finish_waiting', error=str(error)[:240], pause=public(record),
+        return dict(summary, status='finish_waiting', error=str(error)[:240], pause=public(record), monitor_blocker=monitor.get('blocker'),
                     next_action='MT5 took the stop. Keep the monitor reporting and run cancel-regrant --settle again; after '
                                 + str(FINISH_PATIENCE_SECONDS) + ' s this escalates as REGRANT_ESCALATE_FINISH_REFUSED.')
     record = complete(controller, job_id, now=now)
@@ -630,6 +674,10 @@ def _settle(controller, job_id, *, now, monitor, end_state_fn):
     after_batch(controller)
     end_state = journal.get('end_state') or dict(status='not_applicable', reason=journal.get('start_route'))
     next_action = 'Finished members and their results are kept; batch-resume continues the unfinished members.'
+    if controller.install['ea_version'] == '1.48':
+        from studio_batch_pause import V148_CANCEL_LATCH
+        next_action = ('Finished members and their results are kept. ' + V148_CANCEL_LATCH + ' To run the remaining members, '
+                       'ask the person to press Start in the GOAT Studio panel on this MT5.')
     if end_state.get('plain'):
         next_action = end_state['plain'] + ' ' + next_action
     return dict(summary, status=record['state'], batch_status=finished['status'], result_path=finished.get('result_path'),

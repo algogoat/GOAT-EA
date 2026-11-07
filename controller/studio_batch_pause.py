@@ -100,6 +100,17 @@ class PauseRefused(ValueError):
     """A plain, actionable reason a pause or resume cannot proceed."""
 
 
+# V1.48's stop sets MT5's persistent batch-cancelled flag (GOATStudioDispatch.mqh@f771b36:70), and its report-capable
+# start refuses while that flag is set, after writing its consumed claim (f771b36:178-188). Only an in-place start
+# (f771b36:216, never on a report-capable lane) or the person's accepted Batch Start in the panel (f771b36
+# Optimizer.mqh:3089) clears it. V1.49 keeps value 1 as a person's or legacy stop until that Start
+# (GOATBatchCancelOrigin.mqh), so updating the EA alone does not clear it.
+V148_CANCEL_LATCH = ('This V1.48 EA keeps MT5\'s batch-cancelled flag after GOAT\'s stop, and only the person\'s own Start in '
+                     'the GOAT Studio panel on this MT5 clears it: until then MT5 would claim GOAT\'s start of the remaining '
+                     'members and refuse it, so batch-resume cannot run them on this EA. Updating the EA to V1.49 does not '
+                     'clear it either: V1.49 keeps a V1.48 stop as the person\'s cancel (HUMAN_CANCEL_RETAINED) until that Start.')
+
+
 def path(root, job_id):
     if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
         raise ValueError('Invalid batch ID')
@@ -611,6 +622,12 @@ def verify_resumable(controller, job_id, token=None):
         raise PauseRefused('No pause is recorded for batch ' + job_id + '; pause it first.')
     if record['state'] not in ('paused', 'resumed'):
         raise refusal(record)
+    if controller.install.get('ea_version') == '1.48' and record.get('regrant_request_id'):
+        # Before anything is prepared: the successor's start would be claimed, then refused (RESTART_RUNTIME_CHANGED).
+        from studio_refusal import Refusal
+        raise Refusal('Batch ' + job_id + ' was stopped by GOAT. ' + V148_CANCEL_LATCH + ' Ask the person to press Start in '
+                      'the GOAT Studio panel on this MT5 to run the remaining members. Nothing was prepared.',
+                      'RESUME_V148_CANCEL_LATCHED', batch_id=job_id)
     job = controller.job(job_id)
     result_path = Path(record['result_path'])
     if (job['status'] not in ('cancelled', 'failed') or job.get('completion_path') != str(result_path)

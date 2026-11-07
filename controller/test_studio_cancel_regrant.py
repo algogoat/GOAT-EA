@@ -343,6 +343,19 @@ class ReplayTests(StrandedFixture):
         self.assertTrue(all(read_json(self.gate / name)['request']['action'] == 'cancel' for name in self.issued()))
         self.assertEqual(self.c.state()['queue'][0]['job_id'], 'g6')
         self.assertEqual(len(self.c.state()['queue']), 1)
+        if self.c.install['ea_version'] == '1.48':
+            # V1.48's stop leaves MT5's cancellation flag set, which only the person's panel Start clears (f771b36
+            # GOATStudioDispatch.mqh:70, 178-188): the person's Start, never batch-resume, and nothing is prepared.
+            self.assertIn('press Start in the GOAT Studio panel', result['next_action'])
+            self.assertNotIn('batch-resume continues', result['next_action'])
+            with self.assertRaises(Refusal) as caught:
+                pause.verify_resumable(self.c, 'g6', record['resume_token'])
+            self.assertEqual(caught.exception.code, 'RESUME_V148_CANCEL_LATCHED')
+            self.assertIn('Nothing was prepared.', str(caught.exception))
+            self.assertEqual(len(self.c.state()['queue']), 1)
+            self.assertEqual(self.settle()['status'], 'paused')
+            return
+        self.assertIn('batch-resume continues the unfinished members', result['next_action'])
         # Unfinished members stay resumable: exactly the five that never ran.
         pause.verify_resumable(self.c, 'g6', record['resume_token'])
         from studio_batch import resume_batch
@@ -542,6 +555,12 @@ class AdmissionRefusalTests(StrandedFixture):
         self.human('control.takeover'); self.ea_tick()
         self.human('control.grant_agent')   # no monitor tick since
         self.assertRefused('REGRANT_GRANT_NOT_OBSERVED')
+
+    def test_a_click_the_panel_has_not_delivered_refuses(self):
+        self.stranded()
+        path = self.c.local / 'ui-observation.json'   # human/pending.json is written before the inbox copy
+        value = read_json(path); value['pending_id'] = 'ui-control-takeover-3'; write_json(path, value)
+        self.assertRefused('REGRANT_HUMAN_PENDING')
 
     def test_a_pending_restart_refuses(self):
         self.stranded()
@@ -753,7 +772,7 @@ class ReportPrecheckTests(StrandedFixture):
         self.assertIn('verified report pairs', result['error'])
         self.assertIn('REGRANT_ESCALATE_FINISH_REFUSED', result['next_action'])
         self.assertNotIn(self.c.job('g6')['status'], ('completed', 'cancelled', 'failed'))
-        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1; self.ea_tick()   # the monitor still reports, with a fresh sample
         with self.assertRaises(Refusal) as caught:
             self.settle()
         self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
@@ -771,7 +790,7 @@ class ReportPrecheckTests(StrandedFixture):
         self.publish(); self.ea_tick(); self.ea_tick()
         with patch('studio_finish.finish', side_effect=configparser.ParsingError('queue.GOAT')):
             self.assertEqual(self.settle()['status'], 'finish_waiting')
-            self.now += pause.FINISH_PATIENCE_SECONDS + 1
+            self.now += pause.FINISH_PATIENCE_SECONDS + 1; self.ea_tick()   # the monitor still reports, with a fresh sample
             with self.assertRaises(Refusal) as caught:
                 self.settle()
         self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
@@ -784,7 +803,7 @@ class ReportPrecheckTests(StrandedFixture):
         self.ea_fault = 'save_fails'
         self.assertEqual(self.ea_tick(), 'CANCEL_SIGNAL_SENT_RECONCILE'); self.ea_tick()
         self.assertEqual(self.settle()['status'], 'finish_waiting')
-        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1; self.ea_tick()   # the monitor still reports, with a fresh sample
         with self.assertRaises(Refusal) as caught:
             self.settle()
         self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
@@ -798,7 +817,7 @@ class ReportPrecheckTests(StrandedFixture):
         self.ea_fault = 'truncated'
         self.assertEqual(self.ea_tick(), 'CANCEL_SIGNAL_SENT_RECONCILE'); self.ea_tick()
         self.assertEqual(self.settle()['status'], 'finish_waiting')
-        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1; self.ea_tick()   # the monitor still reports, with a fresh sample
         with self.assertRaises(Refusal) as caught:
             self.settle()
         self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
@@ -1440,15 +1459,111 @@ class CustomerV149ReplayTests(CustomerLane, ReplayTests):
     EA_VERSION = '1.49'
 
 
+class ResumeLatchTests(StrandedFixture):
+    """batch-resume and continue after a re-grant stop: refused before preparing on V1.48 only."""
+
+    def paused(self):
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'paused')
+        return pause.load(self.c.root, 'g6')
+
+    def test_v148_refuses_and_v149_resumes(self):
+        record = self.paused()
+        with self.assertRaises(Refusal) as caught:
+            pause.verify_resumable(self.c, 'g6', record['resume_token'])
+        self.assertEqual(caught.exception.code, 'RESUME_V148_CANCEL_LATCHED')
+        self.assertIn('Start in the GOAT Studio panel', str(caught.exception))
+        self.c.install = dict(self.c.install, ea_version='1.49')   # the same record on a V1.49 receipt
+        self.assertEqual(pause.verify_resumable(self.c, 'g6', record['resume_token'])['state'], 'paused')
+
+    def test_an_ordinary_pause_is_not_this_refusal(self):
+        record = self.paused()
+        record.pop('regrant_request_id'); write_json(pause.path(self.c.root, 'g6'), record)
+        self.assertEqual(pause.verify_resumable(self.c, 'g6')['state'], 'paused')
+
+
+class MonitorNotReportingTests(StrandedFixture):
+    """A finish refusal while MT5 is closed, or its sample stale, is fixed by opening MT5: never the escalation."""
+
+    def settle_with(self, monitor):
+        return regrant().settle(self.c, 'g6', now=self.now, monitor=monitor)
+
+    def test_mt5_closed_asks_to_open_it_and_reopening_finishes(self):
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        observation = self.c.local / 'ui-observation.json'
+        stale = time.time() - 120
+        os.utime(observation, (stale, stale))   # MT5 closed after taking the stop: its last sample goes stale
+        closed = ticking(self.now) | dict(state='closed', ticking=False, blocker=dict(
+            code='terminal_closed', message='MT5 for this terminal is closed.', fix='Open this MT5 terminal.'))
+        waiting = self.settle_with(closed)
+        self.assertEqual((waiting['status'], waiting['monitor_blocker']['code']), ('finish_waiting', 'terminal_closed'))
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1
+        with self.assertRaises(Refusal) as caught:
+            self.settle_with(closed)
+        self.assertEqual(caught.exception.code, 'REGRANT_MONITOR_NOT_REPORTING')
+        self.assertIn('MT5 for this terminal is closed.', str(caught.exception))
+        self.assertNotIn('escalate_to', caught.exception.fields)
+        # A ticking monitor whose sample is stale is not reporting either.
+        with self.assertRaises(Refusal) as caught:
+            self.settle_with(ticking(self.now, tester_state='idle'))
+        self.assertEqual(caught.exception.code, 'REGRANT_MONITOR_NOT_REPORTING')
+        # Reopened: a fresh sample, and the same settle finishes with nothing resent.
+        self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEqual(len(self.issued()), 3)
+
+    def test_a_silent_monitor_is_not_escalated_even_with_a_fresh_sample(self):
+        self.stranded()
+        self.publish(); self.ea_tick(); self.ea_tick()
+        self.report_files(0)[0].unlink()   # finish refuses for the batch's own reason
+        silent = ticking(self.now) | dict(state='unbound', ticking=False, blocker=dict(
+            code='monitor_unbound', message='The GOAT monitor in MT5 is running but is not bound to this controller session.',
+            fix='Reopen the GOAT Studio monitor chart.'))
+        self.assertEqual(self.settle_with(silent)['status'], 'finish_waiting')
+        self.now += pause.FINISH_PATIENCE_SECONDS + 1; self.ea_tick()
+        with self.assertRaises(Refusal) as caught:
+            self.settle_with(silent)
+        self.assertEqual(caught.exception.code, 'REGRANT_MONITOR_NOT_REPORTING')
+        with self.assertRaises(Refusal) as caught:   # reporting again: now it is the named dead end
+            self.settle_with(ticking(self.now, tester_state='idle'))
+        self.assertEqual(caught.exception.code, 'REGRANT_ESCALATE_FINISH_REFUSED')
+
+
 class StudioEntryTests(CustomerLane, StrandedFixture):
     """goat.exe studio cancel-regrant, end to end through goat_studio.main on the real store, gate and bridge."""
 
-    def cli(self, *extra):
+    def cli(self, *extra, operation='cancel-regrant'):
         from goat_studio import main as studio_main
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = studio_main(['--installation', str(self.f.path), 'cancel-regrant', '--job-id', 'g6', *extra])
+            code = studio_main(['--installation', str(self.f.path), operation, '--job-id', 'g6', *extra])
         return code, json.loads(out.getvalue())
+
+    def published(self):
+        """The customer command's stop, consumed by MT5: the state --settle acts on."""
+        self.stranded()
+        code, reply = self.cli()
+        self.assertEqual(code, 0, reply)
+        self.assertEqual(self.ea_tick(), 'CANCELLED_RECONCILE'); self.ea_tick()
+        return reply['result']['request_id']
+
+    def settle_cli(self, monitor=None):
+        with patch('studio_batch_pause.observe_monitor', return_value=monitor or ticking(self.now, tester_state='idle')):
+            return self.cli('--settle')
+
+    def assertSettleRefused(self, code):
+        job, record = self.c.job('g6'), pause.load(self.c.root, 'g6')
+        exit_code, reply = self.settle_cli()
+        self.assertEqual((exit_code, reply['ok'], reply.get('refusal_code')), (2, False, code), reply.get('error'))
+        self.assertEqual(self.c.job('g6'), job)
+        self.assertEqual(pause.load(self.c.root, 'g6'), record)
+
+    def pending_click(self, request_id='ui-control-takeover-3'):
+        """The panel journaled a click in human/pending.json and reports it as pending_id before its inbox copy."""
+        path = self.c.local / 'ui-observation.json'
+        value = read_json(path); value['pending_id'] = request_id; write_json(path, value)
 
     def assertCliRefused(self, code, *extra):
         issued, links = self.issued(), sorted(p.name for p in (self.c.root / 'cancel-successors').glob('*'))
@@ -1475,8 +1590,16 @@ class StudioEntryTests(CustomerLane, StrandedFixture):
         self.assertEqual(self.kept.read_bytes(), report)
         record = pause.load(self.c.root, 'g6')
         self.assertEqual((record['members_completed'], record['members_failed'], record['members_remaining']), (2, 1, 5))
-        pause.verify_resumable(self.c, 'g6', record['resume_token'])
         self.assertEqual(len(self.issued()), 3)
+        if self.c.install['ea_version'] == '1.48':
+            # TBMEif's case: the person's Start in the panel, and batch-resume refuses before preparing anything.
+            self.assertIn('press Start in the GOAT Studio panel', result['next_action'])
+            code, resumed = self.cli(operation='batch-resume')
+            self.assertEqual((code, resumed.get('refusal_code')), (2, 'RESUME_V148_CANCEL_LATCHED'), resumed.get('error'))
+            self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
+        else:
+            self.assertIn('batch-resume continues the unfinished members', result['next_action'])
+            pause.verify_resumable(self.c, 'g6', record['resume_token'])
 
     def test_settle_publishes_nothing(self):
         self.stranded()
@@ -1507,6 +1630,37 @@ class StudioEntryTests(CustomerLane, StrandedFixture):
                 self.assertCliRefused('REGRANT_HUMAN_PENDING')
                 self.assertTrue(waiting.exists())
                 waiting.unlink()
+        self.pending_click()
+        self.assertCliRefused('REGRANT_HUMAN_PENDING')
+
+    def test_settle_refuses_while_a_human_request_waits(self):
+        self.published()
+        for channel in ('inbox', 'processing'):
+            with self.subTest(channel=channel):
+                folder = self.c.bridge.root / 'human' / channel; folder.mkdir(parents=True, exist_ok=True)
+                waiting = folder / 'ui-take.json'; write_json(waiting, dict(request_id='ui-take'))
+                self.assertSettleRefused('REGRANT_HUMAN_PENDING')
+                self.assertTrue(waiting.exists())
+                waiting.unlink()
+        self.pending_click()
+        self.assertSettleRefused('REGRANT_HUMAN_PENDING')
+        self.ea_tick()   # the click applied: the panel no longer reports it
+        self.assertEqual(self.settle_cli()[1]['result']['status'], 'paused')
+
+    def test_settle_refuses_an_open_lab_login(self):
+        self.published()
+        import studio_onboarding
+        with patch.object(studio_onboarding, 'OPEN_LAB_LOGINS', frozenset((str(self.c.session['account']['login']),))):
+            self.assertSettleRefused('REGRANT_PROTECTED_ACCOUNT')
+        self.assertEqual(self.settle_cli()[1]['result']['status'], 'paused')
+
+    def test_settle_refuses_a_session_that_is_not_demo_only(self):
+        self.published()
+        session = read_json(self.c.root / 'session.json')
+        write_json(self.c.root / 'session.json', session | dict(demo_only=False))
+        self.assertSettleRefused('REGRANT_NOT_DEMO_LANE')
+        write_json(self.c.root / 'session.json', session)
+        self.assertEqual(self.settle_cli()[1]['result']['status'], 'paused')
 
     def test_an_installed_ea_that_is_not_the_receipts_refuses_before_anything_is_read(self):
         self.stranded()
@@ -1522,7 +1676,25 @@ class StudioEntryTests(CustomerLane, StrandedFixture):
         with patch.object(studio_onboarding, 'OPEN_LAB_LOGINS', frozenset((str(self.c.session['account']['login']),))):
             self.assertCliRefused('REGRANT_PROTECTED_ACCOUNT')
 
-    def test_a_live_run_batch_driver_refuses(self):
+    def test_a_live_run_batch_refuses_on_its_terminal_lease(self):
+        """A customer run-batch holds the terminal lease (TERMINAL_LEASE_OPERATIONS) and the driver gate for its whole run."""
+        import threading
+        from studio_terminal_lease import terminal_lease
+        self.stranded()
+        held, release = threading.Event(), threading.Event()
+        driver_gate = self.c.root / 'batch-driver-gate'; driver_gate.mkdir(exist_ok=True)
+
+        def run_batch():
+            with terminal_lease(self.c.root, purpose='run-batch'), exclusive_gate(driver_gate):
+                held.set(); release.wait(60)
+        thread = threading.Thread(target=run_batch); thread.start()
+        self.addCleanup(thread.join); self.addCleanup(release.set)
+        self.assertTrue(held.wait(10))
+        exit_code, reply = self.cli()
+        self.assertEqual((exit_code, reply['ok'], reply.get('refusal_code')), (2, False, 'TERMINAL_LEASE_BUSY'), reply.get('error'))
+        self.assertEqual(len(self.issued()), 2)
+
+    def test_another_holder_of_the_driver_gate_refuses(self):
         self.stranded()
         driver = self.c.root / 'batch-driver-gate'; driver.mkdir(exist_ok=True)
         with exclusive_gate(driver):
@@ -1547,6 +1719,11 @@ class StudioEntryTests(CustomerLane, StrandedFixture):
         self.assertEqual((contract['required'], contract['optional']), (['job-id'], ['settle']))
         self.assertIn('goat.exe demo cancel-regrant', contract['demo_lane'])
         self.assertIn('cancel-regrant', goat_studio.TERMINAL_LEASE_OPERATIONS)
+
+
+class StudioEntryV149Tests(StudioEntryTests):
+    """The customer command on a V1.49 receipt (head handler), where batch-resume continues the members."""
+    EA_VERSION = '1.49'
 
 
 if __name__ == '__main__':

@@ -112,10 +112,10 @@ MUTATIONS = [
      "    native = _broker(controller) if session.get('authority_kind') == 'demo_direct' else {}\n"),
     ('EA sample skipped on the customer lane', R, "    batch_ongoing = _runtime(controller, state)\n",
      "    batch_ongoing = _runtime(controller, state) if session.get('authority_kind') == 'demo_direct' else True\n"),
-    ('customer entry ignores a waiting human request', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        _refuse('REGRANT_HUMAN_PENDING'",
-     "    if False:\n        _refuse('REGRANT_HUMAN_PENDING'"),
-    ('customer entry reads only the inbox', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        _refuse('REGRANT_HUMAN_PENDING'",
-     "    if any(any((human / channel).glob('*.json')) for channel in ('inbox',)):\n        _refuse('REGRANT_HUMAN_PENDING'"),
+    ('customer entry ignores a waiting human request', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        return True",
+     "    if False:\n        return True"),
+    ('customer entry reads only the inbox', R, "    if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):\n        return True",
+     "    if any(any((human / channel).glob('*.json')) for channel in ('inbox',)):\n        return True"),
     ('customer entry skips the Open Lab refusal', R, "    if str(session['account']['login']) in OPEN_LAB_LOGINS:", "    if False:"),
     ('customer entry outside the terminal lease', 'goat_studio.py', "'bootstrap-retirement-apply','cancel-regrant'))", "'bootstrap-retirement-apply'))"),
     # Round 3: the P3s
@@ -127,6 +127,23 @@ MUTATIONS = [
     ('finish escalation names no destination', R, "                          **_escalation('REGRANT_ESCALATE_FINISH_REFUSED'))", "                          )"),
     ('claim escalation names no destination', R, "**facts, **_escalation('REGRANT_ESCALATE_CLAIM_WITHOUT_OUTCOME'))", "**facts)"),
     ('reports escalation names no destination', R, "members=unverified, **_escalation('REGRANT_ESCALATE_REPORTS_LOST'))", "members=unverified)"),
+    # Round 3 review: the settle path, V1.48's cancellation flag, an MT5 that is not reporting
+    ('Open Lab refusal skipped under --settle', R, "    if str(session['account']['login']) in OPEN_LAB_LOGINS:",
+     "    if not settle_stop and str(session['account']['login']) in OPEN_LAB_LOGINS:"),
+    ('human-pending refusal skipped under --settle', R, "    if _human_waiting(controller):", "    if not settle_stop and _human_waiting(controller):"),
+    ('entry ignores the panel pending_id', R, "    return isinstance(observation, dict) and bool(observation.get('pending_id'))", "    return False"),
+    ('admission ignores the panel pending_id', R, "    if observation.get('pending_id'):\n        # The panel", "    if False:\n        # The panel"),
+    ('settle skips the demo-only lane', R, "    _require_lane(controller.session)\n    job, state = _read(controller, job_id)\n    attempt",
+     "    job, state = _read(controller, job_id)\n    attempt"),
+    ('customer entry accepts any lane', R, "    if session.get('authority_kind') != 'native_human_control':", "    if False:"),
+    ('V1.48 resume not refused', 'studio_batch_pause.py', "    if controller.install.get('ea_version') == '1.48' and record.get('regrant_request_id'):", "    if False:"),
+    ('V1.48 refusal for every pause', 'studio_batch_pause.py', "    if controller.install.get('ea_version') == '1.48' and record.get('regrant_request_id'):",
+     "    if controller.install.get('ea_version') == '1.48':"),
+    ('V1.48 settle advises batch-resume', R, "    if controller.install['ea_version'] == '1.48':\n        from studio_batch_pause import V148_CANCEL_LATCH",
+     "    if False:\n        from studio_batch_pause import V148_CANCEL_LATCH"),
+    ('finish refusal escalates while MT5 is not reporting', R, "        if waited > FINISH_PATIENCE_SECONDS and not _monitor_reporting(controller, monitor):", "        if False:"),
+    ('a stale sample counts as reporting', R, "    return 0 <= time.time() - modified <= RUNTIME_MAX_AGE_SECONDS", "    return True"),
+    ('a silent monitor counts as reporting', R, "    if monitor.get('ticking') is not True:\n        return False", "    if False:\n        return False"),
 ]
 
 

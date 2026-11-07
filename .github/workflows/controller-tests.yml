@@ -47,6 +47,9 @@ concurrency:
 #                             test_b52_review_mutations, one parallel job each (B52: both lines' suites took the combined
 #                             controller job past its 70-minute cap).
 #
+# mutation-suites             one aggregate of node mutations and b49b lag mutations: it fails unless every leg of both
+#                             succeeded (the second read of B52, P2-3: no gated check depended on them).
+#
 # Controller mutations (GOAT-EA#204; Claude-Mac, goatai#2350 6089452823 + 6089458580). With 3 shards,
 # shard 1/3 hit the 45-min cap on GOAT-EA#201 and #203 (run 37956413084: 45.25 min, cancelled), so the
 # suite now runs as 4 shards split by measured step time. The step table and the timing data live
@@ -325,6 +328,22 @@ jobs:
 
       - name: Node mutation suite
         run: node scripts/${{ matrix.suite }}
+
+  # The second read of B52 (P2-3): no check the merge gate stops on depended on the two matrices above. One aggregate under
+  # one stable name fails unless every leg of both succeeded (a matrix's result is its legs' aggregate). It always runs, so
+  # it is never "skipping", and ops-merge-ea-pr.ps1 refuses every check outside pass and skipping, this one included.
+  mutation-suites:
+    name: mutation-suites
+    needs: [node-mutations, b49b-lag-mutations]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every node mutation suite and every B49b lag mutation shard succeeded
+        env:
+          NODE_MUTATIONS: ${{ needs.node-mutations.result }}
+          B49B_LAG_MUTATIONS: ${{ needs.b49b-lag-mutations.result }}
+        run: echo "node-mutations=$NODE_MUTATIONS b49b-lag-mutations=$B49B_LAG_MUTATIONS"; test "$NODE_MUTATIONS" = success && test "$B49B_LAG_MUTATIONS" = success
 
   mutation-selection:
     name: mutation selection

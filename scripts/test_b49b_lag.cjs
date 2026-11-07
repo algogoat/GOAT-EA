@@ -8,7 +8,7 @@
 //    9 the daily stops' window; 10 the no-tick clock; 10b a rejection that returned true; 19 clock sync; 20 a slow or fast clock;
 //    21 a hold ends virtual candidates; 22 the owed close never hides or withholds a real stop;
 //    24 F4's exits after a reconnect; 25 a hold ends paper-level sequences; 26 the Monday wait cannot be spent early; 27 clock logs;
-//    28 a no-tick run on a chart whose body has never run.
+//    28 a no-tick run on a chart whose body has never run; 29 a hold never blocks what reduces exposure.
 // T. Diag_TickTiming: read-only, counted, and written with the guard off (11-13).
 // B. Fix_TickLoad: truly bounded, the back-off, what changes with it on, and A never needs B (14-18).
 // test_b49b_lag_mutations.cjs runs this file on mutated sources (GOAT_EA_MAIN, GOAT_EA_HEADER).
@@ -43,11 +43,11 @@ const FX={0:[[79200,86400]],1:[[0,86400]],2:[[0,86400]],3:[[0,86400]],4:[[0,8640
 const FNS=[
  ['bool GoatManageOnlyLive()',''],
  ['bool GoatFeedGuardLive(void)',''],['datetime GoatServerClock(void)',''],['int GoatFeedAge(const datetime srv_clock)','srv_clock'],
- ['void GoatFeedGuardStamp(void)',''],['void GoatFeedInitMark(const bool init_done)','init_done'],['bool GoatFeedUnsynced(void)',''],['void GoatFeedSyncWatch(void)',''],['void GoatClockSkewWatch(const ulong now_ms)','now_ms'],['void GoatCloseOwedQuoteWatch(const bool feed_held,const ulong now_ms)','feed_held,now_ms'],['void GoatEntriesHoldWatch(void)',''],['void GoatCloseOwedStopLower(void)',''],['void GoatCloseRealStopNote(void)',''],['void GoatCloseOwedClear(void)',''],
+ ['void GoatFeedGuardStamp(void)',''],['void GoatClockSkewWatch(const ulong now_ms)','now_ms'],['void GoatCloseOwedQuoteWatch(const bool feed_held,const ulong now_ms)','feed_held,now_ms'],['void GoatEntriesHoldWatch(void)',''],['void GoatCloseOwedClear(void)',''],
  ['void GoatFeedGuardTick(void)',''],['void GoatClockFastWatch(void)',''],['datetime GoatNoTickClock(const ulong now_ms)','now_ms'],['bool GoatNoTickDue(const bool tester,const bool monitor,const bool connected,const ulong now_ms)','tester,monitor,connected,now_ms'],['bool GoatNoTickSameDay(const datetime clock)','clock'],['void GoatNoTickTimer(void)',''],['void GoatFeedClockServer(void)',''],['void GoatFeedClockFeed(void)',''],
- ['bool GoatEntriesHeld(void)',''],['bool GoatCloseOwedDue(void)',''],['bool GoatCloseOwedHeld(void)',''],['void GoatCloseOwedAssert(const int open_count)','open_count'],
+ ['bool GoatEntriesHeld(void)',''],['void GoatCloseOwedAssert(const int open_count)','open_count'],
  ['void GoatCloseOwedAfter(const int open_count)','open_count'],['void GoatCloseOwedRefused(const uint retcode)','retcode'],['string GoatCloseOwedText(void)',''],
- ['void GoatCloseOwedRestore(const string &keys[],const string &values[])','keys,values'],['bool GoatStatusLive(void)',''],['string GoatStatusText(void)',''],['void GoatStatusFlush(void)',''],
+ ['void GoatCloseOwedRestore(const string &keys[],const string &values[])','keys,values'],['string GoatStatusText(void)',''],['void GoatStatusFlush(void)',''],
  ['bool GoatModifyRejected(const uint retcode,const bool counted,const ulong ticket,const string what,const string description)','retcode,counted,ticket,what,description'],['bool GoatCloseRejected(const uint retcode,const bool counted,const ulong ticket,const string description)','retcode,counted,ticket,description'],
  ['bool GoatTickLoadLive(void)',''],['bool GoatTickLoadHold(const int slot)','slot'],['int GoatTrailSlot(const ulong ticket)','ticket'],['bool GoatTrailHeld(const ulong ticket)','ticket'],['void GoatTrailNote(const int side,const ulong ticket,const uint retcode)','side,ticket,retcode'],['void GoatTrailReset(const int side)','side'],
  ['bool GoatTimingLive(void)',''],['ulong GoatTimingStart(void)',''],['void GoatTimingSlot(const int slot,const ulong started_us)','slot,started_us'],['void GoatTimingTick(const ulong started_us)','started_us'],['string GoatTimingText(void)',''],['void GoatTimingFlush(void)',''],
@@ -58,10 +58,12 @@ const TRADE_CODES=b=>Object.assign(b,{TRADE_RETCODE_NO_CHANGES:10025,TRADE_RETCO
 const nameOf=sig=>sig.match(/(\w+)\(/)[1];
 const TICK=bodyOf(main,'void GoatTickBody()');
 // The production day block and per-second block, in GoatTickBody's order; the minute block sits between them and is not run.
-const PREFIX=TICK.slice(TICK.indexOf('if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return;'),TICK.indexOf('static double MinuteLowEquity'));
+const PREFIX=TICK.slice(TICK.indexOf('if(GoatFeedGuardLive() && !g_GoatFeedSynced && (!g_GoatNoTickRun || DStartEquity==0.0)) return;'),TICK.indexOf('static double MinuteLowEquity'));
 const SECOND='if(IsNewSecond())\n{'+bodyOf(TICK,'if(IsNewSecond())')+'}';
 const CLOSE=bodyOf(main,'void CloseAllPositions(int OP,int magic=0)').replace(/\bCTrade m_trade;/,'');
 const HELPERS=['IsNewSecond','IsNewDay'];
+const SYNC_WATCH='if(GoatFeedGuardLive() && TerminalInfoInteger(TERMINAL_CONNECTED)==0) g_GoatFeedSynced=false;';
+assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes(SYNC_WATCH),'the timer loses the clock on a disconnect');
 
 // One chart on a stubbed terminal. feed: the newest tick the terminal has processed; server: TimeTradeServer.
 function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timing=0,tickload=0,minLevel=0}={}){
@@ -70,7 +72,7 @@ function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timi
   Fix_FeedGuard:flag,Diag_TickTiming:timing,Fix_TickLoad:tickload,GOAT_TICK_LOAD_HOLD_MS:0,GOAT_TICK_LOAD_SLOTS:0,GOAT_TRAIL_FAIL_LIMIT:0,g_GoatTickLoadMs:bounded(Array(6).fill(0)),g_GoatTrailTicket:bounded([]),g_GoatTrailNextMs:bounded([]),g_GoatTrailSide:bounded([]),g_GoatTrailFails:bounded([]),Fix_Clock:0,g_GoatTimingSlotUS:bounded(Array(7).fill(0)),g_GoatTimingSlotCalls:bounded(Array(7).fill(0)),g_GoatTimingTicks:0,g_GoatTimingTickUS:0,g_GoatTimingTickMaxUS:0,g_GoatTimingWindowMs:0,g_GoatTimingWindowUS:0,g_GoatTimingWindowTicks:0,GOAT_TIMING_SLOTS:7,GOAT_TIMING_LOG_MS:0,us:0,GetMicrosecondCount:null,GoatFix_Off:0,GoatFix_On:1,GOAT_FEED_AGE_GUARD_S:0,GOAT_CLOSE_OWED_RETRY_MS:0,GOAT_STATUS_VERSION:0,GOAT_STATUS_WRITE_MS:0,
   GOAT_NO_TICK_BACKOFF_MIN_MS:60000,GOAT_NO_TICK_BACKOFF_MAX_MS:900000,
   g_GoatServerNow:0,g_GoatFeedTmSaved:0,g_GoatFeedStmSaved:null,g_GoatFeedAgeS:-1,g_GoatFeedHeldLogged:false,g_GoatFeedLogMs:0,g_GoatCloseOwed:false,g_GoatCloseOwedStop:false,g_GoatCloseFridayFired:false,
-  g_GoatCloseOwedSince:0,g_GoatCloseOwedNextMs:0,g_GoatCloseOwedBackoffMs:0,g_GoatCloseOwedQuoteMs:0,g_GoatCloseOwedTickMs:0,g_GoatClockSlowLogMs:0,g_GoatClockFastWrites:0,g_GoatClockFastLogged:false,GOAT_CLOSE_OWED_QUOTE_GAP_MS:0,GOAT_CLOCK_FAST_LOG_S:0,GOAT_CLOCK_FAST_WRITES:0,g_GoatLastNoTickRunMs:0,g_GoatNoTickBackoffUntilMs:0,g_GoatStudioReadOnlyMonitor:false,GOAT_NO_TICK_MS:5000,ACCOUNT_BALANCE:101,ACCOUNT_EQUITY:102,g_GoatCloseOwedStopTime:0,g_GoatCloseRealStop:false,g_GoatFeedSynced:false,g_GoatFeedInitDone:true,g_GoatEntriesWereHeld:false,g_GoatClockSkewS:0,g_GoatClockFloorS:0,g_GoatClockFloorSet:false,g_GoatClockSlowLogged:false,g_GoatClockSlowHeld:false,g_GoatClockSlowSinceMs:0,GOAT_CLOSE_OWED_SETTLE_MS:0,GOAT_CLOCK_SLOW_LOG_S:0,GOAT_CLOCK_SLOW_HOLD_S:0,GOAT_CLOCK_SLOW_HOLD_MS:0,g_GoatStatusWrittenMs:0,g_GoatStatusFailLogged:false,g_GoatLastTickMs:0,g_GoatLastTickTime:0,g_GoatStateWriteError:0,
+  g_GoatCloseOwedSince:0,g_GoatCloseOwedNextMs:0,g_GoatCloseOwedBackoffMs:0,g_GoatCloseOwedQuoteMs:0,g_GoatCloseOwedDue:false,g_GoatCloseOwedTickMs:0,g_GoatClockSlowLogMs:0,g_GoatClockFastWrites:0,g_GoatClockFastLogged:false,GOAT_CLOSE_OWED_QUOTE_GAP_MS:0,GOAT_CLOCK_FAST_LOG_S:0,GOAT_CLOCK_FAST_WRITES:0,g_GoatLastNoTickRunMs:0,g_GoatNoTickBackoffUntilMs:0,g_GoatStudioReadOnlyMonitor:false,GOAT_NO_TICK_MS:5000,ACCOUNT_BALANCE:101,ACCOUNT_EQUITY:102,g_GoatCloseOwedStopTime:0,g_GoatCloseRealStop:false,g_GoatFeedSynced:false,g_GoatFeedInitDone:true,g_GoatEntriesWereHeld:false,g_GoatClockSkewS:0,g_GoatClockFloorS:0,g_GoatClockFloorSet:false,g_GoatClockSlowLogged:false,g_GoatClockSlowHeld:false,g_GoatClockSlowSinceMs:0,GOAT_CLOSE_OWED_SETTLE_MS:0,GOAT_CLOCK_SLOW_LOG_S:0,GOAT_CLOCK_SLOW_HOLD_S:0,GOAT_CLOCK_SLOW_HOLD_MS:0,g_GoatStatusWrittenMs:0,g_GoatStatusFailLogged:false,g_GoatLastTickMs:0,g_GoatLastTickTime:0,g_GoatStateWriteError:0,
   g_GoatNoTickRun:false,tm_cur:0,stm_cur:{},TRADE_RETCODE_DONE:10009,TRADE_RETCODE_DONE_PARTIAL:10010,TRADE_RETCODE_PLACED:10008,TRADE_RETCODE_MARKET_CLOSED:10018,TRADE_RETCODE_TRADE_DISABLED:10017,
   SYMBOL_TRADE_MODE:8,SYMBOL_TRADE_MODE_DISABLED:0,TERMINAL_CONNECTED:7,ACCOUNT_LOGIN:9,TIME_DATE:1,TIME_SECONDS:4,FILE_COMMON:4096,_Symbol:'EURUSD',MAGIC1:7,GOAT_BUILD_ID:'b49b',
   closed:0,closeErrors:0,TSLmodifieds:3,TSLmodifyErrors:2,Hour_Start:[8,8,8,8,8,8,8],Minute_Start:[0,0,0,0,0,0,0],Hour_End:Array(7).fill(hourEnd),Minute_End:[0,0,0,0,0,0,0],
@@ -107,6 +109,7 @@ function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timi
   const inner=js(sigBody).replace(/\blet (\w+)(=[-\d]+)?;/g,(m,v)=>statics.some(s=>s[1]===v)?'':m);
   vm.runInContext('var '+name+'=(function(){'+decl+'return function(){'+inner+'};})();',ctx);
  }
+ vm.runInContext('function GoatFeedSyncWatch(){'+js(SYNC_WATCH)+'}',ctx);
  b.stm_cur={sec:59,day:0};b.IsNewSecond();b.g_GoatTickLoadMs[0]=0;   // MQL statics start at 0: a first tick on second :00 would read as "not new"
  vm.runInContext('function TickBody(){'+js(PREFIX).replace(/\(long\)/g,'')+js(SECOND)+'}',ctx);
  // One real tick: the terminal has processed up to `feed`; the server's clock reads `server`. The tick's stamps, as OnTick.
@@ -139,9 +142,9 @@ const FRI=(h,mi=0,s=0)=>at(9,30,h,mi,s),SAT=(h,mi=0,s=0)=>at(9,31,h,mi,s),SUN=(h
   c.feed=FRI(10);c.tm_cur=FRI(10);c.stm_cur=struct(FRI(10));c.g_GoatLastTickTime=FRI(9);
   c.GoatFeedGuardStamp();assert.equal(c.g_GoatLastTickTime,FRI(9),label+': the no-tick clock is untouched');
   c.GoatFeedGuardTick();c.GoatFeedClockServer();assert.equal(c.tm_cur,FRI(10),label+': the clock is not swapped');c.GoatFeedClockFeed();assert.equal(c.tm_cur,FRI(10));
-  assert.equal(c.GoatEntriesHeld(),false,label+': nothing is held');assert.equal(c.GoatCloseOwedHeld(),false);
+  assert.equal(c.GoatEntriesHeld(),false,label+': nothing is held');
   c.GoatCloseOwedAssert(2);assert.equal(c.StopOut_Flag,false);c.g_GoatCloseFridayFired=true;c.GoatCloseOwedAfter(2);assert.equal(c.g_GoatCloseOwed,false,label+': nothing becomes owed');
-  assert.equal(c.GoatStatusLive(),false);c.GoatStatusFlush();assert.equal(c.writes.length,0,label+': no status file');assert.equal(c.GoatCloseOwedText(),'','and the state file gains nothing');
+  c.GoatStatusFlush();assert.equal(c.writes.length,0,label+': no status file');assert.equal(c.GoatCloseOwedText(),'','and the state file gains nothing');
  }
  for(const k of ['MQL_OPTIMIZATION','MQL_FORWARD']){const c=chart();const v=c[k];c.MQLInfoInteger=i=>i===v?1:0;assert.equal(c.GoatFeedGuardLive(),false,k);}
  for(const mode of [1,2]){const c=chart();c.Mode_Operation=mode;assert.equal(c.GoatFeedGuardLive(),false,'batch or dashboard');}
@@ -216,7 +219,7 @@ const FRI=(h,mi=0,s=0)=>at(9,30,h,mi,s),SAT=(h,mi=0,s=0)=>at(9,31,h,mi,s),SUN=(h
  assert.deepEqual([c.g_GoatCloseOwed,c.StopOut_Flag,c.LastStopoutTime,c.g_GoatCloseOwedQuoteMs],[false,false,0,0],'settled: the stop it raised is lowered, so Monday trades as after a normal Friday close');
  assert.ok(c.prints.some(l=>/settled, flat on EURUSD/.test(l)));
  assert.equal(c.ended.filter(d=>d==='Day/Weekend Close').length,4,'the sequences end through B49a\'s own path');
- for(const sig of ['bool GoatCloseOwedDue(void)','void GoatCloseOwedAssert(const int open_count)','bool GoatCloseOwedHeld(void)'])assert.ok(!/SPREAD/.test(bodyOf(main,sig)),'no spread check: '+sig);
+ assert.ok(!/SPREAD/.test(bodyOf(main,'void GoatCloseOwedAssert(const int open_count)')),'no spread check');
  assert.equal(off.owed,false,'off: never owed');
  assert.equal(off.c.positions.length,2,'off: the refused close is dropped and Monday still holds the positions (the measured defect)');
  // After the wait a refusal still paces: 60 s, doubling; a tick never sends inside it.
@@ -296,11 +299,12 @@ const FRI=(h,mi=0,s=0)=>at(9,30,h,mi,s),SAT=(h,mi=0,s=0)=>at(9,31,h,mi,s),SUN=(h
  const entry=bodyOf(main,'bool DashboardEntryAllowed(const int op)');
  assert.ok(/if\(GoatEntriesHeld\(\)\) return false;/.test(entry),'new sequences and promotions');
  const add=bodyOf(main,'   bool Add_Level(double Level_New)');
- assert.ok(add.indexOf('if(GoatEntriesHeld()) return false;')>=0 && add.indexOf('if(GoatEntriesHeld()) return false;')<add.indexOf('if(Level_Count<Max_Seq_Levels'),'adds, before anything is built');
+ assert.ok(add.indexOf('if((Virtual || Level_Count==0) && GoatEntriesHeld()) return false;')>=0 && add.indexOf('if((Virtual || Level_Count==0) && GoatEntriesHeld()) return false;')<add.indexOf('if(Level_Count<Max_Seq_Levels'),'virtual levels, promotion and first levels, before anything is built');
+ assert.ok(add.indexOf('if(closeLots(lotsToCut))')<add.indexOf('if(GoatEntriesHeld()) return false;')&&add.indexOf('if(GoatEntriesHeld()) return false;')<add.indexOf('OpenPosition('),'the second check: past the unwind, ahead of every order');
  assert.equal((main.replace(/\/\/.*$/gm,'').match(/\bOpenPosition\(/g)||[]).length,2,'OpenPosition: one definition and one caller, inside Add_Level');
  assert.ok(add.includes('OpenPosition('),'so every order passes the guard');
  const users=[...main.replace(/\/\/.*$/gm,'').matchAll(/\bGoatEntriesHeld\(/g)].length;
- assert.equal(users,5,'the definition, the two gates, the hold watch and the status text: nothing else reads it');
+ assert.equal(users,6,'the definition, the start gate, the two in Add_Level, the hold watch and the status text: nothing else reads it');
  for(const [sig,label] of [['void CloseAllPositions(int OP,int magic=0)','closes'],['   void TrailingStoploss()','trailing'],['   bool EnforceSequenceMLPS(const string context)','MLPS'],['   void ClosePendingPump()','the close pump']])
   assert.ok(!/GoatEntriesHeld|g_GoatFeedAgeS/.test(bodyOf(main,sig)),label+' never read the guard');
  assert.ok(!/GoatEntriesHeld|g_GoatFeedAgeS/.test(bodyOf(TICK,'if(IsNewSecond())')),'nor the per-second block\'s stops');
@@ -389,7 +393,7 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  for(const [timing,tester,label] of [[0,0,'off, live'],[1,1,'on, tester']]){
   const c=chart({timing,tester,flag:0});c.GetMicrosecondCount=()=>{throw new Error('the clock is read: '+label);};
   assert.equal(c.GoatTimingStart(),0,label);c.GoatTimingSlot(0,0);c.GoatTimingTick(0);c.GoatTimingFlush();
-  assert.equal(c.GoatTimingText(),'',label+': nothing in the status file');assert.equal(c.GoatStatusLive(),false,label+': no status file');
+  assert.equal(c.GoatTimingText(),'',label+': nothing in the status file');c.GoatStatusFlush();assert.equal(c.writes.length,0,label+': no status file');
   assert.equal(c.g_GoatTimingTicks,0);assert.equal(c.prints.length,0,label+': no log line');
  }
  ok();}
@@ -403,8 +407,8 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  assert.deepEqual([c.g_GoatTimingSlotUS[0],c.g_GoatTimingSlotCalls[0]],[400,1],'a section');
  assert.equal(c.g_GoatTimingWindowUS,600,'a section inside a tick is not counted twice');
  t=(c.us=3000,c.GoatTimingStart());c.us=3250;c.GoatTimingSlot(6,t);assert.equal(c.g_GoatTimingWindowUS,850,'OnTimer is outside OnTick, so it counts');
- assert.equal(c.GoatStatusLive(),true,'the status file is written for it with the guard off');
  c.feed=FRI(10);c.server=FRI(10,0,40);c.tickTime=FRI(10);
+ c.GoatStatusFlush();assert.equal(c.writes.length,1,'the status file is written for it with the guard off');
  const kv=Object.fromEntries(c.GoatStatusText().trim().split('\n').map(l=>l.split('=')));
  assert.deepEqual([kv.timing_ticks,kv.timing_tick_us,kv.timing_tick_max_us,kv.timing_second_us,kv.timing_second_calls,kv.timing_timer_us],['2','600','500','400','1','250'],'in the file');
  assert.deepEqual([kv.timing_minute_calls,kv.timing_trailing_calls,kv.timing_signal_calls,kv.timing_exits_calls,kv.timing_sequence_calls],['0','0','0','0','0'],'every section named');
@@ -551,7 +555,7 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
 {// 19. Clock sync: nothing runs until the first real tick after connect. TimeTradeServer has no known offset before it.
  const boot=({trueTime,unsynced,lastTick,hourEnd=21})=>{const c=chart({hourEnd});c.dayStamps=[];c.GoatStateLive=()=>true;c.GoatStateDayRestore=()=>c.dayStamps.push(Math.floor(c.tm_cur/86400));
   c.retcode=10018;c.feed=lastTick;c.server=unsynced;c.tickTime=lastTick;c.trueTime=trueTime;
-  c.GoatFeedInitMark(false);c.GoatFeedGuardStamp();c.TickBody();c.GoatFeedInitMark(true);return c;};   // OnInit's own OnTick() call
+  c.g_GoatFeedInitDone=false;c.GoatFeedGuardStamp();c.TickBody();c.g_GoatFeedInitDone=true;return c;};   // OnInit's own OnTick() call
  // A restart in the first 2 h of a server day, UTC+2: the unsynced clock reads yesterday. The day must not be stamped from it.
  const r=boot({trueTime:at(9,29,0,30),unsynced:at(9,28,22,30),lastTick:at(9,28,21,0)});
  assert.deepEqual(r.dayStamps,[],'OnInit\'s tick stamps no day, so the state file\'s day section and its latched stop wait');
@@ -573,11 +577,10 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  d.step(FRI(10),FRI(10));assert.equal(d.g_GoatFeedSynced,true);d.TerminalInfoInteger=()=>0;d.GoatFeedSyncWatch();assert.equal(d.g_GoatFeedSynced,false,'a disconnect loses the clock');d.TerminalInfoInteger=()=>1;d.GoatFeedSyncWatch();assert.equal(d.g_GoatFeedSynced,false,'reconnecting is not enough');
  d.step(FRI(10,0,1),FRI(10,0,1));assert.equal(d.g_GoatFeedSynced,true,'the next real tick is');
  // Flag off, or the tester: never gated.
- for(const [flag,tester] of [[0,0],[1,1]]){const o=chart({flag,tester});assert.equal(o.GoatFeedUnsynced(),false);}
+ for(const [flag,tester] of [[0,0],[1,1]]){const o=chart({flag,tester});o.feed=FRI(10,0,7);o.TickBody();assert.equal(o.tm_cur,FRI(10,0,7),'the body runs');}
  // Placement: first in the body, and OnInit brackets its own call.
- const lines=TICK.split('\n').filter(l=>l.trim()&&!/^\s*\/\//.test(l));assert.match(lines[2],/if\(GoatFeedUnsynced\(\) && \(!g_GoatNoTickRun \|\| DStartEquity==0\.0\)\) return;/,'right after the mode returns, before the clock');
- const init=bodyOf(main,'int OnInit()');assert.ok(init.indexOf('GoatFeedInitMark(false);')>=0&&init.indexOf('GoatFeedInitMark(false);')<init.indexOf('OnTick(); Sleep(50);')&&init.indexOf('OnTick(); Sleep(50);')<init.indexOf('GoatFeedInitMark(true);'),'OnInit brackets its own OnTick()');
- assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('GoatFeedSyncWatch();'),'the timer watches the connection');
+ const lines=TICK.split('\n').filter(l=>l.trim()&&!/^\s*\/\//.test(l));assert.match(lines[2],/if\(GoatFeedGuardLive\(\) && !g_GoatFeedSynced && \(!g_GoatNoTickRun \|\| DStartEquity==0\.0\)\) return;/,'right after the mode returns, before the clock');
+ const init=bodyOf(main,'int OnInit()');assert.ok(init.indexOf('g_GoatFeedInitDone=false;')>=0&&init.indexOf('g_GoatFeedInitDone=false;')<init.indexOf('OnTick(); Sleep(50);')&&init.indexOf('OnTick(); Sleep(50);')<init.indexOf('g_GoatFeedInitDone=true;'),'OnInit brackets its own OnTick()');
  ok();}
 
 {// 20. A slow clock is provable and holds; a fast one is only reported. Raw skew, whatever GoatServerClock's floor hides.
@@ -640,8 +643,8 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  const fr=chart();fr.retcode=10018;fr.step(FRI(21,0,1),FRI(21,0,1));const n=fr.sends.length;fr.sessions={};for(let i=2;i<10;i++)fr.step(FRI(21,0,i),FRI(21,0,i));
  assert.equal(fr.sends.length,n,'the session table closed: not asked');assert.equal(fr.StopOut_Flag,true,'and the Friday stop stands');
  // A money stop is evaluated on the tick its own stop was up for: it was never skipped as already stopped.
- assert.ok(bodyOf(TICK,'if(IsNewSecond())').indexOf('GoatCloseOwedStopLower();')<bodyOf(TICK,'if(IsNewSecond())').indexOf('if(!StopOut_Flag && MaxLossLocal'),'lowered before the stops are read');
- assert.ok(bodyOf(TICK,'if(IsNewSecond())').indexOf('GoatCloseRealStopNote();')<bodyOf(TICK,'if(IsNewSecond())').indexOf('// End of Day/session'),'noted before the day and Friday actions');
+ assert.ok(bodyOf(TICK,'if(IsNewSecond())').indexOf('{StopOut_Flag=false; g_GoatCloseOwedStop=false;}')<bodyOf(TICK,'if(IsNewSecond())').indexOf('if(!StopOut_Flag && MaxLossLocal'),'lowered before the stops are read');
+ assert.ok(bodyOf(TICK,'if(IsNewSecond())').indexOf('g_GoatCloseRealStop=StopOut_Flag;')<bodyOf(TICK,'if(IsNewSecond())').indexOf('// End of Day/session'),'noted before the day and Friday actions');
  ok();}
 
 {// 23. Never-Init-ed sequences (Delay_Trade=0): dir stays OP_NIL (-2) and Virtual false, and every stop-out still calls End_Sequence on
@@ -682,7 +685,7 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  const gl=chart({hourEnd:23});gl.step(FRI(12),FRI(12));gl.MaxLossGlobal=500;gl.TerminalInfoInteger=()=>0;gl.GoatFeedSyncWatch();gl.TerminalInfoInteger=()=>1;gl.equity=9000;gl.nowMs+=6000;gl.GoatNoTickTimer();
  assert.deepEqual([gl.StopOut_Flag,gl.sends],[true,[12,11]],'MaxLossGlobal fires');
  // The gate still holds where it matters. A restart has no real tick, so no no-tick run can happen, and OnInit's tick runs nothing.
- const boot=chart({hourEnd:21});boot.feed=FRI(20,59,50);boot.server=FRI(23);boot.tickTime=FRI(20,59,50);boot.GoatFeedInitMark(false);boot.GoatFeedGuardStamp();boot.TickBody();boot.GoatFeedInitMark(true);
+ const boot=chart({hourEnd:21});boot.feed=FRI(20,59,50);boot.server=FRI(23);boot.tickTime=FRI(20,59,50);boot.g_GoatFeedInitDone=false;boot.GoatFeedGuardStamp();boot.TickBody();boot.g_GoatFeedInitDone=true;
  assert.deepEqual([boot.sends,boot.g_GoatServerNow],[[],0],'OnInit\'s tick: nothing');boot.nowMs+=70000;boot.GoatNoTickTimer();assert.deepEqual([boot.sends,boot.StopOut_Flag],[[],false],'and no no-tick run before a real tick');
  // A real tick after a blip with the gate up runs nothing it should not, then syncs: the sync comes from the stamp in OnTick, before the body.
  const unsynced=chart({hourEnd:21});unsynced.g_GoatFeedInitDone=false;unsynced.feed=FRI(20,59,50);unsynced.server=FRI(23);unsynced.tickTime=FRI(20,59,50);unsynced.TickBody();assert.deepEqual(unsynced.sends,[],'an unsynced real-tick path runs nothing');
@@ -771,6 +774,72 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  const s=chart({hourEnd:21});s.step(FRI(20,59,50),FRI(20,59,50));s.DStartEquity=0;s.nowMs+=70000;s.GoatNoTickTimer();assert.deepEqual(s.sends,[12,11],'synced: the no-tick pass runs');
  // Flag off: never gated, so the base's path is untouched.
  const off=chart({flag:0,hourEnd:21});off.step(FRI(20,59,50),FRI(20,59,50));off.DStartEquity=0;off.nowMs+=70000;off.GoatNoTickTimer();assert.deepEqual(off.sends,[12,11],'flag off: the base');
+ ok();}
+
+// The production Add_Level on a stubbed ladder.
+const ADD=js(bodyOf(main,'   bool Add_Level(double Level_New)').replace(/C'\d+,\d+,\d+'/g,'0'));
+function ladder({flag=1,tester=0,prog='CumPartial',lots=-0.02,levels=2,virtual=false,traded=true,active=true,age=999}={}){
+ const c=chart({flag,tester,positions:0});
+ Object.assign(c,{Virtual:virtual,Active:active,Traded:traded,dir:0,OP_BUY:0,OP_SELL:1,Level_Count:levels,Trades_Count:levels,Level_Last:1.1,Level_SL:0,Max_Seq_Levels:50,Max_Seq_Trades:50,ClosePendingReason:'',
+  Size_Grid:0.001,Size_Lock:0.001,Size_TP:0.001,Size_SL:0.001,Size_TSL:0.001,StartLots:0.1,Lots_Max:0,Delay_Trade:1,Delay_Trade_Live:1,Delay_Lots_Add:false,Desc:'Trend Buy',Level_Retrace:0,Retrace_Triggered:false,
+  BiasRescueActive:false,GuardRealStarted:traded,g_goat_first_order_refused:[false,false],MustCheck_Buy:true,MustCheck_Sell:true,bid:1.09,ask:1.09,Mode_Lots:7,FixedLots:7,ScaledLots:8,RiskperSeq:9,Lots:0.1,
+  Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Lots_Prog_Peak:3,Mode_Lots_Prog:{CumPartial:1,PeakSmart:2,Peak:3}[prog],LotsNorm:[0.1,0.2,lots,lots],LotsToBeSent:0,LastOpen:0,LastSL:0,LastTP:0,LastOrderTicket:0,LastDealTicket:0,Lots_Order:0.02,Ledger_Mode:0,Ledger_PositionJoin:1,PersistStartMsc:0,
+  Expiry:9e12,g_direction_guard_send_attempted:false,g_direction_guard_denied:false,TraceSequenceID:0,g_trace_current_sequence:0,Sequences:0});
+ c.TradeLevels=[];for(let i=0;i<levels;i++)c.TradeLevels.push({ticket:100+i,lots:0.1,price_level:1.1});
+ c.ArrayResize=(a,n)=>{while(a.length<n)a.push({});a.length=n;return n;};c.ArraySize=a=>a.length;c.MathAbs=Math.abs;c.MathMax=Math.max;c.MathMin=Math.min;c.SymbolInfoDouble=()=>0.01;c.Digits=()=>5;c.DoubleToString=(v,d)=>Number(v).toFixed(d);
+ c.CalcNextLotsCumPartial=()=>lots;c.CalcNextLotsPeakSmart=()=>lots;c.NormalizedLots=v=>v;
+ c.closeLotsCalls=[];c.closeLots=v=>{c.closeLotsCalls.push(v);return true;};c.orders=[];c.OpenPosition=(...a)=>{c.orders.push(a[2]);return 1;};c.locks=0;c.UpdateLockTPSL=()=>{c.locks++;};
+ c.built=0;c.BuildRawLots=()=>{c.built++;};c.AllowPeakSmartPositiveAdd=()=>true;c.AllowBiasRescuePositiveAdd=()=>true;c.FirstOrderGatesRefused=()=>false;c.TimeCurrent=()=>c.feed;
+ vm.runInContext('function Add_Level(Level_New){'+ADD+'}',c.__ctx);
+ c.step(FRI(12),FRI(12)+age);
+ return c;
+}
+const snapshot=c=>JSON.stringify([c.Level_Count,c.Trades_Count,c.Level_Last,c.Level_Retrace,c.Retrace_Triggered,c.TradeLevels,c.locks,c.StartLots]);
+
+{// 29. A hold blocks only what increases exposure. Add_Level's negative-lot branch is a close: it runs on a descending ladder under a hold.
+ for(const prog of ['CumPartial','PeakSmart','Peak']){
+  const u=ladder({prog,lots:-0.02});assert.equal(u.GoatEntriesHeld(),true,prog+': held');
+  assert.equal(u.Add_Level(1.09),true,prog+': the unwind returns true');
+  assert.deepEqual(u.closeLotsCalls,[0.02],prog+': closeLots runs');assert.deepEqual(u.orders,[],prog+': no order');
+  assert.deepEqual([u.Level_Count,u.Trades_Count,u.Level_Last],[3,3,1.09],prog+': its virtual level is written');assert.equal(u.locks,1,prog+': and the lock refreshed');
+  // A positive add under the same hold is refused, with nothing half-written.
+  const p=ladder({prog,lots:0.02});const before=snapshot(p);
+  assert.equal(p.Add_Level(1.09),false,prog+': a positive add is held');assert.deepEqual([p.orders,p.closeLotsCalls],[[],[]],prog+': no order, no close');assert.equal(snapshot(p),before,prog+': no level, count, price or lock moved');
+  // Not held: both run, so the check is the hold and nothing else.
+  const free=ladder({prog,lots:0.02,age:0});assert.equal(free.GoatEntriesHeld(),false);free.Add_Level(1.09);assert.deepEqual(free.orders,[0.02],prog+': not held, the add goes');
+ }
+ // A refused unwind leaves the same: no level is written for a close that did not happen.
+ const ref=ladder({lots:-0.02});ref.closeLots=v=>{ref.closeLotsCalls.push(v);return false;};const b0=snapshot(ref);assert.equal(ref.Add_Level(1.09),false);assert.equal(snapshot(ref),b0,'nothing written');
+ // Too small to be a close: nothing reduces, so it is held like any other level.
+ const dust=ladder({lots:-0.001});const b1=snapshot(dust);assert.equal(dust.Add_Level(1.09),false,'below the volume minimum');assert.deepEqual(dust.closeLotsCalls,[]);assert.equal(snapshot(dust),b1);
+ // A zero-lot level writes a level at the old price: held.
+ const zero=ladder({lots:0});const b2=snapshot(zero);assert.equal(zero.Add_Level(1.09),false,'a zero level');assert.equal(snapshot(zero),b2);
+ // Virtual levels, promotion and a real first level are held first, before anything is built.
+ const v=ladder({virtual:true,lots:0.02});const b3=snapshot(v);assert.equal(v.Add_Level(1.09),false,'a virtual level');assert.equal(snapshot(v),b3);
+ const vu=ladder({virtual:true,lots:-0.02});assert.equal(vu.Add_Level(1.09),false,'a virtual unwind has no real exposure: held');assert.deepEqual(vu.closeLotsCalls,[]);
+ const pr=ladder({virtual:true,levels:1,lots:0.02});let promoted=0;pr.Seq_Buy={Active:false,Add_Level:()=>{promoted++;return true;}};pr.DashboardEntryAllowed=()=>true;assert.equal(pr.Add_Level(1.09),false);assert.equal(promoted,0,'a promotion');
+ const first=ladder({levels:0,traded:false,active:false,lots:0.02});first.Mode_Lots=first.FixedLots;assert.equal(first.Add_Level(1.09),false,'a real first level');assert.deepEqual([first.built,first.orders],[0,[]],'its ladder is never built');
+ // Flag off, and the tester with it on: Add_Level never reads the hold, whatever the feed.
+ for(const [flag,tester] of [[0,0],[1,1]]){const o=ladder({flag,tester,lots:0.02});o.Add_Level(1.09);assert.deepEqual(o.orders,[0.02],'no hold: flag '+flag);}
+ // The other exposure-reducing routes never pass the hold: named here so a new guard on them fails.
+ for(const [sig,label] of [['   bool closeLots(double lotsReq)','closeLots'],['   bool HandlePeakSmartRetrace(double price)','the Smart Peak retrace'],['   void CloseSequencePositions(const string reason)','a sequence close'],['void CloseAllPositions(int OP,int magic=0)','CloseAllPositions']])
+  assert.ok(!/GoatEntriesHeld|g_GoatFeedAgeS|g_GoatClockSlowHeld/.test(bodyOf(main,sig)),label+' never reads the hold');
+ assert.ok(/closeLots\(lotsToClose\)/.test(main)&&!/GoatEntriesHeld/.test(main.slice(main.lastIndexOf('{',main.indexOf('closeLots(lotsToClose)')-1500),main.indexOf('closeLots(lotsToClose)'))),'the retrace close runs without it');
+ ok();}
+
+{// 30. AGENTS.md: a one-line helper needs more than two callers. Every new function here that is a single statement is counted.
+ const code=main.replace(/\/\/.*$/gm,'');
+ const blocks=['lag-a','lag-t','lag-b'].map(n=>main.slice(main.indexOf('// B49b:begin '+n),main.indexOf('// B49b:end '+n))).join('\n');
+ const statements=b=>b.replace(/\/\/.*$/gm,'').replace(/"(?:\\.|[^"\\\n])*"/g,'""').split(';').map(s=>s.trim()).filter(Boolean).length;
+ const singles=[];
+ for(const m of blocks.matchAll(/^(?:bool|void|int|long|ulong|double|string|datetime)\s+(Goat\w+)\([^)]*\)\s*\n\s*\{/gm)){
+  const body=bodyOf(main,m[0].replace(/\s*\n\s*\{$/,''));
+  if(statements(body)!==1||/\bfor\b|\bwhile\b/.test(body))continue;
+  const callers=(code.match(new RegExp('\\b'+m[1]+'\\(','g'))||[]).length+(header.replace(/\/\/.*$/gm,'').match(new RegExp('\\b'+m[1]+'\\(','g'))||[]).length-1;
+  singles.push([m[1],callers]);assert.ok(callers>2,m[1]+' is one line with '+callers+' caller(s): inline it');
+ }
+ assert.deepEqual(singles.map(s=>s[0]).sort(),['GoatFeedGuardLive','GoatTickLoadLive','GoatTimingLive','GoatTimingStart'],'the one-line helpers that stand, each with more than two callers');
+ for(const gone of ['GoatCloseOwedHeld','GoatCloseOwedDue','GoatStatusLive','GoatFeedInitMark','GoatFeedUnsynced','GoatFeedSyncWatch','GoatCloseOwedStopLower','GoatCloseRealStopNote'])assert.ok(!new RegExp('\\b'+gone+'\\(').test(code),gone+' stays inlined');
  ok();}
 
 //@@NEXT@@

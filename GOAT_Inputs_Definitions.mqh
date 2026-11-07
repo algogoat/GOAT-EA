@@ -955,6 +955,7 @@ double   bid,ask;
 long     Hour_Start[7],Hour_End[7],Minute_Start[7],Minute_End[7];
 datetime tm_cur,LastTradeTime,LastStopoutTime,DStartTime;
 bool     g_GoatNoTickRun=false;   // B49b (F4): true while the no-tick timer runs OnTick's per-second block (GoatNoTickTimer)
+bool     g_GoatFeedInitDone=false; // B49b (LAG-A): OnInit's own OnTick() call has passed
 uint     LastRetCode,Shift_Sig;
 long     LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket; // B49a: 64-bit; an int wraps negative above INT_MAX (scripts/test_ticket_width.cjs)
 int      LastTradeCountBuy=0,LastTradeCountSell=0; // B49a: split from the ticket line, unchanged

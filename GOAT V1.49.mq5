@@ -7433,7 +7433,7 @@ void GoatTickBody()
   {
    if(GOATDeviceActivationOnly()) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return; //return; // returning for testing
-   if(GoatFeedUnsynced() && !g_GoatNoTickRun) return; // B49b (LAG-A): no tick body on an unknown clock until the first real tick after connect; a no-tick run reads the monotonic clock and needs a real tick to exist at all
+   if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return; // B49b (LAG-A): no tick body on an unknown clock until the first real tick after connect; a no-tick run reads the monotonic clock and needs a real tick to exist at all, and DStartEquity 0 means the day block never ran, as when the first real tick came while disconnected: the block below divides by it
    //if(!IsLicensed())    {Alert("Trial Expired"); return;}
    //if(!FastSpeed_Flag) OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,false);
    bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);

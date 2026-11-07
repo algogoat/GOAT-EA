@@ -61,8 +61,11 @@ const MUTANTS=[
  ['main','a closed session starts the wait in a backlog','bool stale_open=(feed_held && (long)g_GoatServerNow/86400>owed_day && GoatNoTickSessionOpen(_Symbol,g_GoatServerNow));','bool stale_open=(feed_held && (long)g_GoatServerNow/86400>owed_day);'],
  ['main','the quote keeps the old pacing','   g_GoatCloseOwedQuoteMs=now_ms; g_GoatCloseOwedNextMs=0; g_GoatCloseOwedBackoffMs=0;\n','   g_GoatCloseOwedQuoteMs=now_ms;\n'],
  // Clock sync.
- ['main','the body runs on an unknown clock','   if(GoatFeedUnsynced() && !g_GoatNoTickRun) return; // B49b (LAG-A)','   // B49b (LAG-A)'],
- ['main','the gate switches off the no-tick exits','if(GoatFeedUnsynced() && !g_GoatNoTickRun) return;','if(GoatFeedUnsynced()) return;'],
+ ['main','the body runs on an unknown clock','   if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return; // B49b (LAG-A)','   // B49b (LAG-A)'],
+ ['main','the gate switches off the no-tick exits','if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return;','if(GoatFeedUnsynced()) return;'],
+ ['main','a no-tick run reaches the divide on a chart that never ran','if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return;','if(GoatFeedUnsynced() && !g_GoatNoTickRun) return;'],
+ ['main','negative equity loses its no-tick exits','(!g_GoatNoTickRun || DStartEquity==0.0)','(!g_GoatNoTickRun || DStartEquity<=0.0)'],
+ ['main','the zero check ignores the sync','if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return;','if(DStartEquity==0.0 || (GoatFeedUnsynced() && !g_GoatNoTickRun)) return;'],
  ['main','OnInit\'s own tick counts as real','   if(g_GoatFeedInitDone && TerminalInfoInteger(TERMINAL_CONNECTED)!=0) g_GoatFeedSynced=true;','   if(TerminalInfoInteger(TERMINAL_CONNECTED)!=0) g_GoatFeedSynced=true;'],
  ['main','a tick while disconnected counts','   if(g_GoatFeedInitDone && TerminalInfoInteger(TERMINAL_CONNECTED)!=0) g_GoatFeedSynced=true;','   if(g_GoatFeedInitDone) g_GoatFeedSynced=true;'],
  ['main','a tick never syncs','   if(g_GoatFeedInitDone && TerminalInfoInteger(TERMINAL_CONNECTED)!=0) g_GoatFeedSynced=true;\n',''],

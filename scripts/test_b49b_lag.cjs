@@ -7,7 +7,8 @@
 //    the weekend; 4 a backlog over the open; 5 a restart; 6 the guard's thresholds; 7 exits never read it; 8 the status file;
 //    9 the daily stops' window; 10 the no-tick clock; 10b a rejection that returned true; 19 clock sync; 20 a slow or fast clock;
 //    21 a hold ends virtual candidates; 22 the owed close never hides or withholds a real stop;
-//    24 F4's exits after a reconnect; 25 a hold ends paper-level sequences; 26 the Monday wait cannot be spent early; 27 clock logs.
+//    24 F4's exits after a reconnect; 25 a hold ends paper-level sequences; 26 the Monday wait cannot be spent early; 27 clock logs;
+//    28 a no-tick run on a chart whose body has never run.
 // T. Diag_TickTiming: read-only, counted, and written with the guard off (11-13).
 // B. Fix_TickLoad: truly bounded, the back-off, what changes with it on, and A never needs B (14-18).
 // test_b49b_lag_mutations.cjs runs this file on mutated sources (GOAT_EA_MAIN, GOAT_EA_HEADER).
@@ -57,7 +58,7 @@ const TRADE_CODES=b=>Object.assign(b,{TRADE_RETCODE_NO_CHANGES:10025,TRADE_RETCO
 const nameOf=sig=>sig.match(/(\w+)\(/)[1];
 const TICK=bodyOf(main,'void GoatTickBody()');
 // The production day block and per-second block, in GoatTickBody's order; the minute block sits between them and is not run.
-const PREFIX=TICK.slice(TICK.indexOf('if(GoatFeedUnsynced() && !g_GoatNoTickRun) return;'),TICK.indexOf('static double MinuteLowEquity'));
+const PREFIX=TICK.slice(TICK.indexOf('if(GoatFeedUnsynced() && (!g_GoatNoTickRun || DStartEquity==0.0)) return;'),TICK.indexOf('static double MinuteLowEquity'));
 const SECOND='if(IsNewSecond())\n{'+bodyOf(TICK,'if(IsNewSecond())')+'}';
 const CLOSE=bodyOf(main,'void CloseAllPositions(int OP,int magic=0)').replace(/\bCTrade m_trade;/,'');
 const HELPERS=['IsNewSecond','IsNewDay'];
@@ -574,7 +575,7 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  // Flag off, or the tester: never gated.
  for(const [flag,tester] of [[0,0],[1,1]]){const o=chart({flag,tester});assert.equal(o.GoatFeedUnsynced(),false);}
  // Placement: first in the body, and OnInit brackets its own call.
- const lines=TICK.split('\n').filter(l=>l.trim()&&!/^\s*\/\//.test(l));assert.match(lines[2],/if\(GoatFeedUnsynced\(\) && !g_GoatNoTickRun\) return;/,'right after the mode returns, before the clock');
+ const lines=TICK.split('\n').filter(l=>l.trim()&&!/^\s*\/\//.test(l));assert.match(lines[2],/if\(GoatFeedUnsynced\(\) && \(!g_GoatNoTickRun \|\| DStartEquity==0\.0\)\) return;/,'right after the mode returns, before the clock');
  const init=bodyOf(main,'int OnInit()');assert.ok(init.indexOf('GoatFeedInitMark(false);')>=0&&init.indexOf('GoatFeedInitMark(false);')<init.indexOf('OnTick(); Sleep(50);')&&init.indexOf('OnTick(); Sleep(50);')<init.indexOf('GoatFeedInitMark(true);'),'OnInit brackets its own OnTick()');
  assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('GoatFeedSyncWatch();'),'the timer watches the connection');
  ok();}
@@ -747,6 +748,29 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  for(let i=0;i<3;i++)round();assert.equal(fast(),0,'three writes: not steady yet');round();assert.equal(fast(),1,'four: said');for(let i=0;i<6;i++)round();assert.equal(fast(),1,'once');assert.equal(f.GoatEntriesHeld(),false,'and nothing is refused on it');
  f.step(FRI(12,2,1),FRI(12,2,1));f.nowMs+=15000;f.GoatStatusFlush();assert.equal(f.g_GoatClockFastLogged,false,'a fresh tick ends the episode');assert.equal(f.g_GoatClockFastWrites,0);
  const b9=chart({positions:0});b9.step(FRI(12),FRI(12)+9);for(let i=0;i<6;i++){b9.step(FRI(12),FRI(12)+9);b9.nowMs+=15000;b9.GoatStatusFlush();}assert.equal(b9.g_GoatClockFastWrites,0,'under 10 s: no episode');
+ ok();}
+
+{// 28. The first real tick arrives while disconnected, so the body has never run and DStartEquity is still its initial 0. After the
+ // reconnect F4's timer must not reach the per-second block, which divides by it: in MQL5 a zero divide removes the EA.
+ assert.match(header,/^double\s+DStartEquity=0,/m,'its initial value');assert.match(TICK,/CurrentDDD = 100\*-1\*DChangeEquity\/DStartEquity;/,'and the divide');
+ const never=()=>{const c=chart({hourEnd:21});c.DStartEquity=0;c.CurrentDDD=0;c.TerminalInfoInteger=()=>0;c.feed=FRI(21,0,5);c.server=FRI(21,0,5);c.tickTime=FRI(21,0,5);c.nowMs+=1000;c.g_GoatLastTickMs=c.nowMs;c.g_GoatLastTickTime=c.feed;c.GoatFeedGuardStamp();c.TickBody();c.TerminalInfoInteger=()=>1;return c;};
+ const c=never();assert.equal(c.g_GoatFeedSynced,false,'a real tick while disconnected is not a sync');assert.equal(c.DStartEquity,0,'the body has never run');
+ c.nowMs+=6000;c.GoatNoTickTimer();
+ assert.equal(c.CurrentDDD,0,'the divide was not reached');assert.deepEqual([c.sends,c.StopOut_Flag],[[],false],'and nothing else of the block ran');
+ assert.equal(c.g_GoatLastNoTickRunMs>0,true,'the timer did try');
+ // The next real tick, connected, runs the day block first, and the chart is whole from there.
+ c.step(FRI(21,0,12),FRI(21,0,12));assert.deepEqual([c.g_GoatFeedSynced,c.DStartEquity],[true,10000],'the first connected tick syncs and sets the day');assert.ok(Number.isFinite(c.CurrentDDD));
+ // It never suppresses a chart that has really run. Positive equity: section 24. Negative equity at the day's start: 7906 does not divide by zero, so its exits still run after a blip.
+ const blipped=(setup)=>{const r=chart({hourEnd:21});r.step(FRI(20,59,50),FRI(20,59,50));setup(r);r.TerminalInfoInteger=()=>0;r.GoatFeedSyncWatch();r.TerminalInfoInteger=()=>1;r.nowMs+=70000;r.GoatNoTickTimer();return r;};
+ assert.deepEqual(blipped(r=>{r.DStartEquity=-50;}).sends,[12,11],'negative: the no-tick close goes');
+ assert.deepEqual(blipped(r=>{r.DStartEquity=10000;}).sends,[12,11],'positive: the no-tick close goes');
+ // Exactly 0 after a real run is the one shape it holds back, and only while unsynced: that chart's own first per-second block already divided by it, as on the base.
+ const z=blipped(r=>{r.DStartEquity=0;});assert.deepEqual(z.sends,[],'exactly 0, unsynced, no tick since: held back until the next real tick');
+ z.equity=10000;z.step(FRI(21,1,20),FRI(21,1,20));assert.equal(z.g_GoatFeedSynced,true);assert.deepEqual(z.sends,[12,11],'which runs the block, as flag off would');
+ // Synced, the gate does not apply whatever DStartEquity reads.
+ const s=chart({hourEnd:21});s.step(FRI(20,59,50),FRI(20,59,50));s.DStartEquity=0;s.nowMs+=70000;s.GoatNoTickTimer();assert.deepEqual(s.sends,[12,11],'synced: the no-tick pass runs');
+ // Flag off: never gated, so the base's path is untouched.
+ const off=chart({flag:0,hourEnd:21});off.step(FRI(20,59,50),FRI(20,59,50));off.DStartEquity=0;off.nowMs+=70000;off.GoatNoTickTimer();assert.deepEqual(off.sends,[12,11],'flag off: the base');
  ok();}
 
 //@@NEXT@@

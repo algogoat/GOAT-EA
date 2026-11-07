@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_sha256": "6d80587c470f2234d4ff84fc90000e697311622ab78abd84bbda9def4ddc7998",
+  "source_sha256": "9aeece8dbe68f73d343cab5b6dcbcb6bb773b7f8d9d2ad15256ef1d79ce803a7",
   "defines": {
     "GOAT_VERSION_LABEL": "\"1.49\"",
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
@@ -1326,6 +1326,30 @@
       "type": "double",
       "declaration": "input",
       "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Single_Partial_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Single_Partial_Fraction": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Single_Partial_BE": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
       "optimizable": true,
       "enum_choices": null,
       "dependency_audited": false

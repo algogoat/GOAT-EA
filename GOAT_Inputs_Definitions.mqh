@@ -611,6 +611,9 @@ if(Single_Flat_Only)                      FileWrite(FileSET_handle,"Single_Flat_
 if(Single_BE_ATR!=0.0)                    FileWrite(FileSET_handle,"Single_BE_ATR="+(string)Single_BE_ATR);
 if(Single_Trail_Start_ATR!=0.0)           FileWrite(FileSET_handle,"Single_Trail_Start_ATR="+(string)Single_Trail_Start_ATR);
 if(Single_Trail_ATR!=0.0)                 FileWrite(FileSET_handle,"Single_Trail_ATR="+(string)Single_Trail_ATR);
+if(Single_Partial_ATR!=0.0)               FileWrite(FileSET_handle,"Single_Partial_ATR="+(string)Single_Partial_ATR);
+if(Single_Partial_Fraction!=0.0)          FileWrite(FileSET_handle,"Single_Partial_Fraction="+(string)Single_Partial_Fraction);
+if(Single_Partial_BE)                     FileWrite(FileSET_handle,"Single_Partial_BE="+(string)Single_Partial_BE);
 // B51:end b51-writeset
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
@@ -862,6 +865,9 @@ sinput   bool                    Single_Flat_Only              =                
 input    double                  Single_BE_ATR                 =                           0.0;       // Single: stop to entry after N ATR in favour (0 = off)
 input    double                  Single_Trail_Start_ATR        =                           0.0;       // Single: trailing starts after N ATR in favour
 input    double                  Single_Trail_ATR              =                           0.0;       // Single: trailing distance in ATR (0 = off)
+input    double                  Single_Partial_ATR            =                           0.0;       // Single: partial close after N ATR in favour (0 = off)
+input    double                  Single_Partial_Fraction       =                           0.0;       // Single: fraction of the position it closes (above 0, below 1)
+input    bool                    Single_Partial_BE             =                         false;       // Single: remainder's stop to entry when the partial fills
 // B51 globals (beta-1a). g_GoatRandomEpisodeBar[signal]: the open time of the signal bar of the running episode's first
 // check (0 between episodes). g_GoatRandomSignal[side]: the signal of the episode that opened the single on that side.
 datetime g_GoatRandomEpisodeBar[2]={0,0};

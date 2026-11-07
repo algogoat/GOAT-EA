@@ -110,6 +110,16 @@ class PortedRuleTests(RuleCase):
                                                      Single_Trail_ATR='0.0||0.0||0.5||1.0||Y')),
         'SINGLE_EXITS_WITHOUT_SINGLE': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_BE_ATR='1.0'),
                                         dict(Engine_Mode='0', Single_BE_ATR='1.0')),
+        'SINGLE_PARTIAL_NEGATIVE': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5'),
+                                    dict(Single_Partial_ATR='-1.0')),
+        'SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.99'),
+                                                  dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='1.0')),
+        'SINGLE_PARTIAL_INCOMPLETE': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5'),
+                                      dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_Fraction='0.5')),
+        'SINGLE_PARTIAL_BE_WITHOUT_PARTIAL': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5', Single_Partial_BE='true'),
+                                              dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_BE='true')),
+        'SINGLE_PARTIAL_WITHOUT_SINGLE': (dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5'),
+                                          dict(Engine_Mode='0', Single_Partial_ATR='1.0', Single_Partial_Fraction='0.5')),
     }
 
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
@@ -136,12 +146,15 @@ class PortedRuleTests(RuleCase):
         # B51 (beta-1a): a B50-alpha schema (no B51 input) carries none of B51's rules and every B50 one; a B51 schema
         # that lost one of its inputs fails closed.
         alpha = copy.deepcopy(SCHEMAS['1.49'])
-        for name in ('Random_Direction', 'Random_Seed', 'Single_Flat_Only', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR'):
+        for name in ('Random_Direction', 'Random_Seed', 'Single_Flat_Only', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR',
+                     'Single_Partial_ATR', 'Single_Partial_Fraction', 'Single_Partial_BE'):
             del alpha['inputs'][name]
         b51 = {'RANDOM_DIRECTION_WITHOUT_SINGLE', 'RANDOM_SEED_NEGATIVE', 'RANDOM_DIRECTION_ONE_DIRECTION', 'RANDOM_DIRECTION_WITHOUT_FLAT_ONLY',
-               'SINGLE_FLAT_ONLY_WITHOUT_SINGLE', 'SINGLE_BE_TRAIL_NEGATIVE', 'SINGLE_TRAIL_START_WITHOUT_DISTANCE', 'SINGLE_EXITS_WITHOUT_SINGLE'}
+               'SINGLE_FLAT_ONLY_WITHOUT_SINGLE', 'SINGLE_BE_TRAIL_NEGATIVE', 'SINGLE_TRAIL_START_WITHOUT_DISTANCE', 'SINGLE_EXITS_WITHOUT_SINGLE',
+               'SINGLE_PARTIAL_NEGATIVE', 'SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE', 'SINGLE_PARTIAL_INCOMPLETE', 'SINGLE_PARTIAL_BE_WITHOUT_PARTIAL',
+               'SINGLE_PARTIAL_WITHOUT_SINGLE'}
         self.assertEqual({rule['id'] for rule in applicable_rules(alpha)}, {rule['id'] for rule in EA_INIT_RULES} - b51)
-        for lost in ('Random_Direction', 'Random_Seed', 'Single_Trail_ATR'):
+        for lost in ('Random_Direction', 'Random_Seed', 'Single_Trail_ATR', 'Single_Partial_BE'):
             with self.subTest(lost=lost):
                 damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs'][lost]
                 with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no ' + lost):
@@ -488,11 +501,11 @@ class InventoryTests(unittest.TestCase):
         # B50 (A0) added eleven: seven input refusals (ported), the pre-2007 test start of the New York clock (a tester
         # rule, GOAT-EA#273 P3), the netting account and two indicator handles (not ported).
         # B51 (beta-1a) added six: five input refusals (ported) and the benchmark on a live chart (not ported); beta-1b
-        # three input refusals (ported).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (71, 8, 75))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 42)
+        # three input refusals (ported). Section 8.3-8.4 added six: five input refusals (ported) and the demo gate (not ported).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (77, 8, 81))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 47)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (37, 2, 36))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (42, 2, 37))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [3833, 3943, 3960, 4235])

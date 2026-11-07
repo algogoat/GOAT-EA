@@ -4492,6 +4492,12 @@ int OnInit()
    if(Single_BE_ATR<0.0 || Single_Trail_Start_ATR<0.0 || Single_Trail_ATR<0.0) {Alert("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR cannot be negative."); return INIT_PARAMETERS_INCORRECT;} // B51 (beta-1b)
    if(Single_Trail_Start_ATR>0.0 && !(Single_Trail_ATR>0.0)) {Alert("Initialization Failed: Single_Trail_Start_ATR needs Single_Trail_ATR > 0 (a trailing start without a distance)."); return INIT_PARAMETERS_INCORRECT;} // B51 (beta-1b)
    if(Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0)) {Alert("Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;} // B51 (beta-1b)
+   if(Single_Partial_ATR<0.0 || Single_Partial_Fraction<0.0) {Alert("Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction cannot be negative."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
+   if(Single_Partial_Fraction>=1.0) {Alert("Initialization Failed: Single_Partial_Fraction must be below 1 (closing it all is not a partial close)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
+   if((Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)) {Alert("Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction need each other (a trigger and a fraction)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
+   if(Single_Partial_BE && !(Single_Partial_ATR>0.0)) {Alert("Initialization Failed: Single_Partial_BE needs Single_Partial_ATR > 0 (no partial close, nothing to move the stop on)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
+   if(Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0) {Alert("Initialization Failed: Single_Partial_ATR, Single_Partial_Fraction and Single_Partial_BE need the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;} // B51 (section 8.3)
+   if(Engine_Mode==Engine_Single && GoatSingleAccountRefusal()!="") {Alert("Initialization Failed: the single-trade engine runs only in the strategy tester or on a broker-verified demo account ("+GoatSingleAccountRefusal()+")."); return INIT_FAILED;} // B51 (section 8.4): real accounts stay refused, and no input overrides it
 // B51:end b51-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
@@ -6897,6 +6903,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    if(CheckTrailingLockTPNow())// && Active)
    {
+    GoatSinglePartial(); // B51 (section 8.3): the single's one partial close, before its stop moves
     GoatSingleModify(); // B51 (beta-1b): the single's break-even and trailing (TrailingStoploss never runs for a single: its lock is parked)
     if(Seq_Buy.Active && bid > Seq_Buy.Level_Lock)
     {
@@ -7454,6 +7461,7 @@ bool GoatSingleOpen(SEQUENCE &s,double price)
   {
    int b50_side=(s.dir==OP_SELL ? 1 : 0);
    if(s.Virtual || s.Active || s.Traded) return false;            // only an idle real sequence: never a grid add, never a virtual leg
+   if(GoatSingleAccountRefusal()!="") {GoatSingleRefusal(b50_side,8,s.Desc,GoatSingleAccountRefusal()); return false;} // B51 (section 8.4): the tester or a broker-verified demo, asked on every attempt
    if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove(); return false;} // as Add_Level
    if(GoatCidGuardAddFrozen(s.dir,s.Level_Count+1)) return false; // B47: cid_duplicate freezes a real sequence's adds (as Add_Level)
    if(s.ManageOnlyFrozen(s.Level_Count+1)) return false;          // B49a (F1-lite): an unwritten restart record freezes adds (as Add_Level)
@@ -7733,6 +7741,9 @@ void GoatSingleModifySequence(SEQUENCE &s)
       double b51_favour=(b51_buy ? b51_px-b51_open : b51_open-b51_px);
       bool   b51_be=(Single_BE_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-b51_eps);
       bool   b51_trail=(Single_Trail_ATR>0.0 && b51_favour>=Single_Trail_Start_ATR*b51_atr-b51_eps);
+      // B51 (section 8.3): Single_Partial_BE: the partial has filled and the entry itself is a legal stop. This condition
+      // latches, so unlike Single_BE_ATR it never clamps: after a reversal it waits instead of squeezing the stop under the price.
+      if(!b51_be && Single_Partial_BE && GoatSinglePartialDone(b51_tk) && (b51_buy ? b51_open<=b51_legal+b51_eps : b51_open>=b51_legal-b51_eps)) b51_be=true;
       if(!b51_be && !b51_trail) continue;
       double b51_target=b51_open;
       if(b51_trail)
@@ -7754,11 +7765,207 @@ void GoatSingleModifySequence(SEQUENCE &s)
   }
 void GoatSingleModify()
   {
-   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || (!(Single_BE_ATR>0.0) && !(Single_Trail_ATR>0.0))) return;
+   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || (!(Single_BE_ATR>0.0) && !(Single_Trail_ATR>0.0) && !Single_Partial_BE)) return; // B51 (section 8.3): Single_Partial_BE moves a stop too
    GoatSingleModifySequence(Seq_Buy);
    GoatSingleModifySequence(Seq_Sell);
   }
 // B51:end b51-modify
+// B51:begin b51-partial
+// B51 (docs/b50/B50_ALPHA_DESIGN.md section 8.3): the single's one partial close, on the trailing cadence, before its
+// stop moves. Once the price is Single_Partial_ATR x the entry's ATR in favour, Single_Partial_Fraction of the position
+// closes, once per position.
+// - Once only, across restarts: the broker decides. A position with an exit deal in its history, or with less volume than
+//   its entry deals, has had its partial (ours, one whose reply was lost, or a manual one). That read runs once per
+//   position in each run of the EA and again before every send; an unreadable history sends nothing. The slot below only
+//   saves reads, so no new field joins the restart record and a crash between the fill and any write cannot double-close.
+// - Legal volumes: the close and the remainder must each be at least the volume minimum and a multiple of the step, and
+//   the close at most the maximum. Otherwise the position skips its partial for good, logged once; a broker's
+//   TRADE_RETCODE_INVALID_VOLUME does the same.
+// - A refused close logs one line per attempt and waits 5 s, 30 s, then 60 s steady, per ticket, from the first failure:
+//   a lost reply may still fill, so no close is resent at the next check.
+// - The remainder: the same ticket, SL and TP; GoatSingleModify carries on managing it with the entry's ATR. With
+//   Single_Partial_BE its stop goes to the entry through GoatSingleModifySequence, but never clamped (see there).
+#define GOAT_PARTIAL_UNREAD        0   // this run has not read the position's history
+#define GOAT_PARTIAL_PENDING       1   // read: no partial yet
+#define GOAT_PARTIAL_DONE          2   // read or filled: the position has had its partial
+#define GOAT_PARTIAL_SKIPPED       3   // illegal volumes: this position never closes a part
+#define GOAT_SINGLE_PARTIAL_SLOTS  8   // positions tracked at once (a slot whose position is gone is reused)
+ulong    g_GoatPartialTicket[GOAT_SINGLE_PARTIAL_SLOTS];
+int      g_GoatPartialState[GOAT_SINGLE_PARTIAL_SLOTS];
+int      g_GoatPartialFails[GOAT_SINGLE_PARTIAL_SLOTS];
+datetime g_GoatPartialNext[GOAT_SINGLE_PARTIAL_SLOTS];
+bool     g_GoatPartialNoted[GOAT_SINGLE_PARTIAL_SLOTS];
+int GoatSinglePartialSlot(const ulong tk)
+  {
+   for(int b51_j=0;b51_j<GOAT_SINGLE_PARTIAL_SLOTS;b51_j++) if(g_GoatPartialTicket[b51_j]==tk) return b51_j;
+   for(int b51_j=0;b51_j<GOAT_SINGLE_PARTIAL_SLOTS;b51_j++)
+      if(g_GoatPartialTicket[b51_j]==0 || !PositionSelectByTicket(g_GoatPartialTicket[b51_j]))
+        {
+         g_GoatPartialTicket[b51_j]=tk; g_GoatPartialState[b51_j]=GOAT_PARTIAL_UNREAD; g_GoatPartialFails[b51_j]=0;
+         g_GoatPartialNext[b51_j]=0; g_GoatPartialNoted[b51_j]=false;
+         return b51_j;
+        }
+   return -1;                                                // every slot holds a live position: no record, so no close
+  }
+// Has this ticket had its partial, as far as this run has read? (Single_Partial_BE, from GoatSingleModifySequence.)
+bool GoatSinglePartialDone(const ulong tk)
+  {
+   for(int b51_j=0;b51_j<GOAT_SINGLE_PARTIAL_SLOTS;b51_j++)
+      if(g_GoatPartialTicket[b51_j]==tk) return (g_GoatPartialState[b51_j]==GOAT_PARTIAL_DONE);
+   return false;
+  }
+// The broker's answer for one position: 1 it has had a partial, 0 it has not, -1 unknown now (no entry deal in the loaded
+// history yet, or the read failed), which sends nothing.
+int GoatSinglePartialTruth(const ulong tk)
+  {
+   if(!PositionSelectByTicket(tk)) return -1;
+   ulong  b51_id=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   double b51_vol=PositionGetDouble(POSITION_VOLUME);
+   if(b51_id==0 || !HistorySelectByPosition(b51_id)) return -1;
+   double b51_in=0.0;
+   bool   b51_out=false;
+   for(int b51_j=0;b51_j<HistoryDealsTotal();b51_j++)
+     {
+      ulong b51_deal=HistoryDealGetTicket(b51_j);
+      if(b51_deal==0) return -1;
+      long b51_entry=HistoryDealGetInteger(b51_deal,DEAL_ENTRY);
+      if(b51_entry==DEAL_ENTRY_IN) b51_in+=HistoryDealGetDouble(b51_deal,DEAL_VOLUME);
+      else if(b51_entry==DEAL_ENTRY_OUT || b51_entry==DEAL_ENTRY_OUT_BY) b51_out=true;
+     }
+   if(b51_out) return 1;
+   if(!(b51_in>0.0)) return -1;
+   return (b51_vol<b51_in-1e-8 ? 1 : 0);
+  }
+// Why this close cannot be sent ("" = it can), and the close and remainder it would leave.
+string GoatSinglePartialIllegal(const double b51_vol,double &b51_cut,double &b51_rest)
+  {
+   double b51_vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double b51_vmax=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+   double b51_vstep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   b51_cut=0.0; b51_rest=b51_vol;
+   if(!(b51_vmin>0.0) || !(b51_vstep>0.0)) return "no volume minimum or step";
+   b51_cut=NormalizeDouble(MathFloor(b51_vol*Single_Partial_Fraction/b51_vstep+1e-9)*b51_vstep,8);
+   b51_rest=NormalizeDouble(b51_vol-b51_cut,8);
+   if(b51_cut<b51_vmin-1e-9)  return "the close is below the volume minimum "+DoubleToString(b51_vmin,2);
+   if(b51_rest<b51_vmin-1e-9) return "the remainder is below the volume minimum "+DoubleToString(b51_vmin,2);
+   if(b51_vmax>0.0 && b51_cut>b51_vmax+1e-9) return "the close is above the volume maximum "+DoubleToString(b51_vmax,2);
+   if(MathAbs(b51_rest/b51_vstep-MathRound(b51_rest/b51_vstep))>1e-6) return "the remainder is not a multiple of the volume step "+DoubleToString(b51_vstep,2);
+   return "";
+  }
+void GoatSinglePartialClose(SEQUENCE &s,const int b51_slot,const ulong tk)
+  {
+   if(!PositionSelectByTicket(tk)) return;
+   double b51_vol=PositionGetDouble(POSITION_VOLUME);
+   double b51_cut=0.0,b51_rest=0.0;
+   string b51_why=GoatSinglePartialIllegal(b51_vol,b51_cut,b51_rest);
+   if(b51_why!="")
+     {
+      g_GoatPartialState[b51_slot]=GOAT_PARTIAL_SKIPPED;
+      Print(s.Desc,": Single partial close skipped: ticket=",IntegerToString((long)tk)," volume=",DoubleToString(b51_vol,2),
+            " close=",DoubleToString(b51_cut,2)," remainder=",DoubleToString(b51_rest,2),": ",b51_why);
+      return;
+     }
+   CTrade b51_trade;
+   if(Ledger_Mode==Ledger_PositionJoin) b51_trade.SetExpertMagicNumber(MAGIC1); // B49a (F2): the EA's closes carry MAGIC1
+   Pclosed++;
+   // True from PositionClosePartial only means the request went through (review of GOAT-EA#287). It filled when the retcode
+   // says so and the position's own volume confirms it. TRADE_RETCODE_DONE_PARTIAL filled less than asked, and that is still
+   // this position's one partial. Anything else takes the failure path, whose retry reads the broker's history first.
+   bool   b51_sent=b51_trade.PositionClosePartial(tk,b51_cut);
+   int    b51_ret=(int)b51_trade.ResultRetcode();
+   double b51_left=(PositionSelectByTicket(tk) ? PositionGetDouble(POSITION_VOLUME) : 0.0);
+   if(b51_sent && (b51_ret==TRADE_RETCODE_DONE || b51_ret==TRADE_RETCODE_DONE_PARTIAL) && b51_left<b51_vol-1e-8)
+     {
+      g_GoatPartialState[b51_slot]=GOAT_PARTIAL_DONE; g_GoatPartialFails[b51_slot]=0; g_GoatPartialNext[b51_slot]=0;
+      s.AccumulateSequenceDealPL((ulong)b51_trade.ResultDeal());
+      s.RefreshTicketLots();
+      Print(s.Desc,": Single partial close: ticket=",IntegerToString((long)tk)," closed=",DoubleToString(b51_vol-b51_left,2),
+            " remainder=",DoubleToString(b51_left,2)," retcode=",IntegerToString(b51_ret)," bid=",DoubleToString(bid,_Digits)," ask=",DoubleToString(ask,_Digits));
+      return;
+     }
+   PcloseErrors++;
+   if(b51_ret==TRADE_RETCODE_INVALID_VOLUME)
+     {
+      g_GoatPartialState[b51_slot]=GOAT_PARTIAL_SKIPPED;
+      Print(s.Desc,": Single partial close skipped: ticket=",IntegerToString((long)tk)," close=",DoubleToString(b51_cut,2),
+            " retcode=",IntegerToString(b51_ret),": the broker refuses the volume");
+      return;
+     }
+   int b51_count=++g_GoatPartialFails[b51_slot];
+   int b51_wait=(b51_count==1 ? GOAT_SINGLE_BACKOFF_2_S : (b51_count==2 ? GOAT_SINGLE_BACKOFF_3_S : GOAT_SINGLE_BACKOFF_STEADY_S));
+   g_GoatPartialNext[b51_slot]=TimeCurrent()+b51_wait;
+   Print(s.Desc,": Single partial close failed: ticket=",IntegerToString((long)tk)," bid=",DoubleToString(bid,_Digits)," ask=",DoubleToString(ask,_Digits),
+         " volume=",DoubleToString(b51_vol,2)," close=",DoubleToString(b51_cut,2)," retcode=",IntegerToString(b51_ret),
+         " consecutive=",IntegerToString(b51_count)," backoff=",IntegerToString(b51_wait),"s");
+  }
+void GoatSinglePartialSequence(SEQUENCE &s)
+  {
+   if(s.Virtual || !s.Active || !s.Traded) return;
+   if(s.Adopted && !s.AdoptSizes) return;                    // as GoatSingleModifySequence: no frozen sizes, no entry ATR
+   if(!MathIsValidNumber(s.Size_SL) || !(s.Size_SL>0.0) || s.Size_SL==1234.5) return;
+   double b51_atr=s.Size_SL/Single_SL_ATR;                   // the entry's ATR, the same after a restart
+   bool   b51_buy=(s.dir==OP_BUY);
+   double b51_px=(b51_buy ? bid : ask);
+   double b51_eps=_Point*0.001;
+   for(int i=0;i<s.Level_Count;i++)
+     {
+      ulong b51_tk=(ulong)s.TradeLevels[i].ticket;
+      if(b51_tk==0) continue;
+      int b51_k=GoatSinglePartialSlot(b51_tk);               // before the select: a slot search selects other tickets
+      if(b51_k<0 || !PositionSelectByTicket(b51_tk)) continue;
+      int b51_state=g_GoatPartialState[b51_k];
+      if(b51_state==GOAT_PARTIAL_DONE || b51_state==GOAT_PARTIAL_SKIPPED) continue;
+      double b51_open=PositionGetDouble(POSITION_PRICE_OPEN);
+      bool   b51_due=((b51_buy ? b51_px-b51_open : b51_open-b51_px)>=Single_Partial_ATR*b51_atr-b51_eps);
+      if(b51_state==GOAT_PARTIAL_PENDING && !b51_due) continue;
+      if(b51_due && TimeCurrent()<g_GoatPartialNext[b51_k]) continue;   // backing off: no read, no attempt, no line
+      int b51_truth=GoatSinglePartialTruth(b51_tk);
+      if(b51_truth<0)
+        {
+         if(b51_due && !g_GoatPartialNoted[b51_k])
+            Print(s.Desc,": Single partial close held: ticket=",IntegerToString((long)b51_tk),": its deal history cannot be read yet; nothing is sent until it can");
+         if(b51_due) g_GoatPartialNoted[b51_k]=true;
+         continue;
+        }
+      if(b51_truth>0)
+        {
+         g_GoatPartialState[b51_k]=GOAT_PARTIAL_DONE;
+         s.RefreshTicketLots();
+         Print(s.Desc,": Single partial close already done: ticket=",IntegerToString((long)b51_tk),": the broker's history shows it (a restart, a lost reply or a manual close)");
+         continue;
+        }
+      g_GoatPartialState[b51_k]=GOAT_PARTIAL_PENDING;
+      if(b51_due) GoatSinglePartialClose(s,b51_k,b51_tk);
+     }
+  }
+void GoatSinglePartial()
+  {
+   if(Engine_Mode!=Engine_Single || !(Single_SL_ATR>0.0) || !(Single_Partial_ATR>0.0)) return;
+   GoatSinglePartialSequence(Seq_Buy);
+   GoatSinglePartialSequence(Seq_Sell);
+  }
+// B51:end b51-partial
+// B51:begin b51-account
+// B51 (section 8.4): the single-trade engine runs in the strategy tester or on a broker-verified demo account, never on
+// anything else, and no input changes that. "" = allowed; anything else is the reason it is not. OnInit refuses on it, and
+// GoatSingleOpen, the single's only way to open a position, asks again on every attempt. ACCOUNT_TRADE_MODE_DEMO is 0,
+// the value a failed AccountInfoInteger returns, so the mode alone proves nothing: the terminal must be connected, the
+// reads must set no error and the account must have a login and a server.
+string GoatSingleAccountRefusal()
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return "";
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED)) return "the terminal is not connected to the broker";
+   ResetLastError();
+   long   b51_login=AccountInfoInteger(ACCOUNT_LOGIN);
+   long   b51_mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   string b51_server=AccountInfoString(ACCOUNT_SERVER);
+   int    b51_err=GetLastError();
+   if(b51_err!=0) return "the account mode cannot be read, error "+IntegerToString(b51_err);
+   if(b51_login<=0 || b51_server=="") return "the account has no login or server yet";
+   if(b51_mode!=ACCOUNT_TRADE_MODE_DEMO) return "this account is not a demo account";
+   return "";
+  }
+// B51:end b51-account
 void CloseAllPositions(int OP,int magic=0)
   {
    CTrade m_trade;

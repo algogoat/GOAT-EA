@@ -10,7 +10,8 @@ B50_EXPLICIT=('Single_SL_ATR=0.0||0.0||0||0.0||N\r\nSingle_TP_ATR=0.0||0.0||0||0
  'Rollover_Block_Minutes=0||0||0||0||N\r\n')
 
 B51_EXPLICIT=('Random_Seed=1||1||0||1||N\r\n'   # B51 (beta-1a): the benchmark seed (Random_Direction is an sinput)
- 'Single_BE_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_Start_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_ATR=0.0||0.0||0||0.0||N\r\n')   # beta-1b
+ 'Single_BE_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_Start_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_ATR=0.0||0.0||0||0.0||N\r\n'   # beta-1b
+ 'Single_Partial_ATR=0.0||0.0||0||0.0||N\r\nSingle_Partial_Fraction=0.0||0.0||0||0.0||N\r\nSingle_Partial_BE=false||false||0||false||N\r\n')   # section 8.3
 
 class OptimizationInputsTests(unittest.TestCase):
  def setUp(self):

@@ -48,8 +48,8 @@ const MUTANTS=[
  ['break-even adds the spread','      double b51_target=b51_open;','      double b51_target=(b51_buy ? b51_open+(ask-bid) : b51_open-(ask-bid));'],
  ['the trailing starts at the break-even threshold','b51_trail=(Single_Trail_ATR>0.0 && b51_favour>=Single_Trail_Start_ATR*b51_atr-b51_eps);','b51_trail=(Single_Trail_ATR>0.0 && b51_favour>=Single_BE_ATR*b51_atr-b51_eps);'],
  ['the trailing distance is the start','b51_px-Single_Trail_ATR*b51_atr : b51_px+Single_Trail_ATR*b51_atr','b51_px-Single_Trail_Start_ATR*b51_atr : b51_px+Single_Trail_Start_ATR*b51_atr'],
- ['the ATR is the stop size (not divided by Single_SL_ATR)','   double b51_atr=s.Size_SL/Single_SL_ATR;','   double b51_atr=s.Size_SL;'],
- ['the ATR is the forming bar\'s','   double b51_atr=s.Size_SL/Single_SL_ATR;','   double b51_atr_buf[]; double b51_atr=(CopyBuffer(ATR_MA_handle,0,0,1,b51_atr_buf)==1 ? b51_atr_buf[0] : 0.0);'],
+ ['the ATR is the stop size (not divided by Single_SL_ATR)','   double b51_atr=s.Size_SL/Single_SL_ATR;                   // the entry\'s ATR (see above)','   double b51_atr=s.Size_SL;'],
+ ['the ATR is the forming bar\'s','   double b51_atr=s.Size_SL/Single_SL_ATR;                   // the entry\'s ATR (see above)','   double b51_atr_buf[]; double b51_atr=(CopyBuffer(ATR_MA_handle,0,0,1,b51_atr_buf)==1 ? b51_atr_buf[0] : 0.0);'],
  ['the TP is not kept','b51_trade.PositionModify(tk,sl,cur_tp)','b51_trade.PositionModify(tk,sl,0.0)'],
  // The retcode decides (review of GOAT-EA#287): a call that returns true while the server rejects it is a failure.
  ['a true return is a success whatever the retcode',' && b51_trade.ResultRetcode()==TRADE_RETCODE_DONE)',')'],
@@ -68,7 +68,7 @@ const MUTANTS=[
  ['the call site is dropped','    GoatSingleModify(); // B51 (beta-1b)','    ; // B51 (beta-1b)'],
  // The review's (GOAT-EA#287) mutants, and its P3-9/P3-10 rules.
  ['the sell clamp reads the bid (reviewer)','NormalizeDouble(ask+b51_lvl*_Point,_Digits)','NormalizeDouble(bid+b51_lvl*_Point,_Digits)'],
- ['the sell favour reads the bid (reviewer)','   double b51_px=(b51_buy ? bid : ask);','   double b51_px=bid;'],
+ ['the sell favour reads the bid (reviewer)','   double b51_px=(b51_buy ? bid : ask);\n   double b51_eps=_Point*0.001;                              // normalized','   double b51_px=bid;\n   double b51_eps=_Point*0.001;                              // normalized'],
  ['a stale slot is never reused (reviewer)','if(b51_tk[j]==0 || !PositionSelectByTicket(b51_tk[j]))','if(b51_tk[j]==0)'],
  ['the wait ends a second late (reviewer)','if(b51_k>=0 && b51_now<b51_next[b51_k]) return false;','if(b51_k>=0 && b51_now<=b51_next[b51_k]) return false;'],
  ['the move to the entry waits for the minimum step (reviewer)','      if(!b51_be_move && b51_gain<b51_min_step-b51_eps) continue;','      if(b51_gain<b51_min_step-b51_eps) continue;'],

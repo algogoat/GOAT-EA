@@ -28,6 +28,9 @@ const MUTANTS=[
  [CLOCK,'the New York clock trades a live chart','   if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {','   if(false) {'],
  [CLOCK,'the New York clock is refused in the tester too','   if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {','   if(Clock_Mode==Clock_NewYork && true) {'],
  [REVIEW,'the benchmark runs under the first-order gate','   if(Random_Direction && Gate_Recheck==Gate_AtFirstOrder) {','   if(false) {'],
+ // Codex on GOAT-EA#296: F6's refusal is the grid's only (4502334956); F5's exemption is a real order, not Traded (4502419410).
+ [REVIEW,'a one-trade RiskperSeq single is refused at OnInit','   if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {','   if(Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {'],
+ [F5,'the first-order exemption is Traded again','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || GuardRealStarted) return false;','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;'],
  // Claude-Mac's ask: a held single opens nothing and keeps its episode armed. Two edits each: the start path's own hold
  // (DashboardEntryAllowed) refuses before the single is reached, so a regression has to pass it to show.
  [REVIEW,'the feed guard holds no single',[['   if(GoatEntriesHeld()) return false; // B49b (LAG-A): the feed is behind','   if(false) return false; // B49b (LAG-A): the feed is behind'],

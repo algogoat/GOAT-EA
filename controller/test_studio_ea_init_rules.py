@@ -199,6 +199,14 @@ class PortedRuleTests(RuleCase):
                 validate_strategy(self.values(Mode_Lots='2', Max_Seq_Trades=trades), self.schema)
         self.passes(Mode_Lots='2', Max_Seq_Trades='2')
         self.passes(Mode_Lots='0', Max_Seq_Trades='1')
+        # B52 (Codex GOAT-EA#296 4502334956): a single sizes RiskperSeq from its own stop, so the EA refuses the pair for the
+        # grid engine only, and check_risk_sizing passes a SET that reaches only Engine_Single (every hunt single).
+        self.passes(Mode_Lots='2', Max_Seq_Trades='1', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0')
+        with self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE + ': '):
+            validate_strategy(self.values(Mode_Lots='2', Max_Seq_Trades='1', Engine_Mode='0'), self.schema)
+        ea = [line for line in (REPO / EA_SOURCE).read_text(encoding='utf-8-sig').split('\n') if 'Max_Seq_Trades<=1' in line]
+        self.assertEqual(len(ea), 1)
+        self.assertIn('if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1)', ea[0])
 
     def test_rrr_derivations_feed_the_lp_tp_rule_as_in_the_ea(self):
         # SL/LP mode derives LP = SL*RRR = 0.5, which line 4993 zeroes; TP_Pips_ = TP_Pips*original LP = 0.

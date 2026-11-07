@@ -76,6 +76,16 @@ const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['inp
 // "V1.49-BETA17-51" and "B51"; B52's (the final build) replaces both with its own.
 const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-52"'];
 const B51_IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-51"','#define   GOAT_BUILD_MARKER "B51"'];   // replaced by B52's assembly
+// Codex on GOAT-EA#296: the B49b lines B52 replaces, verbatim as B49b's tree has them (each is checked to be one B49b
+// added and the tree no longer to have; its replacement carries the marker "B52"): F6's OnInit refusal, now the grid
+// engine's only (4502334956); F5's first-order exemption, now on a real order opened (4502419410); F6's one-use
+// GoatPreTradeRefusalCode, inlined at its caller (4502419403, AGENTS.md's one-line-helper rule), and its comment.
+const B49B_REPLACED_BY_B52=[
+  '   if(Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {Alert("Initialization Failed: Risk per Sequence lot sizing needs at least 2 sequence trades (Max_Seq_Trades)."); return INIT_PARAMETERS_INCORRECT;} // B49b (F6): validate-set refuses the pair (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES); the EA did not, and sized a single trade at about half VOLUME_MAX',
+  '    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;',
+  '       else {if(!GoatPreTradeRefusalCode(LastRetCode)) Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2) // B49b (F6): a pre-trade refusal is logged once a minute (GoatPreTradeRefusal), not every tick',
+  '// per-tick "Failed" line (GoatPreTradeRefusalCode).',
+  'bool GoatPreTradeRefusalCode(const uint code) {return(code==741 || code==742);}'];
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
@@ -174,10 +184,12 @@ for(const f of ALL_CHANGED){
  const b49bRemoved=diffLines(B49A_SOURCE,B49B_SOURCE,f).removed;
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[]),...b49bRemoved,...(MERGE_REMOVED[f]||[])].sort(),f+': the B50-alpha lines removed are exactly REMOVED, B49b\'s own and MERGE_REMOVED');
  // The final build: no line B49b or B51 added is lost in the merge (as many copies as each side added).
+ if(f==='GOAT V1.49.mq5'){const b49bAdded=new Set(diffLines(B49A_SOURCE,B49B_SOURCE,f).added);for(const l of B49B_REPLACED_BY_B52) assert.ok(b49bAdded.has(l),'B49B_REPLACED_BY_B52 names only lines B49b added: '+l.trim());}
  const tree=count(lines);
  for(const [label,from,to] of [['B49b',B49A_SOURCE,B49B_SOURCE],['B51',B50_SOURCE,B51_LINE]])
   for(const [text,n] of count(diffLines(from,to,f).added)){
    if(label==='B51'&&f==='GOAT V1.49.mq5'&&B51_IDENTITY_LINES.includes(text)){assert.equal(tree.get(text)||0,0,'B52\'s assembly replaces B51\'s identity line: '+text);continue;}
+   if(label==='B49b'&&f==='GOAT V1.49.mq5'&&B49B_REPLACED_BY_B52.includes(text)){assert.equal(tree.get(text)||0,0,'B52 replaces B49b\'s line: '+text.trim());continue;}
    assert.ok((tree.get(text)||0)>=n,f+': a line '+label+' added is lost in the merge: '+text.trim());
   }
 }
@@ -226,14 +238,21 @@ assert.equal(b51.supersedes_candidate,'beta17-B50');
 assert.deepEqual(Object.keys(b51.sources).sort(),closure(),'B51\'s identity names exactly the compile closure');
 for(const [f,h] of Object.entries(b51.sources)) assert.equal(sha(checkedOut(f,git(['show',B51_SOURCE+':'+f]))),h,'B51 identity source at '+B51_SOURCE+': '+f);
 assert.deepEqual(Object.keys(b51.sources).filter(f=>sha(read(f))!==b51.sources[f]).sort(),[...ALL_CHANGED].sort(),'the tree differs from B51\'s identity in exactly CHANGED and B49B_CHANGED');
-// B52's assembly (the final build, as #293 stamped B51's): the tree is B52's identity. Its sources are exactly the compile
-// closure and each hashes to the tree (checked out as CRLF, as .gitattributes does); the build ID and marker are B52's
-// own, once each, and it supersedes B51.
-const b52=JSON.parse(read('candidate-builds/beta17-B52/identity.json').toString('utf8').replace(/^\uFEFF/,''));
+// B52's assembly (the final build, as #293 stamped B51's; its commit B52_SOURCE): B52's identity is its own commit's, as
+// B51's is above. Its sources are exactly the compile closure and each hashes to that commit's blob as it checks out
+// (CRLF, as .gitattributes does); the identity file is unchanged; the build ID and marker are B52's own, once each, and it
+// supersedes B51. The fixes since (Codex on GOAT-EA#296, before the B52 binary is rebuilt) differ from it in exactly
+// B52_LATER_CHANGED, every changed line marked "B52" (section 4). The next assembly binds the tree to its own identity again.
+const B52_SOURCE='a98ea4393ff2c18c0a3e94482b6ea23fb2fd5be9';
+const B52_LATER_CHANGED=['GOAT V1.49.mq5'];
+git(['merge-base','--is-ancestor',B52_SOURCE,'HEAD']);   // throws unless the working tree descends from B52's identity commit
+const b52=JSON.parse(git(['show',B52_SOURCE+':candidate-builds/beta17-B52/identity.json']).toString('utf8').replace(/^\uFEFF/,''));
+assert.deepEqual(JSON.parse(read('candidate-builds/beta17-B52/identity.json').toString('utf8').replace(/^\uFEFF/,'')),b52,'B52\'s identity file is unchanged');
 assert.equal(b52.build_id+' '+b52.build_marker,'V1.49-BETA17-52 B52');
 assert.equal(b52.supersedes_candidate,'beta17-B51');
 assert.deepEqual(Object.keys(b52.sources).sort(),closure(),'B52\'s identity names exactly the compile closure');
-for(const [f,h] of Object.entries(b52.sources)) assert.equal(sha(read(f)),h,'B52 identity source: '+f);
+for(const [f,h] of Object.entries(b52.sources)) assert.equal(sha(checkedOut(f,git(['show',B52_SOURCE+':'+f]))),h,'B52 identity source at '+B52_SOURCE.slice(0,8)+': '+f);
+assert.deepEqual(Object.keys(b52.sources).filter(f=>sha(read(f))!==b52.sources[f]).sort(),[...B52_LATER_CHANGED].sort(),'the tree differs from B52\'s identity in exactly B52_LATER_CHANGED');
 const mainText=read('GOAT V1.49.mq5').toString('utf8');
 assert.equal(mainText.split('\r\n').filter(l=>l===IDENTITY_LINES[0]).length,1,'the build ID is B52\'s');
 assert.equal(mainText.split('\r\n').filter(l=>l==='#define   GOAT_BUILD_MARKER "B52"').length,1,'the marker is B52\'s');

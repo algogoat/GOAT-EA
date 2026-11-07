@@ -38,10 +38,17 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertEqual(identity['supersedes_candidate'], 'beta17-B51')
         # B52 is the final build (goatai#2750, GOAT-EA#296): B51 with GOAT-EA#292's follow-ups, merged with B49b (claude-pc/b49b
         # 808ff728, GOAT-EA#290), then the fixes of two independent reads of that merge, and #294's controller change. Its
-        # assembly gave it its own identity, as GOAT-EA#293 gave B51 its, and every source hashes to the tree.
+        # assembly gave it its own identity, as GOAT-EA#293 gave B51 its. Its sources hash to its own commit (a98ea439, checked
+        # out with CRLF as .gitattributes does); the fixes since (Codex on GOAT-EA#296, before the binary is rebuilt) differ
+        # from it in exactly scripts/test_b51_no_drift.cjs's B52_LATER_CHANGED, every changed line marked there.
         self.assertEqual(sorted(identity['consolidates']), ['B52.1', 'B52.2', 'B52.3', 'B52.c1'])
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            blob = subprocess.run(['git', 'show', 'a98ea439:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+            blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+            self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B52 commit)')
+        b52_later = json.loads('[' + re.search(r"^const B52_LATER_CHANGED=\[([^\]]*)\]", (ROOT / 'scripts/test_b51_no_drift.cjs').read_text(encoding='utf-8'), re.M)[1].replace("'", '"') + ']')
+        self.assertEqual(sorted(relative for relative, expected in identity['sources'].items()
+                                if hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() != expected), sorted(b52_later))
         # B49b (Track A, goatai#2587 6433828681) was built on B49a in reviewed PRs into claude-pc/b49b. B52 differs from B51 in
         # exactly the files B49b's guard lists as CHANGED (scripts/test_b49b_no_drift.cjs proves B49b's tree, and
         # scripts/test_b51_no_drift.cjs every changed line of this one, the build ID line its one allowance); its compile

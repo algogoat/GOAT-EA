@@ -25,9 +25,9 @@ const MUTANTS=[
  // Placement.
  ['the margin check is not called','   if(GoatMarginLevelRefused(OP,requestedVolume)) {LastRetCode=741; return 0;}','   if(false) {LastRetCode=741; return 0;}'],
  // The per-tick failure line and the label (Mac #281 P2/P3).
- ['the failure line prints for a pre-trade refusal','else {if(!GoatPreTradeRefusalCode(LastRetCode)) Print(','else {Print('],
- ['a spread refusal is not a pre-trade code','return(code==741 || code==742);','return(code==741);'],
- ['a broker failure is skipped too','return(code==741 || code==742);','return(code!=0);'],
+ ['the failure line prints for a pre-trade refusal','else {if(LastRetCode!=741 && LastRetCode!=742) Print(','else {Print('],
+ ['a spread refusal is not a pre-trade code','else {if(LastRetCode!=741 && LastRetCode!=742) Print(','else {if(LastRetCode!=741) Print('],
+ ['a broker failure is skipped too','else {if(LastRetCode!=741 && LastRetCode!=742) Print(','else {if(LastRetCode==0) Print('],
  ['the label tests MaxSP','SYMBOL_SPREAD)>GoatSpreadCap())  ObjectSetText','SYMBOL_SPREAD)>=MaxSP)  ObjectSetText'],
  // The OnInit refusal.
  ['a single trade is allowed','Mode_Lots == RiskperSeq && Max_Seq_Trades<=1)','Mode_Lots == RiskperSeq && Max_Seq_Trades<1)'],

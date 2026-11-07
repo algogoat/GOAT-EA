@@ -47,7 +47,6 @@ function ctx({spread=20,maxSP=9999,maxSpread=0,minMargin=0,margin=0,equity=10000
  const margin_fn=bodyOf(main,'bool GoatMarginLevelRefused(const int op,const double volume)')
   .replace(/!OrderCalcMargin\(([^;]*?),need\)/,'!(OrderCalcMargin($1,0)&&((need=__need),true))');
  vm.runInContext(fn('GoatPreTradeRefusal',['kind','text'],bodyOf(main,'void GoatPreTradeRefusal(const int kind,const string text)'))
-  +fn('GoatPreTradeRefusalCode',['code'],bodyOf(main,'bool GoatPreTradeRefusalCode(const uint code)'))
   +fn('GoatSpreadCap',[],bodyOf(main,'long GoatSpreadCap(void)'))
   +fn('GoatSpreadRefused',[],bodyOf(main,'bool GoatSpreadRefused(void)'))+fn('GoatMarginLevelRefused',['op','volume'],margin_fn),c);
  return c;
@@ -112,9 +111,11 @@ const b49aRefused=(spread,maxSP)=>spread>maxSP;
  const line=init[at+1].replace(/\/\/.*$/,'').trim(),m=/^if\((.*?)\) \{Alert\("([^"]*)"\); return INIT_PARAMETERS_INCORRECT;\}$/.exec(line);
  assert.ok(m,'the next OnInit line is the single-trade refusal: '+line);
  assert.equal(mainB49a.includes('Max_Seq_Trades<=1'),false,'B49a had no such refusal');
- const refused=new Function('Mode_Lots','Max_Seq_Trades','const FixedLots=0,ScaledLots=1,RiskperSeq=2;return '+m[1]+';');
- for(const [lots,trades,want] of [[2,1,true],[2,0,true],[2,-1,true],[2,2,false],[2,10,false],[0,1,false],[1,1,false]])
-  assert.equal(refused(lots,trades),want,'Mode_Lots '+lots+', Max_Seq_Trades '+trades);
+ // B52 (Codex GOAT-EA#296 4502334956): the grid engine only; a single sizes RiskperSeq from its own stop (GoatSingleOpen).
+ const refused=new Function('Mode_Lots','Max_Seq_Trades','Engine_Mode','const FixedLots=0,ScaledLots=1,RiskperSeq=2,Engine_Grid=0,Engine_Single=1;return '+m[1]+';');
+ for(const [lots,trades,want] of [[2,1,true],[2,0,true],[2,-1,true],[2,2,false],[2,10,false],[0,1,false],[1,1,false]]){
+  assert.equal(refused(lots,trades,0),want,'grid: Mode_Lots '+lots+', Max_Seq_Trades '+trades);
+  assert.equal(refused(lots,trades,1),false,'single: Mode_Lots '+lots+', Max_Seq_Trades '+trades);}
  assert.match(m[2],/^Initialization Failed: Risk per Sequence lot sizing needs at least 2 sequence trades/);
  ok();}
 
@@ -124,7 +125,7 @@ const b49aRefused=(spread,maxSP)=>spread>maxSP;
  const at=main.indexOf(' Failed. Return Code:');assert.ok(at>=0);assert.equal(main.indexOf(' Failed. Return Code:',at+1),-1,'one failure line');
  const start=main.lastIndexOf('else {',at),stop=main.indexOf('return false;}',at);
  const branch=js(main.slice(start+'else {'.length,stop)).replace(/\bDesc_lvl\b/g,'"L1"');
- assert.match(branch,/^if\(!GoatPreTradeRefusalCode\(LastRetCode\)\) Print\(/,'the failure line is skipped only for a pre-trade refusal code');
+ assert.match(branch,/^if\(LastRetCode!=741 && LastRetCode!=742\) Print\(/,'the failure line is skipped only for a pre-trade refusal code (B52: inlined, one use)');
  const N=600;   // ten minutes of one-second ticks
  function run(opts,refuse){
   const c=ctx(opts);let failed=0;

@@ -86,7 +86,7 @@ _TRIM = ' \t\r\n'
 
 
 def _desc_keys(text):
-    """ExtractFunctionKeysFromInputString (GOAT V1.49.mq5:11008): key/value pairs of the `@{...}` section."""
+    """ExtractFunctionKeysFromInputString (GOAT V1.49.mq5:11007): key/value pairs of the `@{...}` section."""
     at = text.find('@')
     if at < 0:
         return []
@@ -538,9 +538,12 @@ NOT_PORTED = (
     dict(lines=(4911,), anchor='GOAT license service is temporarily unavailable', condition='license service unavailable', reason='license service response'),
     dict(lines=(4916,), anchor='Sleep(20000)', condition='license invalid', reason='license service response'),
     # B49b (F6): the EA now refuses what validate_strategy already refused, so it is decided before these rules run.
-    dict(lines=(4926,), anchor='Mode_Lots == RiskperSeq && Max_Seq_Trades<=1', condition='Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
+    # B52 (Codex GOAT-EA#296 4502334956): the grid engine's only, as check_risk_sizing's single_only() exempts a SET that reaches
+    # only Engine_Single (GoatSingleOpen sizes RiskperSeq from the single's own stop).
+    dict(lines=(4926,), anchor='Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1',
+         condition='Engine_Mode!=Engine_Single && Mode_Lots==RiskperSeq && Max_Seq_Trades<=1',
          reason='decided first by studio_strategy_settings.check_risk_sizing (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES), over every '
-                'reachable value, before check_ea_init runs'),
+                'reachable value, before check_ea_init runs; a SET that reaches only Engine_Single passes both'),
     dict(lines=(5035,), anchor='iATR failed', condition='iATR handle invalid', reason='symbol/indicator runtime'),
     dict(lines=(5043,), anchor='iMA-on-ATR failed', condition='iMA-on-ATR handle invalid', reason='symbol/indicator runtime'),
     # B50 (A0): the single-trade engine's account and indicator refusals.

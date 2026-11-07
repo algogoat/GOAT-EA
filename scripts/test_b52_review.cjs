@@ -221,4 +221,20 @@ const restored=(W,what)=>{
  ok();
 }
 
+// ---------------------------------------------------------------- 9. Codex GOAT-EA#296 4502334956: a one-trade RiskperSeq single inits
+// B49b F6's OnInit refusal (RiskperSeq with Max_Seq_Trades <= 1: the grid's loss-path solver has no path) is the grid
+// engine's only. A single sizes RiskperSeq from its own stop, so every hunt single (prereg section 2) must init and trade.
+{
+ const W=single({inputs:{Max_Seq_Trades:1}});   // OnInit's slices run as written, the F6 line among them
+ W.run(path_(MON,[[2*H1,1.1000],[3*H1,1.1000]]));
+ assert.equal(sends(W).length,1,'a one-trade RiskperSeq single inits and opens on its signal');
+ assert.equal(sends(W)[0].volume,3.33,'sized from its own stop: 500 / (1.5 x 0.0010 x 100000)');
+ for(const trades of [1,0]){
+  let code=null;try{single({inputs:{Engine_Mode:'Engine_Grid',Max_Seq_Trades:trades}});}catch(e){code=e.initCode;}
+  assert.equal(code,2,'the grid engine with Max_Seq_Trades '+trades+' is still refused (INIT_PARAMETERS_INCORRECT)');
+ }
+ single({inputs:{Engine_Mode:'Engine_Grid',Max_Seq_Trades:2}});   // two trades: the grid inits, as B49b
+ ok();
+}
+
 console.log(JSON.stringify({passed,test:'b52_review'}));

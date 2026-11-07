@@ -22,9 +22,9 @@ const MUTANTS=[
  ['the opposite gate ignores Allow_Opposite_Seq','   if(!Allow_Opposite_Seq && opposite_traded)     return "opposite_sequence";','   if(opposite_traded)     return "opposite_sequence";'],
  gate('if(!DashboardEntryAllowed(pos_dir))            return "dashboard_entry";'),
  // The refusal.
- ['Legacy refuses too','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;','    if(Virtual || Traded) return false;'],
- ['a traded sequence is refused (adds gated)','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual) return false;'],
- ['a virtual candidate is refused','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;','    if(Gate_Recheck!=Gate_AtFirstOrder || Traded) return false;'],
+ ['Legacy refuses too','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || GuardRealStarted) return false;','    if(Virtual || GuardRealStarted) return false;'],
+ ['a traded sequence is refused (adds gated)','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || GuardRealStarted) return false;','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual) return false;'],
+ ['a virtual candidate is refused','    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || GuardRealStarted) return false;','    if(Gate_Recheck!=Gate_AtFirstOrder || GuardRealStarted) return false;'],
  ['the opposite side is this side','(dir==OP_BUY) ? Seq_Sell.Traded : Seq_Buy.Traded','(dir==OP_BUY) ? Seq_Buy.Traded : Seq_Sell.Traded'],
  ['the side flag is not set','    g_goat_first_order_refused[side]=true;\n',''],
  ['the side flag is always the buy side','    int side=(dir==OP_SELL) ? 1 : 0;\n    string reason=GoatFirstOrderGateReason','    int side=0;\n    string reason=GoatFirstOrderGateReason'],

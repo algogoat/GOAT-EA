@@ -66,9 +66,9 @@ function gates(over={}){
  ok();}
 
 // 2. The refusal.
-function sequence({dir=0,virtual=false,traded=false,active=false,gate=1,over={},oppositeTraded=false}={}){
+function sequence({dir=0,virtual=false,traded=false,realStarted=traded,active=false,gate=1,over={},oppositeTraded=false}={}){
  const g=gates(over);
- const s=Object.assign(g,{Gate_Recheck:gate,dir,Virtual:virtual,Traded:traded,Active:over.Active??true,logs:[],ends:[],Max_Seq_Trades:4,
+ const s=Object.assign(g,{Gate_Recheck:gate,dir,Virtual:virtual,Traded:traded,GuardRealStarted:realStarted,Active:over.Active??true,logs:[],ends:[],Max_Seq_Trades:4,
   Seq_Buy:{Traded:dir===1?oppositeTraded:false},Seq_Sell:{Traded:dir===0?oppositeTraded:false},g_goat_first_order_refused:[false,false],
   Size_Grid:0.0012,Size_Lock:0.0008,Size_TP:0,Size_SL:0.003,Size_TSL:0.0004,StartLots:0.1,PeakLots:0.2,PeakCumLots:0.3,ScaleFactor:1,
   LotsRaw:[1],LotsNorm:[1],LotsCum:[1],Distances:[0,1],ArrayResize:(a,n)=>{a.length=n;return n;},
@@ -85,9 +85,17 @@ function sequence({dir=0,virtual=false,traded=false,active=false,gate=1,over={},
  const legacy=sequence({gate:0,over:{Active:false,Sequence_New_News:false}});
  assert.equal(legacy.FirstOrderGatesRefused(),false);assert.deepEqual([legacy.logs,legacy.ends,legacy.g_goat_first_order_refused],[[],[],[false,false]]);
  assert.equal(legacy.Size_Grid,0.0012,'and keeps its sizing');
- // A virtual candidate and an already-traded sequence are never refused here (adds are not first orders).
+ // A virtual candidate and a sequence whose real order opened are never refused here (adds are not first orders).
  assert.equal(sequence({virtual:true,over:{Active:false}}).FirstOrderGatesRefused(),false);
  assert.equal(sequence({traded:true,over:{Active:false}}).FirstOrderGatesRefused(),false);
+ // B52 (Codex GOAT-EA#296 4502419410): a ladder whose first levels were below the volume minimum is Traded (OpenPosition
+ // succeeded for zero lots) with no real order (GuardRealStarted false). Its first real order still passes every start gate:
+ // a news gate that closed since refuses it, and the candidate ends.
+ {const zero=sequence({traded:true,realStarted:false,active:true,over:{Sequence_New_News:false}});
+  assert.equal(zero.FirstOrderGatesRefused(),true,'no real order yet: the first real one is gated');
+  assert.deepEqual(zero.ends,['Gate at first order: news']);assert.match(zero.logs[0],/side=BUY gate=news/);
+  assert.equal(sequence({traded:true,realStarted:false,active:true,over:{Sequence_New_News:true}}).FirstOrderGatesRefused(),false,'all open: it goes ahead');
+  assert.equal(sequence({gate:0,traded:true,realStarted:false,active:true,over:{Sequence_New_News:false}}).FirstOrderGatesRefused(),false,'Legacy: never (B49a)');}
  // All open: the order goes ahead.
  const open=sequence();assert.equal(open.FirstOrderGatesRefused(),false);assert.deepEqual(open.logs,[]);
  // An immediate start (the candidate not active yet) on a closed gate: refused, no sizing kept, the side's flag set.

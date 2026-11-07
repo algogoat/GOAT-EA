@@ -2498,7 +2498,7 @@ class SEQUENCE
 // or the candidate ends with a logged reason and keeps no sizing. Legacy: never refuses (B49a).
    bool FirstOrderGatesRefused()
    {
-    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || Traded) return false;
+    if(Gate_Recheck!=Gate_AtFirstOrder || Virtual || GuardRealStarted) return false; // B52 (Codex GOAT-EA#296 4502419410): exempt once a real order opened, not once Traded: a ladder whose first levels were below the volume minimum traded nothing real
     int side=(dir==OP_SELL) ? 1 : 0;
     string reason=GoatFirstOrderGateReason(dir,(dir==OP_BUY) ? Seq_Sell.Traded : Seq_Buy.Traded);
     if(reason=="") return false;
@@ -2735,7 +2735,7 @@ class SEQUENCE
         Print(Desc_lvl,": Price=",DoubleToString(Level_New,Digits())," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)," Filled");
         return true;
        }
-       else {if(!GoatPreTradeRefusalCode(LastRetCode)) Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2) // B49b (F6): a pre-trade refusal is logged once a minute (GoatPreTradeRefusal), not every tick
+       else {if(LastRetCode!=741 && LastRetCode!=742) Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2) // B49b (F6): a pre-trade refusal is logged once a minute (GoatPreTradeRefusal), not every tick; B52 (Codex GOAT-EA#296 4502419403): its code test inlined (one use)
                            ," Failed. Return Code:",LastRetCode," ID:",GetRetcodeID(LastRetCode)); return false;}
      }
      else
@@ -4923,7 +4923,7 @@ int OnInit()
    if(Mode_Lots == FixedLots)  Lots = Lots_Input;
    if(Mode_Lots == ScaledLots) Lots = Lots_Input/(AccountInfoDouble(ACCOUNT_EQUITY)/1000);
    if(Mode_Lots == RiskperSeq && Risk<10) {Alert("Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low."); return INIT_PARAMETERS_INCORRECT;}
-   if(Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {Alert("Initialization Failed: Risk per Sequence lot sizing needs at least 2 sequence trades (Max_Seq_Trades)."); return INIT_PARAMETERS_INCORRECT;} // B49b (F6): validate-set refuses the pair (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES); the EA did not, and sized a single trade at about half VOLUME_MAX
+   if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1) {Alert("Initialization Failed: Risk per Sequence lot sizing needs at least 2 sequence trades (Max_Seq_Trades)."); return INIT_PARAMETERS_INCORRECT;} // B49b (F6): validate-set refuses the pair (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES); the EA did not, and sized a single trade at about half VOLUME_MAX. B52 (Codex GOAT-EA#296 4502334956): the grid engine only; a single sizes RiskperSeq from its own stop (GoatSingleOpen), as check_risk_sizing exempts it
    if(Sequence_MLPS_Hard_Close && Risk<10.0) {Alert("Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10."); return INIT_PARAMETERS_INCORRECT;}
    if(Mode_Lots_Prog==Lots_Prog_PeakSmart)
    {
@@ -9668,7 +9668,7 @@ void CalculateAllPendingOrders(int &count_buy_limits,int &count_sell_limits,int 
 // tiered margin the projection can under-state the margin, since OrderCalcMargin prices the order alone. Both inputs
 // default to 0, which is B49a's path exactly. A refusal is logged at most once a minute per kind, and only live (the
 // tester's journal stays B49a's); it carries its own LastRetCode (742 spread, 741 margin), for which Add_Level skips its
-// per-tick "Failed" line (GoatPreTradeRefusalCode).
+// per-tick "Failed" line (B52: its code test is inlined there).
 datetime g_goat_pretrade_logged[2];   // 0 spread, 1 margin
 void GoatPreTradeRefusal(const int kind,const string text)
   {
@@ -9676,7 +9676,6 @@ void GoatPreTradeRefusal(const int kind,const string text)
    g_goat_pretrade_logged[kind]=TimeCurrent();
    Print("GOAT pre-trade: ",text," symbol=",_Symbol);
   }
-bool GoatPreTradeRefusalCode(const uint code) {return(code==741 || code==742);}
 long GoatSpreadCap(void) {return((Max_Spread_Points>0 && Max_Spread_Points<MaxSP) ? (long)Max_Spread_Points : (long)MaxSP);}
 bool GoatSpreadRefused(void)
   {

@@ -1558,6 +1558,32 @@ class ResumeLatchTests(StrandedFixture):
         record = pause.load(self.c.root, 'g6')
         self.assertEqual((record['state'], record.get('result_path')), ('pausing', None))
 
+    def test_an_unsettled_regrant_batch_gets_each_routes_own_not_finished_refusal(self):
+        """Published, not yet settled: still active, so each route says to finish it first, never a support report."""
+        self.stranded()
+        self.publish()
+        self.assertNotIn(self.c.job('g6')['status'], ('completed', 'cancelled', 'failed'))
+        self.assertEqual(pause.load(self.c.root, 'g6')['state'], 'pausing')
+        from studio_batch import resume_batch
+        from studio_fast_lane import continue_batch
+        agent = self.agent()
+        before = self.tree()
+        reached = AssertionError('reached a live MT5 read')
+        for name, call, text in (('resume_batch', lambda: resume_batch(self.c, 'g6', 'g6-r1'), 'Stop/reconcile/finish the original batch'),
+                                 ('continue', lambda: continue_batch(self.c, 'g6'), 'stop it first'),
+                                 ('owner batch_resume', lambda: agent.batch_resume('g6'), 'is still pausing')):
+            with self.subTest(route=name), patch.object(DemoAgent, '_refresh_readback', side_effect=reached), \
+                    patch.object(DemoAgent, '_broker', side_effect=reached):
+                raised = self.raised_by(call)
+                self.assertIsInstance(raised, ValueError, repr(raised))
+                self.assertNotEqual(getattr(raised, 'code', None), 'RESUME_STOP_VERSION_UNKNOWN', str(raised))
+                self.assertIn(text, str(raised))
+                self.assertEqual(self.tree(), before)
+        # Settled on V1.48, the same batch is refused for the flag.
+        self.ea_tick(); self.ea_tick()
+        self.assertEqual(self.settle()['status'], 'paused')
+        self.assertEveryRouteRefuses('RESUME_V148_CANCEL_LATCHED')
+
     def test_a_record_still_pausing_after_a_plain_finish_refuses_from_the_store(self):
         self.finished_while_pausing()
         self.assertEqual(self.c.job('g6')['completion']['ea_version'], '1.48')
@@ -1579,6 +1605,7 @@ class ResumeLatchTests(StrandedFixture):
         self.edit_job(completion=dict(self.c.job('g6')['completion'], ea_version=None))
         self.assertEveryRouteRefuses('RESUME_STOP_VERSION_UNKNOWN')
         raised = self.raised_by(lambda: pause.verify_resumable(self.c, 'g6'))
+        self.assertIsInstance(raised, Refusal, repr(raised))
         self.assertEqual(raised.code, 'RESUME_STOP_VERSION_UNKNOWN')
         self.assertIn('support report naming batch g6', str(raised))
 
@@ -1712,7 +1739,17 @@ class StudioEntryTests(CustomerLane, StrandedFixture):
             self.assertEqual(self.tree(), before)
             self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['g6'])
         else:
+            # After a V1.49 stop the guard lets it through. The CLI's own Controller then validates the members against the
+            # shipped V1.49 input schema, which this fixture's two-input SETs do not satisfy, so the success is shown
+            # in-process: the same studio_batch.resume_batch call goat_studio makes, on the fixture's own schema.
             self.assertNotEqual(reply.get('refusal_code'), 'RESUME_V148_CANCEL_LATCHED', reply)
+            self.assertIn('Complete explicit input set required', reply.get('error', ''))
+            from studio_batch import resume_batch
+            with operation('resume-batch'):
+                prepared = resume_batch(self.c, 'g6', 'g6-r1')
+            self.assertEqual(prepared['member_count'], 5)
+            self.assertEqual(self.c.job('g6-r1')['status'], 'pending')
+            self.assertNotIn('launch_intent', self.c.job('g6-r1'))
 
     def published(self):
         """The customer command's stop, consumed by MT5: the state --settle acts on."""

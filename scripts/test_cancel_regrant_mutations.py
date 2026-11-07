@@ -157,6 +157,8 @@ MUTATIONS = [
      "    if version is None:\n        version = ((job or {}).get('completion') or {}).get('ea_version')",
      "    if False:\n        version = None"),
     ('an unreadable pause record counts as no re-grant', 'studio_batch_pause.py', "else _regrant_links(root, job)", "else False"),
+    ('an unsettled batch is told to file a support report', 'studio_batch_pause.py',
+     "        return   # not finished yet (a re-grant stop not settled)", "        pass   # not finished yet (a re-grant stop not settled)"),
     ('V1.48 settle advises batch-resume', R, "    if (finished.get('result') or {}).get('ea_version') == '1.48':   # the receipt's EA",
      "    if False:   # the receipt's EA"),
     ('V1.48 finished batch told members remain', R, "if record['state'] == 'finished'\n                       else 'The finished members",

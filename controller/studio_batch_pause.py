@@ -158,6 +158,9 @@ def refuse_v148_cancel_latch(root, job_id, *, job=None):
     finish result the pause is bound to, else the job's completion in the store. It fails closed: a re-grant batch
     (by its pause record, or by its re-grant links when that record cannot be read) whose version cannot be read
     refuses too, naming why."""
+    if (isinstance(job, dict) and job.get('status') not in ('completed', 'cancelled', 'failed')
+            and not job.get('completion')):
+        return   # not finished yet (a re-grant stop not settled): each route refuses that itself, with its own next step
     record = load(root, job_id, quiet=True)   # None: no pause record, or one that cannot be read
     regrant = record.get('regrant_request_id') if isinstance(record, dict) else _regrant_links(root, job)
     if not regrant:

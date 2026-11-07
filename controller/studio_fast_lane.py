@@ -142,6 +142,7 @@ def continue_batch(c, job_id, *, new_batch_id=None, include_failed=False, includ
     if source['status'] not in TERMINAL and unactivated_hint(c.root, source):
         retire(c, job_id, reason='continue')
         source = c.job(job_id)
+        refuse_v148_cancel_latch(c.root, job_id, job=source)   # the retirement finished it: checked as finished now
     if source['status'] not in TERMINAL:
         raise ValueError('Batch ' + job_id + ' is still ' + source['status'] + '; stop it first: stop --batch-id ' + job_id + '.')
     queue = {row['job_id']: row for row in c.state()['queue']}

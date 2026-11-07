@@ -223,7 +223,11 @@ read.
 cannot resume that batch's remaining members. This predates the re-grant and holds for
 every V1.48 pause→resume. Only re-grant-stopped batches are refused up front. No guard
 yet stops `run-batch` from starting a new batch on that MT5 after such a stop; MT5 would
-claim that start and refuse it.
+claim that start and refuse it. A batch that is not finished is left to each route's own
+"finish it first" refusal, and is checked once it is. A pause record's `regrant_request_id`
+shows that a re-grant was armed, not that its stop was consumed. When that record is
+damaged, the link fallback misses a batch settled after a successor MT5 consumed before
+the takeover, because no re-grant link is written then.
 
 **Identity.** One stop per new grant recorded in the human channel:
 `sha([attempt, 'cancel-successor-regrant', prior_issued_sha256, generation])`, linked

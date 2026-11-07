@@ -300,7 +300,7 @@ const FRI=(h,mi=0,s=0)=>at(9,30,h,mi,s),SAT=(h,mi=0,s=0)=>at(9,31,h,mi,s),SUN=(h
  assert.ok(/if\(GoatEntriesHeld\(\)\) return false;/.test(entry),'new sequences and promotions');
  const add=bodyOf(main,'   bool Add_Level(double Level_New)');
  assert.ok(add.indexOf('if((Virtual || Level_Count==0) && GoatEntriesHeld()) return false;')>=0 && add.indexOf('if((Virtual || Level_Count==0) && GoatEntriesHeld()) return false;')<add.indexOf('if(Level_Count<Max_Seq_Levels'),'virtual levels, promotion and first levels, before anything is built');
- assert.ok(add.indexOf('if(closeLots(lotsToCut))')<add.indexOf('if(GoatEntriesHeld()) return false;')&&add.indexOf('if(GoatEntriesHeld()) return false;')<add.indexOf('OpenPosition('),'the second check: past the unwind, ahead of every order');
+ assert.ok(add.indexOf('if(closeLots(lotsToCut))')<add.indexOf('if((Lots_Calc>0.0 || !Traded) && GoatEntriesHeld()) return false;')&&add.indexOf('if((Lots_Calc>0.0 || !Traded) && GoatEntriesHeld()) return false;')<add.indexOf('OpenPosition('),'the second check: past the unwind, ahead of every order');
  assert.equal((main.replace(/\/\/.*$/gm,'').match(/\bOpenPosition\(/g)||[]).length,2,'OpenPosition: one definition and one caller, inside Add_Level');
  assert.ok(add.includes('OpenPosition('),'so every order passes the guard');
  const users=[...main.replace(/\/\/.*$/gm,'').matchAll(/\bGoatEntriesHeld\(/g)].length;
@@ -778,12 +778,12 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
 
 // The production Add_Level on a stubbed ladder.
 const ADD=js(bodyOf(main,'   bool Add_Level(double Level_New)').replace(/C'\d+,\d+,\d+'/g,'0'));
-function ladder({flag=1,tester=0,prog='CumPartial',lots=-0.02,levels=2,virtual=false,traded=true,active=true,age=999}={}){
+function ladder({flag=1,tester=0,prog='CumPartial',lots=-0.02,levels=2,virtual=false,traded=true,active=true,age=999,norm=null}={}){
  const c=chart({flag,tester,positions:0});
  Object.assign(c,{Virtual:virtual,Active:active,Traded:traded,dir:0,OP_BUY:0,OP_SELL:1,Level_Count:levels,Trades_Count:levels,Level_Last:1.1,Level_SL:0,Max_Seq_Levels:50,Max_Seq_Trades:50,ClosePendingReason:'',
   Size_Grid:0.001,Size_Lock:0.001,Size_TP:0.001,Size_SL:0.001,Size_TSL:0.001,StartLots:0.1,Lots_Max:0,Delay_Trade:1,Delay_Trade_Live:1,Delay_Lots_Add:false,Desc:'Trend Buy',Level_Retrace:0,Retrace_Triggered:false,
   BiasRescueActive:false,GuardRealStarted:traded,g_goat_first_order_refused:[false,false],MustCheck_Buy:true,MustCheck_Sell:true,bid:1.09,ask:1.09,Mode_Lots:7,FixedLots:7,ScaledLots:8,RiskperSeq:9,Lots:0.1,
-  Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Lots_Prog_Peak:3,Mode_Lots_Prog:{CumPartial:1,PeakSmart:2,Peak:3}[prog],LotsNorm:[0.1,0.2,lots,lots],LotsToBeSent:0,LastOpen:0,LastSL:0,LastTP:0,LastOrderTicket:0,LastDealTicket:0,Lots_Order:0.02,Ledger_Mode:0,Ledger_PositionJoin:1,PersistStartMsc:0,
+  Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Lots_Prog_Peak:3,Lots_Prog_Cum:4,Mode_Lots_Prog:{CumPartial:1,PeakSmart:2,Peak:3,Cum:4}[prog],LotsNorm:norm||[0.1,0.2,lots,lots],LotsToBeSent:0,LastOpen:0,LastSL:0,LastTP:0,LastOrderTicket:0,LastDealTicket:0,Lots_Order:0.02,Ledger_Mode:0,Ledger_PositionJoin:1,PersistStartMsc:0,
   Expiry:9e12,g_direction_guard_send_attempted:false,g_direction_guard_denied:false,TraceSequenceID:0,g_trace_current_sequence:0,Sequences:0});
  c.TradeLevels=[];for(let i=0;i<levels;i++)c.TradeLevels.push({ticket:100+i,lots:0.1,price_level:1.1});
  c.ArrayResize=(a,n)=>{while(a.length<n)a.push({});a.length=n;return n;};c.ArraySize=a=>a.length;c.MathAbs=Math.abs;c.MathMax=Math.max;c.MathMin=Math.min;c.SymbolInfoDouble=()=>0.01;c.Digits=()=>5;c.DoubleToString=(v,d)=>Number(v).toFixed(d);
@@ -812,8 +812,20 @@ const snapshot=c=>JSON.stringify([c.Level_Count,c.Trades_Count,c.Level_Last,c.Le
  const ref=ladder({lots:-0.02});ref.closeLots=v=>{ref.closeLotsCalls.push(v);return false;};const b0=snapshot(ref);assert.equal(ref.Add_Level(1.09),false);assert.equal(snapshot(ref),b0,'nothing written');
  // Too small to be a close: nothing reduces, so it is held like any other level.
  const dust=ladder({lots:-0.001});const b1=snapshot(dust);assert.equal(dust.Add_Level(1.09),false,'below the volume minimum');assert.deepEqual(dust.closeLotsCalls,[]);assert.equal(snapshot(dust),b1);
- // A zero-lot level writes a level at the old price: held.
+ // A zero-lot level on CumPartial: the base stops on it with or without a hold, so this case alone cannot see the next one.
  const zero=ladder({lots:0});const b2=snapshot(zero);assert.equal(zero.Add_Level(1.09),false,'a zero level');assert.equal(snapshot(zero),b2);
+ // Peak and Cum: zeros sit where a ladder crosses from adding to cutting, and a hold must not stop the walk to the cuts behind them.
+ for(const prog of ['Peak','Cum']){
+  const w=ladder({prog,levels:2,norm:[0.02,0.01,0,-0.01,-0.01,0.03]});assert.equal(w.GoatEntriesHeld(),true,prog+': held');
+  assert.deepEqual([w.Add_Level(1.09),w.Add_Level(1.08),w.Add_Level(1.07)],[true,true,true],prog+': through the zero and into its cuts');
+  assert.equal(w.Level_Count,5,prog+': level count 5');assert.deepEqual(w.closeLotsCalls,[0.01,0.01],prog+': the cuts are made');
+  assert.deepEqual(w.orders,[0],prog+': the zero sends only OpenPosition\'s no-volume path, so no exposure is added');assert.equal(w.Level_Last,1.07);
+  const after=snapshot(w);assert.equal(w.Add_Level(1.06),false,prog+': the next positive level is held');assert.deepEqual(w.orders,[0]);assert.equal(snapshot(w),after,prog+': with nothing written');
+  // Flag off walks the same three levels, so the hold changes nothing on this path.
+  const o=ladder({prog,flag:0,levels:2,norm:[0.02,0.01,0,-0.01,-0.01,0.03]});o.Add_Level(1.09);o.Add_Level(1.08);o.Add_Level(1.07);assert.deepEqual([o.Level_Count,o.closeLotsCalls],[5,[0.01,0.01]],prog+': as flag off');
+  // A paper sequence: a zero level must not mark it traded.
+  const paper=ladder({prog,levels:1,traded:false,norm:[0.02,0]});const b=snapshot(paper);assert.equal(paper.Add_Level(1.09),false,prog+': a paper zero is held');assert.equal(paper.Traded,false,prog+': and stays untraded');assert.equal(snapshot(paper),b);assert.deepEqual(paper.orders,[]);
+ }
  // Virtual levels, promotion and a real first level are held first, before anything is built.
  const v=ladder({virtual:true,lots:0.02});const b3=snapshot(v);assert.equal(v.Add_Level(1.09),false,'a virtual level');assert.equal(snapshot(v),b3);
  const vu=ladder({virtual:true,lots:-0.02});assert.equal(vu.Add_Level(1.09),false,'a virtual unwind has no real exposure: held');assert.deepEqual(vu.closeLotsCalls,[]);

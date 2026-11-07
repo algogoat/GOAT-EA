@@ -2653,7 +2653,7 @@ class SEQUENCE
       }
       else return false;
      }
-     if(GoatEntriesHeld()) return false; // B49b (LAG-A): past the unwind, this level adds or changes nothing that reduces exposure, and nothing has been written: closes, stops, MLPS and unwinds never stop here
+     if((Lots_Calc>0.0 || !Traded) && GoatEntriesHeld()) return false; // B49b (LAG-A): past the unwind only an add, or a level on a sequence with no real order yet, stops: a zero level on a traded ladder must advance to the cuts behind it. No level, count or price has been written yet (CalcNextLots* can refresh ticket lots and rebuild lot arrays, which is harmless); closes, stops, MLPS and unwinds never stop here
      //-----------------------------------------------------------------
      // virtual delayed lots
      if(!Virtual && !Traded && Delay_Lots_Add && Level_Count==MathAbs(Delay_Trade_Live) && Level_Count>0 && Lots_Calc>0)

@@ -589,6 +589,9 @@ if(Fix_ClosePath!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_ClosePath="+(string
 if(Max_Spread_Points!=0) FileWrite(FileSET_handle,"Max_Spread_Points="+(string)Max_Spread_Points); // B49b (F6): recorded only when set
 if(Min_Margin_Level_PC!=0.0) FileWrite(FileSET_handle,"Min_Margin_Level_PC="+(string)Min_Margin_Level_PC); // B49b (F6): recorded only when set
 if(Fix_Clock!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_Clock="+(string)(int)Fix_Clock); // B49b (F4/R2): recorded only when on
+if(Fix_FeedGuard!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_FeedGuard="+(string)(int)Fix_FeedGuard); // B49b (LAG-A): recorded only when on
+if(Diag_TickTiming!=GoatFix_Off) FileWrite(FileSET_handle,"Diag_TickTiming="+(string)(int)Diag_TickTiming); // B49b (LAG-T): recorded only when on
+if(Fix_TickLoad!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_TickLoad="+(string)(int)Fix_TickLoad); // B49b (LAG-B): recorded only when on
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -828,6 +831,19 @@ sinput   double                  Min_Margin_Level_PC           =                
 // B49a's one-field compare either way, so On never changes when signals, sequences or trailing are sampled. The no-tick
 // timer itself (F4) is live-only and has no input.
 sinput   ENUM_GOAT_FIX           Fix_Clock                     =                   GoatFix_Off;       // Fix: OnTick's second/minute/day blocks from the full time
+// B49b (LAG-A): the lag hotfix's safeguards, right whatever makes a terminal fall behind; live trading charts only, never
+// B49b (LAG-A): the tester. Session, day and Friday ends on the server clock, a feed-age guard on new entries and adds, a
+// B49b (LAG-A): feed-age status file, a refused Friday close stays owed. Off reproduces B49a. Detail above GoatTimerBody.
+sinput   ENUM_GOAT_FIX           Fix_FeedGuard                 =                   GoatFix_Off;       // Fix: feed-age guard, server-time session ends, owed Friday close
+// B49b (LAG-T): read-only timing of OnTick, OnTimer and the sections of GoatTickBody, in the status file and one log line a
+// B49b (LAG-T): minute, so a bench can show whether per-tick work is the bottleneck before Fix_TickLoad is ever turned on. It
+// B49b (LAG-T): never changes a trade. Live trading charts only.
+sinput   ENUM_GOAT_FIX           Diag_TickTiming               =                   GoatFix_Off;       // Diagnostic: time spent per tick (read-only)
+// B49b (LAG-B): load changes, justified only if the EA's own per-tick work puts a terminal behind (not proven: measure with
+// B49b (LAG-B): Diag_TickTiming first). The per-second block, trailing, MLPS and the deferred close run at most once per real
+// B49b (LAG-B): second, and refused grid modifies back off. This changes how often exits and trails are evaluated, so it can
+// B49b (LAG-B): change trades; the block above GoatTimerBody says exactly how. Live trading charts only. Group A never needs it.
+sinput   ENUM_GOAT_FIX           Fix_TickLoad                  =                   GoatFix_Off;       // Fix: bound per-tick load (changes exit and trail timing)
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
@@ -939,6 +955,7 @@ double   bid,ask;
 long     Hour_Start[7],Hour_End[7],Minute_Start[7],Minute_End[7];
 datetime tm_cur,LastTradeTime,LastStopoutTime,DStartTime;
 bool     g_GoatNoTickRun=false;   // B49b (F4): true while the no-tick timer runs OnTick's per-second block (GoatNoTickTimer)
+bool     g_GoatFeedInitDone=false; // B49b (LAG-A): OnInit's own OnTick() call has passed
 uint     LastRetCode,Shift_Sig;
 long     LastOrderTicket,LastDealTicket,LastBuyTicket,LastSellTicket; // B49a: 64-bit; an int wraps negative above INT_MAX (scripts/test_ticket_width.cjs)
 int      LastTradeCountBuy=0,LastTradeCountSell=0; // B49a: split from the ticket line, unchanged
@@ -1412,6 +1429,7 @@ string ConvertToGOATsymbol(string symbol)
    return symbol;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatTickLoadHold(const int slot); // B49b (LAG-B): defined with the group in the entrypoint, the only call from this header into it
 bool CheckSignalNow()
   {
    if(Signal_Sample_Period == Tick)       return true;
@@ -1436,6 +1454,7 @@ bool CheckSequenceNow()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CheckTrailingLockTPNow()
   {
+   if(GoatTickLoadHold(1)) return false; // B49b (LAG-B): at most once per real second, whatever the sampling
    if(Trailing_Sample_Period == Tick)       return true;
    if(Trailing_Sample_Period == Second)     return CheckNewSecond3();
    if(Trailing_Sample_Period == M1)         return CheckNewMinute3();
@@ -1590,6 +1609,7 @@ bool IsNewBar3(ENUM_TIMEFRAMES TF_Period)
 bool IsNewSecond()
   {
    if(g_GoatNoTickRun) return true; // B49b (F4): the no-tick timer runs the per-second block, leaving the tick's clock state as it was
+   if(GoatTickLoadHold(0)) return false; // B49b (LAG-B): at most once per real second; the second stays new for the next tick
    if(Fix_Clock==GoatFix_On) {static long lastSecondTime=-1; long curSecondTime=(long)tm_cur; if(curSecondTime==lastSecondTime) return false; lastSecondTime=curSecondTime; return true;} // B49b (F4/R2): the full timestamp
    static int lastSecond;
    int curSecond = stm_cur.sec;

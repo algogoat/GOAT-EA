@@ -740,6 +740,7 @@ bool DashboardEntryAllowed(const int op)
   {
    if(GoatCidGuardRefuses(true)) return false; // B46: a missing or duplicate CID record refuses new sequences (GoatCidGuardEvaluate)
    if(g_GoatManageOnly!=GOAT_MANAGE_NONE) return false; // B49b (F1): manage-only (a licence outage or refusal, an expired build) opens nothing new
+   if(GoatEntriesHeld()) return false; // B49b (LAG-A): the feed is behind or a Friday close is owed, nothing new opens
    if(!GoatStagedChildMayOpen(g_GoatStudioMonitorRunPath,MAGIC1,Symbol())) return false; // beta.25: a profile-staged child opens nothing before its dashboard policy (GOATPortfolioSetupControl.mqh)
    if(!DashboardTradeAllowed(op)) return false;
    if(DashboardExposureConflict(op)) return false;
@@ -866,6 +867,7 @@ class SEQUENCE
    void End_Sequence(string desc)
    {
     if(EndDeferredUntilFlat(desc)) return; // B49b (F3): Fix_ClosePath, a sequence ends only when its positions are flat
+    if(!Virtual) GoatTrailReset(dir); // B49b (LAG-B): the next sequence on this side starts with no back-off
     if(Active)
     {
      if(Traded)// && ((dir==OP_BUY&&Last_PL_Buy>0.0)||(dir==OP_SELL&&Last_PL_Sell>0.0)) )
@@ -1981,6 +1983,7 @@ class SEQUENCE
 //---------------------- optional live MLPS breach stop for any real sequence
    bool EnforceSequenceMLPS(const string context)
    {
+    if(context=="tick" && GoatTickLoadHold(dir==OP_BUY ? 2 : 3)) return false; // B49b (LAG-B): the tick path at most once per real second; an add always checks
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     if(!Sequence_MLPS_Hard_Close) {GoatPerformanceRecord(g_PerfMLPSUS,g_PerfMLPSCalls,profile_started); return false;}
     if(Virtual || !Active || !Traded) {GoatPerformanceRecord(g_PerfMLPSUS,g_PerfMLPSCalls,profile_started); return false;}
@@ -2529,6 +2532,7 @@ class SEQUENCE
    {
     if(ClosePendingReason=="") return;
     if(!Active) {ClosePendingReason=""; ClosePendingTried=0; return;}
+    if(GoatTickLoadHold(dir==OP_BUY ? 4 : 5)) return; // B49b (LAG-B): the scan below at most once per real second
     if(FindNumberOfPositions(dir,MAGIC1)>0)
     {
      datetime now=TimeCurrent();
@@ -2570,6 +2574,7 @@ class SEQUENCE
     if(!Virtual && GoatCidGuardAddFrozen(dir,Level_Count+1)) return false; // B47: cid_duplicate freezes adds (grid and rescue) of a real sequence
     if(!Virtual && ManageOnlyFrozen(Level_Count+1)) return false; // B49a (F1-lite): an adopted basket, or a failed restart record, freezes adds
     if(!Virtual && ClosePendingReason!="") return false; // B49b (F3): no add while an end waits for its close
+    if((Virtual || Level_Count==0) && GoatEntriesHeld()) return false; // B49b (LAG-A): no virtual level, promotion or first level on an old price, before anything is built
     if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)
     {
      //if(StopOut_Flag || Sequence_pause_Flag) return false;
@@ -2648,6 +2653,7 @@ class SEQUENCE
       }
       else return false;
      }
+     if((Lots_Calc>0.0 || !Traded) && GoatEntriesHeld()) return false; // B49b (LAG-A): past the unwind only an add, or a level on a sequence with no real order yet, stops: a zero level on a traded ladder must advance to the cuts behind it. No level, count or price has been written yet (CalcNextLots* can refresh ticket lots and rebuild lot arrays, which is harmless); closes, stops, MLPS and unwinds never stop here
      //-----------------------------------------------------------------
      // virtual delayed lots
      if(!Virtual && !Traded && Delay_Lots_Add && Level_Count==MathAbs(Delay_Trade_Live) && Level_Count>0 && Lots_Calc>0)
@@ -2875,7 +2881,9 @@ class SEQUENCE
        if(Fix_ClosePath==GoatFix_On && (Trailing || BiasRescueActive || !(Level_SL_>0.0))) Level_SL_ = TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL_); // B49b (F3 D2): a trailed or rescued stop is never moved back, and no stop is deleted by a computed SL of 0; the grid's averaged re-placement after an add or harvest still moves the SL as in B49a (Claude-Mac GOAT-EA#276 P1)
        if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
        {
+        int tp_errors_before=TPmodifyErrors; // B49b (LAG-A)
         if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) {TPmodifyErrors++; if(!MQLInfoInteger(MQL_TESTER)) PrintFormat("TP/SL modify failed: ticket=%I64d SL=%.6f TP=%.6f ret=%u (%s)",TradeLevels[i].ticket,Level_SL_,Level_TP_,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TPSLmodifieds++; // B49b (F3 D5): a failed live modify is logged, never silent
+        if(GoatModifyRejected(Trade.ResultRetcode(),TPmodifyErrors!=tp_errors_before,(ulong)TradeLevels[i].ticket,"TP/SL",Trade.ResultRetcodeDescription())) TPmodifyErrors++; // B49b (LAG-A): only the retcode says it was accepted
       }
      }
      }
@@ -2933,8 +2941,12 @@ class SEQUENCE
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
        if(currSL==0.0 || (SL>currSL && (SL-currSL)>=minStep))
        {
+        if(GoatTrailHeld((ulong)TradeLevels[i].ticket)) continue; // B49b (LAG-B): this ticket is backing off; the broker keeps its last accepted SL
+        int tsl_errors_before=TSLmodifyErrors; // B49b (LAG-A)
         if(!Trade.PositionModify(TradeLevels[i].ticket,SL,PositionGetDouble(POSITION_TP)))
         {TSLmodifyErrors++; PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,SL,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++; // B49b (F3): %.6f takes the double (B49a passed a string)
+        if(GoatModifyRejected(Trade.ResultRetcode(),TSLmodifyErrors!=tsl_errors_before,(ulong)TradeLevels[i].ticket,"TSL BUY",Trade.ResultRetcodeDescription())) TSLmodifyErrors++; // B49b (LAG-A): only the retcode says it was accepted
+        GoatTrailNote(dir,(ulong)TradeLevels[i].ticket,Trade.ResultRetcode()); // B49b (LAG-B): per ticket; only a real refusal counts
        }
        else g_TSLBuySkipped++;
       }
@@ -2959,8 +2971,12 @@ class SEQUENCE
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
        if(currSL==0.0 || (SL<currSL && (currSL-SL)>=minStep))
        {
+        if(GoatTrailHeld((ulong)TradeLevels[i].ticket)) continue; // B49b (LAG-B): this ticket is backing off; the broker keeps its last accepted SL
+        int tsl_errors_before=TSLmodifyErrors; // B49b (LAG-A)
         if(!Trade.PositionModify(TradeLevels[i].ticket,SL,PositionGetDouble(POSITION_TP)))
         {TSLmodifyErrors++; PrintFormat("TSL SELL modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,SL,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++;
+        if(GoatModifyRejected(Trade.ResultRetcode(),TSLmodifyErrors!=tsl_errors_before,(ulong)TradeLevels[i].ticket,"TSL SELL",Trade.ResultRetcodeDescription())) TSLmodifyErrors++; // B49b (LAG-A): only the retcode says it was accepted
+        GoatTrailNote(dir,(ulong)TradeLevels[i].ticket,Trade.ResultRetcode()); // B49b (LAG-B): per ticket; only a real refusal counts
        }
        else g_TSLSellSkipped++;
       }
@@ -4183,6 +4199,7 @@ void GoatStateFlush(const bool force=false)
    if(!GoatStateLive() || g_GoatStateDay==0) return;
    if(!force && GetTickCount()-g_GoatStateWrittenMs<GOAT_SQ_FLUSH_MS) return;
    string text=GoatStateText();
+   text+=GoatCloseOwedText(); // B49b (LAG-A): "" unless a Friday close is owed
    if(text==g_GoatStateLast && !g_GoatStateFailed) return;
    g_GoatStateWrittenMs=GetTickCount();
    string login=IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
@@ -4232,6 +4249,7 @@ void GoatStateRestore()
    string keys[],values[];
    if(!GoatStateRead(keys,values)) return;
    Seq_Buy.StateRestore(keys,values); Seq_Sell.StateRestore(keys,values);
+   GoatCloseOwedRestore(keys,values); // B49b (LAG-A)
    ArrayResize(g_GoatDayKeys,0); ArrayResize(g_GoatDayValues,0);
    ArrayCopy(g_GoatDayKeys,keys); ArrayCopy(g_GoatDayValues,values);
    g_GoatDayRestorePending=true;
@@ -4358,6 +4376,7 @@ int OnInit()
   {
    GoatNoTickForget(); // B49b (F4): a re-init (symbol, timeframe, inputs) keeps the EA's globals, never its last tick
    g_GoatManageOnly=GOAT_MANAGE_NONE; g_GoatLicenceRetriedMs=0; // B49b (F1): manage-only is re-derived below from the licence and expiry, never carried over a re-init
+   g_GoatFeedInitDone=false; // B49b (LAG-A): its own OnTick() call below is not a real tick
    g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
    g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;
    if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&
@@ -5099,6 +5118,7 @@ int OnInit()
    GoatTraceInit(); // Evidence failure never changes trading decisions.
    OnTick(); Sleep(50);
    GoatNoTickForget(); // B49b (F4): OnInit's own OnTick() call is not a tick
+   g_GoatFeedInitDone=true; // B49b (LAG-A)
    ChartRedraw(); Sleep(50);
    return (INIT_SUCCEEDED);
   }
@@ -6538,10 +6558,481 @@ void GoatNoTickCloseLog(const ulong ticket,const int op)
       ticket,op,MAGIC1,TimeToString(GoatNoTickClock(g_GoatLastNoTickRunMs),TIME_DATE|TIME_SECONDS),now_ms-g_GoatLastTickMs,GOAT_BUILD_ID));
   }
 // B49b:end F4
+// B49b:begin lag-a
+// LAG-A, the lag hotfix's safeguards (Fix_FeedGuard, default Off): right whatever makes a terminal fall behind, the EA's
+// work or the host. All time logic keys on TimeCurrent(), the last tick the terminal has processed, so a terminal hours
+// behind ends its sessions hours late, sends the Friday close into a closed market, drops it at the next day's reset and
+// can open on old signals. On a live trading chart (GoatManageOnlyLive: never the tester, optimization, forward pass,
+// batch, dashboard or an export), under the flag:
+// - a server clock, TimeTradeServer() and never earlier than the broker's last tick (GoatServerClock), decides the day's
+//   reset and the per-second block's session, Friday and day-end logic. The block is entered exactly as before: IsNewSecond
+//   and every sampler stay on the feed's clock (GoatFeedClockServer swaps the clock inside the day and per-second blocks
+//   only, GoatFeedClockFeed puts it back), so this group changes WHEN a session ends, never how often anything is checked;
+// - the no-tick timer's clock counts from the server clock at the last tick, not from a stale tick's time (GoatFeedGuardStamp);
+// - feed age is that clock minus the newest tick of the chart's symbol, read at each real tick: over GOAT_FEED_AGE_GUARD_S,
+//   or unreadable, no new sequence, promotion, virtual level or positive add (GoatEntriesHeld, in DashboardEntryAllowed and
+//   SEQUENCE::Add_Level, the only way to OpenPosition). Anything that reduces exposure passes: closes, stops, MLPS and trailing
+//   never read it, and Add_Level's negative-lot unwind runs ahead of its second check. An OnTick on a quiet symbol carries a fresh
+//   tick, so a quiet market does not trip it; a PC clock more than 30 s from the broker's does, and says so;
+// - a Friday close that leaves positions open stays owed (GoatCloseOwed*): it survives the day reset and a restart (the state
+//   file) and holds entries. On the day it armed it retries while the session is open, backing off on a market-closed refusal.
+//   After the weekend it goes on the first tick at least GOAT_CLOSE_OWED_SETTLE_MS after the first later quote, unconditionally:
+//   no session table and no spread check, so neither can stall it (a spread check is ruled out; the wait is the open's wide
+//   spread). A quote that is not the open must not spend the wait: a market-shut refusal restarts it, and so does a tick after a gap
+//   of GOAT_CLOSE_OWED_QUOTE_GAP_MS, since a stray tick before the open would otherwise leave no wait on the real first tick. Another
+//   stop's close is never withheld for it. F3's GoatCloseFailureLog still logs each failing ticket; F3's
+//   ClosePendingPump only covers an ended sequence, and a stop-out's close never reaches it, so nothing here repeats it;
+// - until the first real tick after connect a real tick's body does not run (g_GoatFeedSynced): TimeTradeServer's offset is not
+//   known before it, so a restart would stamp the wrong server day (losing the day's state and a latched stop), could read a true
+//   Saturday 00:00-02:00 as Friday and arm an owed close, or read a negative-offset server ahead. TimeTradeServer minus TimeGMT
+//   cannot tell, since a UTC broker reads 0. A disconnect re-arms it. F4's no-tick run is exempt: its clock is the last real tick's
+//   server clock plus the monotonic time since, and it cannot run before a real tick (GoatNoTickDue), so a blip never costs the exits;
+// - raw TimeTradeServer minus TimeCurrent is watched at each real tick and written as clock_skew_s. Below -10 s the PC is behind
+//   the broker: logged once per episode, at most once a minute. Below -30 s for GOAT_CLOCK_SLOW_HOLD_MS: entries held. A PC ahead moves
+//   every end early by that much and cannot be told from lag, so it is never refused on; clock_skew_floor_s, the lowest skew since the
+//   last status write, shows it as a steady positive number, and a floor at or over GOAT_CLOCK_FAST_LOG_S for GOAT_CLOCK_FAST_WRITES
+//   writes in a row logs once per episode;
+// - when a hold starts, virtual candidates end, and so do real sequences still on a paper level (Active, not Traded), so an old
+//   candidate never places its first order once the hold lifts;
+// - a status file (GoatStatusFlush, every GOAT_STATUS_WRITE_MS from the timer) says the feed age. It is new: this build had
+//   no per-chart status file, and the restart state file must not rewrite itself on a number that always changes.
+#define GOAT_FEED_AGE_GUARD_S 30
+#define GOAT_CLOSE_OWED_RETRY_MS 1000
+#define GOAT_STATUS_VERSION 1
+#define GOAT_STATUS_WRITE_MS 15000
+#define GOAT_CLOSE_OWED_SETTLE_MS 300000
+#define GOAT_CLOSE_OWED_QUOTE_GAP_MS 1800000
+#define GOAT_CLOCK_FAST_LOG_S 10
+#define GOAT_CLOCK_FAST_WRITES 4
+#define GOAT_CLOCK_SLOW_LOG_S 10
+#define GOAT_CLOCK_SLOW_HOLD_S 30
+#define GOAT_CLOCK_SLOW_HOLD_MS 60000
+datetime    g_GoatServerNow=0;                // the server clock of this GoatTickBody run
+datetime    g_GoatFeedTmSaved=0;              // the feed clock while the server clock is swapped in
+MqlDateTime g_GoatFeedStmSaved;
+int         g_GoatFeedAgeS=-1;                // at the last real tick; -1: unreadable, or no tick yet
+bool        g_GoatFeedHeldLogged=false;
+ulong       g_GoatFeedLogMs=0;
+bool        g_GoatCloseOwed=false;            // a Friday close left positions open
+bool        g_GoatCloseOwedStop=false;        // the owed close raised StopOut_Flag itself, so settling lowers it
+bool        g_GoatCloseFridayFired=false;     // this per-second block's Friday action was Close
+datetime    g_GoatCloseOwedSince=0;
+ulong       g_GoatCloseOwedNextMs=0,g_GoatCloseOwedBackoffMs=0;
+ulong       g_GoatCloseOwedQuoteMs=0;         // when the first quote after the weekend was seen; 0: not yet
+ulong       g_GoatCloseOwedTickMs=0;          // the last real tick while owed
+bool        g_GoatCloseOwedDue=false;         // this block's answer: read by the send straight after it is set
+datetime    g_GoatCloseOwedStopTime=0;        // LastStopoutTime when the owed close raised its stop: settling puts it back
+bool        g_GoatCloseRealStop=false;        // this block's stop-out came from somewhere other than the Friday close
+bool        g_GoatFeedSynced=false;           // a real tick has arrived since connect
+bool        g_GoatEntriesWereHeld=false;
+long        g_GoatClockSkewS=0,g_GoatClockFloorS=0;
+bool        g_GoatClockFloorSet=false,g_GoatClockSlowLogged=false,g_GoatClockSlowHeld=false;
+ulong       g_GoatClockSlowSinceMs=0,g_GoatClockSlowLogMs=0;
+int         g_GoatClockFastWrites=0;
+bool        g_GoatClockFastLogged=false;
+ulong       g_GoatStatusWrittenMs=0;
+bool        g_GoatStatusFailLogged=false;
+bool GoatFeedGuardLive(void)
+  {
+   return(Fix_FeedGuard==GoatFix_On && GoatManageOnlyLive());
+  }
+datetime GoatServerClock(void)
+  {
+   datetime srv_clock=TimeTradeServer(),srv_last=TimeCurrent();
+   return(srv_clock>srv_last ? srv_clock : srv_last);
+  }
+int GoatFeedAge(const datetime srv_clock)
+  {
+   MqlTick feed_tick;
+   if(!SymbolInfoTick(_Symbol,feed_tick) || feed_tick.time==0) return -1;
+   long feed_age=(long)srv_clock-(long)feed_tick.time;
+   return (feed_age<0 ? 0 : (int)feed_age);
+  }
+// OnTick, right after GoatNoTickStamp: the no-tick timer's clock counts from here.
+void GoatFeedGuardStamp(void)
+  {
+   if(!GoatFeedGuardLive()) return;
+   if(g_GoatFeedInitDone && TerminalInfoInteger(TERMINAL_CONNECTED)!=0) g_GoatFeedSynced=true;
+   if(g_GoatFeedSynced) g_GoatLastTickTime=GoatServerClock();
+  }
+// At each real tick: the raw skew, whatever GoatServerClock's floor hides. Only a PC behind the broker is provable.
+void GoatClockSkewWatch(const ulong now_ms)
+  {
+   g_GoatClockSkewS=(long)TimeTradeServer()-(long)TimeCurrent();
+   if(!g_GoatClockFloorSet || g_GoatClockSkewS<g_GoatClockFloorS) {g_GoatClockFloorS=g_GoatClockSkewS; g_GoatClockFloorSet=true;}
+   if(g_GoatClockSkewS>=-GOAT_CLOCK_SLOW_LOG_S) g_GoatClockSlowLogged=false; // cleared: the next episode says so too
+   if(g_GoatClockSkewS<-GOAT_CLOCK_SLOW_LOG_S && !g_GoatClockSlowLogged && (g_GoatClockSlowLogMs==0 || now_ms-g_GoatClockSlowLogMs>=60000))
+     {
+      g_GoatClockSlowLogged=true; g_GoatClockSlowLogMs=now_ms;
+      Print("GOAT clock: this PC reads ",IntegerToString(g_GoatClockSkewS)," s against the broker's last tick. Below -",IntegerToString(GOAT_CLOCK_SLOW_HOLD_S)," s for a minute, entries are held");
+     }
+   if(g_GoatClockSkewS>=-GOAT_CLOCK_SLOW_HOLD_S)
+     {
+      g_GoatClockSlowSinceMs=0;
+      if(g_GoatClockSlowHeld) Print("GOAT clock: skew ",IntegerToString(g_GoatClockSkewS)," s, no longer holding entries");
+      g_GoatClockSlowHeld=false;
+      return;
+     }
+   if(g_GoatClockSlowSinceMs==0) g_GoatClockSlowSinceMs=now_ms;
+   if(g_GoatClockSlowHeld || now_ms-g_GoatClockSlowSinceMs<GOAT_CLOCK_SLOW_HOLD_MS) return;
+   g_GoatClockSlowHeld=true;
+   Print("GOAT clock: skew ",IntegerToString(g_GoatClockSkewS)," s sustained: new_trades=refused adds=frozen closes_stops_mlps=continue");
+  }
+// From the status flush, before the floor restarts: a floor that stays up is a fast clock or a terminal that stays behind. Said once
+// per episode, and never refused on: the two cannot be told apart, and refusing on a fast clock would stop a healthy terminal.
+void GoatClockFastWatch(void)
+  {
+   if(!g_GoatClockFloorSet) return;
+   if(g_GoatClockFloorS<GOAT_CLOCK_FAST_LOG_S) {g_GoatClockFastWrites=0; g_GoatClockFastLogged=false; return;}
+   g_GoatClockFastWrites++;
+   if(g_GoatClockFastLogged || g_GoatClockFastWrites<GOAT_CLOCK_FAST_WRITES) return;
+   g_GoatClockFastLogged=true;
+   Print("GOAT clock: TimeTradeServer has read at least ",IntegerToString(g_GoatClockFloorS)," s ahead of the broker's last tick for a minute: a fast PC clock (session, day and Friday ends move early by that much) or a terminal behind. Nothing is refused on it");
+  }
+// At each real tick while owed: the first quote after the weekend starts the wait. A later day on the symbol's own tick is that
+// quote. In a backlog over the open no such tick has been processed yet, and a stale tick proves nothing, so the server day and
+// the session table stand in for it there; either way the send itself reads neither.
+void GoatCloseOwedQuoteWatch(const bool feed_held,const ulong now_ms)
+  {
+   if(!g_GoatCloseOwed) return;
+   if(g_GoatCloseOwedTickMs!=0 && now_ms-g_GoatCloseOwedTickMs>=GOAT_CLOSE_OWED_QUOTE_GAP_MS) g_GoatCloseOwedQuoteMs=0; // that quote was not the open
+   g_GoatCloseOwedTickMs=now_ms;
+   if(g_GoatCloseOwedQuoteMs!=0) return;
+   long owed_day=(long)g_GoatCloseOwedSince/86400;
+   MqlTick feed_tick;
+   bool later_quote=(SymbolInfoTick(_Symbol,feed_tick) && (long)feed_tick.time/86400>owed_day);
+   bool stale_open=(feed_held && (long)g_GoatServerNow/86400>owed_day && GoatNoTickSessionOpen(_Symbol,g_GoatServerNow));
+   if(!later_quote && !stale_open) return;
+   g_GoatCloseOwedQuoteMs=now_ms; g_GoatCloseOwedNextMs=0; g_GoatCloseOwedBackoffMs=0;
+   Print("GOAT close owed: first quote after the weekend on ",_Symbol,"; the close goes on the first tick from ",IntegerToString(GOAT_CLOSE_OWED_SETTLE_MS/1000)," s");
+  }
+// GoatTickBody, right after the clock line: this run's server clock and, on a real tick, the feed age.
+void GoatFeedGuardTick(void)
+  {
+   if(!GoatFeedGuardLive()) return;
+   g_GoatServerNow=(g_GoatNoTickRun ? tm_cur : GoatServerClock());
+   if(g_GoatNoTickRun) return;
+   g_GoatFeedAgeS=GoatFeedAge(g_GoatServerNow);
+   bool feed_held=(g_GoatFeedAgeS<0 || g_GoatFeedAgeS>GOAT_FEED_AGE_GUARD_S);
+   ulong now_ms=GetTickCount64();
+   GoatClockSkewWatch(now_ms);
+   GoatCloseOwedQuoteWatch(feed_held,now_ms);
+   // A fresh tick means quotes are flowing, not that trading is open (a broker's quote session can outlast its trade session):
+   // it caps an owed close's wait at the shortest step, so it never asks every second, and never waits 15 min on a live market.
+   if(!feed_held && g_GoatCloseOwedNextMs>now_ms+GOAT_NO_TICK_BACKOFF_MIN_MS) {g_GoatCloseOwedNextMs=now_ms+GOAT_NO_TICK_BACKOFF_MIN_MS; g_GoatCloseOwedBackoffMs=0;}
+   if(feed_held==g_GoatFeedHeldLogged) return;
+   if(g_GoatFeedLogMs!=0 && now_ms-g_GoatFeedLogMs<60000) return;
+   g_GoatFeedLogMs=now_ms; g_GoatFeedHeldLogged=feed_held;
+   if(feed_held) Print("GOAT feed guard: feed_age_s=",IntegerToString(g_GoatFeedAgeS)," guard_s=",IntegerToString(GOAT_FEED_AGE_GUARD_S)," symbol=",_Symbol," new_trades=refused adds=frozen closes_stops_mlps=continue");
+   else          Print("GOAT feed guard: feed_age_s=",IntegerToString(g_GoatFeedAgeS)," back within guard_s=",IntegerToString(GOAT_FEED_AGE_GUARD_S)," symbol=",_Symbol,"; new trades and adds resume");
+  }
+// The server clock inside the day block and the per-second block only.
+void GoatFeedClockServer(void)
+  {
+   if(!GoatFeedGuardLive()) return;
+   g_GoatFeedTmSaved=tm_cur; g_GoatFeedStmSaved=stm_cur;
+   tm_cur=g_GoatServerNow; TimeToStruct(tm_cur,stm_cur);
+  }
+void GoatFeedClockFeed(void)
+  {
+   if(!GoatFeedGuardLive()) return;
+   tm_cur=g_GoatFeedTmSaved; stm_cur=g_GoatFeedStmSaved;
+  }
+bool GoatEntriesHeld(void)
+  {
+   if(!GoatFeedGuardLive()) return false;
+   return(g_GoatCloseOwed || g_GoatClockSlowHeld || g_GoatFeedAgeS<0 || g_GoatFeedAgeS>GOAT_FEED_AGE_GUARD_S);
+  }
+// GoatTickBody, on a real tick: a hold that starts ends the virtual candidates, so none is promoted on an old signal when it lifts.
+void GoatEntriesHoldWatch(void)
+  {
+   if(!GoatFeedGuardLive() || g_GoatNoTickRun) return;
+   bool hold_now=GoatEntriesHeld();
+   if(hold_now && !g_GoatEntriesWereHeld)
+     {
+      if(Seq_Buy_Virtual.Active)  Seq_Buy_Virtual.End_Sequence("Feed guard hold");
+      if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Feed guard hold");
+      if(Seq_Buy.Active && !Seq_Buy.Traded)   Seq_Buy.End_Sequence("Feed guard hold");
+      if(Seq_Sell.Active && !Seq_Sell.Traded) Seq_Sell.End_Sequence("Feed guard hold");
+     }
+   g_GoatEntriesWereHeld=hold_now;
+  }
+void GoatCloseOwedClear(void)
+  {
+   g_GoatCloseOwed=false; g_GoatCloseOwedStop=false; g_GoatCloseOwedSince=0; g_GoatCloseOwedStopTime=0;
+   g_GoatCloseOwedNextMs=0; g_GoatCloseOwedBackoffMs=0; g_GoatCloseOwedQuoteMs=0; g_GoatCloseOwedTickMs=0;
+  }
+// Before the stop-out block: once due, the owed close takes B49a's own close path, past the day reset that cleared the flag. Due, the
+// day it armed: while the session is open. After the weekend: the first tick from the wait, reading no session table or spread.
+void GoatCloseOwedAssert(const int open_count)
+  {
+   if(!g_GoatCloseOwed || !GoatFeedGuardLive()) return;
+   ulong now_ms=GetTickCount64();
+   g_GoatCloseOwedDue=(now_ms>=g_GoatCloseOwedNextMs && (g_GoatCloseOwedQuoteMs!=0 ? now_ms-g_GoatCloseOwedQuoteMs>=GOAT_CLOSE_OWED_SETTLE_MS
+                       : ((long)g_GoatServerNow/86400==(long)g_GoatCloseOwedSince/86400 && GoatNoTickSessionOpen(_Symbol,g_GoatServerNow))));
+   if(open_count==0 || StopOut_Flag || !g_GoatCloseOwedDue) return;
+   StopOut_Flag=true; g_GoatCloseOwedStop=true; g_GoatCloseOwedStopTime=LastStopoutTime;
+   Print("GOAT close owed: sending the Friday close owed since ",TimeToString(g_GoatCloseOwedSince,TIME_DATE|TIME_SECONDS)," open=",IntegerToString(open_count)," close_errors=",IntegerToString(closeErrors)," symbol=",_Symbol);
+  }
+// After the stop-out block: a Friday close that left positions open becomes owed, loudly; flat settles it.
+void GoatCloseOwedAfter(const int open_count)
+  {
+   if(!GoatFeedGuardLive()) return;
+   bool fired=g_GoatCloseFridayFired;
+   g_GoatCloseFridayFired=false;
+   if(fired && open_count>0)
+     {
+      if(!g_GoatCloseRealStop) {g_GoatCloseOwedStop=true; g_GoatCloseOwedStopTime=LastStopoutTime;} // the Friday stop is the owed close's own, unless a real one is up
+      if(g_GoatCloseOwed) return;
+      g_GoatCloseOwed=true; g_GoatCloseOwedSince=g_GoatServerNow;
+      string owed_line="GOAT close owed: the Friday close left "+IntegerToString(open_count)+" position(s) open on "+_Symbol+", close_errors="+IntegerToString(closeErrors)
+                      +". It stays owed past the day reset, and no new trade opens until flat.";
+      Print(owed_line); Alert(owed_line);
+      return;
+     }
+   if(!g_GoatCloseOwed || open_count>0) return;
+   Print("GOAT close owed: settled, flat on ",_Symbol," close_errors=",IntegerToString(closeErrors)," owed since ",TimeToString(g_GoatCloseOwedSince,TIME_DATE|TIME_SECONDS));
+   if(g_GoatCloseOwedStop) {StopOut_Flag=false; LastStopoutTime=g_GoatCloseOwedStopTime;} // only its own stop, and a Mode_Restart cooldown stays
+   GoatCloseOwedClear();
+  }
+// CloseAllPositions, each attempt while owed: a closed market backs off (F4's 60 s doubling to 15 min, one step per window; a
+// fresh tick caps it at 60 s), any other refusal waits GOAT_CLOSE_OWED_RETRY_MS.
+void GoatCloseOwedRefused(const uint retcode)
+  {
+   if(retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_DONE_PARTIAL || retcode==TRADE_RETCODE_PLACED) return;
+   ulong now_ms=GetTickCount64();
+   if(now_ms<g_GoatCloseOwedNextMs) return;
+   bool market_shut=(retcode==TRADE_RETCODE_MARKET_CLOSED || retcode==TRADE_RETCODE_TRADE_DISABLED);
+   if(!market_shut) {g_GoatCloseOwedNextMs=now_ms+GOAT_CLOSE_OWED_RETRY_MS; return;}
+   g_GoatCloseOwedQuoteMs=0; // the market was not open after all: the next tick starts the wait again
+   ulong owed_wait=g_GoatCloseOwedBackoffMs*2;
+   if(owed_wait<GOAT_NO_TICK_BACKOFF_MIN_MS) owed_wait=GOAT_NO_TICK_BACKOFF_MIN_MS;
+   if(owed_wait>GOAT_NO_TICK_BACKOFF_MAX_MS) owed_wait=GOAT_NO_TICK_BACKOFF_MAX_MS;
+   g_GoatCloseOwedBackoffMs=owed_wait; g_GoatCloseOwedNextMs=now_ms+owed_wait;
+  }
+// The state file's owed section: nothing unless owed, so the file is B49a's otherwise.
+string GoatCloseOwedText(void)
+  {
+   if(!g_GoatCloseOwed) return "";
+   return "close_owed=1\nclose_owed_since="+IntegerToString((long)g_GoatCloseOwedSince)+"\nclose_owed_stop="+(g_GoatCloseOwedStop ? "1" : "0")+"\nclose_owed_stop_time="+IntegerToString((long)g_GoatCloseOwedStopTime)+"\n";
+  }
+// OnInit, GoatStateRestore: an owed close survives a restart whatever the day.
+void GoatCloseOwedRestore(const string &keys[],const string &values[])
+  {
+   if(GoatStateValue(keys,values,"close_owed")!="1") return;
+   if(!GoatFeedGuardLive() || Action_Friday!=Action_Close) {Print("GOAT close owed: the state file owes a Friday close, ignored (Fix_FeedGuard off or Action_Friday not Close)"); GoatCloseOwedClear(); return;} // a re-init keeps the globals
+   g_GoatCloseOwed=true; g_GoatCloseOwedStop=(GoatStateValue(keys,values,"close_owed_stop")=="1");
+   g_GoatCloseOwedSince=(datetime)StringToInteger(GoatStateValue(keys,values,"close_owed_since"));
+   g_GoatCloseOwedStopTime=(datetime)StringToInteger(GoatStateValue(keys,values,"close_owed_stop_time"));
+   string owed_line="GOAT close owed: restored, a Friday close owed since "+TimeToString(g_GoatCloseOwedSince,TIME_DATE|TIME_SECONDS)+" on "+_Symbol+". No new trade opens until flat.";
+   Print(owed_line); Alert(owed_line);
+  }
+// PositionModify's and PositionClose's bool is OrderSend's, which can be true on a server rejection; only ResultRetcode()
+// decides. Nothing in the grid's trailing or TP/SL state reads the answer (Level_TSL and Trailing are set before the send, and
+// the next pass re-reads POSITION_SL), so a rejection cannot corrupt a stop; it only went uncounted and unlogged, booked as a
+// success in the counters and reports. Under the flag it is counted and said. Off: B49a's bool-only count.
+bool GoatModifyRejected(const uint retcode,const bool counted,const ulong ticket,const string what,const string description)
+  {
+   if(!GoatFeedGuardLive() || counted || retcode==TRADE_RETCODE_DONE) return false;
+   PrintFormat("%s modify rejected though it returned true: ticket=%I64u ret=%u (%s)",what,ticket,retcode,description);
+   return true;
+  }
+bool GoatCloseRejected(const uint retcode,const bool counted,const ulong ticket,const string description)
+  {
+   if(!GoatFeedGuardLive() || counted || retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_DONE_PARTIAL || retcode==TRADE_RETCODE_PLACED) return false;
+   GoatCloseFailureLog(ticket,retcode,description);
+   return true;
+  }
+string GoatStatusText(void)
+  {
+   MqlTick feed_tick;
+   bool feed_read=SymbolInfoTick(_Symbol,feed_tick);
+   datetime srv_clock=GoatServerClock();
+   return "version="+IntegerToString(GOAT_STATUS_VERSION)+"\nlogin="+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\nmagic="+IntegerToString(MAGIC1)+"\nsymbol="+_Symbol+"\nbuild_id="+GOAT_BUILD_ID
+         +"\nserver_time="+IntegerToString((long)srv_clock)+"\ntick_time="+IntegerToString(feed_read ? (long)feed_tick.time : 0)+"\nfeed_age_s="+IntegerToString(GoatFeedAge(srv_clock))
+         +"\nguard_s="+IntegerToString(GOAT_FEED_AGE_GUARD_S)+"\nlast_ontick_age_ms="+IntegerToString(g_GoatLastTickMs==0 ? -1 : (long)(GetTickCount64()-g_GoatLastTickMs))
+         +"\nsession_open="+(GoatNoTickSessionOpen(_Symbol,srv_clock) ? "1" : "0")+"\nconnected="+IntegerToString(TerminalInfoInteger(TERMINAL_CONNECTED))
+         +"\nfeed_guard="+(GoatFeedGuardLive() ? "1" : "0")+"\nentries_held="+(GoatEntriesHeld() ? "1" : "0")
+         +"\nclose_owed="+(g_GoatCloseOwed ? "1" : "0")+"\nclose_owed_since="+IntegerToString((long)g_GoatCloseOwedSince)
+         +"\nclock_synced="+(g_GoatFeedSynced ? "1" : "0")+"\nclock_skew_s="+IntegerToString((long)TimeTradeServer()-(long)TimeCurrent())+"\nclock_skew_floor_s="+(g_GoatClockFloorSet ? IntegerToString(g_GoatClockFloorS) : "na")+"\nclock_slow_held="+(g_GoatClockSlowHeld ? "1" : "0")
+         +"\nclosed="+IntegerToString(closed)+"\nclose_errors="+IntegerToString(closeErrors)
+         +"\ntsl_modifies="+IntegerToString(TSLmodifieds)+"\ntsl_modify_errors="+IntegerToString(TSLmodifyErrors)
+         +"\npositions_account="+IntegerToString(PositionsTotal())+"\n"+GoatTimingText(); // LAG-T: "" unless Diag_TickTiming
+  }
+// From the timer. It never touches trading: a failed write logs once and freezes nothing, unlike the restart state file.
+void GoatStatusFlush(void)
+  {
+   if((!GoatFeedGuardLive() && !GoatTimingLive()) || MAGIC1<=0) return; // LAG-T: timing alone writes the file too
+   ulong now_ms=GetTickCount64();
+   if(g_GoatStatusWrittenMs!=0 && now_ms-g_GoatStatusWrittenMs<GOAT_STATUS_WRITE_MS) return;
+   g_GoatStatusWrittenMs=now_ms;
+   GoatClockFastWatch();
+   string login=IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   FolderCreate("GOAT",FILE_COMMON);
+   FolderCreate("GOAT\\State",FILE_COMMON);
+   FolderCreate("GOAT\\State\\"+login,FILE_COMMON);
+   string status_path="GOAT\\State\\"+login+"\\"+IntegerToString(MAGIC1)+"_"+_Symbol+".status.txt";
+   if(GoatStateWrite(status_path,GoatStatusText())) {g_GoatStatusFailLogged=false; g_GoatClockFloorSet=false; return;} // the floor restarts each write
+   if(!g_GoatStatusFailLogged) Print("GOAT status file not written (",status_path,", error ",IntegerToString(g_GoatStateWriteError),"); nothing else changes");
+   g_GoatStatusFailLogged=true;
+  }
+// B49b:end lag-a
+// B49b:begin lag-t
+// LAG-T, read-only timing (Diag_TickTiming, default Off): where a chart's time goes, so the bench can show whether per-tick
+// work is the bottleneck at all before group B is ever turned on. Whether a terminal falls behind because of the EA's work or
+// because of its host is not proven. It reads a microsecond clock around OnTick, OnTimer and six sections of GoatTickBody,
+// keeps counters, adds them to the status file and logs one line a minute. It sends nothing, selects nothing and sets no
+// trading state. Off, each call is one input compare. Live trading charts only (GoatManageOnlyLive); with it on and the other
+// flags off the chart trades as the base, plus the file and the log line. busy_pct is this chart's share of one core: a
+// terminal's EAs each run on their own thread, so sum the charts and compare with the host's CPU, and with feed_age_s.
+#define GOAT_TIMING_SLOTS 7   // 0 per-second block, 1 minute block, 2 trailing, 3 signals, 4 exits (close pump, MLPS), 5 grid and sequence, 6 OnTimer
+#define GOAT_TIMING_LOG_MS 60000
+ulong g_GoatTimingSlotUS[GOAT_TIMING_SLOTS],g_GoatTimingSlotCalls[GOAT_TIMING_SLOTS];
+ulong g_GoatTimingTicks=0,g_GoatTimingTickUS=0,g_GoatTimingTickMaxUS=0;
+ulong g_GoatTimingWindowMs=0,g_GoatTimingWindowUS=0,g_GoatTimingWindowTicks=0;
+bool GoatTimingLive(void)
+  {
+   return(Diag_TickTiming==GoatFix_On && GoatManageOnlyLive());
+  }
+ulong GoatTimingStart(void)
+  {
+   return(GoatTimingLive() ? GetMicrosecondCount() : 0);
+  }
+void GoatTimingSlot(const int slot,const ulong started_us)
+  {
+   if(started_us==0 || slot<0 || slot>=GOAT_TIMING_SLOTS) return;
+   ulong spent_us=GetMicrosecondCount()-started_us;
+   g_GoatTimingSlotUS[slot]+=spent_us; g_GoatTimingSlotCalls[slot]++;
+   if(slot==6) g_GoatTimingWindowUS+=spent_us;
+  }
+void GoatTimingTick(const ulong started_us)
+  {
+   if(started_us==0) return;
+   ulong spent_us=GetMicrosecondCount()-started_us;
+   g_GoatTimingTicks++; g_GoatTimingTickUS+=spent_us; g_GoatTimingWindowTicks++; g_GoatTimingWindowUS+=spent_us;
+   if(spent_us>g_GoatTimingTickMaxUS) g_GoatTimingTickMaxUS=spent_us;
+  }
+string GoatTimingText(void)
+  {
+   if(!GoatTimingLive()) return "";
+   string slot_names[GOAT_TIMING_SLOTS]={"second","minute","trailing","signal","exits","sequence","timer"};
+   string timing_text="timing_ticks="+IntegerToString((long)g_GoatTimingTicks)+"\ntiming_tick_us="+IntegerToString((long)g_GoatTimingTickUS)+"\ntiming_tick_max_us="+IntegerToString((long)g_GoatTimingTickMaxUS)+"\n";
+   for(int s=0;s<GOAT_TIMING_SLOTS;s++)
+      timing_text+="timing_"+slot_names[s]+"_us="+IntegerToString((long)g_GoatTimingSlotUS[s])+"\ntiming_"+slot_names[s]+"_calls="+IntegerToString((long)g_GoatTimingSlotCalls[s])+"\n";
+   return timing_text;
+  }
+// From the timer: one line a minute, the window's busy share against the feed age it ran at.
+void GoatTimingFlush(void)
+  {
+   if(!GoatTimingLive()) return;
+   ulong now_ms=GetTickCount64();
+   if(g_GoatTimingWindowMs==0) {g_GoatTimingWindowMs=now_ms; return;}
+   if(now_ms-g_GoatTimingWindowMs<GOAT_TIMING_LOG_MS) return;
+   ulong window_ms=now_ms-g_GoatTimingWindowMs;
+   Print(StringFormat("GOAT tick timing: symbol=%s window_ms=%I64u ticks=%I64u busy_pct=%.2f tick_max_us=%I64u feed_age_s=%d positions_account=%d",
+      _Symbol,window_ms,g_GoatTimingWindowTicks,100.0*(double)g_GoatTimingWindowUS/((double)window_ms*1000.0),g_GoatTimingTickMaxUS,GoatFeedAge(GoatServerClock()),PositionsTotal()));
+   g_GoatTimingWindowMs=now_ms; g_GoatTimingWindowUS=0; g_GoatTimingWindowTicks=0;
+  }
+// B49b:end lag-t
+// B49b:begin lag-b
+// LAG-B, load changes (Fix_TickLoad, default Off): justified only if the EA's own per-tick work is what puts a terminal behind,
+// which is not proven. Measure first (Diag_TickTiming, the bench); nothing in group A needs this. It reads the PC's monotonic
+// clock, never the server clock. Live trading charts only (GoatManageOnlyLive). The hot path it bounds, on this base: the
+// per-second block runs on each new FEED second, so in a backlog nearly every tick; it walks every position on the account
+// (PositionsTotal, not this chart's), plus HistorySelect when a daily limit is set and about 14 GlobalVariableSet with a
+// dashboard. Trailing is per feed second and sends a synchronous modify per level; MLPS walks the levels every tick; the close
+// pump walks the account every tick while an end is deferred.
+// WHAT CHANGES WITH IT ON: this changes how often exits and trails are evaluated, so it can change trades.
+// - Every stop in the per-second block (MaxLoss*, daily limits, equity levels, session, Friday and day ends) is evaluated at most
+//   once per real second instead of once per feed second. A tick inside the second is not evaluated; if no later tick comes the
+//   check waits for one, or for F4's no-tick timer (5 s).
+// - Trailing (Level_TSL and the broker SL) moves at most once per real second, even with Trailing_Sample_Period=Tick. A stop can
+//   trail less tightly, so a reversal can exit at a worse price, including a rescue's break-even protection, which trailing sets.
+// - Sequence_MLPS_Hard_Close is evaluated at most once per real second on the tick path (an add still checks it). A spike between
+//   checks can close later and past the limit, as it could between ticks.
+// - A deferred close (F3) retries at most once per real second.
+// - After GOAT_TRAIL_FAIL_LIMIT consecutive refused modifies on a ticket, that ticket backs off 1, 5, 30 then 60 s. Per ticket, as
+//   #287 is for singles: a refused ticket never blocks a healthy level, and one refused pass on a big basket trips nothing. A
+//   modify that would have been accepted inside a wait is not sent, so that ticket's stop can sit up to 60 s behind; the broker keeps
+//   its last accepted SL. TRADE_RETCODE_DONE or NO_CHANGES clears the ticket; PLACED and DONE_PARTIAL neither count nor clear; anything
+//   else is a refusal. The bound is per ticket, so N stuck tickets send N requests a minute: the bench must read tsl_modifies.
+// - With the session closed no tick arrives, so MLPS and trailing wait for the next tick, with or without this flag; the F4 timer runs
+//   the per-second block only.
+// Unchanged: signals, entries, sizes, the grid's own sampling, the minute block, every broker-held SL/TP.
+#define GOAT_TICK_LOAD_HOLD_MS 1000
+#define GOAT_TICK_LOAD_SLOTS 6     // 0 per-second block, 1 trailing, 2-3 MLPS buy/sell, 4-5 the deferred-close pump buy/sell
+#define GOAT_TRAIL_FAIL_LIMIT 5
+ulong g_GoatTickLoadMs[GOAT_TICK_LOAD_SLOTS];
+// Only the tickets currently refused: a row is keyed by ticket and freed when it clears, so nothing here is ever indexed by a side.
+ulong g_GoatTrailTicket[],g_GoatTrailNextMs[];
+int   g_GoatTrailSide[],g_GoatTrailFails[];
+bool GoatTickLoadLive(void)
+  {
+   return(Fix_TickLoad==GoatFix_On && GoatManageOnlyLive());
+  }
+// True while this slot ran under GOAT_TICK_LOAD_HOLD_MS ago. Off: false, and no clock is read.
+bool GoatTickLoadHold(const int slot)
+  {
+   if(!GoatTickLoadLive() || slot<0 || slot>=GOAT_TICK_LOAD_SLOTS) return false;
+   ulong now_ms=GetTickCount64();
+   if(g_GoatTickLoadMs[slot]!=0 && now_ms-g_GoatTickLoadMs[slot]<GOAT_TICK_LOAD_HOLD_MS) return true;
+   g_GoatTickLoadMs[slot]=now_ms;
+   return false;
+  }
+int GoatTrailSlot(const ulong ticket)
+  {
+   for(int t=0;t<ArraySize(g_GoatTrailTicket);t++) if(g_GoatTrailTicket[t]==ticket) return t;
+   return -1;
+  }
+bool GoatTrailHeld(const ulong ticket)
+  {
+   if(!GoatTickLoadLive()) return false;
+   int trail_slot=GoatTrailSlot(ticket);
+   if(trail_slot<0 || g_GoatTrailFails[trail_slot]<GOAT_TRAIL_FAIL_LIMIT) return false;
+   return(GetTickCount64()<g_GoatTrailNextMs[trail_slot]);
+  }
+void GoatTrailNote(const int side,const ulong ticket,const uint retcode)
+  {
+   if(!GoatTickLoadLive() || retcode==TRADE_RETCODE_PLACED || retcode==TRADE_RETCODE_DONE_PARTIAL) return;
+   int trail_slot=GoatTrailSlot(ticket);
+   if(retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_NO_CHANGES)
+     {
+      if(trail_slot<0) return;
+      if(g_GoatTrailFails[trail_slot]>=GOAT_TRAIL_FAIL_LIMIT) Print("GOAT trail back-off: recovered ticket=",IntegerToString((long)ticket)," symbol=",_Symbol," after ",IntegerToString(g_GoatTrailFails[trail_slot])," refusals");
+      g_GoatTrailTicket[trail_slot]=0; g_GoatTrailFails[trail_slot]=0; g_GoatTrailNextMs[trail_slot]=0;
+      return;
+     }
+   if(trail_slot<0)
+     {
+      trail_slot=GoatTrailSlot(0);
+      if(trail_slot<0)
+        {
+         trail_slot=ArraySize(g_GoatTrailTicket);
+         ArrayResize(g_GoatTrailTicket,trail_slot+1); ArrayResize(g_GoatTrailNextMs,trail_slot+1); ArrayResize(g_GoatTrailSide,trail_slot+1); ArrayResize(g_GoatTrailFails,trail_slot+1);
+        }
+      g_GoatTrailTicket[trail_slot]=ticket; g_GoatTrailSide[trail_slot]=side; g_GoatTrailFails[trail_slot]=0; g_GoatTrailNextMs[trail_slot]=0;
+     }
+   g_GoatTrailFails[trail_slot]++;
+   if(g_GoatTrailFails[trail_slot]<GOAT_TRAIL_FAIL_LIMIT) return;
+   int back_step=g_GoatTrailFails[trail_slot]-GOAT_TRAIL_FAIL_LIMIT;
+   int wait_s=(back_step==0 ? 1 : back_step==1 ? 5 : back_step==2 ? 30 : 60);
+   g_GoatTrailNextMs[trail_slot]=GetTickCount64()+(ulong)wait_s*1000;
+   Print("GOAT trail back-off: ticket=",IntegerToString((long)ticket)," symbol=",_Symbol," consecutive=",IntegerToString(g_GoatTrailFails[trail_slot])," retcode=",IntegerToString(retcode)," wait_s=",IntegerToString(wait_s));
+  }
+// End_Sequence calls this for a sequence that may never have been Init-ed (Delay_Trade=0 leaves the virtuals at dir=OP_NIL): off, it
+// writes nothing, and on, the side only selects rows, so no value of it can reach an array index.
+void GoatTrailReset(const int side)
+  {
+   if(!GoatTickLoadLive()) return;
+   for(int t=0;t<ArraySize(g_GoatTrailTicket);t++) if(g_GoatTrailTicket[t]!=0 && g_GoatTrailSide[t]==side) {g_GoatTrailTicket[t]=0; g_GoatTrailFails[t]=0; g_GoatTrailNextMs[t]=0;}
+  }
+// B49b:end lag-b
 void OnTimer(void)
   {
+   ulong timing_timer=GoatTimingStart(); // B49b (LAG-T)
    GoatTimerBody();
    GoatTraceTimer();
+   GoatTimingSlot(6,timing_timer); // B49b (LAG-T)
   }
 
 void GoatTimerBody(void)
@@ -6556,7 +7047,10 @@ void GoatTimerBody(void)
    GoatCidGuardHeartbeat(); // B47: the claim heartbeat (every GOAT_CID_CLAIM_HEARTBEAT_MS; live trading charts only)
    Seq_Buy.PersistFlush(); Seq_Sell.PersistFlush(); // B49a (F1-lite): the restart record's realized P/L (at most every GOAT_SQ_FLUSH_MS)
    GoatStateFlush(); GoatManageOnlyTimer(); // B49b (F1): the state file when it changed; manage-only's licence retry and its end
+   if(GoatFeedGuardLive() && TerminalInfoInteger(TERMINAL_CONNECTED)==0) g_GoatFeedSynced=false; // B49b (LAG-A): a disconnect loses the clock until the next real tick
    GoatNoTickTimer(); // B49b (F4): exits without a tick (live trading charts only)
+   GoatStatusFlush(); // B49b (LAG-A): the feed-age status file (at most every GOAT_STATUS_WRITE_MS; live trading charts only)
+   GoatTimingFlush(); // B49b (LAG-T): one timing line a minute
    if(g_GoatStudioReadOnlyMonitor)
    {
       if(g_GoatStudioWorkerDiagnosticPending)
@@ -6889,15 +7383,19 @@ void HandleBiasExitSell(const int sells)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
   {
+   ulong timing_tick=GoatTimingStart(); // B49b (LAG-T)
    GoatNoTickStamp(); // B49b (F4): a real tick event (OnInit's own OnTick() call is forgotten right after it)
+   GoatFeedGuardStamp(); // B49b (LAG-A): the no-tick clock counts from the server clock, never a stale tick
    GoatTickBody();
    GoatTraceBoundary();
+   GoatTimingTick(timing_tick); // B49b (LAG-T)
   }
 
 void GoatTickBody()
   {
    if(GOATDeviceActivationOnly()) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return; //return; // returning for testing
+   if(GoatFeedGuardLive() && !g_GoatFeedSynced && (!g_GoatNoTickRun || DStartEquity==0.0)) return; // B49b (LAG-A): no tick body on an unknown clock until the first real tick after connect; a no-tick run reads the monotonic clock and needs a real tick to exist at all, and DStartEquity 0 means the day block never ran, as when the first real tick came while disconnected: the block below divides by it
    //if(!IsLicensed())    {Alert("Trial Expired"); return;}
    //if(!FastSpeed_Flag) OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,false);
    bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
@@ -6905,7 +7403,10 @@ void GoatTickBody()
    tm_cur = TimeCurrent(); TimeCurrent(stm_cur);
    if(g_GoatNoTickRun) {tm_cur=GoatNoTickClock(g_GoatLastNoTickRunMs); TimeToStruct(tm_cur,stm_cur);} // B49b (F4): no tick, so the clock is the last tick's plus the time since
    GoatRankTick(); // B44 item 5: blind export runs only (returns at once otherwise); measures, never trades
+   GoatFeedGuardTick(); // B49b (LAG-A): this run's server clock and feed age
+   GoatEntriesHoldWatch(); // B49b (LAG-A): a hold that starts ends the virtual candidates
 //-------------------------------------------------------------------------
+   GoatFeedClockServer(); // B49b (LAG-A): the day resets on the server clock
    if(IsNewDay())
    {
     days++;
@@ -6951,6 +7452,7 @@ void GoatTickBody()
     else if(days_FWD>0 && !g_GoatFwdClosed) {eq_FWD_end = DStartEquity; g_GoatFwdClosed=true;} // B49b (F8 R16): FWD closes at the next day's open
     DLastTime=TimeCurrent();
    }
+   GoatFeedClockFeed(); // B49b (LAG-A): the samplers below stay on the feed's clock
 //-------------------------------------------------------------------------
    /* tick-by-tick: remember the lowest equity seen since the last bar-open */
    static double MinuteLowEquity = DBL_MAX;
@@ -6958,6 +7460,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    if(IsNewMinute())
    {
+    ulong timing_minute=GoatTimingStart(); // B49b (LAG-T)
     if(Mode=="EXPORT" && !MQLInfoInteger(MQL_OPTIMIZATION))
     {
      static double LastEquity=0,LastBalance=0,LastBid=bid*1.1,LastAsk=ask*1.1; // avoid divide by zero
@@ -7282,10 +7785,13 @@ void GoatTickBody()
          }
        else BiasDisplayFunction(true,clrGold,idx);
       }
+    GoatTimingSlot(1,timing_minute); // B49b (LAG-T)
    }
 //-------------------------------------------------------------------------
    if(IsNewSecond())
    {
+    GoatFeedClockServer(); // B49b (LAG-A): session, Friday and day-end logic on the server clock
+    ulong timing_second=GoatTimingStart(); // B49b (LAG-T)
     int k;
          if(stm_cur.day_of_week==1)                         k=0;
     else if(stm_cur.day_of_week==2)                         k=1;
@@ -7331,11 +7837,13 @@ void GoatTickBody()
       }
      }
      PL_Total = PL_Buy+PL_Sell;//Comment(m_position.Commission());
+     if(DStartLocalLoss==99999 && GoatFeedGuardLive()) {DStartLocalLoss=PL_Total; DStartTime=g_GoatServerNow;} // B49b (LAG-A): the day that reset on the server clock starts on it
      if(DStartLocalLoss==99999) {DStartLocalLoss=PL_Total; DStartTime=TimeCurrent();}
     }
 //-------
     if(MaxDailyLossLocal!=0.0 || MaxDailyProfitLocal!=0.0)
     {
+     if(GoatFeedGuardLive()) HistorySelect(DStartTime,g_GoatServerNow); else // B49b (LAG-A): a stale end would miss today's closed deals from the daily stops
      HistorySelect(DStartTime,TimeCurrent());
      uint     total=HistoryDealsTotal();
      ulong    ticket=0;
@@ -7387,6 +7895,7 @@ void GoatTickBody()
      }
     }
 //-------
+    if(g_GoatCloseOwedStop && GoatFeedGuardLive()) {StopOut_Flag=false; g_GoatCloseOwedStop=false;} // B49b (LAG-A): the owed close's stop comes down, so these stops read as if it were not there; one that fires owns the flag
     if(!StopOut_Flag && MaxLossLocal!=0.0 && PL_Total<=-MaxLossLocal)
     {
      StopOut_Flag = true;
@@ -7435,6 +7944,7 @@ void GoatTickBody()
      //ObjectSetText("06","Exit Reason: Daily Target Reached",Font_Size,"NULL",clrMagenta);
      Alert("Daily Target Reached : Trading Stopped");
     }*/
+    if(GoatFeedGuardLive()) g_GoatCloseRealStop=StopOut_Flag; // B49b (LAG-A): whatever is up before the day and Friday actions is another stop's
     // End of Day/session
     if(InActive && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)
     {
@@ -7446,15 +7956,18 @@ void GoatTickBody()
     if(InActive && stm_cur.day_of_week==5 && stm_cur.hour>=Hour_End[k])//&& FindNumberOfPositions(OP_BUYSELL,MAGIC1)>0)
     {
      if(Action_Friday==Action_Close) StopOut_Flag = true;
+     if(Action_Friday==Action_Close && GoatFeedGuardLive()) g_GoatCloseFridayFired=true; // B49b (LAG-A)
      if(Action_Friday==Action_Pause) Sequence_Pause_Close = true;
      //ObjectSetText("06","Exit Reason: Weekend Close",Font_Size,"NULL",clrMagenta);
     }
     //Comment(Sequence_Pause_Close);
 //-------
+    GoatCloseOwedAssert(Trades); // B49b (LAG-A): a Friday close still owed goes once the session is open
     if(StopOut_Flag)
     {
      if(Trades>0)
      {
+      if(!g_GoatCloseOwed || !GoatFeedGuardLive() || g_GoatCloseRealStop || g_GoatCloseOwedDue) // B49b (LAG-A): a Friday close owed and not due is not sent, so a closed market is not asked every second; another stop's close always goes
       CloseAllPositions(OP_BUYSELL,MAGIC1);
       Trades=FindNumberOfPositions(OP_BUYSELL,MAGIC1);
      }
@@ -7467,6 +7980,7 @@ void GoatTickBody()
      }
      if(Trades==0 && LastStopoutTime!=0 && (TimeCurrent()>(LastStopoutTime+Mode_Restart*60*60)) ) StopOut_Flag = false;
     }
+    GoatCloseOwedAfter(Trades); // B49b (LAG-A): a Friday close that left positions open is owed; flat settles it
 //-------
     if(!g_GoatNoTickRun) { // B49b (F4): a timer run never handles a bias edge (no rescue, no SL/TP on a stale quote); the next real tick does
     // Direction-specific Bias StopOut handling - Buy
@@ -7521,11 +8035,14 @@ void GoatTickBody()
      DashboardBusSendStatus(dashboard_status);
     }
   //PartialClose();
+    GoatTimingSlot(0,timing_second); // B49b (LAG-T)
+    GoatFeedClockFeed(); // B49b (LAG-A)
    }
    if(g_GoatNoTickRun) return; // B49b (F4): the no-tick timer runs only the per-second block above: never trails, signals or enters
 //-------------------------------------------------------------------------
    if(CheckTrailingLockTPNow())// && Active)
    {
+    ulong timing_trailing=GoatTimingStart(); // B49b (LAG-T)
     if(Seq_Buy.Active && bid > Seq_Buy.Level_Lock)
     {
      if(Mode_Trail==Trail_Lock_Pro) {if(bid>Seq_Buy.Level_Lock+Seq_Buy.Size_TSL)    Seq_Buy.TrailingStoploss();}
@@ -7553,6 +8070,7 @@ void GoatTickBody()
      if(Mode_Trail==Trail_Lock_Pro) {if(ask<=Seq_Sell_Virtual.Level_Lock-Seq_Sell_Virtual.Size_TSL)  Seq_Sell_Virtual.TrailingStoploss();}
      else                                                                                            Seq_Sell_Virtual.TrailingStoploss();
     }
+    GoatTimingSlot(2,timing_trailing); // B49b (LAG-T)
    }
 //-------------------------------------------------------------------------
    if(Seq_Buy.Active  && !Seq_Buy.Traded)
@@ -7581,6 +8099,7 @@ void GoatTickBody()
 //-------------------------------------------------------------------------
    if( CheckSignalNow() )//|| Check_Forced)
    {
+    ulong timing_signal=GoatTimingStart(); // B49b (LAG-T)
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     bool checked=false;
     Shift_Sig = 1;
@@ -7613,18 +8132,22 @@ void GoatTickBody()
      InActive=false;
     }
     if(MQLInfoInteger(MQL_VISUAL_MODE)) ChartRedraw(0);
+    GoatTimingSlot(3,timing_signal); // B49b (LAG-T)
     GoatPerformanceRecord(g_PerfSignalUS,g_PerfSignalCalls,profile_started);
    }
  //else ObjectSetText(IntegerToString(TotalText_Trade-2,2,'0')," ",Font_Size-1,"NULL",clrLime);
 //-------------------------------------------------------------------------
    static bool LastBuyTradeSignal=false,LastSellTradeSignal=false;
 
+   ulong timing_exits=GoatTimingStart(); // B49b (LAG-T)
    Seq_Buy.ClosePendingPump(); Seq_Sell.ClosePendingPump(); // B49b (F3): an end deferred until flat retries its close
    bool buyMlpsExit=false,sellMlpsExit=false;
    if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
    if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
+   GoatTimingSlot(4,timing_exits); // B49b (LAG-T)
 
    GoatDirectionGuardMaintenance(Seq_Buy.Active,Seq_Sell.Active);
+   ulong timing_sequence=GoatTimingStart(); // B49b (LAG-T)
    bool sequenceCheckNow=CheckSequenceNow();
    if(sequenceCheckNow && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
    {
@@ -7715,6 +8238,7 @@ void GoatTickBody()
      }
     }
    }
+   GoatTimingSlot(5,timing_sequence); // B49b (LAG-T)
 //-------------------------------------------------------------------------
    return;
   }
@@ -8165,9 +8689,12 @@ void CloseAllPositions(int OP,int magic=0)
      if(m_position.PositionType() != OP && OP != OP_BUYSELL)                  continue;
      if(g_GoatNoTickRun) GoatNoTickCloseLog(m_position.Ticket(),OP); // B49b (F4): the no-tick timer's close attempts are logged, once a minute per ticket
 
+     int close_errors_before=closeErrors; // B49b (LAG-A)
      if(!m_trade.PositionClose(m_position.Ticket())) // close a position by the specified symbol
       {closeErrors++; GoatCloseFailureLog(m_position.Ticket(),m_trade.ResultRetcode(),m_trade.ResultRetcodeDescription());} // B49b (F3 D4): a failed live close is logged (throttled), never silent
+     if(GoatCloseRejected(m_trade.ResultRetcode(),closeErrors!=close_errors_before,m_position.Ticket(),m_trade.ResultRetcodeDescription())) closeErrors++; // B49b (LAG-A): only the retcode says it was accepted
      if(g_GoatNoTickRun) GoatNoTickRefused(m_trade.ResultRetcode()); // B49b (F4): a market-closed refusal backs the no-tick timer off
+     if(g_GoatCloseOwed) GoatCloseOwedRefused(m_trade.ResultRetcode()); // B49b (LAG-A): an owed close's refusal paces its retries
      closed++;
     }
    }

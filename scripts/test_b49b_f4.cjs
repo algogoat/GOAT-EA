@@ -130,7 +130,7 @@ const WED_NOON=Date.UTC(2026,9,28,12,0,0)/1000;
 // The IsNew* helpers, B49a's and this tree's, over the same clock.
 const NEW=['IsNewSecond','IsNewMinute','IsNewDay'];
 function helpers(text,fixClock){
- const c={stm_cur:{},tm_cur:0,g_GoatNoTickRun:false,Fix_Clock:fixClock,GoatFix_Off:0,GoatFix_On:1};vm.createContext(c);
+ const c={stm_cur:{},tm_cur:0,g_GoatNoTickRun:false,GoatTickLoadHold:()=>false,Fix_Clock:fixClock,GoatFix_Off:0,GoatFix_On:1};vm.createContext(c);
  // Each MQL static is a closure variable of its own function, as MQL keeps it per function.
  for(const name of NEW){
   const body=bodyOf(text,'bool '+name+'()').replace(/\(long\)tm_cur\/(\d+)/g,'Math.floor(tm_cur/$1)');   // MQL's integer division
@@ -189,7 +189,7 @@ const timeline=[T0,T0+1,T0+2,T0+62,T0+122,T0+3722,T0+7322,T0+7323,T0+86400+7323,
  assert.ok(!/TimeTradeServer/.test(f4block+tick),'the PC\'s clock is never the timer\'s');
  // Only a real OnTick event stamps; OnInit forgets the tick first (a re-init keeps the EA's globals) and right after its
  // own OnTick() call.
- assert.equal(bodyOf(main,'void OnTick()').replace(/\/\/.*$/gm,'').replace(/\s+/g,''),'GoatNoTickStamp();GoatTickBody();GoatTraceBoundary();','OnTick stamps, then runs the tick');
+ assert.equal(bodyOf(main,'void OnTick()').replace(/\/\/.*$/gm,'').replace(/\s+/g,''),'ulongtiming_tick=GoatTimingStart();GoatNoTickStamp();GoatFeedGuardStamp();GoatTickBody();GoatTraceBoundary();GoatTimingTick(timing_tick);','OnTick stamps, then runs the tick');
  const init=bodyOf(main,'int OnInit()'),initCode=init.replace(/\/\/.*$/gm,'').trim();
  assert.ok(initCode.startsWith('GoatNoTickForget();'),'OnInit forgets the tick first');
  assert.match(init,/\n   OnTick\(\); Sleep\(50\);\n   GoatNoTickForget\(\);/,'and right after its own OnTick() call');
@@ -203,7 +203,7 @@ const timeline=[T0,T0+1,T0+2,T0+62,T0+122,T0+3722,T0+7322,T0+7323,T0+86400+7323,
  const between=tick.slice(server,second).split('\n').slice(1);let depth=0;const top=[];
  for(const line of between){const code=line.replace(/\/\*.*?\*\//g,'').replace(/\/\/.*$/,'').replace(/"[^"]*"/g,'');const t=code.trim();
   if(depth===0&&t&&t!=='{'&&t!=='}')top.push(t);depth+=(code.match(/\{/g)||[]).length-(code.match(/\}/g)||[]).length;}
- assert.deepEqual(top.filter(t=>!/^if\(IsNew(Day|Minute)\(\)\)$/.test(t)),['GoatRankTick();','static double MinuteLowEquity = DBL_MAX;','if(!g_GoatNoTickRun) MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));'],'ungated statements between the clock and the per-second block; the minute\'s low equity counts real ticks only');
+ assert.deepEqual(top.filter(t=>!/^if\(IsNew(Day|Minute)\(\)\)$/.test(t)),['GoatRankTick();','GoatFeedGuardTick();','GoatEntriesHoldWatch();','GoatFeedClockServer();','GoatFeedClockFeed();','static double MinuteLowEquity = DBL_MAX;','if(!g_GoatNoTickRun) MinuteLowEquity = MathMin(MinuteLowEquity,AccountInfoDouble(ACCOUNT_EQUITY));'],'ungated statements between the clock and the per-second block; the minute\'s low equity counts real ticks only');
  const timer=bodyOf(main,'void GoatTimerBody(void)');
  assert.ok(timer.includes('GoatNoTickTimer();'),'the timer body runs the no-tick check');
  assert.ok(timer.indexOf('GoatNoTickTimer();')>timer.indexOf('GOATDeviceActivationTimer();'),'after the activation-only return');

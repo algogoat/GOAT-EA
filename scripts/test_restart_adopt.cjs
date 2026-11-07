@@ -103,7 +103,7 @@ function sequence(t,{dir=0,virtual=false}={}){
  const c={...K,MAGIC1:M,_Symbol:SYM,dir,Virtual:virtual,Desc:'Trend '+(dir?'Sell':'Buy'),Ledger_Mode:t.ledger,Mode_Operation:t.mode,
   Max_Seq_Levels:64,Max_Seq_Trades:10,Lock_Profit_Flexibility:1.0,Mode_Lots_Prog:5,_Digits:5,GOAT_SQ_FLUSH_MS:FLUSH_MS,TradeLevels:levels,
   LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,Level_Count:0,Trades_Count:0,Level_Last:0,Level_SL:0,
-  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,
+  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,GoatModifyRejected:()=>false,GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},
   Size_Grid:1234.5,Size_Lock:1234.5,Size_TP:1234.5,Size_SL:1234.5,Size_TSL:1234.5,
   get LastTradeCountBuy(){return t.counts.buy;},set LastTradeCountBuy(v){t.counts.buy=v;},
   get LastTradeCountSell(){return t.counts.sell;},set LastTradeCountSell(v){t.counts.sell=v;},
@@ -119,7 +119,7 @@ function sequence(t,{dir=0,virtual=false}={}){
   PositionsTotal:()=>t.positions.length,PositionGetTicket:i=>{sel=t.positions[i];return sel?sel.ticket:0;},
   PositionSelectByTicket:tk=>{sel=t.positions.find(p=>p.ticket===tk)||null;return !!sel;},
   PositionGetInteger:k=>sel[k],PositionGetString:k=>sel[k],PositionGetDouble:k=>sel[k],
-  CTrade:()=>({SetExpertMagicNumber:()=>{},PositionModify:(tk,sl,tp)=>{const p=t.positions.find(x=>x.ticket===tk);t.modifies.push({ticket:tk,from:p.sl,sl,tp});p.sl=sl;p.tp=tp;return true;}}),
+  CTrade:()=>({SetExpertMagicNumber:()=>{},ResultRetcode:()=>10009,ResultRetcodeDescription:()=>'done',PositionModify:(tk,sl,tp)=>{const p=t.positions.find(x=>x.ticket===tk);t.modifies.push({ticket:tk,from:p.sl,sl,tp});p.sl=sl;p.tp=tp;return true;}}),
   HistorySelect:(from,to)=>{history=t.deals.filter(d=>d.msc/1000>=from&&d.msc/1000<=to).map(d=>d.ticket);return true;},
   HistoryDealsTotal:()=>history.length,HistoryDealGetTicket:i=>history[i]??0,
   HistoryDealGetInteger:(d,k)=>t.deals.find(x=>x.ticket===d)[k],HistoryDealGetDouble:(d,k)=>t.deals.find(x=>x.ticket===d)[k],
@@ -423,7 +423,7 @@ function firstTick(text,buy,sell,{ready=false}={}){
  const b=text.indexOf(TICK_END,a);assert.ok(b>a);
  const k=getSize(text,{ready,context:{}});
  Object.assign(k,{Seq_Buy:buy,Seq_Sell:sell,Seq_Buy_Virtual:{Active:false},Seq_Sell_Virtual:{Active:false},adds:[],
-  GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
+  timing_exits:0,GoatTimingStart:()=>0,GoatTimingSlot:()=>{},GoatDirectionGuardMaintenance:()=>{},CheckSequenceNow:()=>true,Sequence_Pause_Close:false,Sequence_Pause_News:false,
   Sequence_Pause_Bias_B:false,Sequence_Pause_Bias_S:false,DashboardPortfolioPaused:false,DashboardTradeAllowed:()=>true,
   Mode_Lots_Prog:0,Lots_Prog_CumPartial:5,Lots_Prog_PeakSmart:6,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
   RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,OP_BUY:0,OP_SELL:1,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,Trades_Skipped_Bias_S:0,

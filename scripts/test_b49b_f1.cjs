@@ -90,7 +90,7 @@ const K={OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,MQL_TESTER:1,MQL_OPTIMIZATION:2,MQL_FOR
  GOAT_LICENCE_RETRY_MS:RETRY_MS,INIT_SUCCEEDED:0,INIT_FAILED:1,GOAT_BUILD_ID:'B49b-test',
  GOAT_STATE_VERSION:VERSION,GOAT_SQ_FLUSH_MS:FLUSH_MS,LICENSE_VALID:VALID,FILE_COMMON:4096,ACCOUNT_LOGIN:'login',ACCOUNT_NAME:'name',ACCOUNT_SERVER:'server',
  TIME_DATE:1,URL_Web:'https://goatedge.ai',Expiry:1798675200,MAGIC1:1843920117,_Symbol:'EURUSD',_Digits:5};
-const common=t=>({IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),StringToDouble:s=>Number(s)||0,
+const common=t=>({GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},GoatEntriesHeld:()=>false,GoatCloseOwedText:()=>'',GoatCloseOwedRestore:()=>{},IntegerToString:v=>String(v),DoubleToString:(v,d)=>Number(v).toFixed(d),StringToDouble:s=>Number(s)||0,
  StringToInteger:s=>Math.trunc(Number(s)||0),StringFind:(s,x)=>s.indexOf(x),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.substr(a,n),
  StringSplit:(s,sep,arr)=>{arr.length=0;arr.push(...s.split(sep));return arr.length;},TimeToString:v=>'D'+v,
  ArraySize:a=>a.length,ArrayResize:(a,n)=>{while(a.length<n)a.push('');a.length=n;return n;},ArrayCopy:(d,s)=>{d.length=0;d.push(...s);return s.length;},
@@ -126,7 +126,7 @@ function flags({tester=false,mode=0,Mode='',state=NONE}={}){
  ok();}
 {// DashboardEntryAllowed: every start path passes through it (Add_Level's virtual->real hand-off and the signal block).
  const run=(state,{cid=false,op=0}={})=>{const c={g_GoatManageOnly:state,GOAT_MANAGE_NONE:NONE,MAGIC1:1,g_GoatStudioMonitorRunPath:'',Symbol:()=>'EURUSD',
-  GoatCidGuardRefuses:()=>cid,GoatStagedChildMayOpen:()=>true,DashboardTradeAllowed:()=>true,DashboardExposureConflict:()=>false};
+  GoatCidGuardRefuses:()=>cid,GoatEntriesHeld:()=>false,GoatStagedChildMayOpen:()=>true,DashboardTradeAllowed:()=>true,DashboardExposureConflict:()=>false};
   vm.createContext(c);vm.runInContext(fn('DashboardEntryAllowed',['op'],bodyOf(main,SIG.entry)),c);return c.DashboardEntryAllowed(op);};
  // Both sides (Claude-Mac #284 P3: a sell-side refusal was untested).
  for(const op of [0,1]){assert.equal(run(NONE,{op}),true);for(const s of [DOWN,REFUSED,EXPIRED,CRED]) assert.equal(run(s,{op}),false,'manage-only '+s+' opens nothing, side '+op);}
@@ -463,7 +463,7 @@ const PATH='GOAT\\State\\907113355\\1843920117_EURUSD.txt';
  assert.match(main,/    if\(StopOut_Flag_B && !g_GoatLastStopOutB\)[^\n]*\n    \{\n     HandleBiasExitBuy\(Buys\);\n    \}\n    g_GoatLastStopOutB = StopOut_Flag_B;/);
  assert.match(main,/    if\(StopOut_Flag_S && !g_GoatLastStopOutS\)[^\n]*\n    \{\n     HandleBiasExitSell\(Sells\);\n    \}\n    g_GoatLastStopOutS = StopOut_Flag_S;/);
  // OnTimer and OnDeinit, beside the restart record's flush.
- assert.match(bodyOf(main,'void OnTimer(void)'),/^\s*GoatTimerBody\(\);/,'OnTimer runs GoatTimerBody');
+ assert.match(bodyOf(main,'void OnTimer(void)'),/^\s*ulong timing_timer=GoatTimingStart\(\);[^\n]*\n\s*GoatTimerBody\(\);/,'OnTimer runs GoatTimerBody');
  assert.match(bodyOf(main,'void GoatTimerBody(void)'),/Seq_Buy\.PersistFlush\(\); Seq_Sell\.PersistFlush\(\);[^\n]*\n   GoatStateFlush\(\); GoatManageOnlyTimer\(\);/);
  assert.match(bodyOf(main,'void OnDeinit(const int reason)'),/Seq_Buy\.PersistFlush\(true\); Seq_Sell\.PersistFlush\(true\);[^\n]*\n   GoatStateFlush\(true\);/);
  // Adoption marks the direction guard's existing-sequence state (no claim: the core refuses a claim over live exposure).

@@ -70,7 +70,7 @@ def numeric(value, definition, *, step=False):
 # B49b appends its per-fix flags (PR-1 Fix_MoneyVolume, PR-5 Gate_Recheck, PR-3 Fix_ClosePath) and PR-6's pre-trade caps
 # (Max_Spread_Points, Min_Margin_Level_PC; 0 = off) and PR-4's Fix_Clock, each defaulting to
 # B49a's behaviour.
-APPENDED_INPUTS = ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC', 'Fix_Clock')
+APPENDED_INPUTS = ('Ledger_Mode', 'Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC', 'Fix_Clock', 'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad')
 
 
 def appended_default(definition):

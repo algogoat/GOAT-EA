@@ -867,6 +867,7 @@ class SEQUENCE
    void End_Sequence(string desc)
    {
     if(EndDeferredUntilFlat(desc)) return; // B49b (F3): Fix_ClosePath, a sequence ends only when its positions are flat
+    if(!Virtual) GoatTrailReset(dir); // B49b (LAG-B): the next sequence on this side starts with no back-off
     if(Active)
     {
      if(Traded)// && ((dir==OP_BUY&&Last_PL_Buy>0.0)||(dir==OP_SELL&&Last_PL_Sell>0.0)) )
@@ -1982,6 +1983,7 @@ class SEQUENCE
 //---------------------- optional live MLPS breach stop for any real sequence
    bool EnforceSequenceMLPS(const string context)
    {
+    if(context=="tick" && GoatTickLoadHold(dir==OP_BUY ? 2 : 3)) return false; // B49b (LAG-B): the tick path at most once per real second; an add always checks
     ulong profile_started=g_PerformanceProfileTester ? GetMicrosecondCount() : 0;
     if(!Sequence_MLPS_Hard_Close) {GoatPerformanceRecord(g_PerfMLPSUS,g_PerfMLPSCalls,profile_started); return false;}
     if(Virtual || !Active || !Traded) {GoatPerformanceRecord(g_PerfMLPSUS,g_PerfMLPSCalls,profile_started); return false;}
@@ -2530,6 +2532,7 @@ class SEQUENCE
    {
     if(ClosePendingReason=="") return;
     if(!Active) {ClosePendingReason=""; ClosePendingTried=0; return;}
+    if(GoatTickLoadHold(dir==OP_BUY ? 4 : 5)) return; // B49b (LAG-B): the scan below at most once per real second
     if(FindNumberOfPositions(dir,MAGIC1)>0)
     {
      datetime now=TimeCurrent();
@@ -2937,10 +2940,12 @@ class SEQUENCE
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
        if(currSL==0.0 || (SL>currSL && (SL-currSL)>=minStep))
        {
+        if(GoatTrailHeld(dir)) continue; // B49b (LAG-B): this side is backing off; the broker keeps the last accepted SL
         int tsl_errors_before=TSLmodifyErrors; // B49b (LAG-A)
         if(!Trade.PositionModify(TradeLevels[i].ticket,SL,PositionGetDouble(POSITION_TP)))
         {TSLmodifyErrors++; PrintFormat("TSL BUY modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,SL,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++; // B49b (F3): %.6f takes the double (B49a passed a string)
         if(GoatModifyRejected(Trade.ResultRetcode(),TSLmodifyErrors!=tsl_errors_before,(ulong)TradeLevels[i].ticket,"TSL BUY",Trade.ResultRetcodeDescription())) TSLmodifyErrors++; // B49b (LAG-A): only the retcode says it was accepted
+        GoatTrailNote(dir,Trade.ResultRetcode()); // B49b (LAG-B): only TRADE_RETCODE_DONE clears the count
        }
        else g_TSLBuySkipped++;
       }
@@ -2965,10 +2970,12 @@ class SEQUENCE
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
        if(currSL==0.0 || (SL<currSL && (currSL-SL)>=minStep))
        {
+        if(GoatTrailHeld(dir)) continue; // B49b (LAG-B): this side is backing off; the broker keeps the last accepted SL
         int tsl_errors_before=TSLmodifyErrors; // B49b (LAG-A)
         if(!Trade.PositionModify(TradeLevels[i].ticket,SL,PositionGetDouble(POSITION_TP)))
         {TSLmodifyErrors++; PrintFormat("TSL SELL modify failed: ticket=%I64u newSL=%.6f ret=%d (%s)",TradeLevels[i].ticket,SL,Trade.ResultRetcode(),Trade.ResultRetcodeDescription());} TSLmodifieds++;
         if(GoatModifyRejected(Trade.ResultRetcode(),TSLmodifyErrors!=tsl_errors_before,(ulong)TradeLevels[i].ticket,"TSL SELL",Trade.ResultRetcodeDescription())) TSLmodifyErrors++; // B49b (LAG-A): only the retcode says it was accepted
+        GoatTrailNote(dir,Trade.ResultRetcode()); // B49b (LAG-B): only TRADE_RETCODE_DONE clears the count
        }
        else g_TSLSellSkipped++;
       }
@@ -6816,6 +6823,73 @@ void GoatTimingFlush(void)
    g_GoatTimingWindowMs=now_ms; g_GoatTimingWindowUS=0; g_GoatTimingWindowTicks=0;
   }
 // B49b:end lag-t
+// B49b:begin lag-b
+// LAG-B, load changes (Fix_TickLoad, default Off): justified only if the EA's own per-tick work is what puts a terminal behind,
+// which is not proven. Measure first (Diag_TickTiming, the bench); nothing in group A needs this. It reads the PC's monotonic
+// clock, never the server clock. Live trading charts only (GoatManageOnlyLive). The hot path it bounds, on this base: the
+// per-second block runs on each new FEED second, so in a backlog nearly every tick; it walks every position on the account
+// (PositionsTotal, not this chart's), plus HistorySelect when a daily limit is set and about 14 GlobalVariableSet with a
+// dashboard. Trailing is per feed second and sends a synchronous modify per level; MLPS walks the levels every tick; the close
+// pump walks the account every tick while an end is deferred.
+// WHAT CHANGES WITH IT ON: this changes how often exits and trails are evaluated, so it can change trades.
+// - Every stop in the per-second block (MaxLoss*, daily limits, equity levels, session, Friday and day ends) is evaluated at most
+//   once per real second instead of once per feed second. A tick inside the second is not evaluated; if no later tick comes the
+//   check waits for one, or for F4's no-tick timer (5 s).
+// - Trailing (Level_TSL and the broker SL) moves at most once per real second, even with Trailing_Sample_Period=Tick. A stop can
+//   trail less tightly, so a reversal can exit at a worse price, including a rescue's break-even protection, which trailing sets.
+// - Sequence_MLPS_Hard_Close is evaluated at most once per real second on the tick path (an add still checks it). A spike between
+//   checks can close later and past the limit, as it could between ticks.
+// - A deferred close (F3) retries at most once per real second.
+// - After GOAT_TRAIL_FAIL_LIMIT consecutive refused grid modifies on a side, its modifies back off 1, 5, 30 then 60 s. A modify that
+//   would have been accepted inside a wait is not sent, so that side's stops can sit up to 60 s behind; the broker keeps the last
+//   accepted SL, and only TRADE_RETCODE_DONE clears the count. Per side, not per ticket (#287 is per ticket for singles): a basket's
+//   tickets share one price, so one refusal predicts the rest, and a per-ticket table would still send a level's worth each round.
+// Unchanged: signals, entries, sizes, the grid's own sampling, the minute block, every broker-held SL/TP.
+#define GOAT_TICK_LOAD_HOLD_MS 1000
+#define GOAT_TICK_LOAD_SLOTS 6     // 0 per-second block, 1 trailing, 2-3 MLPS buy/sell, 4-5 the deferred-close pump buy/sell
+#define GOAT_TRAIL_FAIL_LIMIT 5
+ulong g_GoatTickLoadMs[GOAT_TICK_LOAD_SLOTS];
+int   g_GoatTrailFails[2];         // consecutive refused modifies, by side (OP_BUY, OP_SELL)
+ulong g_GoatTrailNextMs[2];
+bool GoatTickLoadLive(void)
+  {
+   return(Fix_TickLoad==GoatFix_On && GoatManageOnlyLive());
+  }
+// True while this slot ran under GOAT_TICK_LOAD_HOLD_MS ago. Off: false, and no clock is read.
+bool GoatTickLoadHold(const int slot)
+  {
+   if(!GoatTickLoadLive()) return false;
+   ulong now_ms=GetTickCount64();
+   if(g_GoatTickLoadMs[slot]!=0 && now_ms-g_GoatTickLoadMs[slot]<GOAT_TICK_LOAD_HOLD_MS) return true;
+   g_GoatTickLoadMs[slot]=now_ms;
+   return false;
+  }
+bool GoatTrailHeld(const int side)
+  {
+   if(!GoatTickLoadLive() || g_GoatTrailFails[side]<GOAT_TRAIL_FAIL_LIMIT) return false;
+   return(GetTickCount64()<g_GoatTrailNextMs[side]);
+  }
+void GoatTrailNote(const int side,const uint retcode)
+  {
+   if(!GoatTickLoadLive()) return;
+   if(retcode==TRADE_RETCODE_DONE)
+     {
+      if(g_GoatTrailFails[side]>=GOAT_TRAIL_FAIL_LIMIT) Print("GOAT trail back-off: recovered side=",IntegerToString(side)," symbol=",_Symbol," after ",IntegerToString(g_GoatTrailFails[side])," refusals");
+      g_GoatTrailFails[side]=0; g_GoatTrailNextMs[side]=0;
+      return;
+     }
+   g_GoatTrailFails[side]++;
+   if(g_GoatTrailFails[side]<GOAT_TRAIL_FAIL_LIMIT) return;
+   int back_step=g_GoatTrailFails[side]-GOAT_TRAIL_FAIL_LIMIT;
+   int wait_s=(back_step==0 ? 1 : back_step==1 ? 5 : back_step==2 ? 30 : 60);
+   g_GoatTrailNextMs[side]=GetTickCount64()+(ulong)wait_s*1000;
+   Print("GOAT trail back-off: side=",IntegerToString(side)," symbol=",_Symbol," consecutive=",IntegerToString(g_GoatTrailFails[side])," retcode=",IntegerToString(retcode)," wait_s=",IntegerToString(wait_s));
+  }
+void GoatTrailReset(const int side)
+  {
+   g_GoatTrailFails[side]=0; g_GoatTrailNextMs[side]=0;
+  }
+// B49b:end lag-b
 void OnTimer(void)
   {
    ulong timing_timer=GoatTimingStart(); // B49b (LAG-T)

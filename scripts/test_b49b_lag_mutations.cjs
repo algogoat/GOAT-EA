@@ -100,6 +100,28 @@ const MUTANTS=[
  ['main','OnTick is not timed','   GoatTimingTick(timing_tick); // B49b (LAG-T)','   // B49b (LAG-T)'],
  ['main','the per-second block is not timed','    GoatTimingSlot(0,timing_second); // B49b (LAG-T)','    // B49b (LAG-T)'],
  ['main','the exits are not timed','   GoatTimingSlot(4,timing_exits); // B49b (LAG-T)','   // B49b (LAG-T)'],
+ // Group B: off by default, bounded, and A never needs it.
+ ['header','load changes default On','Fix_TickLoad                  =                   GoatFix_Off;','Fix_TickLoad                  =                   GoatFix_On;'],
+ ['main','load changes ignore their flag','return(Fix_TickLoad==GoatFix_On && GoatManageOnlyLive());','return(GoatManageOnlyLive());'],
+ ['main','load changes run in the tester','return(Fix_TickLoad==GoatFix_On && GoatManageOnlyLive());','return(Fix_TickLoad==GoatFix_On);'],
+ ['main','the hold is not a second','#define GOAT_TICK_LOAD_HOLD_MS 1000','#define GOAT_TICK_LOAD_HOLD_MS 5000'],
+ ['main','the hold never lets anything through','   g_GoatTickLoadMs[slot]=now_ms;\n',''],
+ ['main','the hold never holds','if(g_GoatTickLoadMs[slot]!=0 && now_ms-g_GoatTickLoadMs[slot]<GOAT_TICK_LOAD_HOLD_MS) return true;','if(false) return true;'],
+ ['header','the per-second block is not bounded','   if(GoatTickLoadHold(0)) return false; // B49b (LAG-B)','   // B49b (LAG-B)'],
+ ['header','the hold runs before the no-tick run','   if(g_GoatNoTickRun) return true; // B49b (F4): the no-tick timer runs the per-second block, leaving the tick\'s clock state as it was\n   if(GoatTickLoadHold(0)) return false;','   if(GoatTickLoadHold(0)) return false;\n   if(g_GoatNoTickRun) return true; // B49b (F4): the no-tick timer runs the per-second block, leaving the tick\'s clock state as it was\n  '],
+ ['main','MLPS is not bounded','    if(context=="tick" && GoatTickLoadHold(dir==OP_BUY ? 2 : 3)) return false; // B49b (LAG-B)','    // B49b (LAG-B)'],
+ ['main','an add can skip MLPS','if(context=="tick" && GoatTickLoadHold(dir==OP_BUY ? 2 : 3)) return false;','if(GoatTickLoadHold(dir==OP_BUY ? 2 : 3)) return false;'],
+ ['main','the pump is not bounded','    if(GoatTickLoadHold(dir==OP_BUY ? 4 : 5)) return; // B49b (LAG-B)','    // B49b (LAG-B)'],
+ ['main','the limit is not five','#define GOAT_TRAIL_FAIL_LIMIT 5','#define GOAT_TRAIL_FAIL_LIMIT 3'],
+ ['main','the back-off ignores its flag','if(!GoatTickLoadLive() || g_GoatTrailFails[side]<GOAT_TRAIL_FAIL_LIMIT) return false;','if(g_GoatTrailFails[side]<GOAT_TRAIL_FAIL_LIMIT) return false;'],
+ ['main','the note ignores its flag','void GoatTrailNote(const int side,const uint retcode)\n  {\n   if(!GoatTickLoadLive()) return;\n','void GoatTrailNote(const int side,const uint retcode)\n  {\n'],
+ ['main','anything but a refusal clears it','   if(retcode==TRADE_RETCODE_DONE)\n     {\n      if(g_GoatTrailFails[side]>=','   if(retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_PLACED)\n     {\n      if(g_GoatTrailFails[side]>='],
+ ['main','a success never clears it','      g_GoatTrailFails[side]=0; g_GoatTrailNextMs[side]=0;\n      return;\n','      return;\n'],
+ ['main','recovery is silent','      if(g_GoatTrailFails[side]>=GOAT_TRAIL_FAIL_LIMIT) Print("GOAT trail back-off: recovered','      if(false) Print("GOAT trail back-off: recovered'],
+ ['main','the schedule is flat','int wait_s=(back_step==0 ? 1 : back_step==1 ? 5 : back_step==2 ? 30 : 60);','int wait_s=60;'],
+ ['main','the schedule has no 60 s floor','int wait_s=(back_step==0 ? 1 : back_step==1 ? 5 : back_step==2 ? 30 : 60);','int wait_s=(back_step==0 ? 1 : back_step==1 ? 5 : 30);'],
+ ['main','an end keeps the back-off','    if(!Virtual) GoatTrailReset(dir); // B49b (LAG-B)','    // B49b (LAG-B)'],
+ ['main','group A reads group B','return(g_GoatCloseOwed && GoatFeedGuardLive() && !GoatCloseOwedDue());','return(g_GoatCloseOwed && (GoatTickLoadLive() || GoatFeedGuardLive()) && !GoatCloseOwedDue());'],
 //@@NEXT@@
 ];
 function runOn(texts){

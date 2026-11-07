@@ -51,6 +51,7 @@ bool GoatStudioFixedInternal(const string identity,const string value)
    if(identity=="[TesterInputs]|Fix_Clock") return value=="0"; // B49b (F4/R2): an omitted fix flag runs Off
    if(identity=="[TesterInputs]|Fix_FeedGuard") return value=="0"; // B49b (LAG-A): an omitted fix flag runs Off
    if(identity=="[TesterInputs]|Diag_TickTiming") return value=="0"; // B49b (LAG-T): an omitted fix flag runs Off
+   if(identity=="[TesterInputs]|Fix_TickLoad") return value=="0"; // B49b (LAG-B): an omitted fix flag runs Off
    return false;
   }
 

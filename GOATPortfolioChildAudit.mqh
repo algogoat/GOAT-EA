@@ -210,7 +210,7 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
    // B49b (F7): the fix flags are written by WriteSet only when on, like Ledger_Mode; a child that carries one while the
    // SET does not must hold Off (0).
    {
-      string fix_names[8]={"Fix_MoneyVolume","Gate_Recheck","Fix_ClosePath","Max_Spread_Points","Min_Margin_Level_PC","Fix_Clock","Fix_FeedGuard","Diag_TickTiming"};   // B49b: F7, F5, F3, F6, F4/R2, LAG-A, LAG-T (0 = off)
+      string fix_names[9]={"Fix_MoneyVolume","Gate_Recheck","Fix_ClosePath","Max_Spread_Points","Min_Margin_Level_PC","Fix_Clock","Fix_FeedGuard","Diag_TickTiming","Fix_TickLoad"};   // B49b: F7, F5, F3, F6, F4/R2, LAG-A, LAG-T, LAG-B (0 = off)
       for(int n=0;n<ArraySize(fix_names);n++)
       {
          bool found=false;

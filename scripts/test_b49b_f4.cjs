@@ -130,7 +130,7 @@ const WED_NOON=Date.UTC(2026,9,28,12,0,0)/1000;
 // The IsNew* helpers, B49a's and this tree's, over the same clock.
 const NEW=['IsNewSecond','IsNewMinute','IsNewDay'];
 function helpers(text,fixClock){
- const c={stm_cur:{},tm_cur:0,g_GoatNoTickRun:false,Fix_Clock:fixClock,GoatFix_Off:0,GoatFix_On:1};vm.createContext(c);
+ const c={stm_cur:{},tm_cur:0,g_GoatNoTickRun:false,GoatTickLoadHold:()=>false,Fix_Clock:fixClock,GoatFix_Off:0,GoatFix_On:1};vm.createContext(c);
  // Each MQL static is a closure variable of its own function, as MQL keeps it per function.
  for(const name of NEW){
   const body=bodyOf(text,'bool '+name+'()').replace(/\(long\)tm_cur\/(\d+)/g,'Math.floor(tm_cur/$1)');   // MQL's integer division

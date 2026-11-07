@@ -7,6 +7,7 @@
 //    the weekend; 4 a backlog over the open; 5 a restart; 6 the guard's thresholds; 7 exits never read it; 8 the status file;
 //    9 the daily stops' window; 10 the no-tick clock; 10b a rejection that returned true.
 // T. Diag_TickTiming: read-only, counted, and written with the guard off (11-13).
+// B. Fix_TickLoad: truly bounded, the back-off, what changes with it on, and A never needs B (14-18).
 // test_b49b_lag_mutations.cjs runs this file on mutated sources (GOAT_EA_MAIN, GOAT_EA_HEADER).
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
@@ -42,6 +43,7 @@ const FNS=[
  ['void GoatCloseOwedAfter(const int open_count)','open_count'],['void GoatCloseOwedRefused(const uint retcode)','retcode'],['string GoatCloseOwedText(void)',''],
  ['void GoatCloseOwedRestore(const string &keys[],const string &values[])','keys,values'],['bool GoatStatusLive(void)',''],['string GoatStatusText(void)',''],['void GoatStatusFlush(void)',''],
  ['bool GoatModifyRejected(const uint retcode,const bool counted,const ulong ticket,const string what,const string description)','retcode,counted,ticket,what,description'],['bool GoatCloseRejected(const uint retcode,const bool counted,const ulong ticket,const string description)','retcode,counted,ticket,description'],
+ ['bool GoatTickLoadLive(void)',''],['bool GoatTickLoadHold(const int slot)','slot'],['bool GoatTrailHeld(const int side)','side'],['void GoatTrailNote(const int side,const uint retcode)','side,retcode'],['void GoatTrailReset(const int side)','side'],
  ['bool GoatTimingLive(void)',''],['ulong GoatTimingStart(void)',''],['void GoatTimingSlot(const int slot,const ulong started_us)','slot,started_us'],['void GoatTimingTick(const ulong started_us)','started_us'],['string GoatTimingText(void)',''],['void GoatTimingFlush(void)',''],
  ['string GoatStateValue(const string &keys[],const string &values[],const string key)','keys,values,key'],
  ['bool GoatNoTickSessionOpen(const string symbol,const datetime clock)','symbol,clock'],
@@ -55,10 +57,10 @@ const CLOSE=bodyOf(main,'void CloseAllPositions(int OP,int magic=0)').replace(/\
 const HELPERS=['IsNewSecond','IsNewDay'];
 
 // One chart on a stubbed terminal. feed: the newest tick the terminal has processed; server: TimeTradeServer.
-function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timing=0}={}){
+function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timing=0,tickload=0,minLevel=0}={}){
  const list=[];for(let i=0;i<positions;i++)list.push({ticket:11+i,symbol:'EURUSD',magic:7,type:i%2,volume:0.1});
  const b={MQL_TESTER:6,MQL_OPTIMIZATION:61,MQL_FORWARD:62,Operation_Standard:0,Operation_Batch:1,Operation_Dash:2,Mode_Operation:0,Mode:'',
-  Fix_FeedGuard:flag,Diag_TickTiming:timing,Fix_Clock:0,g_GoatTimingSlotUS:Array(7).fill(0),g_GoatTimingSlotCalls:Array(7).fill(0),g_GoatTimingTicks:0,g_GoatTimingTickUS:0,g_GoatTimingTickMaxUS:0,g_GoatTimingWindowMs:0,g_GoatTimingWindowUS:0,g_GoatTimingWindowTicks:0,GOAT_TIMING_SLOTS:7,GOAT_TIMING_LOG_MS:0,us:0,GetMicrosecondCount:null,GoatFix_Off:0,GoatFix_On:1,GOAT_FEED_AGE_GUARD_S:0,GOAT_CLOSE_OWED_RETRY_MS:0,GOAT_STATUS_VERSION:0,GOAT_STATUS_WRITE_MS:0,
+  Fix_FeedGuard:flag,Diag_TickTiming:timing,Fix_TickLoad:tickload,GOAT_TICK_LOAD_HOLD_MS:0,GOAT_TICK_LOAD_SLOTS:0,GOAT_TRAIL_FAIL_LIMIT:0,g_GoatTickLoadMs:Array(6).fill(0),g_GoatTrailFails:[0,0],g_GoatTrailNextMs:[0,0],Fix_Clock:0,g_GoatTimingSlotUS:Array(7).fill(0),g_GoatTimingSlotCalls:Array(7).fill(0),g_GoatTimingTicks:0,g_GoatTimingTickUS:0,g_GoatTimingTickMaxUS:0,g_GoatTimingWindowMs:0,g_GoatTimingWindowUS:0,g_GoatTimingWindowTicks:0,GOAT_TIMING_SLOTS:7,GOAT_TIMING_LOG_MS:0,us:0,GetMicrosecondCount:null,GoatFix_Off:0,GoatFix_On:1,GOAT_FEED_AGE_GUARD_S:0,GOAT_CLOSE_OWED_RETRY_MS:0,GOAT_STATUS_VERSION:0,GOAT_STATUS_WRITE_MS:0,
   GOAT_NO_TICK_BACKOFF_MIN_MS:60000,GOAT_NO_TICK_BACKOFF_MAX_MS:900000,
   g_GoatServerNow:0,g_GoatFeedTmSaved:0,g_GoatFeedStmSaved:null,g_GoatFeedAgeS:-1,g_GoatFeedHeldLogged:false,g_GoatFeedLogMs:0,g_GoatCloseOwed:false,g_GoatCloseOwedStop:false,g_GoatCloseFridayFired:false,
   g_GoatCloseOwedSince:0,g_GoatCloseOwedNextMs:0,g_GoatCloseOwedBackoffMs:0,g_GoatStatusWrittenMs:0,g_GoatStatusFailLogged:false,g_GoatLastTickMs:0,g_GoatLastTickTime:0,g_GoatStateWriteError:0,
@@ -68,19 +70,19 @@ function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timi
   InActive:false,Active:true,Sequence_Pause_Close:false,Trade_Friday:true,Trade_December:true,FastSpeed_Flag:true,POSITION_TYPE_BUY:0,POSITION_TYPE_SELL:1,OP_BUYSELL:2,
   StopOut_Flag:false,StopOut_Flag_B:false,StopOut_Flag_S:false,LastStopoutTime:0,Mode_Restart:0,g_GoatLastStopOutB:false,g_GoatLastStopOutS:false,
   DStartLocalLoss:0,DStartTime:0,DStartEquity:10000,MaxEquity:10000,DDs_PC:[0],DDs_Actual:[0],CurrentDD:0,CurrentDDD:0,dt_Back_OOS:0,dt_Fwrd_OOS:0,
-  MaxLossLocal:0,MaxLossGlobal:0,MaxDailyLossLocal:dailyLoss,MaxDailyProfitLocal:0,MinLevelEquity:0,MaxLevelEquity:0,Ledger_Mode:0,Ledger_PositionJoin:1,
+  MaxLossLocal:0,MaxLossGlobal:0,MaxDailyLossLocal:dailyLoss,MaxDailyProfitLocal:0,MinLevelEquity:minLevel,MaxLevelEquity:0,Ledger_Mode:0,Ledger_PositionJoin:1,
   Action_Close:1,Action_Pause:2,Action_Dayend:0,Action_Friday:action,Key:'K',days:0,LastEquity:0,Pause_Flag:false,
   feed:0,server:0,tickTime:0,tickReadable:true,nowMs:1000000,tester,retcode:10009,tradeMode:4,sessions:FX,prints:[],alerts:[],sends:[],ended:[],history:[],writes:[],writeOk:true,folders:[],__r:null,positions:list,serverReads:0,
   Math,Number,String,Array,JSON,undefined,NaN,Infinity};
  const ctx=new Proxy(b,{has:()=>true,get(t,p){if(p in t)return t[p];if(typeof p==='symbol')return undefined;return function stub(){return 0;};},set(t,p,v){t[p]=v;return true;}});
  vm.createContext(ctx);b.__ctx=ctx;
- for(const m of main.matchAll(/^#define (GOAT_(?:FEED_AGE_GUARD_S|CLOSE_OWED_RETRY_MS|STATUS_VERSION|STATUS_WRITE_MS|TIMING_SLOTS|TIMING_LOG_MS)) (\d+)$/gm))b[m[1]]=Number(m[2]);
+ for(const m of main.matchAll(/^#define (GOAT_(?:FEED_AGE_GUARD_S|CLOSE_OWED_RETRY_MS|STATUS_VERSION|STATUS_WRITE_MS|TIMING_SLOTS|TIMING_LOG_MS|TICK_LOAD_HOLD_MS|TICK_LOAD_SLOTS|TRAIL_FAIL_LIMIT)) (\d+)$/gm))b[m[1]]=Number(m[2]);
  b.__struct=struct;b.__session=(s,dow,i)=>{const l=b.sessions[dow]||[];return i<l.length?l[i]:null;};
  b.TimeCurrent=()=>b.feed;b.TimeTradeServer=()=>{b.serverReads++;return b.server;};
  b.MQLInfoInteger=k=>k===6?b.tester:0;b.GetTickCount64=()=>b.nowMs;b.SymbolInfoInteger=(s,k)=>k===8?b.tradeMode:0;
  b.SymbolInfoTick=(s,t)=>{if(!b.tickReadable)return false;t.time=b.tickTime;return true;};
  b.GetMicrosecondCount=()=>b.us;b.StringFormat=(f,...a)=>{let i=0;return f.replace(/%(?:I64)?(\.\d+)?([dfsu])/g,(m,p,t)=>{const v=a[i++];return t==='f'?Number(v).toFixed(p?Number(p.slice(1)):6):String(v);});};b.ArraySize=a=>a.length; b.IntegerToString=v=>String(v);b.TimeToString=t=>String(t);b.StringToInteger=s=>Number(s)||0;
- b.Print=(...a)=>b.prints.push(a.join(''));b.Alert=s=>b.alerts.push(s);b.AccountInfoDouble=()=>10000;b.AccountInfoInteger=()=>555;b.PositionsTotal=()=>b.positions.length;b.TerminalInfoInteger=()=>1;
+ b.Print=(...a)=>b.prints.push(a.join(''));b.Alert=s=>b.alerts.push(s);b.equity=10000;b.AccountInfoDouble=()=>b.equity;b.AccountInfoInteger=()=>555;b.PositionsTotal=()=>b.positions.length;b.TerminalInfoInteger=()=>1;
  let sel=null;
  b.m_position={SelectByIndex:i=>{sel=b.positions[i];return !!sel;},Symbol:()=>sel.symbol,Magic:()=>sel.magic,Volume:()=>sel.volume,PositionType:()=>sel.type,Profit:()=>0,Commission:()=>0,Swap:()=>0,Ticket:()=>sel.ticket};
  b.FindNumberOfPositions=()=>b.positions.length;
@@ -98,7 +100,7 @@ function chart({flag=1,tester=0,action=1,positions=2,hourEnd=21,dailyLoss=0,timi
   const inner=js(sigBody).replace(/\blet (\w+)(=[-\d]+)?;/g,(m,v)=>statics.some(s=>s[1]===v)?'':m);
   vm.runInContext('var '+name+'=(function(){'+decl+'return function(){'+inner+'};})();',ctx);
  }
- b.stm_cur={sec:59,day:0};b.IsNewSecond();   // MQL statics start at 0: a first tick on second :00 would read as "not new"
+ b.stm_cur={sec:59,day:0};b.IsNewSecond();b.g_GoatTickLoadMs[0]=0;   // MQL statics start at 0: a first tick on second :00 would read as "not new"
  vm.runInContext('function TickBody(){'+js(PREFIX).replace(/\(long\)/g,'')+js(SECOND)+'}',ctx);
  // One real tick: the terminal has processed up to `feed`; the server's clock reads `server`. The tick's stamps, as OnTick.
  b.step=(feed,server,{tickTime=feed,ms=1000}={})=>{b.feed=feed;b.server=server;b.tickTime=tickTime;b.nowMs+=ms;b.g_GoatLastTickMs=b.nowMs;b.g_GoatLastTickTime=feed;b.GoatFeedGuardStamp();b.TickBody();return b;};
@@ -119,7 +121,7 @@ const FRI=(h,mi=0,s=0)=>at(9,30,h,mi,s),SAT=(h,mi=0,s=0)=>at(9,31,h,mi,s),SUN=(h
  assert.equal(strip(header),atBase('GOAT_Inputs_Definitions.mqh'),'the header without the hotfix lines is the base');
  assert.ok(main.includes('// B49b:begin lag-a'),'the strip above is not vacuous');
  // Each flag is an appended sinput, default Off, written to a SET only when on.
- for(const name of ['Fix_FeedGuard','Diag_TickTiming']){
+ for(const name of ['Fix_FeedGuard','Diag_TickTiming','Fix_TickLoad']){
   assert.match(header,new RegExp('^sinput\\s+ENUM_GOAT_FIX\\s+'+name+'\\s*=\\s*GoatFix_Off;','m'),name+' defaults Off');
   assert.match(header,new RegExp('^if\\('+name+'!=GoatFix_Off\\) FileWrite\\(FileSET_handle,"'+name+'="','m'),name+' is written only when on');
  }
@@ -415,6 +417,97 @@ function basket({flag=1,tester=0,dir=0,levels=3,answer=()=>[true,10009],tickload
  assert.ok(bodyOf(main,'void GoatTimerBody(void)').includes('GoatTimingFlush();'),'the log line from the timer');
  // No early return between a section's open and close, or the section would silently lose its time.
  for(const sig of ['if(IsNewSecond())','if(IsNewMinute())','if(CheckTrailingLockTPNow())','if( CheckSignalNow() )'])assert.ok(!/\breturn\b/.test(bodyOf(TICK,sig).replace(/\/\/.*$/gm,'')),sig+' has no return');
+ ok();}
+
+{// 14. Off, or on in the tester: no hold, no clock read, every modify sent.
+ assert.match(header,/^sinput\s+ENUM_GOAT_FIX\s+Fix_TickLoad\s*=\s*GoatFix_Off;/m,'off by default');
+ for(const [tickload,tester,label] of [[0,0,'off, live'],[1,1,'on, tester'],[0,1,'off, tester']]){
+  const c=chart({tickload,tester,flag:0});c.GetTickCount64=()=>{throw new Error('the clock is read: '+label);};
+  for(let s=0;s<6;s++)for(let i=0;i<3;i++)assert.equal(c.GoatTickLoadHold(s),false,label);
+  c.g_GoatTrailFails[1]=9;c.g_GoatTrailNextMs[1]=9e15;assert.equal(c.GoatTrailHeld(1),false,label+': a count is never read');c.g_GoatTrailFails[1]=0;
+  assert.equal(c.GoatTrailHeld(0),false,label);c.GoatTrailNote(0,10016);assert.deepEqual(c.g_GoatTrailFails,[0,0],label+': nothing counted');
+  const b=basket({tickload,tester,flag:0,levels:50,answer:()=>[false,10016]});for(let i=0;i<3;i++)b.tick();assert.equal(b.modifies.length,150,label+': every level, every pass, as the base');
+ }
+ const trace=d=>{const out=[];for(const [f,s] of [[FRI(10),FRI(21,0,30)],[FRI(10,0,1),SAT(1)],[FRI(10,0,2),MON(1)],[MON(1,0,1),MON(1,0,1)]]){d.step(f,s,{ms:1});out.push([d.StopOut_Flag,d.sends.length,d.Active,d.InActive,d.tm_cur,JSON.stringify(d.stm_cur)]);}return out;};
+ assert.deepEqual(trace(chart({flag:0,tickload:1,tester:1})),trace(chart({flag:0})),'the tester, flag on: the flags-off trace at any tick spacing');
+ ok();}
+
+{// 15. Truly bounded: however many ticks and feed seconds arrive, the account scan runs at most once per real second.
+ const storm=tickload=>{const c=chart({flag:0,tickload});let scans=0;c.PositionsTotal=()=>{scans++;return c.positions.length;};
+  for(let i=0;i<3000;i++)c.step(FRI(10)+i,FRI(10)+i,{ms:1});   // 3,000 ticks, each a new feed second, in 3 real seconds: a backlog
+  return scans;};
+ assert.equal(storm(0),3000,'off: once per feed second: every tick');
+ assert.equal(storm(1),3,'on: once per real second, whatever the tick rate');
+ assert.equal(chart({flag:0,tickload:1}).GOAT_TICK_LOAD_HOLD_MS,1000,'a second');
+ // A hold leaves the second new, so the next tick after it runs the block; the slots are independent.
+ const c=chart({flag:0,tickload:1});assert.equal(c.GoatTickLoadHold(0),false);assert.equal(c.GoatTickLoadHold(0),true,'held');assert.equal(c.GoatTickLoadHold(1),false,'another slot');
+ c.nowMs+=999;assert.equal(c.GoatTickLoadHold(0),true);c.nowMs+=1;assert.equal(c.GoatTickLoadHold(0),false,'a second later');
+ // F4's timer run is never held: it is the path that catches a chart with no ticks.
+ const t=chart({flag:0,tickload:1});t.GoatTickLoadHold(0);t.g_GoatNoTickRun=true;assert.equal(t.IsNewSecond(),true,'a no-tick run goes through');
+ ok();}
+
+{// 16. What changes with it on: a stop waits for the next real second; it is delayed, never lost.
+ const off=chart({flag:0,minLevel:9000}),on=chart({flag:0,tickload:1,minLevel:9000});
+ for(const c of [off,on])c.step(FRI(10,0,1),FRI(10,0,1),{ms:5000});
+ for(const c of [off,on]){c.equity=8000;c.step(FRI(10,0,2),FRI(10,0,2),{ms:10});}
+ assert.deepEqual([off.StopOut_Flag,off.sends.length],[true,2],'off: the equity stop fires on this tick\'s feed second');
+ assert.deepEqual([on.StopOut_Flag,on.sends.length],[false,0],'on: 10 ms after the last evaluation, it waits (a declared change)');
+ on.step(FRI(10,0,3),FRI(10,0,3),{ms:1000});assert.deepEqual([on.StopOut_Flag,on.sends.length],[true,2],'and fires at the next real second: delayed, never lost');
+ ok();}
+
+{// 17. The grid's trailing back-off.
+ const reject=()=>[false,10016];
+ const c=basket({tickload:1,flag:0,levels:50,answer:reject});c.tick();
+ assert.equal(c.modifies.length,5,'five refusals, then the rest of the pass waits');assert.equal(c.GoatTrailHeld(0),true);
+ assert.equal(c.Trailing,true,'the sequence\'s own trailing level still moves');
+ const at=[];let last=c.modifies.length;const start=c.nowMs;
+ for(let s=1;s<=300;s++){c.nowMs=start+s*1000;c.tick();if(c.modifies.length>last){at.push(s);assert.equal(c.modifies.length-last,1,'one probe per window, however many levels');last=c.modifies.length;}}
+ assert.deepEqual(at.slice(0,6),[1,6,36,96,156,216],'1, 5, 30, then 60 s steady');
+ assert.equal(c.modifies.length,12,'bounded: five, then a request a minute at steady state (09 sent 2,610 an hour)');
+ assert.ok(c.prints.some(p=>/GOAT trail back-off: side=0 symbol=EURUSD consecutive=5 retcode=10016 wait_s=1/.test(p)),'each attempt\'s wait is logged');
+ // A rejection that returned true counts as a refusal; only DONE clears it.
+ const t=basket({tickload:1,flag:0,levels:50,answer:()=>[true,10016]});t.tick();assert.equal(t.modifies.length,5,'true on a rejection is a refusal');
+ const placed=basket({tickload:1,flag:0,levels:50,answer:()=>[true,10008]});placed.tick();assert.equal(placed.modifies.length,5,'and so is anything but DONE');
+ // One DONE clears it and the rest of the basket goes in the same pass.
+ let accept=false;const r=basket({tickload:1,flag:0,levels:20,answer:()=>accept?[true,10009]:[false,10016]});r.tick();assert.equal(r.modifies.length,5);
+ accept=true;r.nowMs+=1000;const before=r.modifies.length;r.tick();assert.equal(r.modifies.length-before,20,'a success clears it: every level');
+ assert.deepEqual(r.g_GoatTrailFails,[0,0]);assert.ok(r.prints.some(p=>/recovered side=0/.test(p)),'said');
+ // Under the limit nothing waits; a success resets the run; the sides are independent; an ended sequence starts clean.
+ const u=chart({flag:0,tickload:1});for(let i=0;i<4;i++)u.GoatTrailNote(0,10016);assert.equal(u.GoatTrailHeld(0),false,'four refusals: no wait');
+ u.GoatTrailNote(0,10009);u.GoatTrailNote(0,10016);assert.equal(u.g_GoatTrailFails[0],1,'consecutive');
+ for(let i=0;i<5;i++)u.GoatTrailNote(1,10016);assert.deepEqual([u.GoatTrailHeld(0),u.GoatTrailHeld(1)],[false,true],'per side');
+ u.GoatTrailReset(1);assert.equal(u.GoatTrailHeld(1),false,'reset');
+ const end=bodyOf(main,'   void End_Sequence(string desc)');assert.ok(end.indexOf('if(!Virtual) GoatTrailReset(dir);')>end.indexOf('if(EndDeferredUntilFlat(desc)) return;'),'an ended real sequence resets its side');
+ // MLPS and the deferred-close pump: bounded on the tick path; an add still checks; the production bodies, on a stub.
+ const mlps=js(bodyOf(main,'   bool EnforceSequenceMLPS(const string context)'));
+ const m=basket({tickload:1,flag:0});m.Sequence_MLPS_Hard_Close=true;m.Risk=100;m.Active=true;let walks=0;m.CurrentSequencePL=()=>{walks++;return 0;};m.g_PerformanceProfileTester=false;
+ vm.runInContext('function EnforceSequenceMLPS(context){'+mlps+'}',m.__ctx);
+ for(let i=0;i<100;i++)m.EnforceSequenceMLPS('tick');assert.equal(walks,1,'the tick path: once in the second');
+ m.EnforceSequenceMLPS('add level');assert.equal(walks,2,'an add always checks');
+ m.nowMs+=1000;m.EnforceSequenceMLPS('tick');assert.equal(walks,3,'the next second');
+ const mo=basket({tickload:0,flag:0});mo.Sequence_MLPS_Hard_Close=true;mo.Risk=100;mo.Active=true;let w0=0;mo.CurrentSequencePL=()=>{w0++;return 0;};mo.g_PerformanceProfileTester=false;
+ vm.runInContext('function EnforceSequenceMLPS(context){'+mlps+'}',mo.__ctx);for(let i=0;i<100;i++)mo.EnforceSequenceMLPS('tick');assert.equal(w0,100,'off: every tick');
+ const pump=js(bodyOf(main,'   void ClosePendingPump()'));
+ const scan=tickload=>{const p=basket({tickload,flag:0});p.Active=true;p.ClosePendingReason='x';p.ClosePendingTried=0;let n=0;p.FindNumberOfPositions=()=>{n++;return 1;};p.CloseAllPositions=()=>{};
+  vm.runInContext('function ClosePendingPump(){'+pump+'}',p.__ctx);for(let i=0;i<100;i++)p.ClosePendingPump();return n;};
+ assert.ok(scan(0)>=100,'off: the account walked every tick while a close is deferred');assert.ok(scan(1)<=2,'on: at most once in the second');
+ ok();}
+
+{// 18. A never needs B, B never needs A, and they compose.
+ const blockOf=name=>main.slice(main.indexOf('// B49b:begin '+name),main.indexOf('// B49b:end '+name)).replace(/\/\/.*$/gm,'');
+ for(const name of ['lag-a','lag-t'])assert.ok(!/TickLoad|GoatTrail/.test(blockOf(name)),name+' reads nothing of group B');
+ assert.ok(!/FeedGuard|ServerClock|TimeTradeServer|g_GoatServerNow|GoatEntriesHeld|GoatCloseOwed|Timing/.test(blockOf('lag-b')),'group B reads nothing of group A or the timing');
+ const noB=line=>!/GoatTickLoad|GoatTrail/.test(line);
+ for(const line of main.split('\n'))if(/\(LAG-A\)/.test(line))assert.ok(noB(line),'no group A line calls group B: '+line.trim());
+ for(const line of main.split('\n'))if(/\(LAG-B\)/.test(line))assert.ok(!/GoatFeed|GoatEntriesHeld|GoatCloseOwed|g_GoatServerNow/.test(line),'no group B line calls group A: '+line.trim());
+ // B alone never reads the server clock; a hold never reaches the guard.
+ const onlyB=chart({flag:0,tickload:1});onlyB.TimeTradeServer=()=>{throw new Error('group B reads the server clock');};onlyB.step(FRI(10),FRI(10));assert.equal(onlyB.GoatEntriesHeld(),false);
+ // A's whole weekend with B on, at ticks a second apart: the same owed close, sent at the first tradable tick.
+ const c=chart({tickload:1});c.retcode=10018;c.step(FRI(21,0,30),FRI(21,0,30));assert.equal(c.g_GoatCloseOwed,true,'owed');
+ c.step(FRI(21,0,41),SAT(0,0,5));assert.equal(c.StopOut_Flag,false,'the day reset');assert.equal(c.g_GoatCloseOwed,true);
+ c.retcode=10009;c.step(MON(0,0,6),MON(0,0,6));assert.deepEqual([c.positions,c.g_GoatCloseOwed,c.StopOut_Flag],[[],false,false],'and settled');
+ // The guard and the server clock hold on ticks B holds back: the guard is read before any block.
+ const g=chart({tickload:1,positions:0});g.step(FRI(12),FRI(13),{ms:1});g.step(FRI(12),FRI(13),{ms:1});assert.equal(g.GoatEntriesHeld(),true,'held, on a tick inside the second');
  ok();}
 
 //@@NEXT@@

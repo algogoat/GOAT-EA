@@ -103,7 +103,7 @@ function sequence(t,{dir=0,virtual=false}={}){
  const c={...K,MAGIC1:M,_Symbol:SYM,dir,Virtual:virtual,Desc:'Trend '+(dir?'Sell':'Buy'),Ledger_Mode:t.ledger,Mode_Operation:t.mode,
   Max_Seq_Levels:64,Max_Seq_Trades:10,Lock_Profit_Flexibility:1.0,Mode_Lots_Prog:5,_Digits:5,GOAT_SQ_FLUSH_MS:FLUSH_MS,TradeLevels:levels,
   LedgerPositions:[],LedgerDeals:[],Active:false,Traded:false,BiasRescueActive:false,Level_Count:0,Trades_Count:0,Level_Last:0,Level_SL:0,
-  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,GoatModifyRejected:()=>false,
+  Level_TSL:0,Level_Lock:0,Level_TP:0,Level_Entry:0,LotsTotal:0,SequenceRealizedPL:0,TPmodifyErrors:0,TPSLmodifieds:0,GoatModifyRejected:()=>false,GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},GoatTrailHeld:()=>false,GoatTrailNote:()=>{},
   Size_Grid:1234.5,Size_Lock:1234.5,Size_TP:1234.5,Size_SL:1234.5,Size_TSL:1234.5,
   get LastTradeCountBuy(){return t.counts.buy;},set LastTradeCountBuy(v){t.counts.buy=v;},
   get LastTradeCountSell(){return t.counts.sell;},set LastTradeCountSell(v){t.counts.sell=v;},

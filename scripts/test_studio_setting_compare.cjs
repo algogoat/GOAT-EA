@@ -81,6 +81,9 @@ compare(w,a+'\nFix_FeedGuard=1\n',false,'Fix_FeedGuard');
 // B49b (LAG-T): Diag_TickTiming, the fix-flag rule.
 compare(w,a+'\nDiag_TickTiming=0\n',true);
 compare(w,a+'\nDiag_TickTiming=1\n',false,'Diag_TickTiming');
+// B49b (LAG-B): Fix_TickLoad, the fix-flag rule.
+compare(w,a+'\nFix_TickLoad=0\n',true);
+compare(w,a+'\nFix_TickLoad=1\n',false,'Fix_TickLoad');
 // B49b (F4/R2): Fix_Clock, the fix-flag rule.
 compare(w,a+'\nFix_Clock=0\n',true);
 compare(w,a+'\nFix_Clock=1\n',false,'Fix_Clock');

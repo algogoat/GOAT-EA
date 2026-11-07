@@ -29,7 +29,7 @@ const fn=(name,args,body)=>'function '+name+'('+args.join(',')+'){'+js(body)+'}\
 
 // A sequence with its own positions on the account; CloseAllPositions closes them unless the broker refuses.
 function sequence({fix=1,virtual=false,active=true,traded=true,positions=2,refuse=0}={}){
- const c={OP_BUY:0,OP_SELL:1,MAGIC1:77,GoatFix_On:1,GoatFix_Off:0,Fix_ClosePath:fix,dir:0,Virtual:virtual,Active:active,Traded:traded,
+ const c={GoatTickLoadHold:()=>false,GoatTrailReset:()=>{},OP_BUY:0,OP_SELL:1,MAGIC1:77,GoatFix_On:1,GoatFix_Off:0,Fix_ClosePath:fix,dir:0,Virtual:virtual,Active:active,Traded:traded,
   Desc:'Trend Buy',ClosePendingReason:'',ClosePendingTried:0,now:1000,open:positions,refuse,logs:[],ends:[],closes:0};
  c.FindNumberOfPositions=(op,magic)=>{assert.equal(op,0);assert.equal(magic,77);return c.open;};
  c.CloseAllPositions=(op,magic)=>{c.closes++;if(c.refuse>0)c.refuse--;else c.open=0;};

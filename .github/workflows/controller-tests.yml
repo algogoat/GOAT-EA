@@ -180,7 +180,7 @@ jobs:
         run: node scripts/test_b49b_f4.cjs
       - name: B49b F4 mutations
         run: node scripts/test_b49b_f4_mutations.cjs
-      - name: B49b lag hotfix (flags off is the base; the feed guard, server-time ends, the owed Friday close; read-only timing)
+      - name: B49b lag hotfix (flags off is the base; the feed guard, server-time ends, the owed Friday close; read-only timing; bounded per-tick load)
         run: node scripts/test_b49b_lag.cjs
       - name: B49b lag hotfix mutations
         run: node scripts/test_b49b_lag_mutations.cjs

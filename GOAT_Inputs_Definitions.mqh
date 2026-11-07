@@ -591,6 +591,7 @@ if(Min_Margin_Level_PC!=0.0) FileWrite(FileSET_handle,"Min_Margin_Level_PC="+(st
 if(Fix_Clock!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_Clock="+(string)(int)Fix_Clock); // B49b (F4/R2): recorded only when on
 if(Fix_FeedGuard!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_FeedGuard="+(string)(int)Fix_FeedGuard); // B49b (LAG-A): recorded only when on
 if(Diag_TickTiming!=GoatFix_Off) FileWrite(FileSET_handle,"Diag_TickTiming="+(string)(int)Diag_TickTiming); // B49b (LAG-T): recorded only when on
+if(Fix_TickLoad!=GoatFix_Off) FileWrite(FileSET_handle,"Fix_TickLoad="+(string)(int)Fix_TickLoad); // B49b (LAG-B): recorded only when on
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -838,6 +839,11 @@ sinput   ENUM_GOAT_FIX           Fix_FeedGuard                 =                
 // B49b (LAG-T): minute, so a bench can show whether per-tick work is the bottleneck before Fix_TickLoad is ever turned on. It
 // B49b (LAG-T): never changes a trade. Live trading charts only.
 sinput   ENUM_GOAT_FIX           Diag_TickTiming               =                   GoatFix_Off;       // Diagnostic: time spent per tick (read-only)
+// B49b (LAG-B): load changes, justified only if the EA's own per-tick work puts a terminal behind (not proven: measure with
+// B49b (LAG-B): Diag_TickTiming first). The per-second block, trailing, MLPS and the deferred close run at most once per real
+// B49b (LAG-B): second, and refused grid modifies back off. This changes how often exits and trails are evaluated, so it can
+// B49b (LAG-B): change trades; the block above GoatTimerBody says exactly how. Live trading charts only. Group A never needs it.
+sinput   ENUM_GOAT_FIX           Fix_TickLoad                  =                   GoatFix_Off;       // Fix: bound per-tick load (changes exit and trail timing)
 // B49b:end fix-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
@@ -1422,6 +1428,7 @@ string ConvertToGOATsymbol(string symbol)
    return symbol;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatTickLoadHold(const int slot); // B49b (LAG-B): defined with the group in the entrypoint, the only call from this header into it
 bool CheckSignalNow()
   {
    if(Signal_Sample_Period == Tick)       return true;
@@ -1446,6 +1453,7 @@ bool CheckSequenceNow()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CheckTrailingLockTPNow()
   {
+   if(GoatTickLoadHold(1)) return false; // B49b (LAG-B): at most once per real second, whatever the sampling
    if(Trailing_Sample_Period == Tick)       return true;
    if(Trailing_Sample_Period == Second)     return CheckNewSecond3();
    if(Trailing_Sample_Period == M1)         return CheckNewMinute3();
@@ -1600,6 +1608,7 @@ bool IsNewBar3(ENUM_TIMEFRAMES TF_Period)
 bool IsNewSecond()
   {
    if(g_GoatNoTickRun) return true; // B49b (F4): the no-tick timer runs the per-second block, leaving the tick's clock state as it was
+   if(GoatTickLoadHold(0)) return false; // B49b (LAG-B): at most once per real second; the second stays new for the next tick
    if(Fix_Clock==GoatFix_On) {static long lastSecondTime=-1; long curSecondTime=(long)tm_cur; if(curSecondTime==lastSecondTime) return false; lastSecondTime=curSecondTime; return true;} // B49b (F4/R2): the full timestamp
    static int lastSecond;
    int curSecond = stm_cur.sec;

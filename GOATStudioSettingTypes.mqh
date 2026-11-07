@@ -19,6 +19,7 @@ string GoatStudioSettingType(const string key)
    if(key=="Fix_Clock") return "int"; // B49b (F4/R2): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
    if(key=="Fix_FeedGuard") return "int"; // B49b (LAG-A): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
    if(key=="Diag_TickTiming") return "int"; // B49b (LAG-T): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
+   if(key=="Fix_TickLoad") return "int"; // B49b (LAG-B): an appended ENUM_GOAT_FIX sinput (never an optimization axis)
    return "";
   }
 string GoatStudioOptimizationNames()

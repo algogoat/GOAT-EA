@@ -1,5 +1,5 @@
 // B51 no-drift guard (B50-beta-1, docs/b50/B50_ALPHA_DESIGN.md section 8: beta-1a, the random-direction benchmark,
-// then beta-1b, the single's break-even and trailing; the assembly after). B51 = B50-alpha + B50-beta-1, each in its own
+// then beta-1b, the single's break-even and trailing, then the partial close and the demo gate; the assembly after). B51 = B50-alpha + B50-beta-1, each in its own
 // reviewed PR. Against B50-alpha (source 32df4eb, GOAT-EA#278 merged; its source hashes are committed in
 // candidate-builds/beta17-B50/identity.json):
 // - every file of B50-alpha's compile closure outside CHANGED is byte-identical to B50-alpha;
@@ -26,14 +26,19 @@ const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSetting
 const ADDED=[];
 // Every B50-alpha line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
+ 'GOAT V1.49.mq5':[
+  'else',
+  'if(Engine_Mode==Engine_Single && AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) {Alert("Initialization Failed: the single-trade engine needs a hedging account (netting is not supported)."); return INIT_FAILED;}',
+ ],
  'GOATStudioSettingTypes.mqh':[
   '+"Single_SL_ATR|Single_TP_ATR|Single_TP_R|Single_Exit_Opposite|Single_Time_Stop_Bars|Single_Time_Stop_TF|Rollover_Block_Minutes|"; // B50 (A0): the B50 optimization axes (NY_Session is a string, never one)', // beta-1a: the list continues with the B51 axes
  ],
 };
-// The B50-beta-1 inputs, appended at the very end in this order (beta-1a, then beta-1b).
-const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only','Single_BE_ATR','Single_Trail_Start_ATR','Single_Trail_ATR'];
+// The B50-beta-1 inputs, appended at the very end in this order (beta-1a, beta-1b, then the partial close).
+const NEW_INPUTS=['Random_Direction','Random_Seed','Single_Flat_Only','Single_BE_ATR','Single_Trail_Start_ATR','Single_Trail_ATR','Single_Partial_ATR','Single_Partial_Fraction','Single_Partial_BE'];
 const NEW_DEFAULTS={Random_Direction:['sinput','bool','false'],Random_Seed:['input','int','1'],Single_Flat_Only:['sinput','bool','false'],
- Single_BE_ATR:['input','double','0.0'],Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0']};
+ Single_BE_ATR:['input','double','0.0'],Single_Trail_Start_ATR:['input','double','0.0'],Single_Trail_ATR:['input','double','0.0'],
+ Single_Partial_ATR:['input','double','0.0'],Single_Partial_Fraction:['input','double','0.0'],Single_Partial_BE:['input','bool','false']};
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});

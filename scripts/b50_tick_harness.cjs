@@ -20,7 +20,17 @@
 //   buffers by handle name (ATR, ATR_MA, RSI, MA0.., ADX, BB, MACD) and series from the fixture, GlobalVariables, the
 //   freeze level (world.freezeLevel, default 0) and a refused PositionModify (world.rejectModify(ticket,sl,tp,w) true:
 //   retcode world.modifyRetcode, default 10016; world.modifyReturnsTrue: the call still returns true, as when the server
-//   rejects a structurally valid request; B51 beta-1b), the
+//   rejects a structurally valid request; B51 beta-1b), a refused or unanswered partial close (world.rejectPartial
+//   (ticket,volume,w) true: nothing fills, retcode world.partialRetcode, default 10006, and world.partialReturnsTrue makes the
+//   call return true all the same; world.partialFilled(ticket,volume,w): the volume that fills, 10010 if less than asked;
+//   world.orders [{ticket,position,magic,type}]: open orders; world.lateFills [{at,ticket,volume}]: a close that fills at time at, with its deal; a close above the position's volume
+//   closes what is left, as CTrade's clamp does; world.tickAge: the last tick's age in seconds, which also holds TimeCurrent back (TimeTradeServer runs on); world.rejectTick: SymbolInfoTick fails; world.afterHistory(position,w):
+//   runs after a history read, to land a fill between that read and the send;
+//   world.lostPartialReply(ticket,volume,w) true: it fills, the call fails with 10012), the account (world.tradeMode, default demo; world.connected, default on;
+//   world.accountServer; world.accountError, an error the account reads set; world.accountTradeAllowed; world.preSync: the second
+//   before MT5 synchronizes, as probed in goatai#2750 6702118905: mode 0 with no error, login and server filled, no connection,
+//   balance or trade permission), a failing history read
+//   (world.rejectHistory(position,w) true) and MQL_FORWARD (world.forward; B51 section 8.3-8.4), the
 //   clock (TimeGMT is the server time in the tester, server - serverOffset h live), and the trade transaction pumped once
 //   per deal after the tick (as MT5 runs OnTradeTransaction after OnTick). Every OrderSend, PositionModify, close and
 //   broker fill lands in world.trace, in order.
@@ -422,7 +432,7 @@ function memberNames(unit,clsName){
 const API_CONSTANTS={POSITION_TYPE_BUY:0,POSITION_TYPE_SELL:1,ORDER_TYPE_BUY:0,ORDER_TYPE_SELL:1,ORDER_TYPE_BUY_LIMIT:2,ORDER_TYPE_SELL_LIMIT:3,
  ORDER_TYPE_BUY_STOP:4,ORDER_TYPE_SELL_STOP:5,DEAL_TYPE_BUY:0,DEAL_TYPE_SELL:1,DEAL_ENTRY_IN:0,DEAL_ENTRY_OUT:1,DEAL_ENTRY_INOUT:2,DEAL_ENTRY_OUT_BY:3,
  DEAL_REASON_CLIENT:0,DEAL_REASON_EXPERT:3,DEAL_REASON_SL:4,DEAL_REASON_TP:5,TRADE_ACTION_DEAL:1,TRADE_ACTION_SLTP:6,
- TRADE_RETCODE_PLACED:10008,TRADE_RETCODE_DONE:10009,TRADE_RETCODE_DONE_PARTIAL:10010,TRADE_RETCODE_INVALID_STOPS:10016,
+ TRADE_RETCODE_PLACED:10008,TRADE_RETCODE_DONE:10009,TRADE_RETCODE_DONE_PARTIAL:10010,TRADE_RETCODE_ERROR:10011,TRADE_RETCODE_TIMEOUT:10012,TRADE_RETCODE_INVALID_VOLUME:10014,TRADE_RETCODE_INVALID_STOPS:10016,
  TRADE_TRANSACTION_DEAL_ADD:6,ACCOUNT_MARGIN_MODE_RETAIL_NETTING:0,ACCOUNT_MARGIN_MODE_EXCHANGE:1,ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:2,
  ACCOUNT_TRADE_MODE_DEMO:0,ACCOUNT_TRADE_MODE_CONTEST:1,ACCOUNT_TRADE_MODE_REAL:2,
  PERIOD_CURRENT:0,PERIOD_M1:1,PERIOD_M5:5,PERIOD_M15:15,PERIOD_M30:30,PERIOD_H1:16385,PERIOD_H4:16388,PERIOD_D1:16408,PERIOD_W1:32769,PERIOD_MN1:49153,
@@ -479,7 +489,7 @@ function terminalModel(w,K){
  const sym=w.symbol;
  const pos=t=>w.positions.find(p=>p.ticket===t);
  const profitOf=p=>{const price=p.type===0?w.bid:w.ask;return Math.round(((p.type===0?price-p.open:p.open-price)/w.point)*w.tickValue*p.volume*100)/100;};
- let selP=null,selection=[];
+ let selP=null,selO=null,selection=[];
  const dealAdd=(d)=>{const ticket=++w.nextDeal;const deal={ticket,order:d.order||0,position:d.position,symbol:sym,magic:d.magic,type:d.type,entry:d.entry,
   volume:d.volume,price:d.price,profit:d.profit||0,commission:d.commission||0,swap:0,fee:0,time:w.time,time_msc:w.time*1000,reason:d.reason,comment:d.comment||''};
   w.deals.push(deal);w.pending.push(ticket);return ticket;};
@@ -503,7 +513,11 @@ function terminalModel(w,K){
    if(w.rejectModify&&w.rejectModify(t,sl,tp,w)){o.retcode=w.modifyRetcode??10016;return !!w.modifyReturnsTrue;}   // B51 (beta-1b): a broker that refuses a modify
    p.sl=sl;p.tp=tp;o.retcode=10009;return true;},
   PositionClose:(t)=>{const p=pos(t);w.trace.push({op:'PositionClose',ticket:t,volume:p?p.volume:0,time:w.time});if(!p){o.retcode=10013;return false;}o.deal=close(p,p.volume,3,undefined,o.magic);o.retcode=10009;return true;},
-  PositionClosePartial:(t,v)=>{const p=pos(t);w.trace.push({op:'PositionClosePartial',ticket:t,volume:v,time:w.time});if(!p){o.retcode=10013;return false;}o.deal=close(p,v,3,undefined,o.magic);o.retcode=10009;return true;},
+  PositionClosePartial:(t,v)=>{const p=pos(t);w.trace.push({op:'PositionClosePartial',ticket:t,volume:v,time:w.time});if(!p){o.retcode=10013;return false;}
+   if(w.rejectPartial&&w.rejectPartial(t,v,w)){o.retcode=w.partialRetcode??10006;return !!w.partialReturnsTrue;}   // B51 (section 8.3): a broker that refuses it
+   const filled=w.partialFilled?w.partialFilled(t,v,w):v;o.deal=close(p,filled,3,undefined,o.magic);
+   if(w.lostPartialReply&&w.lostPartialReply(t,v,w)){o.deal=0;o.retcode=10012;return false;}      // B51 (section 8.3): it filled, the reply never came
+   o.retcode=filled<v?10010:10009;return true;},
   ResultRetcode:()=>o.retcode,ResultDeal:()=>o.deal,ResultOrder:()=>0,ResultRetcodeDescription:()=>'',ResultComment:()=>'',ResultPrice:()=>0,ResultVolume:()=>0});return o;};
  const positionInfo=()=>{let p=null;return {
   SelectByIndex:i=>{p=w.positions[i]||null;return !!p;},SelectByTicket:t=>{p=pos(t)||null;return !!p;},Select:s=>{p=w.positions.find(x=>x.symbol===s)||null;return !!p;},
@@ -540,10 +554,11 @@ function terminalModel(w,K){
   PositionGetInteger:(k,box)=>{const v=posGet(k);if(box){box.v=v;return !!selP;}return v;},
   PositionGetDouble:(k,box)=>{const v=K.POSITION_PROFIT===k?(selP?profitOf(selP):0):posGet(k);if(box){box.v=v;return !!selP;}return v;},
   PositionGetString:k=>selP?selP[prop(P,k)]:'',
-  OrdersTotal:()=>0,OrderGetTicket:()=>0,OrderSelect:()=>false,
+  OrdersTotal:()=>(w.orders||[]).length,OrderGetTicket:i=>{selO=(w.orders||[])[i]||null;return selO?selO.ticket:0;},OrderSelect:()=>false,
+  OrderGetInteger:k=>{if(!selO)return 0;if(k===K.ORDER_POSITION_ID)return selO.position??0;if(k===K.ORDER_MAGIC)return selO.magic??0;if(k===K.ORDER_TYPE)return selO.type??0;return 0;},OrderGetString:k=>selO&&k===K.ORDER_SYMBOL?(selO.symbol??sym):'',
   // history
   HistorySelect:(from,to)=>{selection=w.deals.filter(d=>d.time>=from&&d.time<=to).map(d=>d.ticket);return true;},
-  HistorySelectByPosition:id=>{selection=w.deals.filter(d=>d.position===id).map(d=>d.ticket);return true;},
+  HistorySelectByPosition:id=>{if(w.rejectHistory&&w.rejectHistory(id,w))return false;selection=w.deals.filter(d=>d.position===id).map(d=>d.ticket);if(w.afterHistory)w.afterHistory(id,w);return true;},
   HistoryDealsTotal:()=>selection.length,HistoryDealGetTicket:i=>selection[i]??0,HistoryDealSelect:t=>!!dealOf(t),
   HistoryDealGetInteger:(t,k,box)=>{const v=dealGet(t,k);if(box){box.v=v;return true;}return v;},
   HistoryDealGetDouble:(t,k,box)=>{const v=dealGet(t,k);if(box){box.v=v;return true;}return v;},
@@ -559,18 +574,19 @@ function terminalModel(w,K){
   Symbol:()=>sym,Period:()=>w.period,Point:()=>w.point,Digits:()=>w.digits,_Symbol:sym,_Point:w.point,_Digits:w.digits,
   SymbolInfoDouble:(s,k,box)=>{const v=symD(k);if(box){box.v=v;return true;}return v;},
   SymbolInfoInteger:(s,k,box)=>{const v=symI(k);if(box){box.v=v;return true;}return v;},
-  SymbolInfoString:(s,k)=>symS(k),SymbolInfoTick:(s,tk)=>{Object.assign(tk,{time:w.time,bid:w.bid,ask:w.ask,time_msc:w.time*1000});return true;},
+  SymbolInfoString:(s,k)=>symS(k),SymbolInfoTick:(s,tk)=>{if(w.rejectTick)return false;const tt=w.time-(w.tickAge||0);Object.assign(tk,{time:tt,bid:w.bid,ask:w.ask,time_msc:tt*1000});return true;},
   SymbolSelect:()=>true,SymbolsTotal:()=>1,SymbolName:()=>sym,
-  AccountInfoDouble:k=>{if(k===K.ACCOUNT_BALANCE)return w.balance;if(k===K.ACCOUNT_EQUITY)return equity();if(k===K.ACCOUNT_MARGIN)return 0;
+  AccountInfoDouble:k=>{if(k===K.ACCOUNT_BALANCE)return w.preSync?0:w.balance;if(k===K.ACCOUNT_EQUITY)return equity();if(k===K.ACCOUNT_MARGIN)return 0;
    if(k===K.ACCOUNT_MARGIN_FREE)return equity();if(k===K.ACCOUNT_MARGIN_LEVEL)return 0;if(k===K.ACCOUNT_PROFIT)return equity()-w.balance;throw new Error('unmodelled account double '+k);},
-  AccountInfoInteger:k=>{if(k===K.ACCOUNT_LOGIN)return w.login;if(k===K.ACCOUNT_MARGIN_MODE)return w.marginMode;if(k===K.ACCOUNT_TRADE_MODE)return 0;
+  AccountInfoInteger:k=>{if(w.accountError&&k===K.ACCOUNT_TRADE_MODE){w.lastError=w.accountError;return 0;}   // MT5: a failed read answers 0, which is ACCOUNT_TRADE_MODE_DEMO
+   if(k===K.ACCOUNT_LOGIN)return w.login;if(k===K.ACCOUNT_MARGIN_MODE)return w.marginMode;if(k===K.ACCOUNT_TRADE_MODE)return w.preSync?0:(w.tradeMode??0);if(k===K.ACCOUNT_TRADE_ALLOWED)return w.preSync?0:(w.accountTradeAllowed??1);
    if(k===K.ACCOUNT_LEVERAGE)return 100;if(k===K.ACCOUNT_TRADE_ALLOWED||k===K.ACCOUNT_TRADE_EXPERT)return 1;throw new Error('unmodelled account integer '+k);},
-  AccountInfoString:k=>k===K.ACCOUNT_CURRENCY?'USD':(k===K.ACCOUNT_SERVER?'Harness-Demo':(k===K.ACCOUNT_COMPANY?'Harness':'')),
-  MQLInfoInteger:k=>{if(k===K.MQL_TESTER)return w.tester?1:0;if(k===K.MQL_OPTIMIZATION)return w.optimization?1:0;if(k===K.MQL_FORWARD)return 0;
+  AccountInfoString:k=>k===K.ACCOUNT_CURRENCY?(w.accountCurrency??'USD'):(k===K.ACCOUNT_SERVER?(w.accountServer??'Harness-Demo'):(k===K.ACCOUNT_COMPANY?(w.accountCompany??'Harness'):'')),
+  MQLInfoInteger:k=>{if(k===K.MQL_TESTER)return w.tester?1:0;if(k===K.MQL_OPTIMIZATION)return w.optimization?1:0;if(k===K.MQL_FORWARD)return w.forward?1:0;
    if(k===K.MQL_VISUAL_MODE)return w.visual?1:0;if(k===K.MQL_DLLS_ALLOWED)return 1;return 0;},
-  MQLInfoString:k=>k===K.MQL_PROGRAM_NAME?'GOAT V1.49':'',TerminalInfoInteger:()=>0,TerminalInfoString:()=>'C:\\Harness',
+  MQLInfoString:k=>k===K.MQL_PROGRAM_NAME?'GOAT V1.49':'',TerminalInfoInteger:k=>k===K.TERMINAL_CONNECTED?(w.preSync?0:(w.connected??1)):0,TerminalInfoString:()=>'C:\\Harness',
   // time
-  TimeCurrent:s=>{if(s&&typeof s==='object')toStruct(w.time,s);return w.time;},TimeTradeServer:s=>{if(s&&typeof s==='object')toStruct(w.time,s);return w.time;},
+  TimeCurrent:s=>{const tc=w.time-(w.tickAge||0);if(s&&typeof s==='object')toStruct(tc,s);return tc;},TimeTradeServer:s=>{if(s&&typeof s==='object')toStruct(w.time,s);return w.time;},
   TimeGMT:s=>{const t=w.tester?w.time:w.time-w.serverOffset*3600;if(s&&typeof s==='object')toStruct(t,s);return t;},
   TimeLocal:()=>w.tester?w.time:w.time-w.serverOffset*3600,TimeToStruct:(t,s)=>toStruct(t,s),
   StructToTime:s=>Date.UTC(s.year,s.mon-1,s.day,s.hour,s.min,s.sec)/1000,
@@ -601,7 +617,7 @@ function terminalModel(w,K){
   ObjectSetDouble:()=>true,ObjectGetInteger:()=>0,ObjectGetDouble:()=>0,ObjectGetString:()=>'',ObjectsTotal:()=>0,ObjectName:()=>'',Comment:()=>{},
   // logs and lifecycle
   Print:(...a)=>{w.logs.push(a.map(String).join(''));},PrintFormat:(f,...a)=>{w.logs.push(String(f)+' '+a.map(String).join(','));},
-  Alert:(...a)=>{w.alerts.push(a.map(String).join(''));},ExpertRemove:()=>{w.removed=true;},Sleep:()=>{},GetLastError:()=>0,ResetLastError:()=>{},
+  Alert:(...a)=>{w.alerts.push(a.map(String).join(''));},ExpertRemove:()=>{w.removed=true;},Sleep:()=>{},GetLastError:()=>w.lastError||0,ResetLastError:()=>{w.lastError=0;},
   PlaySound:()=>true,SendNotification:()=>true,MessageBox:()=>1,EventSetTimer:()=>true,EventSetMillisecondTimer:()=>true,EventKillTimer:()=>{},
   IsStopped:()=>false,FileWrite:()=>0,FileClose:()=>{},FileOpen:()=>-1,FileIsExist:()=>false,
   // values
@@ -609,7 +625,9 @@ function terminalModel(w,K){
   // modelled objects
   __ctrade:ctrade,__positionInfo:positionInfo,
   // the broker side, run before each tick: SL and TP fills
-  __brokerFills:()=>{for(const p of [...w.positions]){const px=p.type===0?w.bid:w.ask;
+  __brokerFills:()=>{for(const f of (w.lateFills||[]).filter(x=>x.at<=w.time)){const p=pos(f.ticket);if(p)close(p,f.volume,3,undefined,w.lateFillMagic??p.magic);}
+   if(w.lateFills)w.lateFills=w.lateFills.filter(x=>x.at>w.time);
+   for(const p of [...w.positions]){const px=p.type===0?w.bid:w.ask;
    if(p.sl>0&&(p.type===0?px<=p.sl:px>=p.sl)){w.trace.push({op:'BrokerStop',ticket:p.ticket,price:p.sl,time:w.time});close(p,p.volume,4,p.sl,p.magic);}
    else if(p.tp>0&&(p.type===0?px>=p.tp:px<=p.tp)){w.trace.push({op:'BrokerTake',ticket:p.ticket,price:p.tp,time:w.time});close(p,p.volume,5,p.tp,p.magic);}}},
   __open:open,__equity:equity,
@@ -809,6 +827,8 @@ function build(source,fx={}){
  ctx.FastSpeed_Flag=fx.fastSpeed??w.tester;
  // 'lots' runs from the lot sizing to the indicator handles, B50's block included (__oninit_b50 is that block alone).
  {const r=run('lots');if(r!==undefined){const e=new Error('OnInit refused: '+r);e.initCode=r;throw e;}}
+ // A chart that has been up for a while unless the fixture studies the settling (fx.accountSettled===false).
+ if(fx.accountSettled!==false&&ctx.g_GoatSingleDemoSinceMs>0) ctx.g_GoatSingleDemoSinceMs=1;
  const OP_BUY=Number(C.macros.get('OP_BUY').body),OP_SELL=Number(C.macros.get('OP_SELL').body);   // object macros (0, 1)
  ctx.Seq_Buy.Init(OP_BUY,false);ctx.Seq_Sell.Init(OP_SELL,false);
  if(Math.abs(ctx.Delay_Trade)>0){ctx.Seq_Buy_Virtual.Init(OP_BUY,true);ctx.Seq_Sell_Virtual.Init(OP_SELL,true);}

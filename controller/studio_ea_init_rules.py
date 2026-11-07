@@ -392,7 +392,7 @@ EA_INIT_RULES = (
           'NY_Session not HH:MM-HH:MM (hours 0-23, two-digit minutes 0-59), or start==end',
           'Initialization Failed: NY_Session must be HH:MM-HH:MM with different start and end times.',
           lambda v: _bad_ny_session(v['NY_Session'])),
-    # B51 (beta-1a, beta-1b): the random-direction benchmark and the single's break-even and trailing (GOAT V1.49.mq5:4481-4495). A schema without these appended inputs
+    # B51 (beta-1a, beta-1b, section 8.3): the random-direction benchmark, the single's break-even and trailing and its partial close (GOAT V1.49.mq5:4481-4500). A schema without these appended inputs
     # (B50-alpha and earlier) belongs to a build without the rules (applicable_rules, APPENDED_GROUPS).
     _rule('RANDOM_DIRECTION_WITHOUT_SINGLE', [4486], 'Random_Direction && Engine_Mode!=Engine_Single',
           ['Random_Direction', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
@@ -432,6 +432,36 @@ EA_INIT_RULES = (
           'Engine_Mode!=Engine_Single && (Single_BE_ATR>0.0 || Single_Trail_Start_ATR>0.0 || Single_Trail_ATR>0.0) (review of GOAT-EA#287, P3-10)',
           'Initialization Failed: Single_BE_ATR, Single_Trail_Start_ATR and Single_Trail_ATR need the single-trade engine (Engine_Mode=Engine_Single).',
           lambda v: not _single(v) and (v['Single_BE_ATR'] > 0.0 or v['Single_Trail_Start_ATR'] > 0.0 or v['Single_Trail_ATR'] > 0.0)),
+    _rule('SINGLE_PARTIAL_NEGATIVE', [4495], 'Single_Partial_ATR<0.0 || Single_Partial_Fraction<0.0',
+          ['Single_Partial_ATR', 'Single_Partial_Fraction'], {},
+          'Single_Partial_ATR<0.0 || Single_Partial_Fraction<0.0',
+          'Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction cannot be negative.',
+          lambda v: v['Single_Partial_ATR'] < 0.0 or v['Single_Partial_Fraction'] < 0.0),
+    _rule('SINGLE_PARTIAL_FRACTION_NOT_BELOW_ONE', [4496], 'Single_Partial_Fraction>=1.0',
+          ['Single_Partial_Fraction'], {},
+          'Single_Partial_Fraction>=1.0',
+          'Initialization Failed: Single_Partial_Fraction must be below 1 (closing it all is not a partial close).',
+          lambda v: v['Single_Partial_Fraction'] >= 1.0),
+    _rule('SINGLE_PARTIAL_INCOMPLETE', [4497], '(Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)',
+          ['Single_Partial_ATR', 'Single_Partial_Fraction'], {},
+          '(Single_Partial_ATR>0.0)!=(Single_Partial_Fraction>0.0)',
+          'Initialization Failed: Single_Partial_ATR and Single_Partial_Fraction need each other (a trigger and a fraction).',
+          lambda v: (v['Single_Partial_ATR'] > 0.0) != (v['Single_Partial_Fraction'] > 0.0)),
+    _rule('SINGLE_PARTIAL_BE_WITHOUT_PARTIAL', [4498], 'Single_Partial_BE && !(Single_Partial_ATR>0.0)',
+          ['Single_Partial_BE', 'Single_Partial_ATR'], {},
+          'Single_Partial_BE && !(Single_Partial_ATR>0.0)',
+          'Initialization Failed: Single_Partial_BE needs Single_Partial_ATR > 0 (no partial close, nothing to move the stop on).',
+          lambda v: bool(v['Single_Partial_BE']) and not v['Single_Partial_ATR'] > 0.0),
+    _rule('SINGLE_PARTIAL_WITHOUT_SINGLE', [4499], 'Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0',
+          ['Engine_Mode', 'Single_Partial_ATR'], {'Engine_Mode': ['Engine_Single']},
+          'Engine_Mode!=Engine_Single && Single_Partial_ATR>0.0 (the two rules above refuse the fraction and Single_Partial_BE without it)',
+          'Initialization Failed: Single_Partial_ATR, Single_Partial_Fraction and Single_Partial_BE need the single-trade engine (Engine_Mode=Engine_Single).',
+          lambda v: not _single(v) and v['Single_Partial_ATR'] > 0.0),
+    _rule('SINGLE_PARTIAL_NEEDS_POSITION_JOIN', [4500], 'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
+          ['Single_Partial_ATR', 'Ledger_Mode'], {'Ledger_Mode': ['Ledger_PositionJoin']},
+          'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
+          'Initialization Failed: Single_Partial_ATR needs Ledger_Mode=Ledger_PositionJoin (Ledger_Legacy would drop the partial\'s profit from the sequence).',
+          lambda v: v['Single_Partial_ATR'] > 0.0 and v['Ledger_Mode'] != v.choice('Ledger_Mode', 'Ledger_PositionJoin')),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -510,11 +540,14 @@ NOT_PORTED = (
     # B51 (beta-1a): the benchmark never trades a live chart; validate-set serves live and tester SETs alike.
     dict(lines=(4491,), anchor='Random_Direction is a strategy-tester benchmark', condition='Random_Direction on a live chart',
          reason='run context (live chart)'),
-    dict(lines=(4566,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    # B51 (section 8.4): Engine_Single refuses a live account positively read as not demo; a SET cannot show the account.
+    dict(lines=(4508,), anchor='b51_account==GOAT_ACCOUNT_NOT_DEMO', condition='Engine_Single outside the tester on an account read as not demo',
+         reason='run context (account mode, connection)'),
+    dict(lines=(4587,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(4567,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(4575,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(4580,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(4588,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(4596,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(4601,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 
@@ -601,7 +634,9 @@ def applicable_rules(schema, table=EA_INIT_RULES):
         # B49a). One that declares some but lost one a rule reads fails closed below, like any other lost input.
         # B51 (beta-1a): the same per appended group (APPENDED_GROUPS), so a B50-alpha schema skips B51's rules.
         absent = {name for group in APPENDED_GROUPS if not any(name in inputs for name in group) for name in group}
-        if missing and all(name in absent for name in missing):
+        # Section 8.3: any, not all: a rule of an absent group may also read an older input its schema predates (a V1.48
+        # schema has neither Single_Partial_ATR nor Ledger_Mode). A lost input of a present group is never in absent.
+        if any(name in absent for name in missing):
             continue
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
                   for label in wanted if label not in (inputs[name].get('enum_choices') or {})]

@@ -433,7 +433,7 @@ const addLogs=t=>t.logs.filter(l=>l.startsWith('GOAT CID guard v1: add_frozen=')
  const freeze=SINGLE.indexOf('   if(GoatCidGuardAddFrozen(s.dir,s.Level_Count+1)) return false; // B47: ');
  assert.ok(freeze>=0&&freeze<SINGLE.indexOf('OpenPosition(s.dir,MAGIC1,'),'GoatSingleOpen: the freeze before the order');
  assert.equal((main.match(/\bOpenPosition\(/g)||[]).length,3,'OpenPosition: defined once, called in Add_Level and GoatSingleOpen (B50)');
- assert.equal((main.match(/GoatCidGuardAddFrozen\(/g)||[]).length,3,'the freeze: defined once, called in Add_Level and GoatSingleOpen (B50)');
+ assert.equal((main.match(/GoatCidGuardAddFrozen\(/g)||[]).length,4,'the freeze: defined once, called in Add_Level, GoatSingleOpen (B50) and the single\'s partial (B51)');
  ok();}
 
 // 13. B49a (B48): the daily CID touch. MT5 drops a GlobalVariable after 4 weeks without access, so once per UTC day

@@ -34,6 +34,13 @@ string GoatStudioSettingType(const string key)
    if(StringFind("|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|","|"+key+"|")>=0) return "double"; // B51 (beta-1b): break-even and trailing of a single
    if(StringFind("|Single_Partial_ATR|Single_Partial_Fraction|","|"+key+"|")>=0) return "double"; // B51 (section 8.3): the partial close of a single
    if(key=="Single_Partial_BE") return "bool"; // B51 (section 8.3)
+   // B54:begin b54-types
+   // B54 (A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md section 7): the breakout inputs. The enum inputs are int; BRK_Mode, ORB_Mode
+   // and ORB_Clock are sinputs, so none of those three is ever an optimization axis.
+   if(StringFind("|BRK_Mode|BRK_TF_|BRK_Bars|ORB_Mode|ORB_Clock|ORB_TF_|ORB_Start_Minute|ORB_Range_Minutes|ORB_Entry_Minutes|","|"+key+"|")>=0) return "int";
+   if(StringFind("|BRK_Buffer_ATR|ORB_Buffer_ATR|ORB_Min_Range_ATR|ORB_Max_Range_ATR|","|"+key+"|")>=0) return "double";
+   if(key=="BRK_Once_Per_Level") return "bool";
+   // B54:end b54-types
    return "";
   }
 string GoatStudioOptimizationNames()
@@ -41,7 +48,8 @@ string GoatStudioOptimizationNames()
    // B50:begin b50-axes
    return "|Trailing_Sample_Period|Allow_Opposite_Seq|Reverse_Seq|Mode_Trade|Grid_Size|Grid_Min|Grid_Max|Grid_Exponent|Grid_Factor|Lock_Profit_Size|Lock_Profit_Flexibility|TP_Pips|SL_Pips|RRR|Mode_RRR|TSL_Size|Mode_Trail|Delay_Trade|Delay_Trade_Live|Delay_Lots_Add|Max_Seq_Trades|CloseAtMaxLevels|ATR_TF_|ATR_Period|ATR_Method|Lots_Input|Lots_Max|Lots_Max_Cum|Lots_Exponent|Lots_Factor|Mode_Lots_Prog|Peak_Lots_Pos_PC|Partial_Profit_Factor|Peak_Smart_Release_PC|Peak_Smart_Max_Close_PC|MaxDailyLossLocal|MaxDailyProfitLocal|RSI_Mode|RSI_TF_|RSI_Period|RSI_Price|RSI_Level|EMA_Mode|EMA_TF_|EMA_Method|EMA_Price|EMA_Count|EMA_Period|EMA_Exponent|EMA_MustCheck|ADX_Mode|ADX_TF_|ADX_Period|ADX_Level|ADX_MustCheck|BB_Mode|BB_TF_|BB_Period|BB_Deviation|BB_MustCheck|MACD_Mode|MACD_Mode_Trend|MACD_TF_|MACD_Fast|MACD_Slow|MACD_Signal|MACD_Deviations|MACD_Price|MACD_MustCheck|RSI2_Mode|RSI2_TF_|RSI2_Period|RSI2_Price|RSI2_Level|RSI2_MustCheck|Active_Time_Weekday|Active_Time_Friday|Action_Dayend|Action_Friday|Trade_Friday|Bias_Protocol|Mode_Bias|Mode_Bias_Trades|Mode_Bias_Exit|Bias_Exit_Max_Exposure_Adds|Bias_threshold|Mode_News|News_threshold|News_beforeMinutes|News_afterMinutes|"
           +"Single_SL_ATR|Single_TP_ATR|Single_TP_R|Single_Exit_Opposite|Single_Time_Stop_Bars|Single_Time_Stop_TF|Rollover_Block_Minutes|" // B50 (A0): the B50 optimization axes (NY_Session is a string, never one); B51 continues the list
-          +"Random_Seed|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|Single_Partial_ATR|Single_Partial_Fraction|Single_Partial_BE|"; // B51 (beta-1a, beta-1b, section 8.3): the B50-beta optimization axes (Random_Direction is an sinput, never one)
+          +"Random_Seed|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|Single_Partial_ATR|Single_Partial_Fraction|Single_Partial_BE|" // B51 (beta-1a, beta-1b, section 8.3): the B50-beta optimization axes (Random_Direction is an sinput, never one); B54 continues the list
+          +"BRK_TF_|BRK_Bars|BRK_Buffer_ATR|BRK_Once_Per_Level|ORB_TF_|ORB_Start_Minute|ORB_Range_Minutes|ORB_Entry_Minutes|ORB_Buffer_ATR|ORB_Min_Range_ATR|ORB_Max_Range_ATR|"; // B54 (A0, spec section 7): the breakout axes (BRK_Mode, ORB_Mode and ORB_Clock are sinputs, never one)
    // B50:end b50-axes
   }
 bool GoatStudioSettingOptimizable(const string key)
@@ -66,6 +74,17 @@ string GoatStudioAppendedDefault(const string key)
    if(StringFind("|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|","|"+key+"|")>=0) return "0.0"; // B51 (beta-1b)
    if(StringFind("|Single_Partial_ATR|Single_Partial_Fraction|","|"+key+"|")>=0) return "0.0"; // B51 (section 8.3)
    if(key=="Single_Partial_BE") return "false"; // B51 (section 8.3)
+   // B54:begin b54-defaults
+   // B54 (A0, spec sections 3.1 and 4.1): the breakout inputs; their defaults (both families Disabled) reproduce B53.
+   if(StringFind("|BRK_Mode|ORB_Mode|ORB_Clock|ORB_Entry_Minutes|","|"+key+"|")>=0) return "0";
+   if(StringFind("|BRK_Buffer_ATR|ORB_Buffer_ATR|ORB_Min_Range_ATR|ORB_Max_Range_ATR|","|"+key+"|")>=0) return "0.0";
+   if(key=="BRK_TF_") return "60";            // TF_H1
+   if(key=="BRK_Bars") return "20";
+   if(key=="BRK_Once_Per_Level") return "true";
+   if(key=="ORB_TF_") return "5";             // TF_M5
+   if(key=="ORB_Start_Minute") return "570";  // 09:30, in minutes from midnight of the clock anchor
+   if(key=="ORB_Range_Minutes") return "30";
+   // B54:end b54-defaults
    return "";
   }
 // B50:end b50-defaults

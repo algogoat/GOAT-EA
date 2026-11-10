@@ -8595,9 +8595,11 @@ void GoatBrkLatchRebuild()
 //   first evaluation after S+R, never built up from ticks. It needs at least ceil(R/2) bars (ruling 14). B8/B9 compare it
 //   with atr_r, the ATR at t* (the close of the last ORB_TF_ bar at or before S+R), found by time, so a restart mid-session
 //   cannot change the day's verdict.
-// - Bar s is eligible when its anchor-local open is at or after S+R and its close is at or before the end of E (S+R plus
-//   ORB_Entry_Minutes, or 17:00 NY when that is 0; no later than 16:55 NY on a Friday). The signal is a fresh cross of
-//   H+buf or L-buf. Any unreadable input gives OP_NULL, logged once per cause.
+// - Bar s is eligible when its anchor-local open is at or after S+R and its close is before the end of E (S+R plus
+//   ORB_Entry_Minutes, or 17:00 NY when that is 0; no later than 16:55 NY on a Friday), so its entry, on the first tick
+//   after the close, lands inside E (Claude-Mac 6777812433). The signal is held through the forming bar after s, so a
+//   gated entry can still land in that one bar. It is a fresh cross of H+buf or L-buf. Any unreadable input gives OP_NULL,
+//   logged once per cause.
 int      ORB_Sig=OP_NULL;
 datetime g_GoatOrbDay=0;              // T of the last evaluated Mon-Fri trigger bar (the latch's key)
 datetime g_GoatOrbRangeDay=0;         // the T whose range verdict is held below (0 = none read yet)
@@ -8681,7 +8683,7 @@ int GoatOrbSignal(const int s)
    if(a<day+sr*60) return OP_NULL;                  // the range is still forming
    datetime e_end=(datetime)(ORB_Entry_Minutes>0 ? day+(sr+ORB_Entry_Minutes)*60-off : day+17*3600-off_ny);
    if(dow==5 && e_end>day+(16*60+55)*60-off_ny) e_end=(datetime)(day+(16*60+55)*60-off_ny);   // the Friday cutoff (clock:151)
-   if(close_t>e_end) return OP_NULL;                // past the entry window
+   if(close_t>=e_end) return OP_NULL;               // bar s must close before E's end (Claude-Mac 6777812433: its entry lands after the close)
    if(g_GoatOrbRangeDay!=day && !GoatOrbReadRange(day,off)) return OP_NULL;
    if(!g_GoatOrbRangeOk) return OP_NULL;
    double atr=GoatBrkATR(close_t);                  // the buffer's ATR, found by time as in 3.2

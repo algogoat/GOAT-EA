@@ -7,8 +7,9 @@
 // 2. The signal (GoatOrbSignal on closed trigger bar s = 1), New York anchor on an NYClose server (09:30-10:00 NY is
 //    16:30-17:00 server): the range is the M1 bars opening in [S, S+R), so the S bar is in and the S+R bar out; a fresh
 //    cross of H or L, strictly; no evaluation and no range read before S+R; the buffer's ATR and atr_r found by time, so a
-//    restart mid-session with ATR moving keeps the day's B8/B9 verdict; the entry window's end (ORB_Entry_Minutes, else
-//    17:00 NY, and 16:55 NY on a Friday); no session on a weekend trade date; the M1-count rule (ceil(R/2) bars); unreadable
+//    restart mid-session with ATR moving keeps the day's B8/B9 verdict; bar s closes before the entry window's end
+//    (ORB_Entry_Minutes, else 17:00 NY, and 16:55 NY on a Friday; Claude-Mac 6777812433, reading 1: strict); no session on
+//    a weekend trade date; the M1-count rule (ceil(R/2) bars); unreadable
 //    data gives OP_NULL, logged once, and an unreadable range is read again on the next bar.
 // 3. Clocks in use: the New York anchor on a Fixed server either side of the US change; the London anchor's 08:00 window on
 //    Fixed and EU DST servers in the March and October mismatch weeks and in summer; under the London anchor the entry
@@ -19,13 +20,15 @@
 //    up-cross the same T opens nothing, the down-cross opens a sell, and the next T's up-cross opens a buy. Under Reverse_Seq
 //    the up-cross opens a sell, the second up-cross is latched and the down-cross opens a buy (the latch is the signal's).
 //    Random_Direction, seeds 1-3: the latched up-cross opens nothing whichever side was drawn. The opposite exit is the
-//    opposite break. FastSpeed true and false trade alike.
+//    opposite break. FastSpeed true and false trade alike. The latest entry is the first tick after the last eligible
+//    bar's close, before E's end (E=0 on a weekday, a Friday, S+R+E = Lim under both anchors); a cross on the bar closing
+//    at the end opens nothing; a signal gated at its bar's first tick still opens later in that bar (the hold, pinned).
 // 6. OnInit's rebuild of the T latch from deal history: flipped under Reverse_Seq, another magic ignored, the next T clean,
 //    and an unreadable history latches the first T read both ways.
 // 7. Load-bearing: the spec's mutants (6.3: atr_r read at evaluation time, London from the US rule, New York time from raw
 //    server time, the first Sunday in place of the second, Lim = 1320, the range built from ticks, S+R included in the
 //    range) plus the S bar left out, the latch removed, the latch keyed by position side, the Friday cutoff dropped, 17:00
-//    NY read on the anchor's clock, the M1-count rule dropped, a weekend trade date traded, GoatSignalAll without entry B's
+//    NY read on the anchor's clock, a bar closing at E's end eligible, the M1-count rule dropped, a weekend trade date traded, GoatSignalAll without entry B's
 //    term, the buffer's ATR read at evaluation time, the fresh cross dropped, an unreadable range held as a no-ORB day, and
 //    the trigger bar evaluated before S+R. Each must be caught.
 // What it does not prove: compile cleanliness (MetaEditor), MT5's own CopyRates and bar history, or the native tester.
@@ -114,16 +117,18 @@ function signal(files){
  const byTime=shift=>shift===3?0.0010:0.0500;
  expect('inside the 1.0 x ATR buffer',sig(1.1029,{inputs:{ORB_Buffer_ATR:1.0},atr:byTime}),OP.NULL);
  expect('past the 1.0 x ATR buffer (ATR found by time)',sig(1.1031,{inputs:{ORB_Buffer_ATR:1.0},atr:byTime}),OP.BUY);
- // The entry window: ORB_Entry_Minutes=30 ends at 10:30 NY (17:30 server); 0 runs to 17:00 NY (00:00 server).
- expect('E: the last bar closing by S+R+30',sig(1.1025,{t:tue(17,25),inputs:{ORB_Entry_Minutes:30}}),OP.BUY);
- expect('E: a bar closing after S+R+30',sig(1.1025,{t:tue(17,30),inputs:{ORB_Entry_Minutes:30}}),OP.NULL);
- expect('E: ORB_Entry_Minutes=0 runs on',sig(1.1025,{t:tue(17,30)}),OP.BUY);
- expect('E: the last bar closing by 17:00 NY',sig(1.1025,{t:tue(23,55)}),OP.BUY);
+ // The entry window: ORB_Entry_Minutes=30 ends at 10:30 NY (17:30 server); 0 runs to 17:00 NY (00:00 server). Bar s must
+ // close before E's end (Claude-Mac 6777812433, reading 1: strict), so a bar closing at the end gives no signal.
+ expect('E: the last bar closing before S+R+30',sig(1.1025,{t:tue(17,20),inputs:{ORB_Entry_Minutes:30}}),OP.BUY);
+ expect('E: the bar closing at S+R+30',sig(1.1025,{t:tue(17,25),inputs:{ORB_Entry_Minutes:30}}),OP.NULL);
+ expect('E: ORB_Entry_Minutes=0 runs on',sig(1.1025,{t:tue(17,25)}),OP.BUY);
+ expect('E: the last bar closing before 17:00 NY',sig(1.1025,{t:tue(23,50)}),OP.BUY);
+ expect('E: the bar closing at 17:00 NY',sig(1.1025,{t:tue(23,55)}),OP.NULL);
  expect('E: the bar opening at 17:00 NY (still Tuesday\'s T)',sig(1.1025,{t:T(2026,10,7,0,0)}),OP.NULL);
  // Friday 10-09: E ends at 16:55 NY (23:55 server).
  const FRI=rangeBars(T(2026,10,9,16,30));
- expect('Friday: the last bar closing by 16:55 NY',sig(1.1025,{t:T(2026,10,9,23,50),m1:FRI}),OP.BUY);
- expect('Friday: the bar closing at 17:00 NY',sig(1.1025,{t:T(2026,10,9,23,55),m1:FRI}),OP.NULL);
+ expect('Friday: the last bar closing before 16:55 NY',sig(1.1025,{t:T(2026,10,9,23,45),m1:FRI}),OP.BUY);
+ expect('Friday: the bar closing at 16:55 NY',sig(1.1025,{t:T(2026,10,9,23,50),m1:FRI}),OP.NULL);
  // Saturday 10-10 has no session, whatever its bars.
  expect('a weekend trade date',sig(1.1025,{t:T(2026,10,10,17),m1:rangeBars(T(2026,10,10,16,30))}),OP.NULL);
  // The M1-count rule: R = 30 needs 15 bars. Bars S+1.. are missing (a short day).
@@ -174,8 +179,8 @@ function clocks(files){
  // mismatch week, 22:00 London in summer. S = 1140 (19:00 London).
  const EVE={...FIXED,ORB_Clock:'ORB_Clock_London',ORB_Start_Minute:1140};
  for(const [label,s0,d] of [['03-10, 17:00 NY = 21:00 London',T(2026,3,10,21),[2026,3,10]],['07-07, 17:00 NY = 22:00 London',T(2026,7,7,20),[2026,7,7]]]){
-  at('London anchor, '+label+': the last bar closing by 17:00 NY',EVE,s0,T(...d,22,55),OP.BUY);
-  at('London anchor, '+label+': the bar opening at 17:00 NY',EVE,s0,T(...d,23,0),OP.NULL);
+  at('London anchor, '+label+': the last bar closing before 17:00 NY',EVE,s0,T(...d,22,50),OP.BUY);
+  at('London anchor, '+label+': the bar closing at 17:00 NY',EVE,s0,T(...d,22,55),OP.NULL);
  }
  return P;
 }
@@ -247,6 +252,38 @@ function ticks(files){
  return {P,W};
 }
 
+// 5b. The latest entry (Claude-Mac 6777812433, reading 1). With an up-cross on the last eligible bar the entry is the first
+// tick after its close, before E's end; an up-cross on the bar closing at E's end opens nothing. For E=0 on a Tuesday, on a
+// Friday, and with S+R+E = Lim under both anchors (London on 03-10, where 21:00 London is 17:00 NY). The sessions run to
+// 23:59 so the gate is E's end alone. And the hold: a signal gated at its bar's first tick still opens later in that bar.
+function latest(files){
+ const P=[];
+ const LATE={Active_Time_US:'15:00-23:59',Active_Time_Friday:'SESSION_ALL'};
+ const FIXED={Server_Clock_Model:'ServerClock_Fixed',Server_UTC_Offset:2};
+ const entries=(inputs,s0,t,end)=>{
+  const W=world(files,{inputs:{...LATE,...inputs},at:t-60,m1:rangeBars(s0),m5:cross(t,1.1,1.1025)});
+  W.run(path([[t-60,1.1000],[end+600,1.1000]]));return sends(W).map(x=>x.time);
+ };
+ for(const [label,inputs,s0,last,end] of [
+  ['E=0, Tuesday (17:00 NY = 00:00 server)',{},tue(16,30),tue(23,50),wed(0,0)],
+  ['Friday (16:55 NY = 23:55 server)',{},T(2026,10,9,16,30),T(2026,10,9,23,45),T(2026,10,9,23,55)],
+  ['S+R+E = Lim 1020, New York anchor',{ORB_Start_Minute:960,ORB_Entry_Minutes:30},tue(23,0),tue(23,50),wed(0,0)],
+  ['S+R+E = Lim 1260, London anchor, 03-10',{...FIXED,ORB_Clock:'ORB_Clock_London',ORB_Start_Minute:1200,ORB_Entry_Minutes:30},T(2026,3,10,22),T(2026,3,10,22,50),T(2026,3,10,23)],
+ ]){
+  const got=entries(inputs,s0,last,end);
+  if(got.length!==1||got[0]!==last+300+7||!(got[0]<end)) P.push('latest entry, '+label+': entries at '+got.map(stamp).join(',')+', wanted one at '+stamp(last+300+7)+', before '+stamp(end));
+  const none=entries(inputs,s0,last+300,end);
+  if(none.length) P.push('latest entry, '+label+': the bar closing at E\'s end opened at '+none.map(stamp).join(','));
+ }
+ // The hold: ORB_Entry_Minutes=30 (E ends 17:30). The 17:00 down-cross opens a sell; the 17:20 up-cross (the last eligible
+ // bar) is held through the 17:25 bar while Single_Flat_Only waits for the sell, stopped out at 17:26:47; the buy opens at
+ // the next check, 17:27:07, inside that bar and before E's end.
+ const W=world(files,{inputs:{ORB_Entry_Minutes:30,Single_Flat_Only:true},at:tue(16,59),m1:TICK_M1,m5:{...cross(tue(17),1.1,1.0975),...cross(tue(17,20),1.1,1.1025)}});
+ W.run(path([[tue(17),1.1000],[tue(17,5),1.1000],[tue(17,26),1.1000],[tue(17,27),1.1030],[tue(17,40),1.1030]]));
+ if(kinds(W)!=='sell@06 17:05,buy@06 17:27') P.push('the hold through the forming bar: orders '+kinds(W)+', wanted sell@06 17:05,buy@06 17:27');
+ return P;
+}
+
 // 6. OnInit's rebuild of the T latch from deal history (the ticks world: a buy at Tue 17:05, a sell at 17:30, a buy Wed 17:05).
 function rebuild(files,W){
  const P=[],c=W.ctx,TUE=T(2026,10,6),WED=T(2026,10,7);
@@ -269,7 +306,7 @@ function rebuild(files,W){
 }
 
 let clockChecks=0;
-const all=files=>{const k=clock(files);clockChecks=k.checks;const t=ticks(files);return [...k.P,...signal(files),...clocks(files),...init(files),...t.P,...rebuild(files,t.W)];};
+const all=files=>{const k=clock(files);clockChecks=k.checks;const t=ticks(files);return [...k.P,...signal(files),...clocks(files),...init(files),...t.P,...latest(files),...rebuild(files,t.W)];};
 const problems=all(tree);
 assert.deepEqual(problems,[],'entry B on the tree');
 
@@ -294,8 +331,9 @@ const MUTANTS=[
  ['the S bar left out',[[M,'if(r[i].time<w0 ||','if(r[i].time<=w0 ||']],/^below H/],
  ['the latch removed',[[M,'return(ORB_Mode==ORB_Breakout && g_GoatOrbDay>0 && g_GoatOrbLatchDay[signal]==g_GoatOrbDay);','return(false);']],/^one single per direction per T/],
  ['the latch keyed by position side',[[M,'g_GoatOrbLatchDay[Reverse_Seq ? 1-side : side]=day;','g_GoatOrbLatchDay[side]=day;']],/^rebuild under Reverse_Seq/],
- ['the Friday cutoff dropped',[[M,'if(dow==5 && e_end>','if(false && e_end>']],/^Friday: the bar closing at 17:00 NY/],
+ ['the Friday cutoff dropped',[[M,'if(dow==5 && e_end>','if(false && e_end>']],/^Friday: the bar closing at 16:55 NY/],
  ['17:00 NY read on the anchor\'s clock',[[M,'day+17*3600-off_ny','day+17*3600-off']],/^London anchor, 03-10, 17:00 NY = 21:00 London: the last bar/],
+ ['a bar closing at E\'s end eligible (> for >=)',[[M,'if(close_t>=e_end) return OP_NULL;','if(close_t>e_end) return OP_NULL;']],/^latest entry, S\+R\+E = Lim 1260, London anchor, 03-10: the bar closing at E's end opened/],
  ['the M1-count rule dropped',[[M,'bool ok=(2*m>=ORB_Range_Minutes);','bool ok=(m>0);']],/^14 of 30 M1 bars/],
  ['a weekend trade date traded',[[M,'if(dow<1 || dow>5) return OP_NULL;','if(dow<0) return OP_NULL;']],/^a weekend trade date/],
  ['GoatSignalAll without entry B\'s sell term',[[M,'            && ( ORB_Mode==ORB_Disabled  || ORB_Sig==OP_SELL)); // B54 (spec 5)','            ); // B54 (spec 5)']],/^opposite exit/],

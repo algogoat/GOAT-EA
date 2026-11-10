@@ -206,8 +206,8 @@ Lim = 1020 (17:00 NY) under the NewYork anchor, and 1260 (21:00 London) under th
 
 The term is evaluated on each new bar of `TF2TF(ORB_TF_)` (`static INTERVAL ORB_Sample`), in the same block as Entry
 A, at bar close only, as in 3.3.
-- **Eligible bar.** Bar s is eligible when its anchor-local open is at or after S+R and its close is at or before E's
-  end.
+- **Eligible bar.** Bar s is eligible when its anchor-local open is at or after S+R and its close is before E's end
+  (Claude-Mac 6777812433, reading 1: strict; 4.4).
 - **Signal.** `ORB_Sig = OP_BUY` if `Close[s] > H+buf` and `Close[s+1] <= H+buf`. A sell is the mirror image against
   L. Here `buf = ORB_Buffer_ATR x atr`, with `atr` as in 3.2.
 - **Unreadable data** gives `OP_NULL`, logged once per cause.
@@ -230,6 +230,16 @@ A, at bar close only, as in 3.3.
   - London midnight is already past 17:00 NY of the previous NY date (19:00 or 20:00 NY).
   - So under either anchor a window stays inside trade date T and never crosses 17:00 NY in either DST state. OnInit
     refuses any B4-B6 combination that could (4.1).
+- **Entries close before E's end (Claude-Mac 6777812433, reading 1).**
+  - A trade enters on the first tick after its trigger bar closes, so bar s is eligible only when it closes before E's
+    end. That holds for every form of the end: S+R+`ORB_Entry_Minutes`, 17:00 NY when that is 0, and the Friday 16:55 NY
+    cutoff.
+  - So an E-minute window holds entries in [S+R+TF, S+R+E), and none lands at the rollover, even with S+R+E = Lim.
+  - The signal of the last eligible bar is still held through its own forming bar (3.3), so a gated entry can land
+    later in that one bar, still before E's end.
+- **London anchor with `ORB_Entry_Minutes=0` (Claude-Mac note 3).** E then runs to 17:00 NY: 22:00 London in
+  ordinary weeks and 21:00 London in the mismatch weeks. An explicit window stops at Lim, 21:00 London. Both follow from
+  the rules above, and neither is a defect.
 - **Pre-2007.** A tester start before 2007-03-11 is refused for ORB with the NewYork anchor under Fixed or EUDST, as
   main:5053 does. Under the London anchor it is refused under every model, because NYClose derives UTC through the
   2007 US rule (clock:103-109).
@@ -367,11 +377,15 @@ Per file:
     and October mismatch weeks; the Lim refusals under both DST states; the pre-2007 refusals; the live INIT_FAILED.
   - **Mutants that must fail:** atr_r read at evaluation time, London from the US rule, NY time from raw server time,
     the first Sunday in place of the second, Lim = 1320, the range built from ticks, S+R included in the range.
-  - **As built in PR B:** twelve more mutants: the S bar left out, the latch removed, the latch keyed by position side,
-    the Friday cutoff dropped, 17:00 NY read on the anchor's clock, the M1-count rule dropped, a weekend T traded,
-    `GoatSignalAll` without entry B's term, the buffer's ATR read at evaluation time, the fresh cross dropped, an
-    unreadable range held as a no-ORB day, and the trigger bar evaluated before S+R. Every mutant must raise its named
-    problem. The harness gains `CopyRates` by start and stop time, with a gap hook for holidays.
+  - **As built in PR B:** thirteen more mutants: the S bar left out, the latch removed, the latch keyed by position side,
+    the Friday cutoff dropped, 17:00 NY read on the anchor's clock, a bar closing at E's end eligible, the M1-count rule
+    dropped, a weekend T traded, `GoatSignalAll` without entry B's term, the buffer's ATR read at evaluation time, the
+    fresh cross dropped, an unreadable range held as a no-ORB day, and the trigger bar evaluated before S+R. Every mutant
+    must raise its named problem. The harness gains `CopyRates` by start and stop time, with a gap hook for holidays.
+  - **The latest entry** (reading 1) is checked in ticks: the first tick after the last eligible bar's close, before E's
+    end, for E=0 on a weekday, on a Friday, and for S+R+E = Lim under both anchors. A cross on the bar closing at the end
+    opens nothing. A test also pins the hold through the forming bar: a buy gated by `Single_Flat_Only` opens later in
+    that bar.
 - **Updated tests:** `test_b50_exits` (8-term text match), `test_studio_appended_inputs`, `test_studio_ea_init_rules`,
   `test_studio_pinned_tester_inputs`, `test_studio_optimization_inputs`, `test_studio_broker_fit`,
   `test_portfolio_child_audit`, `test_studio_setting_compare`, `test_hunt_sets_init`.

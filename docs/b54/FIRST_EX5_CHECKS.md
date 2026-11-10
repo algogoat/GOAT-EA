@@ -20,3 +20,11 @@ Conditions 2 and 7 of Claude-Mac's ruling 6761445724 still bind:
 
 Check 4 needs Claude-Mac's go-ahead for a SET with a mode on. A live-chart OnInit (ORB's `INIT_FAILED`, ruling 7)
 stays harness-only until Claude-Mac rules on attaching a B54 EX5 to any chart.
+
+## Before any demo or live use of ORB
+
+From Claude-Mac's notes on GOAT-EA#305 (6777812433). These do not block the tester build.
+1. **The range read:** a `CopyRates` read with too few bars is held as a no-ORB day. In the tester that is a real short
+   day. On a live chart an M1 series not yet synchronised looks the same. So the read needs a check that M1 history
+   reaches S+R, and if it does not, the read must return unreadable instead.
+2. **A transient unreadable input** (a bar or the ATR) loses that bar's cross, as entry A does.

@@ -6,18 +6,23 @@
 //      or before bar s's close, found by time.
 //    - prior day: D is the newest Mon-Fri D1 bar before the one holding bar s, found from bar s's open (a Monday skips a
 //      Sunday stub; the first tick after midnight still reads the previous day's D); a fresh cross only; a gap past the
-//      level fires on the day's first trigger bar.
+//      level fires on the day's first trigger bar. The latch's key is D itself (Claude-Mac 6766613697 P2).
 //    - unreadable data is OP_NULL, logged once per cause.
 // 2. Ticks: a prior-day up-cross opens one single; after it is stopped out, a second up-cross the same day is latched
 //    (BRK_Once_Per_Level=false trades it: the control). Under Reverse_Seq the up-cross opens a sell, the second is latched,
 //    and a down-cross the same day opens a buy (the latch is keyed by the signal's direction, spec 3.5 item 3).
-// 3. OnInit's rebuild from deal history: the signal direction of each MAGIC1 entry whose trigger bar lies in the current
-//    trigger bar's day (flipped under Reverse_Seq; a deal just after midnight belongs to the previous day's trigger bar);
-//    other magics are ignored; an unreadable history latches the first day read both ways.
+//    A Sunday stub and Monday read one level (Friday's): an up-cross on the stub opens a single; after it is stopped out,
+//    Monday's up-cross is latched (the control trades it).
+// 3. OnInit's rebuild from deal history: the signal direction of each MAGIC1 entry whose trigger bar reads the current
+//    trigger bar's D (flipped under Reverse_Seq; a deal just after midnight belongs to the previous day's trigger bar;
+//    Sunday's entry latches Monday); other magics are ignored; an unreadable history latches the first D read both ways.
 // 4. Load-bearing: the spec's mutants (6.3: the latch removed, the latch keyed by position side, Close[0] read, bar 1 inside
-//    the level, >= for >, the Sunday stub kept, D taken at evaluation time) plus the ATR read at evaluation time and the
-//    fresh-cross condition dropped must each be caught.
-// Also: FastSpeed both ways; the opposite exit as the opposite break; Random_Direction with the latch, for five seeds.
+//    the level, >= for >, the Sunday stub kept, D taken at evaluation time) plus the ATR read at evaluation time, the
+//    fresh-cross condition dropped, the latch and the rebuild keyed on bar s's day, and a latched episode not recorded
+//    must each be caught.
+// Also: FastSpeed both ways; the opposite exit as the opposite break; Random_Direction with the latch, for five seeds: a
+// latched episode is still recorded (its bar and ordinal, no draw; review note 1), so latch on and off draw the same side
+// for every episode both trade.
 // Flags-off parity against B53 is scripts/test_b54_parity.cjs.
 'use strict';
 const assert=require('node:assert/strict');
@@ -71,7 +76,7 @@ function signal(files){
  // At 00:00:30 Tuesday, s is Monday's 23:00 bar: D is Friday (high 1.1000), not Monday (1.1060).
  {const W=pd(T(2026,10,13,0,0,30),{[mon(22)]:bar(1.099,1.099,1.099,1.0990),[mon(23)]:bar(1.099,1.1055,1.099,1.1050)});
   expect('prior day: the first tick after midnight reads bar s\'s day',W.ctx.GoatBrkSignal(1),OP.BUY);
-  if(W.ctx.g_GoatBrkDay!==T(2026,10,12)) P.push('prior day: the latch day is '+W.ctx.g_GoatBrkDay+', wanted Monday');}
+  if(W.ctx.g_GoatBrkDay!==T(2026,10,9)) P.push('prior day: the latch key is '+W.ctx.g_GoatBrkDay+', wanted D (Friday)');}
  // Tuesday's first bar gaps past Monday's high (1.1060); its predecessor (Monday 23:00) lies in D.
  expect('prior day: a gap fires on the day\'s first trigger bar',sig(T(2026,10,13,1,0,30),{[mon(23)]:bar(1.099,1.1055,1.099,1.1050),[T(2026,10,13,0)]:bar(1.107,1.108,1.107,1.1075)}),OP.BUY);
  return P;
@@ -128,13 +133,32 @@ function ticks(files){
   const hours=W=>sends(W).map(x=>new Date(x.time*1000).toISOString().slice(11,13)).join(',');
   if(hours(L)!=='10') P.push('Random_Direction seed '+seed+': entries at '+hours(L)+', wanted 10 only');
   if(hours(O)!=='10,12') P.push('Random_Direction seed '+seed+', latch off: entries at '+hours(O)+', wanted 10,12');
+  if(sends(L)[0]?.type!==sends(O)[0]?.type) P.push('Random_Direction seed '+seed+': the latch changed the 10:00 draw');
+  const rec=W=>JSON.stringify([[...W.ctx.g_GoatRandomOrdinalBar],[...W.ctx.g_GoatRandomOrdinal]]);
+  if(rec(L)!==rec(O)) P.push('Random_Direction seed '+seed+': the latched episode is recorded as the traded one is ('+rec(L)+' vs '+rec(O)+')');
  }
- return {P,W};
+ // A Sunday stub (P2): Friday 2026-10-09 high 1.1000 / low 1.0900. Sunday 10-11 21:00 closes 1.0990 and 22:00 1.1010 (an
+ // up-cross on the stub); Monday 10-12 00:00 closes 1.0995 and 01:00 1.1012 (Monday's up-cross). Both read Friday's level.
+ // The EA runs Saturday and Sunday on Friday's session, so Friday's runs to 23:59 here (the default ends at 11:00).
+ const sun=(h,m=0)=>T(2026,10,11,h,m),mon=(h,m=0)=>T(2026,10,12,h,m);
+ const STUB={[86400]:{[T(2026,10,9)]:bar(1.095,1.1000,1.0900,1.095)},[HR]:{[sun(21)]:bar(1.099,1.099,1.099,1.0990),
+  [sun(22)]:bar(1.099,1.101,1.099,1.1010),[mon(0)]:bar(1.1,1.1,1.099,1.0995),[mon(1)]:bar(1.0995,1.1012,1.0995,1.1012)}};
+ const stub=inputs=>{const S=world(files,{inputs:{BRK_Mode:'BRK_PriorDay',Active_Time_Friday:'SESSION_ALL',Active_Time_US:'15:00-23:59',...inputs},at:sun(22,59),bars:STUB});
+  S.run(path([[sun(23),1.1000],[sun(23,30),1.1000],[sun(23,40),1.0970],[mon(3),1.0990]]));return S;};
+ const S=stub({}),SC=stub({BRK_Once_Per_Level:false});
+ if(kinds(S)!=='buy@23') P.push('Sunday stub: orders '+kinds(S)+', wanted buy@23 only (Monday\'s up-cross reads the same D)');
+ if(!kinds(SC).startsWith('buy@23,buy@02')) P.push('Sunday stub control: orders '+kinds(SC)+', wanted buy@23,buy@02 first');
+ return {P,W,S};
 }
 
 // 3. OnInit's rebuild from deal history.
-function rebuild(files,W){
- const P=[],c=W.ctx,day=T(2026,10,6);
+function rebuild(files,W,S){
+ const P=[],c=W.ctx,day=T(2026,10,5);   // Tuesday's trigger bars read Monday 10-05 as D: the latch's key
+ // The Sunday stub's world at Monday 03:30: s is Monday's 02:00 bar (D Friday); Sunday's 23:00 buy came from the stub's
+ // 22:00 bar, which reads Friday too.
+ S.w.time=T(2026,10,12,3,30);S.ctx.GoatBrkLatchRebuild();
+ if(S.ctx.g_GoatBrkLatchDay[OP.BUY]!==T(2026,10,9)||S.ctx.g_GoatBrkLatchDay[OP.SELL]!==0||S.ctx.g_GoatBrkDay!==T(2026,10,9))
+  P.push('rebuild on Monday: Sunday\'s entry latches Friday\'s level ('+[...S.ctx.g_GoatBrkLatchDay]+', key '+S.ctx.g_GoatBrkDay+')');
  const deal=(time,type,magic=c.MAGIC1)=>{const t=++W.w.nextDeal;W.w.deals.push({ticket:t,order:0,position:t,symbol:W.w.symbol,magic,type,entry:0,volume:0.1,price:1.1,
   profit:0,commission:0,swap:0,fee:0,time,time_msc:time*1000,reason:3,comment:''});};
  W.w.time=at(12,30);c.GoatBrkLatchRebuild();
@@ -156,24 +180,36 @@ function rebuild(files,W){
  return P;
 }
 
-const all=files=>{const t=ticks(files);return [...signal(files),...t.P,...rebuild(files,t.W)];};
+const all=files=>{const t=ticks(files);return [...signal(files),...t.P,...rebuild(files,t.W,t.S)];};
 const problems=all(tree);
 assert.deepEqual(problems,[],'entry A on the tree');
 
-// 4. Mutants.
-const mutate=(from,to)=>{const text=tree[H.MAIN];assert.equal(text.split(from).length-1,1,'mutant anchor '+JSON.stringify(from));return {...tree,[H.MAIN]:text.replace(from,to)};};
+// 4. Mutants. Each is [label, from, to, must?], or [label, [[from, to], ...], must?] for one mutant at several sites; must
+// (a pattern) names a problem the mutant has to raise, beyond being caught at all.
+const mutate=pairs=>{let text=tree[H.MAIN];
+ for(const [a,b] of pairs){assert.equal(text.split(a).length-1,1,'mutant anchor '+JSON.stringify(a));text=text.replace(a,()=>b);}
+ return {...tree,[H.MAIN]:text};};
 const MUTANTS=[
  ['the latch removed','return(BRK_Mode==BRK_PriorDay && BRK_Once_Per_Level && g_GoatBrkDay>0 && g_GoatBrkLatchDay[signal]==g_GoatBrkDay);','return(false);'],
  ['the latch keyed by position side','g_GoatBrkLatchDay[Reverse_Seq ? 1-side : side]=day;','g_GoatBrkLatchDay[side]=day;'],
  ['Close[0] read','double close_s=iClose(_Symbol,tf,s);','double close_s=iClose(_Symbol,tf,0);'],
  ['bar 1 inside the level','for(int i=s+1;i<=s+BRK_Bars;i++)','for(int i=s;i<s+BRK_Bars;i++)'],
  ['>= for >','if(close_s>up+buf) return OP_BUY;','if(close_s>=up+buf) return OP_BUY;'],
- ['the Sunday stub kept','if(dt.day_of_week>=1 && dt.day_of_week<=5) d=j;','d=j;'],
- ['D taken at evaluation time','int k=GoatBrkBarAt(PERIOD_D1,open_s);','int k=GoatBrkBarAt(PERIOD_D1,TimeCurrent());'],
+ ['the Sunday stub kept','if(dt.day_of_week>=1 && dt.day_of_week<=5) return j;','return j;'],
+ ['D taken at evaluation time','int d=GoatBrkPriorDayAt(open_s);','int d=GoatBrkPriorDayAt(TimeCurrent());'],
+ ['the latch keyed on bar s\'s day','g_GoatBrkDay=iTime(_Symbol,PERIOD_D1,d);','g_GoatBrkDay=iTime(_Symbol,PERIOD_D1,GoatBrkBarAt(PERIOD_D1,open_s));',/^Sunday stub: orders buy@23,buy@02/],
+ ['the rebuild keyed on bar s\'s day',[['int k=GoatBrkPriorDayAt(iTime(_Symbol,tf,1));','int k=GoatBrkBarAt(PERIOD_D1,iTime(_Symbol,tf,1));'],
+  ['int dk=(held>=0 ? GoatBrkPriorDayAt(iTime(_Symbol,tf,held+1)) : -1);','int dk=(held>=0 ? GoatBrkBarAt(PERIOD_D1,iTime(_Symbol,tf,held+1)) : -1);']],/^rebuild on Monday/],
+ ['a latched episode not recorded','if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0) GoatSingleRandomRecord(OP_BUY);',
+  'if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0 && !GoatBrkLatched(OP_BUY)) GoatSingleRandomRecord(OP_BUY);',/the latched episode is recorded/],
  ['the ATR read at evaluation time','double atr=GoatBrkATR(open_s+PeriodSeconds(tf));','double atr=GoatBrkATR(TimeCurrent());'],
  ['the fresh cross dropped','if(close_s>pdh+buf && prev<=pdh+buf) return OP_BUY;','if(close_s>pdh+buf) return OP_BUY;'],
  ['GoatSignalAll without the sell term','            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)); // B54 (spec 5)','            ); // B54 (spec 5)'],
 ];
 const caught=[];
-for(const [label,from,to] of MUTANTS){const found=all(mutate(from,to));assert.ok(found.length>0,'mutant "'+label+'" is caught');caught.push(label+': '+found[0]);}
+for(const [label,from,a,b] of MUTANTS){
+ const pairs=Array.isArray(from)?from:[[from,a]],must=Array.isArray(from)?a:b,found=all(mutate(pairs));
+ assert.ok(found.length>0,'mutant "'+label+'" is caught');
+ if(must) assert.ok(found.some(m=>must.test(m)),'mutant "'+label+'" raises '+must+' ('+found.join(' | ')+')');
+ caught.push(label+': '+(must?found.find(m=>must.test(m)):found[0]));}
 console.log(JSON.stringify({test:'b54_breakout',passed:true,mutants:caught}));

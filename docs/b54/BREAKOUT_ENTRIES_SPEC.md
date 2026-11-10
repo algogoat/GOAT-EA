@@ -135,6 +135,10 @@ six terms do: computed once per new trigger bar and held for that bar.
      `Single_Flat_Only` pattern (main:8717).
    - It is rebuilt at OnInit from deal history: any `DEAL_ENTRY_IN` of this `MAGIC1` and side since the current D1
      bar opened. This reads history, not state, as design:396-399 does (ruling 13).
+   - As built in PR A (Claude-Mac 6766613697, P2): the key is D's open time, not the day holding the trigger bar. So
+     days that read one level share one latch: a Sunday stub and Monday, or a 7-day symbol's Saturday to Monday.
+     The rebuild latches a deal whose trigger bar (the `BRK_TF_` bar before the one holding the deal) reads the
+     current D.
 3. **Reverse_Seq.** The episode flag and the latch stay keyed by the signal direction, as `g_GoatSingleArmed` is
    (main:8718, 8761). So an up-cross that opened a faded sell blocks a second faded sell on the same D and leaves the
    down-cross free to open a buy.
@@ -330,13 +334,15 @@ Per file:
     cross and gap open; the buffer ATR found by time; NBar re-entry only after the signal reads false, with and
     without `Single_Flat_Only`.
   - **The latch** blocks a second PriorDay entry on the same D (up-cross, stop-out, dip, second up-cross) and is
-    rebuilt from history after a restart.
+    rebuilt from history after a restart. A Sunday stub's up-cross latches Monday's, since both read Friday as D,
+    and the rebuild on Monday reads Sunday's entry.
   - **`Reverse_Seq`:** the second faded sell on D is blocked, and the down-cross opens a buy.
   - **`Random_Direction`:** for each seed, the entry times equal the strategy's, the latch blocks the second entry
     whichever side was drawn, and the sides are the reference's draws.
   - **Also:** the opposite exit, unreadable data, FastSpeed both ways, and every refusal.
   - **Mutants that must fail:** the latch removed, the latch keyed by position side, `Close[0]` read, bar 1 inside
-    the level, `>=` for `>`, the Sunday stub kept, D taken at evaluation time.
+    the level, `>=` for `>`, the Sunday stub kept, D taken at evaluation time. PR A adds the latch, and the rebuild,
+    keyed on bar s's day.
 - **`test_b54_orb.cjs`** with mutants.
   - **Windows:** the window edges (S in, S+R out); the M1-count rule; B8/B9; the Friday 16:55 NY cutoff; the entry
     window's end; one entry per direction per T.

@@ -1,0 +1,310 @@
+{
+ "about": "B54 PR A synthetic axis SETs (Claude-Mac, GOAT-EA#303 condition 4). Not pool files. Each is a complete SET at the schema's defaults plus base and lines; probes: the SET's values (current), then each Y axis at its start and stop with the others at their values; ladder: every rung (controller only). Read by controller/test_b54_init.py and scripts/test_b54_init.cjs.",
+ "base": {
+  "Engine_Mode": "1",
+  "Single_SL_ATR": "1.0",
+  "Mode_Bias_Exit": "0"
+ },
+ "alerts": {
+  "BRK_WITHOUT_SINGLE": "Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single).",
+  "ORB_WITHOUT_SINGLE": "Initialization Failed: ORB_Mode needs the single-trade engine (Engine_Mode=Engine_Single).",
+  "BRK_WITH_ORB": "Initialization Failed: BRK_Mode and ORB_Mode cannot both be on (one breakout family per SET).",
+  "BRK_BARS_RANGE": "Initialization Failed: BRK_Bars must be between 2 and 500 with BRK_Mode=BRK_NBar.",
+  "BRK_BUFFER_RANGE": "Initialization Failed: BRK_Buffer_ATR must be between 0 and 5.",
+  "BRK_PRIOR_DAY_ON_D1": "Initialization Failed: BRK_Mode=BRK_PriorDay needs a trigger timeframe below D1 (BRK_TF_=TF_D1 is the prior day's own timeframe).",
+  "ORB_TF_NOT_M1_TO_H1": "Initialization Failed: ORB_TF_ must be TF_M1, TF_M5, TF_M15 or TF_H1 (the range is counted in its minutes).",
+  "ORB_START_RANGE": "Initialization Failed: ORB_Start_Minute must be between 0 and Lim-5 (Lim is 1020 under ORB_Clock_NewYork, 1260 under ORB_Clock_London) and a multiple of ORB_TF_'s minutes.",
+  "ORB_RANGE_MINUTES": "Initialization Failed: ORB_Range_Minutes must be between 5 and 240, a multiple of ORB_TF_'s minutes, and end before Lim (ORB_Start_Minute+ORB_Range_Minutes < Lim).",
+  "ORB_ENTRY_WINDOW": "Initialization Failed: ORB_Entry_Minutes must be between 0 and Lim, and the entry window must end by Lim (ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim).",
+  "ORB_BUFFER_RANGE": "Initialization Failed: ORB_Buffer_ATR must be between 0 and 5.",
+  "ORB_RANGE_FILTER_NEGATIVE": "Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off).",
+  "ORB_RANGE_FILTER_ORDER": "Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on.",
+  "ORB_BREAKOUT_NOT_BUILT": "Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."
+ },
+ "codes": {
+  "BRK_WITHOUT_SINGLE": "INIT_PARAMETERS_INCORRECT",
+  "ORB_WITHOUT_SINGLE": "INIT_PARAMETERS_INCORRECT",
+  "BRK_WITH_ORB": "INIT_PARAMETERS_INCORRECT",
+  "BRK_BARS_RANGE": "INIT_PARAMETERS_INCORRECT",
+  "BRK_BUFFER_RANGE": "INIT_PARAMETERS_INCORRECT",
+  "BRK_PRIOR_DAY_ON_D1": "INIT_PARAMETERS_INCORRECT",
+  "ORB_TF_NOT_M1_TO_H1": "INIT_PARAMETERS_INCORRECT",
+  "ORB_START_RANGE": "INIT_PARAMETERS_INCORRECT",
+  "ORB_RANGE_MINUTES": "INIT_PARAMETERS_INCORRECT",
+  "ORB_ENTRY_WINDOW": "INIT_PARAMETERS_INCORRECT",
+  "ORB_BUFFER_RANGE": "INIT_PARAMETERS_INCORRECT",
+  "ORB_RANGE_FILTER_NEGATIVE": "INIT_PARAMETERS_INCORRECT",
+  "ORB_RANGE_FILTER_ORDER": "INIT_PARAMETERS_INCORRECT",
+  "ORB_BREAKOUT_NOT_BUILT": "INIT_FAILED"
+ },
+ "sets": [
+  {
+   "file": "brk-nbar-ends.set",
+   "about": "N-bar, every BRK axis at Y inside its bounds (BRK_Bars 2 and 500 are accepted)",
+   "lines": {
+    "BRK_Mode": "1",
+    "BRK_TF_": "1||0||1||1||Y",
+    "BRK_Bars": "20||2||1||500||Y",
+    "BRK_Buffer_ATR": "0.0||0.0||0.5||5.0||Y",
+    "BRK_Once_Per_Level": "true||false||1||true||Y"
+   },
+   "probes": {
+    "current": "ok",
+    "BRK_TF_@start": "ok",
+    "BRK_TF_@stop": "ok",
+    "BRK_Bars@start": "ok",
+    "BRK_Bars@stop": "ok",
+    "BRK_Buffer_ATR@start": "ok",
+    "BRK_Buffer_ATR@stop": "ok",
+    "BRK_Once_Per_Level@start": "ok",
+    "BRK_Once_Per_Level@stop": "ok"
+   },
+   "ladder": "ok"
+  },
+  {
+   "file": "brk-nbar-bars-ends.set",
+   "about": "N-bar, BRK_Bars 1..501: refused at both ends",
+   "lines": {
+    "BRK_Mode": "1",
+    "BRK_Bars": "20||1||1||501||Y"
+   },
+   "probes": {
+    "current": "ok",
+    "BRK_Bars@start": "BRK_BARS_RANGE",
+    "BRK_Bars@stop": "BRK_BARS_RANGE"
+   },
+   "ladder": "BRK_BARS_RANGE"
+  },
+  {
+   "file": "brk-pday-buffer-ends.set",
+   "about": "Prior day, BRK_Buffer_ATR -0.5..5.5 refused at both ends; BRK_Bars 1 is N-bar only",
+   "lines": {
+    "BRK_Mode": "2",
+    "BRK_Bars": "1||1||1||3||Y",
+    "BRK_Buffer_ATR": "0.0||-0.5||0.5||5.5||Y"
+   },
+   "probes": {
+    "current": "ok",
+    "BRK_Bars@start": "ok",
+    "BRK_Bars@stop": "ok",
+    "BRK_Buffer_ATR@start": "BRK_BUFFER_RANGE",
+    "BRK_Buffer_ATR@stop": "BRK_BUFFER_RANGE"
+   },
+   "ladder": "BRK_BUFFER_RANGE"
+  },
+  {
+   "file": "brk-pday-d1.set",
+   "about": "Prior day on a D1 trigger: refused at every probe",
+   "lines": {
+    "BRK_Mode": "2",
+    "BRK_TF_": "1440",
+    "BRK_Bars": "20||1||1||30||Y"
+   },
+   "probes": {
+    "current": "BRK_PRIOR_DAY_ON_D1",
+    "BRK_Bars@start": "BRK_PRIOR_DAY_ON_D1",
+    "BRK_Bars@stop": "BRK_PRIOR_DAY_ON_D1"
+   },
+   "ladder": "BRK_PRIOR_DAY_ON_D1"
+  },
+  {
+   "file": "orb-ny-inside.set",
+   "about": "Opening range, New York anchor, six ORB axes at Y and every rung inside Lim 1020 (600+240+180)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Start_Minute": "570||540||15||600||Y",
+    "ORB_Range_Minutes": "30||15||15||240||Y",
+    "ORB_Entry_Minutes": "0||0||60||180||Y",
+    "ORB_Buffer_ATR": "0.0||0.0||1.0||5.0||Y",
+    "ORB_Min_Range_ATR": "0.0||0.0||0.5||1.0||Y",
+    "ORB_Max_Range_ATR": "0.0||0.0||1.5||3.0||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@stop": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@stop": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Buffer_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Buffer_ATR@stop": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Min_Range_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Min_Range_ATR@stop": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Max_Range_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Max_Range_ATR@stop": "ORB_BREAKOUT_NOT_BUILT"
+   },
+   "ladder": "ORB_BREAKOUT_NOT_BUILT"
+  },
+  {
+   "file": "orb-ny-lim.set",
+   "about": "New York anchor: ORB_Start_Minute 1020 is past Lim-5 (1015)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Start_Minute": "1000||1000||5||1020||Y",
+    "ORB_Range_Minutes": "5"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_START_RANGE"
+   },
+   "ladder": "ORB_START_RANGE"
+  },
+  {
+   "file": "orb-london-lim.set",
+   "about": "London anchor: Lim 1260, so 1240+5+15 fits and ORB_Start_Minute 1260 is past Lim-5 (1255)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Clock": "1",
+    "ORB_Start_Minute": "1240||1240||5||1260||Y",
+    "ORB_Range_Minutes": "5",
+    "ORB_Entry_Minutes": "0||0||5||15||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_START_RANGE",
+    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@stop": "ORB_BREAKOUT_NOT_BUILT"
+   },
+   "ladder": "ORB_START_RANGE"
+  },
+  {
+   "file": "orb-entry-end.set",
+   "about": "New York anchor: 570+30+425 ends past Lim 1020",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Entry_Minutes": "0||0||5||425||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@stop": "ORB_ENTRY_WINDOW"
+   },
+   "ladder": "ORB_ENTRY_WINDOW"
+  },
+  {
+   "file": "orb-range-ends.set",
+   "about": "ORB_Range_Minutes 0..245: refused at both ends",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Range_Minutes": "30||0||5||245||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@start": "ORB_RANGE_MINUTES",
+    "ORB_Range_Minutes@stop": "ORB_RANGE_MINUTES"
+   },
+   "ladder": "ORB_RANGE_MINUTES"
+  },
+  {
+   "file": "orb-tf-cur.set",
+   "about": "ORB_TF_ TF_Cur..TF_M1 (the one native TF ladder): TF_Cur is refused",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "1||0||1||1||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_TF_@start": "ORB_TF_NOT_M1_TO_H1",
+    "ORB_TF_@stop": "ORB_BREAKOUT_NOT_BUILT"
+   },
+   "ladder": "ORB_TF_NOT_M1_TO_H1"
+  },
+  {
+   "file": "orb-filter-ends.set",
+   "about": "Range filter -0.5..2.5 against a 2.0 maximum, and a 5.5 buffer",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Buffer_ATR": "0.0||0.0||5.5||5.5||Y",
+    "ORB_Min_Range_ATR": "0.5||-0.5||1.0||2.5||Y",
+    "ORB_Max_Range_ATR": "2.0"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Buffer_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Buffer_ATR@stop": "ORB_BUFFER_RANGE",
+    "ORB_Min_Range_ATR@start": "ORB_RANGE_FILTER_NEGATIVE",
+    "ORB_Min_Range_ATR@stop": "ORB_RANGE_FILTER_ORDER"
+   },
+   "ladder": "ORB_BUFFER_RANGE"
+  },
+  {
+   "file": "orb-h1-interior.set",
+   "about": "H1 trigger: the ends 540 and 600 are aligned, the rung 570 is not (the ladder alone shows it)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "60",
+    "ORB_Range_Minutes": "60",
+    "ORB_Start_Minute": "540||540||30||600||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_BREAKOUT_NOT_BUILT"
+   },
+   "ladder": "ORB_START_RANGE"
+  },
+  {
+   "file": "orb-h1-start-misaligned.set",
+   "about": "H1 trigger: ORB_Start_Minute 570 is not a multiple of 60 (a probe end)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "60",
+    "ORB_Range_Minutes": "60",
+    "ORB_Start_Minute": "540||540||30||570||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_START_RANGE"
+   },
+   "ladder": "ORB_START_RANGE"
+  },
+  {
+   "file": "orb-m15-range-misaligned.set",
+   "about": "M15 trigger: ORB_Range_Minutes 20 is not a multiple of 15 (a probe end)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "15",
+    "ORB_Range_Minutes": "15||15||5||20||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@stop": "ORB_RANGE_MINUTES"
+   },
+   "ladder": "ORB_RANGE_MINUTES"
+  },
+  {
+   "file": "orb-ny-sum-lim.set",
+   "about": "New York anchor: 1010+5 ends before Lim, 1015+5 = Lim 1020 does not",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Start_Minute": "1010||1010||5||1015||Y",
+    "ORB_Range_Minutes": "5"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_RANGE_MINUTES"
+   },
+   "ladder": "ORB_RANGE_MINUTES"
+  },
+  {
+   "file": "orb-entry-int-max.set",
+   "about": "ORB_Entry_Minutes at the int maximum: bounded by Lim before any sum reads it",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Entry_Minutes": "0||0||2147483647||2147483647||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@stop": "ORB_ENTRY_WINDOW"
+   },
+   "ladder": "ORB_ENTRY_WINDOW"
+  }
+ ]
+}

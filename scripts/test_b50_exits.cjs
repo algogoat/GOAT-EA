@@ -72,7 +72,9 @@ function firstExit(W){
  const entry=conditions(undefined,'SignalEntryTrigger','if'),all=conditions(undefined,'GoatSignalAll','return');
  assert.equal(entry.length,2,'SignalEntryTrigger has its buy and sell conditions');
  assert.deepEqual(all,entry,'GoatSignalAll(OP_BUY) and (OP_SELL) are SignalEntryTrigger\'s six terms, token for token');
- assert.deepEqual(conditions('65fde12','SignalEntryTrigger','if'),entry,'and B49a\'s');
+ // B54 (spec 5, 6.3): entry A's term follows B49a's six in both, in lockstep with GoatSignalAll (PR B adds ORB's).
+ const B54_TERMS=[' && ( BRK_Mode == BRK_Disabled || BRK_Sig == 0 )',' && ( BRK_Mode == BRK_Disabled || BRK_Sig == 1 )'];
+ assert.deepEqual(conditions('65fde12','SignalEntryTrigger','if').map((c,i)=>c+B54_TERMS[i]),entry,'and B49a\'s six terms, then B54\'s');
  assert.match(entry[0],/RSI_Sig == 0 \)/);assert.match(entry[1],/RSI_Sig == 1 \)/);   // OP_BUY, OP_SELL (macros expanded)
  // Behaviour: every term is read (one term against the direction makes it false), and a range read is both.
  const W=world({EMA_Mode:'Trade_Trend_Range',ADX_Mode:'Trade_Trend',RSI_Mode:'RSI_OverBS'},[]),c=W.ctx;

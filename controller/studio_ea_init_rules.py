@@ -269,6 +269,36 @@ def _single(v):
     return v['Engine_Mode'] == v.choice('Engine_Mode', 'Engine_Single')
 
 
+# B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.6, GOAT V1.49.mq5:5122-5150): the breakout entries' families and ORB's window.
+def _brk(v):
+    return v['BRK_Mode'] != v.choice('BRK_Mode', 'BRK_Disabled')
+
+
+def _orb(v):
+    return v['ORB_Mode'] != v.choice('ORB_Mode', 'ORB_Disabled')
+
+
+def _orb_lim(v):
+    """Spec 4.1/4.4: Lim, 17:00 NY in minutes after the anchor's midnight: 1020 under the New York anchor, 1260 (21:00
+    London, while the US is on DST and the EU is not) under the London anchor."""
+    return 1260 if v['ORB_Clock'] == v.choice('ORB_Clock', 'ORB_Clock_London') else 1020
+
+
+ORB_TFS = ('TF_M1', 'TF_M5', 'TF_M15', 'TF_H1')
+
+
+def _orb_minutes(v):
+    """ORB_TF_'s minutes, which its enum value names (TF_M1=1 ... TF_H1=60), or None for a timeframe ORB_TF_NOT_M1_TO_H1
+    refuses first (the EA never reaches the window rules with one; ORB_Start_Minute%0 is never computed)."""
+    tf = v['ORB_TF_']
+    return tf if tf in {v.choice('ORB_TF_', label) for label in ORB_TFS} else None
+
+
+def _orb_misaligned(v, name):
+    minutes = _orb_minutes(v)
+    return minutes is not None and v[name] % minutes != 0
+
+
 SESSION_INPUTS = ('Active_Time_ASIA', 'Active_Time_EU', 'Active_Time_US')
 RRR_CHAIN = ('Mode_RRR', 'RRR', 'SL_Pips', 'TP_Pips', 'Lock_Profit_Size')
 
@@ -470,6 +500,99 @@ EA_INIT_RULES = (
           'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
           'Initialization Failed: Single_Partial_ATR needs Ledger_Mode=Ledger_PositionJoin (Ledger_Legacy would drop the partial\'s profit from the sequence).',
           lambda v: v['Single_Partial_ATR'] > 0.0 and v['Ledger_Mode'] != v.choice('Ledger_Mode', 'Ledger_PositionJoin')),
+    # B54 (spec 4.6, GOAT V1.49.mq5:5122-5150): the breakout entries. A schema without the B54 group (B53 and earlier)
+    # belongs to a build without these rules (applicable_rules, APPENDED_GROUPS). A family's ranges apply while it is on.
+    _rule('BRK_WITHOUT_SINGLE', [5128], 'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single',
+          ['BRK_Mode', 'Engine_Mode'], {'BRK_Mode': ['BRK_Disabled'], 'Engine_Mode': ['Engine_Single']},
+          'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single (spec 4.6)',
+          'Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single).',
+          lambda v: _brk(v) and not _single(v)),
+    _rule('ORB_WITHOUT_SINGLE', [5129], 'ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single',
+          ['ORB_Mode', 'Engine_Mode'], {'ORB_Mode': ['ORB_Disabled'], 'Engine_Mode': ['Engine_Single']},
+          'ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single (spec 4.6)',
+          'Initialization Failed: ORB_Mode needs the single-trade engine (Engine_Mode=Engine_Single).',
+          lambda v: _orb(v) and not _single(v)),
+    _rule('BRK_WITH_ORB', [5130], 'BRK_Mode!=BRK_Disabled && ORB_Mode!=ORB_Disabled',
+          ['BRK_Mode', 'ORB_Mode'], {'BRK_Mode': ['BRK_Disabled'], 'ORB_Mode': ['ORB_Disabled']},
+          'BRK_Mode!=BRK_Disabled && ORB_Mode!=ORB_Disabled (ruling 15: one family per SET)',
+          'Initialization Failed: BRK_Mode and ORB_Mode cannot both be on (one breakout family per SET).',
+          lambda v: _brk(v) and _orb(v)),
+    _rule('BRK_BARS_RANGE', [5131], 'BRK_Mode==BRK_NBar && (BRK_Bars<2 || BRK_Bars>500)',
+          ['BRK_Mode', 'BRK_Bars'], {'BRK_Mode': ['BRK_NBar']},
+          'BRK_Mode==BRK_NBar && (BRK_Bars<2 || BRK_Bars>500) (spec 3.1 A3)',
+          'Initialization Failed: BRK_Bars must be between 2 and 500 with BRK_Mode=BRK_NBar.',
+          lambda v: v['BRK_Mode'] == v.choice('BRK_Mode', 'BRK_NBar') and (v['BRK_Bars'] < 2 or v['BRK_Bars'] > 500)),
+    _rule('BRK_BUFFER_RANGE', [5132], 'BRK_Mode!=BRK_Disabled && (BRK_Buffer_ATR<0.0 || BRK_Buffer_ATR>5.0)',
+          ['BRK_Mode', 'BRK_Buffer_ATR'], {'BRK_Mode': ['BRK_Disabled']},
+          'BRK_Mode!=BRK_Disabled && (BRK_Buffer_ATR<0.0 || BRK_Buffer_ATR>5.0) (spec 3.1 A4)',
+          'Initialization Failed: BRK_Buffer_ATR must be between 0 and 5.',
+          lambda v: _brk(v) and (v['BRK_Buffer_ATR'] < 0.0 or v['BRK_Buffer_ATR'] > 5.0)),
+    _rule('BRK_PRIOR_DAY_ON_D1', [5133], 'BRK_Mode==BRK_PriorDay && BRK_TF_==TF_D1',
+          ['BRK_Mode', 'BRK_TF_'], {'BRK_Mode': ['BRK_PriorDay'], 'BRK_TF_': ['TF_D1']},
+          'BRK_Mode==BRK_PriorDay && BRK_TF_==TF_D1 (spec 3.1 A2; TF_Cur on a D1 chart is NOT_PORTED, 5134)',
+          'Initialization Failed: BRK_Mode=BRK_PriorDay needs a trigger timeframe below D1 (BRK_TF_=TF_D1 is the prior '
+          "day's own timeframe).",
+          lambda v: v['BRK_Mode'] == v.choice('BRK_Mode', 'BRK_PriorDay') and v['BRK_TF_'] == v.choice('BRK_TF_', 'TF_D1')),
+    _rule('ORB_TF_NOT_M1_TO_H1', [5136], 'ORB_TF_!=TF_M1 && ORB_TF_!=TF_M5 && ORB_TF_!=TF_M15 && ORB_TF_!=TF_H1',
+          ['ORB_Mode', 'ORB_TF_'], {'ORB_Mode': ['ORB_Disabled'], 'ORB_TF_': list(ORB_TFS)},
+          'ORB_Mode!=ORB_Disabled && ORB_TF_ not TF_M1/TF_M5/TF_M15/TF_H1 (spec 4.1 B3; TF_Cur is refused: the range must '
+          'be counted in minutes the SET names)',
+          'Initialization Failed: ORB_TF_ must be TF_M1, TF_M5, TF_M15 or TF_H1 (the range is counted in its minutes).',
+          lambda v: _orb(v) and _orb_minutes(v) is None),
+    _rule('ORB_START_RANGE', [5137], 'ORB_Start_Minute<0 || ORB_Start_Minute>(ORB_Clock==ORB_Clock_London ? 1260 : 1020)-5',
+          ['ORB_Mode', 'ORB_Start_Minute', 'ORB_Clock', 'ORB_TF_'],
+          {'ORB_Mode': ['ORB_Disabled'], 'ORB_Clock': ['ORB_Clock_London'], 'ORB_TF_': list(ORB_TFS)},
+          'ORB_Mode!=ORB_Disabled && (ORB_Start_Minute<0 || ORB_Start_Minute>Lim-5 || ORB_Start_Minute % ORB_TF_ minutes != 0) '
+          '(spec 4.1 B4)',
+          'Initialization Failed: ORB_Start_Minute must be between 0 and Lim-5 (Lim is 1020 under ORB_Clock_NewYork, 1260 '
+          "under ORB_Clock_London) and a multiple of ORB_TF_'s minutes.",
+          lambda v: _orb(v) and (v['ORB_Start_Minute'] < 0 or v['ORB_Start_Minute'] > _orb_lim(v) - 5
+                                 or _orb_misaligned(v, 'ORB_Start_Minute'))),
+    _rule('ORB_RANGE_MINUTES', [5138], 'ORB_Range_Minutes<5 || ORB_Range_Minutes>240',
+          ['ORB_Mode', 'ORB_Range_Minutes', 'ORB_TF_', 'ORB_Start_Minute', 'ORB_Clock'],
+          {'ORB_Mode': ['ORB_Disabled'], 'ORB_Clock': ['ORB_Clock_London'], 'ORB_TF_': list(ORB_TFS)},
+          'ORB_Mode!=ORB_Disabled && (ORB_Range_Minutes<5 || ORB_Range_Minutes>240 || ORB_Range_Minutes % ORB_TF_ minutes != 0 '
+          '|| ORB_Start_Minute+ORB_Range_Minutes>=Lim) (spec 4.1 B5)',
+          "Initialization Failed: ORB_Range_Minutes must be between 5 and 240, a multiple of ORB_TF_'s minutes, and end "
+          'before Lim (ORB_Start_Minute+ORB_Range_Minutes < Lim).',
+          lambda v: _orb(v) and (v['ORB_Range_Minutes'] < 5 or v['ORB_Range_Minutes'] > 240
+                                 or _orb_misaligned(v, 'ORB_Range_Minutes')
+                                 or v['ORB_Start_Minute'] + v['ORB_Range_Minutes'] >= _orb_lim(v))),
+    _rule('ORB_ENTRY_WINDOW', [5139], 'ORB_Entry_Minutes<0 || ORB_Entry_Minutes>(ORB_Clock==ORB_Clock_London ? 1260 : 1020) || ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>',
+          ['ORB_Mode', 'ORB_Entry_Minutes', 'ORB_Start_Minute', 'ORB_Range_Minutes', 'ORB_Clock'],
+          {'ORB_Mode': ['ORB_Disabled'], 'ORB_Clock': ['ORB_Clock_London']},
+          'ORB_Mode!=ORB_Disabled && (ORB_Entry_Minutes<0 || ORB_Entry_Minutes>Lim '
+          '|| ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>Lim) (spec 4.1 B6; B6 is bounded before the sum, which a '
+          '32-bit int could wrap: Claude-Mac 6764975563)',
+          'Initialization Failed: ORB_Entry_Minutes must be between 0 and Lim, and the entry window must end by Lim '
+          '(ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim).',
+          lambda v: _orb(v) and (v['ORB_Entry_Minutes'] < 0 or v['ORB_Entry_Minutes'] > _orb_lim(v)
+                                 or v['ORB_Start_Minute'] + v['ORB_Range_Minutes'] + v['ORB_Entry_Minutes'] > _orb_lim(v))),
+    _rule('ORB_BUFFER_RANGE', [5140], 'ORB_Mode!=ORB_Disabled && (ORB_Buffer_ATR<0.0 || ORB_Buffer_ATR>5.0)',
+          ['ORB_Mode', 'ORB_Buffer_ATR'], {'ORB_Mode': ['ORB_Disabled']},
+          'ORB_Mode!=ORB_Disabled && (ORB_Buffer_ATR<0.0 || ORB_Buffer_ATR>5.0) (spec 4.1 B7)',
+          'Initialization Failed: ORB_Buffer_ATR must be between 0 and 5.',
+          lambda v: _orb(v) and (v['ORB_Buffer_ATR'] < 0.0 or v['ORB_Buffer_ATR'] > 5.0)),
+    _rule('ORB_RANGE_FILTER_NEGATIVE', [5141], 'ORB_Min_Range_ATR<0.0 || ORB_Max_Range_ATR<0.0',
+          ['ORB_Mode', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR'], {'ORB_Mode': ['ORB_Disabled']},
+          'ORB_Mode!=ORB_Disabled && (ORB_Min_Range_ATR<0.0 || ORB_Max_Range_ATR<0.0) (spec 4.1 B8, B9)',
+          'Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off).',
+          lambda v: _orb(v) and (v['ORB_Min_Range_ATR'] < 0.0 or v['ORB_Max_Range_ATR'] < 0.0)),
+    _rule('ORB_RANGE_FILTER_ORDER', [5142], 'ORB_Max_Range_ATR<=ORB_Min_Range_ATR',
+          ['ORB_Mode', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR'], {'ORB_Mode': ['ORB_Disabled']},
+          'ORB_Mode!=ORB_Disabled && ORB_Min_Range_ATR>0.0 && ORB_Max_Range_ATR>0.0 && ORB_Max_Range_ATR<=ORB_Min_Range_ATR '
+          '(spec 4.1 B9)',
+          'Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on.',
+          lambda v: _orb(v) and v['ORB_Min_Range_ATR'] > 0.0 and v['ORB_Max_Range_ATR'] > 0.0
+          and v['ORB_Max_Range_ATR'] <= v['ORB_Min_Range_ATR']),
+    # B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term the tree does not have yet. Ported, although
+    # the EA answers INIT_FAILED: it reads one input value, so validate-set refuses such a SET before any tester sees it.
+    # The commit that adds a value's term removes its EA line and its rule here (the inventory test keeps them in step):
+    # PR A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's; PR B removes this one.
+    _rule('ORB_BREAKOUT_NOT_BUILT', [5149], 'if(ORB_Mode==ORB_Breakout)', ['ORB_Mode'], {'ORB_Mode': ['ORB_Breakout']},
+          'ORB_Mode==ORB_Breakout (no signal term in this tree yet; PR B adds it)',
+          'Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet.',
+          lambda v: v['ORB_Mode'] == v.choice('ORB_Mode', 'ORB_Breakout')),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -493,6 +616,26 @@ TESTER_INIT_RULES = (
                'after 2007.03.11 (the US DST rules it applies).',
                lambda v: v['Clock_Mode'] == v.choice('Clock_Mode', 'Clock_NewYork')
                and v['Server_Clock_Model'] != v.choice('Server_Clock_Model', 'ServerClock_NYClose')),
+         from_date_before='2007.03.11'),
+    # B54 (spec 4.4): the opening range's anchors apply the US DST rules of 2007 on, as the New York clock does: the New
+    # York anchor under a fixed or EU DST server model, and the London anchor under every model (NYClose derives UTC
+    # through the 2007 US rule too).
+    dict(_rule('ORB_NY_TEST_BEFORE_2007', [5144], 'ORB_Clock==ORB_Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose',
+               ['ORB_Mode', 'ORB_Clock', 'Server_Clock_Model'],
+               {'ORB_Mode': ['ORB_Disabled'], 'ORB_Clock': ['ORB_Clock_NewYork'], 'Server_Clock_Model': ['ServerClock_NYClose']},
+               'MQL_TESTER && FromDate<2007.03.11 && ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_NewYork && '
+               'Server_Clock_Model!=ServerClock_NYClose (spec 4.4)',
+               'Initialization Failed: ORB_Clock_NewYork with a fixed or EU DST server model needs a test start on or after '
+               '2007.03.11 (the US DST rules it applies).',
+               lambda v: _orb(v) and v['ORB_Clock'] == v.choice('ORB_Clock', 'ORB_Clock_NewYork')
+               and v['Server_Clock_Model'] != v.choice('Server_Clock_Model', 'ServerClock_NYClose')),
+         from_date_before='2007.03.11'),
+    dict(_rule('ORB_LONDON_TEST_BEFORE_2007', [5145], 'ORB_Clock==ORB_Clock_London && MQLInfoInteger(MQL_TESTER)',
+               ['ORB_Mode', 'ORB_Clock'], {'ORB_Mode': ['ORB_Disabled'], 'ORB_Clock': ['ORB_Clock_London']},
+               'MQL_TESTER && FromDate<2007.03.11 && ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_London (spec 4.4)',
+               'Initialization Failed: ORB_Clock_London needs a test start on or after 2007.03.11 under every server model '
+               '(its UTC comes through the 2007 US DST rules).',
+               lambda v: _orb(v) and v['ORB_Clock'] == v.choice('ORB_Clock', 'ORB_Clock_London')),
          from_date_before='2007.03.11'),
 )
 
@@ -518,7 +661,7 @@ NOT_PORTED = (
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
     dict(lines=(4516,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4528,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5201)',
+    dict(lines=(4528,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5233)',
          reason='current time vs build expiry'),
     dict(lines=(4690,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
          reason='run context (live chart)'),
@@ -563,23 +706,35 @@ NOT_PORTED = (
     # B51 (section 8.4): Engine_Single refuses a live account positively read as not demo; a SET cannot show the account.
     dict(lines=(5111,), anchor='b51_account==GOAT_ACCOUNT_NOT_DEMO', condition='Engine_Single outside the tester on an account read as not demo',
          reason='run context (account mode, connection)'),
+    # B54 (spec 4.6): the rules that read the chart's timeframe, and ORB on a live chart (ruling 7).
+    dict(lines=(5134,), anchor='BRK_TF_==TF_Cur && PeriodSeconds(PERIOD_CURRENT)>=PeriodSeconds(PERIOD_D1)',
+         condition='BRK_Mode==BRK_PriorDay && BRK_TF_==TF_Cur on a chart of D1 or longer',
+         reason='the chart timeframe (the tester Period or the live chart), not a SET value; BRK_PRIOR_DAY_ON_D1 refuses TF_D1 itself'),
+    dict(lines=(5135,), anchor='Signal_Sample_Period==M_Current && PeriodSeconds(TF2TF(BRK_TF_))<PeriodSeconds(PERIOD_CURRENT)',
+         condition='BRK_Mode!=BRK_Disabled && Signal_Sample_Period==M_Current && BRK_TF_ shorter than the chart timeframe (spec 3.3)',
+         reason='the chart timeframe (the tester Period or the live chart), not a SET value'),
+    dict(lines=(5143,), anchor='Signal_Sample_Period==M_Current && PeriodSeconds(TF2TF(ORB_TF_))<PeriodSeconds(PERIOD_CURRENT)',
+         condition='ORB_Mode!=ORB_Disabled && Signal_Sample_Period==M_Current && ORB_TF_ shorter than the chart timeframe (spec 4.3)',
+         reason='the chart timeframe (the tester Period or the live chart), not a SET value'),
+    dict(lines=(5146,), anchor='ORB_Mode is tester-only in B54', condition='ORB_Mode!=ORB_Disabled on a live chart (ruling 7)',
+         reason='run context (live chart)'),
     # B49b (F7 SIG-01): every enabled signal indicator's handle, as ATR's.
-    dict(lines=(5134,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5135,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5136,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5137,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5138,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
+    dict(lines=(5166,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5167,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5168,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5169,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5170,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
          reason='symbol/indicator runtime (the indicator file)'),
-    dict(lines=(5139,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5171,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
     # B49b (F1 full): live trading charts only (GoatManageOnlyLive); in the tester manage-only is never set.
-    dict(lines=(5201,), anchor='manage_only_init==INIT_FAILED',
+    dict(lines=(5233,), anchor='manage_only_init==INIT_FAILED',
          condition='live, a refused licence or an expired build (or a rejected credential whose replacement cannot begin) with no open basket to manage',
          reason='license service response and build expiry on a live chart'),
-    dict(lines=(5207,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(5239,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(5208,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(5216,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(5221,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(5240,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(5248,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(5253,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

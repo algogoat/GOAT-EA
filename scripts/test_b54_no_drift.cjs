@@ -1,7 +1,8 @@
 // B54 no-drift guard (docs/b54/BREAKOUT_ENTRIES_SPEC.md section 6.3). B54 = B53 (the final build V1.49-BETA17-53, merge
 // 216e1622 of GOAT-EA#296; its source hashes are committed in candidate-builds/beta17-B53/identity.json) plus the breakout
 // entries, each in its own reviewed PR. PR A0 (gate 0, section 6.2) declares the 14 inputs and their enums, WriteSet's
-// lines, the Studio types, axes and defaults and the child audit's names; no trading logic reads the inputs yet. Against B53:
+// lines, the Studio types, axes and defaults and the child audit's names. PR A's first commit adds the entrypoint's b54-init
+// block (spec 4.6; GOAT-EA#303 ruling, condition 3): OnInit refusals only; no trading logic reads the inputs yet. Against B53:
 // - every file of B53's compile closure outside CHANGED is byte-identical to B53;
 // - in the CHANGED files, every line added or replaced since B53 carries the marker "B54" or sits inside a
 //   "// B54:begin <item>" ... "// B54:end <item>" block, so nothing changes unmarked; pure deletions are refused, and every
@@ -13,7 +14,7 @@
 //   choices, and the new ones are exactly NEW_INPUTS, in order, at the very end, in their own group, the header's last.
 //   That is this guard's one explicit allowance;
 // - each later B54 PR adds the files and REMOVED lines it changes (section 6.3: SignalEntryTrigger's and GoatSignalAll's
-//   closing-paren lines), so the review sees the lists grow. A0 leaves the entrypoint byte-identical to B53's.
+//   closing-paren lines), so the review sees the lists grow. A0 left the entrypoint byte-identical to B53's; PR A adds it.
 // test_b51_no_drift.cjs now proves B53's own commit (as test_b50_no_drift.cjs proves B50-alpha's), so the chain
 // B49a -> B50 -> B53 -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B54 change is marked, listed and reviewable. Neutrality with the
@@ -23,10 +24,18 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B53_SOURCE='216e16225441cfc1bfe0546c1c70adaf327405cf';
 // Each item PR adds the files it changes, so the review sees the list grow.
-const CHANGED=['GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATPortfolioChildAudit.mqh'];
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATPortfolioChildAudit.mqh'];
 const ADDED=[];
 // Every B53 line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
+ // PR A (spec 6.3): entry A's term closes SignalEntryTrigger's two conditions and GoatSignalAll's two returns, so their
+ // closing-paren lines are replaced.
+ 'GOAT V1.49.mq5':[
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))',
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))',
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL));',
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL));',
+ ],
  'GOATStudioSettingTypes.mqh':[
   '+"Random_Seed|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|Single_Partial_ATR|Single_Partial_Fraction|Single_Partial_BE|"; // B51 (beta-1a, beta-1b, section 8.3): the B50-beta optimization axes (Random_Direction is an sinput, never one)', // A0: the list continues with the B54 axes
  ],
@@ -119,7 +128,6 @@ checks++;
 const deps=JSON.parse(read('controller/contracts/v149/dependencies.json').toString('utf8').replace(/^﻿/,''));
 assert.equal(deps.header_sha256,sha(read('GOAT_Inputs_Definitions.mqh')),'dependencies.json pins this header');
 assert.equal(deps.main_sha256,sha(read('GOAT V1.49.mq5')),'dependencies.json pins this entrypoint');
-assert.equal(deps.main_sha256,b53.sources['GOAT V1.49.mq5'],'A0: the entrypoint is B53\'s');
 const schema=JSON.parse(read('controller/contracts/v149/inputs.json').toString('utf8').replace(/^﻿/,''));
 assert.equal(schema.source_sha256,deps.header_sha256,'inputs.json was read from this header');
 const before=JSON.parse(git(['show',B53_SOURCE+':controller/contracts/v149/inputs.json']).toString('utf8').replace(/^﻿/,''));

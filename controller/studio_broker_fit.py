@@ -124,7 +124,10 @@ LOTS_PROG_PEAK_SMART = 6
 BIAS_EXIT_SMART_RESCUE = 1
 POINT_INPUTS = ('Grid_Size', 'Grid_Min', 'Grid_Max', 'Lock_Profit_Size', 'SL_Pips', 'TSL_Size')
 FIXED_MONEY_INPUTS = ('MaxLossLocal', 'MaxLossGlobal', 'MaxDailyLossLocal', 'MaxDailyProfitLocal', 'MinLevelEquity', 'MaxLevelEquity')
-TF_INPUTS = ('ATR_TF_', 'RSI_TF_', 'EMA_TF_', 'ADX_TF_', 'BB_TF_', 'MACD_TF_', 'RSI2_TF_')
+TF_INPUTS = ('ATR_TF_', 'RSI_TF_', 'EMA_TF_', 'ADX_TF_', 'BB_TF_', 'MACD_TF_', 'RSI2_TF_',
+             'BRK_TF_')   # B54 (spec 7; GOAT-EA#303 ruling, condition 5): the breakout's trigger bars
+# B54: a SET and schema from before B54 (B53 and earlier) have no BRK_TF_; their build has no breakout, so it is neutral there.
+B54_TF_INPUTS = ('BRK_TF_',)
 TF_H4 = 240
 TF_D1 = 1440                           # B50 (A0): appended to ENUM_MODE_TFs; its bars start at the server's midnight too
 SERVER_DAY_TFS = {TF_H4: 'H4', TF_D1: 'D1'}
@@ -592,6 +595,8 @@ def offset_neutral(values, defaults, timeframe):
     if timeframe not in OFFSET_NEUTRAL_TIMEFRAMES:
         reasons.append('timeframe ' + str(timeframe))
     for name in TF_INPUTS:
+        if name in B54_TF_INPUTS and name not in values and name not in defaults:
+            continue
         if not _readable(values, defaults, name):
             reasons.append(name + ' unreadable')        # could be H4: never assumed neutral
         elif _number(values, defaults, name) in SERVER_DAY_TFS:
@@ -601,6 +606,13 @@ def offset_neutral(values, defaults, timeframe):
         stop_tf = _number(values, defaults, 'Single_Time_Stop_TF')
         if stop_tf is None or stop_tf in SERVER_DAY_TFS:
             reasons.append('Single_Time_Stop_TF=' + SERVER_DAY_TFS.get(stop_tf, 'unreadable'))
+    # B54 (spec 7): the prior day is the broker's D1 bar, which starts at the server's midnight (ruling 5). A BRK_Mode the
+    # SET or schema gives but GOAT cannot read could be the prior day: never neutral (Claude-Mac 6764975563, optional item).
+    brk_mode = _number(values, defaults, 'BRK_Mode')
+    if brk_mode is None and ('BRK_Mode' in values or 'BRK_Mode' in defaults):
+        reasons.append('BRK_Mode unreadable')
+    elif brk_mode == 2:
+        reasons.append('BRK_Mode=BRK_PriorDay')
     if _number(values, defaults, 'Clock_Mode') not in (None, 0):
         reasons.append('Clock_Mode=Clock_NewYork')
     if _number(values, defaults, 'Rollover_Block_Minutes') not in (None, 0):

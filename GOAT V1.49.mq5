@@ -5119,6 +5119,38 @@ int OnInit()
 // B51:end b51-init
    if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: the New York clock is tester-only in this build (its day end, Friday close and no-tick exits are not yet integrated with B49b's live protections); use Clock_Server on a live chart."); return INIT_FAILED;} // B52 (review P1): must be tested before live use
    if(Random_Direction && Gate_Recheck==Gate_AtFirstOrder) {Alert("Initialization Failed: Random_Direction cannot run with Gate_Recheck=Gate_AtFirstOrder (the first-order gate reads the signal's side; the draw can pick the other)."); return INIT_PARAMETERS_INCORRECT;} // B52 (review P3)
+// B54:begin b54-init
+   // B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.6): the breakout entries refuse an incoherent SET. A rule that reads input
+   // values only is ported to the controller's EA_INIT_RULES (a test start rule to TESTER_INIT_RULES); one that reads the
+   // chart's timeframe or the live chart is NOT_PORTED. A family's ranges (3.1, 4.1) apply while its mode is on. Lim (4.1,
+   // 4.4) is 1020 (17:00 NY) under ORB_Clock_NewYork, 1260 (21:00 London) under ORB_Clock_London; each input is bounded before
+   // a sum reads it (a 32-bit int wraps; Claude-Mac 6764975563). ORB_TF_ names its minutes (TF_M1=1 ... TF_H1=60).
+   if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: ORB_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && ORB_Mode!=ORB_Disabled)     {Alert("Initialization Failed: BRK_Mode and ORB_Mode cannot both be on (one breakout family per SET)."); return INIT_PARAMETERS_INCORRECT;} // ruling 15
+   if(BRK_Mode==BRK_NBar && (BRK_Bars<2 || BRK_Bars>500))   {Alert("Initialization Failed: BRK_Bars must be between 2 and 500 with BRK_Mode=BRK_NBar."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && (BRK_Buffer_ATR<0.0 || BRK_Buffer_ATR>5.0)) {Alert("Initialization Failed: BRK_Buffer_ATR must be between 0 and 5."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode==BRK_PriorDay && BRK_TF_==TF_D1)             {Alert("Initialization Failed: BRK_Mode=BRK_PriorDay needs a trigger timeframe below D1 (BRK_TF_=TF_D1 is the prior day's own timeframe)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode==BRK_PriorDay && BRK_TF_==TF_Cur && PeriodSeconds(PERIOD_CURRENT)>=PeriodSeconds(PERIOD_D1)) {Alert("Initialization Failed: BRK_Mode=BRK_PriorDay with BRK_TF_=TF_Cur needs a chart timeframe below D1."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && Signal_Sample_Period==M_Current && PeriodSeconds(TF2TF(BRK_TF_))<PeriodSeconds(PERIOD_CURRENT)) {Alert("Initialization Failed: Signal_Sample_Period=M_Current checks once per chart bar, so a BRK_TF_ shorter than the chart's would skip trigger bars."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_TF_!=TF_M1 && ORB_TF_!=TF_M5 && ORB_TF_!=TF_M15 && ORB_TF_!=TF_H1) {Alert("Initialization Failed: ORB_TF_ must be TF_M1, TF_M5, TF_M15 or TF_H1 (the range is counted in its minutes)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Start_Minute<0 || ORB_Start_Minute>(ORB_Clock==ORB_Clock_London ? 1260 : 1020)-5 || ORB_Start_Minute%((int)ORB_TF_)!=0)) {Alert("Initialization Failed: ORB_Start_Minute must be between 0 and Lim-5 (Lim is 1020 under ORB_Clock_NewYork, 1260 under ORB_Clock_London) and a multiple of ORB_TF_'s minutes."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Range_Minutes<5 || ORB_Range_Minutes>240 || ORB_Range_Minutes%((int)ORB_TF_)!=0 || ORB_Start_Minute+ORB_Range_Minutes>=(ORB_Clock==ORB_Clock_London ? 1260 : 1020))) {Alert("Initialization Failed: ORB_Range_Minutes must be between 5 and 240, a multiple of ORB_TF_'s minutes, and end before Lim (ORB_Start_Minute+ORB_Range_Minutes < Lim)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Entry_Minutes<0 || ORB_Entry_Minutes>(ORB_Clock==ORB_Clock_London ? 1260 : 1020) || ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>(ORB_Clock==ORB_Clock_London ? 1260 : 1020))) {Alert("Initialization Failed: ORB_Entry_Minutes must be between 0 and Lim, and the entry window must end by Lim (ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Buffer_ATR<0.0 || ORB_Buffer_ATR>5.0)) {Alert("Initialization Failed: ORB_Buffer_ATR must be between 0 and 5."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Min_Range_ATR<0.0 || ORB_Max_Range_ATR<0.0)) {Alert("Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_Min_Range_ATR>0.0 && ORB_Max_Range_ATR>0.0 && ORB_Max_Range_ATR<=ORB_Min_Range_ATR) {Alert("Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && Signal_Sample_Period==M_Current && PeriodSeconds(TF2TF(ORB_TF_))<PeriodSeconds(PERIOD_CURRENT)) {Alert("Initialization Failed: Signal_Sample_Period=M_Current checks once per chart bar, so an ORB_TF_ shorter than the chart's would skip trigger bars."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_NewYork with a fixed or EU DST server model needs a test start on or after 2007.03.11 (the US DST rules it applies)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_London && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_London needs a test start on or after 2007.03.11 under every server model (its UTC comes through the 2007 US DST rules)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: ORB_Mode is tester-only in B54 (ruling 7); use ORB_Disabled on a live chart."); return INIT_FAILED;}
+   // B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term this tree does not have is refused, in the tester
+   // and on a live chart. The commit that adds a value's term removes its line (scripts/test_b54_init.cjs reads the terms).
+   if(ORB_Mode==ORB_Breakout)                               {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}
+// B54:end b54-init
+// B54:begin brk-init
+   GoatBrkLatchRebuild(); // B54 (spec 3.5, ruling 13): BRK_Sig, the day and the PriorDay latch, from deal history (a live re-init keeps EA globals)
+// B54:end brk-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
                                   //EMA2_handle    = iMA    (Symbol(),EMA_TF,EMA2_Period,0,EMA_Method,EMA_Price);
@@ -8413,6 +8445,145 @@ bool GoatEmaBuffersReady(const int shift)
    return true;
   }
 // B49b:end signal-ready
+// B54:begin brk-signal
+// B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 3.2-3.5): entry A, the N-bar / prior-day breakout. UpdateCurrentSignals computes
+// BRK_Sig once per new BRK_TF_ bar from the closed trigger bar s (= Shift_Sig = 1) and holds it for that bar: the forming
+// bar and the bid are never read, so there is no intrabar entry and no tick-model dependence. Any unreadable input gives
+// OP_NULL (never a stale buy), logged once per cause.
+int      BRK_Sig=OP_NULL;
+datetime g_GoatBrkDay=0;              // PriorDay: D's open, the level of the last evaluated trigger bar (the latch's key)
+datetime g_GoatBrkLatchDay[2]={0,0};  // PriorDay: per signal direction, the D a single opened on (BRK_Once_Per_Level)
+bool     g_GoatBrkLatchUnread=false;  // PriorDay: OnInit could not read the history, so the first day read is latched both ways
+string   g_GoatBrkCause="";           // the last unreadable-data cause logged
+int GoatBrkNull(const string cause)
+  {
+   if(cause!=g_GoatBrkCause) {g_GoatBrkCause=cause; Print("GOAT signals: BRK ",cause," symbol=",_Symbol," (signal NEUTRAL, no entry on it until it reads)");}
+   return OP_NULL;
+  }
+// The index of the tf bar holding time t (its open at or before t), found by time; -1 when there is none.
+int GoatBrkBarAt(const ENUM_TIMEFRAMES tf,const datetime t)
+  {
+   int k=iBarShift(_Symbol,tf,t,false);
+   if(k<0) return -1;
+   int bars=Bars(_Symbol,tf);
+   while(k<bars && iTime(_Symbol,tf,k)>t) k++;
+   return (k<bars && iTime(_Symbol,tf,k)>0) ? k : -1;
+  }
+// ATR_MA_handle's value at the newest ATR_TF bar closed at or before t, found by time (never a shift from the current bar).
+double GoatBrkATR(const datetime t)
+  {
+   int k=GoatBrkBarAt(ATR_TF,t-1);
+   if(k<0) return 0.0;
+   if(iTime(_Symbol,ATR_TF,k)+PeriodSeconds(ATR_TF)>t) k++;   // that bar was still forming at t
+   double b[];
+   if(CopyBuffer(ATR_MA_handle,0,k,1,b)!=1) return 0.0;
+   return (b[0]>0.0 && b[0]!=EMPTY_VALUE) ? b[0] : 0.0;
+  }
+// D for a trigger bar opening at t: the newest completed Mon-Fri broker D1 bar before the D1 bar holding t (ruling 5: a
+// GMT broker's Sunday stub is skipped). Its D1 index; -1 when no D1 bar holds t, -2 when none of the 7 before is Mon-Fri.
+int GoatBrkPriorDayAt(const datetime t)
+  {
+   int k=GoatBrkBarAt(PERIOD_D1,t);
+   if(k<0) return -1;
+   MqlDateTime dt;
+   for(int j=k+1;j<=k+7;j++)
+     {
+      datetime o=iTime(_Symbol,PERIOD_D1,j);
+      if(o<=0) break;
+      TimeToStruct(o,dt);
+      if(dt.day_of_week>=1 && dt.day_of_week<=5) return j;
+     }
+   return -2;
+  }
+int GoatBrkSignal(const int s)
+  {
+   ENUM_TIMEFRAMES tf=TF2TF(BRK_TF_);
+   datetime open_s=iTime(_Symbol,tf,s);
+   double close_s=iClose(_Symbol,tf,s);
+   if(open_s<=0 || !(close_s>0.0)) return GoatBrkNull("trigger bar unreadable");
+   double atr=GoatBrkATR(open_s+PeriodSeconds(tf));
+   if(!(atr>0.0)) return GoatBrkNull("ATR unreadable");
+   double buf=BRK_Buffer_ATR*atr;
+   if(BRK_Mode==BRK_NBar)
+     {
+      // The channel is bars s+1..s+N (2..N+1): the trigger bar is never inside its own level.
+      if(Bars(_Symbol,tf)<s+BRK_Bars+1) return GoatBrkNull("fewer than BRK_Bars+1 bars");
+      double up=0.0,dn=0.0;
+      bool first=true;
+      for(int i=s+1;i<=s+BRK_Bars;i++)
+        {
+         double h=iHigh(_Symbol,tf,i),l=iLow(_Symbol,tf,i);
+         if(!(h>0.0) || !(l>0.0)) return GoatBrkNull("channel bar unreadable");
+         if(first || h>up) up=h;
+         if(first || l<dn) dn=l;
+         first=false;
+        }
+      g_GoatBrkCause="";
+      if(close_s>up+buf) return OP_BUY;
+      if(close_s<dn-buf) return OP_SELL;
+      return OP_NULL;
+     }
+   if(BRK_Mode==BRK_PriorDay)
+     {
+      // D (GoatBrkPriorDayAt) is found from bar s's open. A fresh cross: bar s closes beyond the level and bar s+1 did not,
+      // so a gap past the level still fires on the day's first trigger bar (its predecessor lies in D).
+      int d=GoatBrkPriorDayAt(open_s);
+      if(d==-1) return GoatBrkNull("D1 bar unreadable");
+      if(d<0) return GoatBrkNull("no Mon-Fri D1 bar in the last 7");
+      double pdh=iHigh(_Symbol,PERIOD_D1,d),pdl=iLow(_Symbol,PERIOD_D1,d),prev=iClose(_Symbol,tf,s+1);
+      if(!(pdh>0.0) || !(pdl>0.0) || !(prev>0.0)) return GoatBrkNull("prior day unreadable");
+      // The latch's key is D itself (Claude-Mac 6766613697 P2): days that read one level (a Sunday stub and Monday, or a
+      // 7-day symbol's Saturday to Monday) share one latch.
+      g_GoatBrkDay=iTime(_Symbol,PERIOD_D1,d);
+      if(g_GoatBrkLatchUnread) {g_GoatBrkLatchDay[OP_BUY]=g_GoatBrkLatchDay[OP_SELL]=g_GoatBrkDay; g_GoatBrkLatchUnread=false;}
+      g_GoatBrkCause="";
+      if(close_s>pdh+buf && prev<=pdh+buf) return OP_BUY;
+      if(close_s<pdl-buf && prev>=pdl-buf) return OP_SELL;
+      return OP_NULL;
+     }
+   return OP_NULL;
+  }
+// PriorDay with BRK_Once_Per_Level (spec 3.5 item 2): once a single opens for signal direction d on day D, no further
+// single opens for d until D changes. Keyed by the signal's direction, as g_GoatSingleArmed is, so Reverse_Seq and
+// Random_Direction (3.5 items 3-4) latch the signal whatever side the position takes.
+bool GoatBrkLatched(const int signal)
+  {
+   return(BRK_Mode==BRK_PriorDay && BRK_Once_Per_Level && g_GoatBrkDay>0 && g_GoatBrkLatchDay[signal]==g_GoatBrkDay);
+  }
+void GoatBrkLatch(const int signal)
+  {
+   if(BRK_Mode==BRK_PriorDay) g_GoatBrkLatchDay[signal]=g_GoatBrkDay;
+  }
+// OnInit (spec 3.5 item 2, ruling 13): the latch is rebuilt from deal history, never from saved state. A DEAL_ENTRY_IN of
+// MAGIC1 on this symbol whose trigger bar (the BRK_TF_ bar before the one holding the deal) reads the same D as the
+// current trigger bar latches its signal direction: the position's side, flipped under Reverse_Seq. Random_Direction is
+// tester-only, so no restart ever reads its deals. A history that cannot be read latches the first D read both ways.
+void GoatBrkLatchRebuild()
+  {
+   BRK_Sig=OP_NULL; g_GoatBrkDay=0; g_GoatBrkLatchDay[0]=g_GoatBrkLatchDay[1]=0; g_GoatBrkLatchUnread=false; g_GoatBrkCause="";
+   if(BRK_Mode!=BRK_PriorDay || !BRK_Once_Per_Level) return;
+   ENUM_TIMEFRAMES tf=TF2TF(BRK_TF_);
+   int k=GoatBrkPriorDayAt(iTime(_Symbol,tf,1));
+   datetime day=(k>=0 ? iTime(_Symbol,PERIOD_D1,k) : 0);
+   if(day<=0 || !HistorySelect(day-PeriodSeconds(PERIOD_D1),TimeCurrent()+60))
+     {g_GoatBrkLatchUnread=true; Print("GOAT signals: BRK prior-day latch: history unreadable at OnInit; the first day read is latched both ways"); return;}
+   for(int i=HistoryDealsTotal()-1;i>=0;i--)
+     {
+      ulong deal=HistoryDealGetTicket(i);
+      if(deal==0) continue;
+      if(HistoryDealGetInteger(deal,DEAL_MAGIC)!=MAGIC1 || HistoryDealGetString(deal,DEAL_SYMBOL)!=_Symbol) continue;
+      if(HistoryDealGetInteger(deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
+      long type=HistoryDealGetInteger(deal,DEAL_TYPE);
+      if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL) continue;
+      int held=GoatBrkBarAt(tf,(datetime)HistoryDealGetInteger(deal,DEAL_TIME));
+      int dk=(held>=0 ? GoatBrkPriorDayAt(iTime(_Symbol,tf,held+1)) : -1);
+      if(dk<0 || iTime(_Symbol,PERIOD_D1,dk)!=day) continue;
+      int side=(type==DEAL_TYPE_BUY ? OP_BUY : OP_SELL);
+      g_GoatBrkLatchDay[Reverse_Seq ? 1-side : side]=day;
+     }
+   g_GoatBrkDay=day;
+  }
+// B54:end brk-signal
 void UpdateRSI(int shift)
   {
    if((RSI_Mode!=RSI_Disabled) && GoatSignalReady(0,"RSI",GoatSignalBufferReady(RSI_handle,0,shift+0,2,(RSI_Mode==RSI_OverBS) ? 1 : 2,RSI_Buf),RSI_Sig)) // B49b (F7 SIG-02)
@@ -8643,6 +8814,15 @@ void UpdateCurrentSignals(int shift)
     SetEdit(PanelDialog.m_edit_Ind6_2,(RSI2_Sig==OP_BUY)?"BUY":(RSI2_Sig==OP_SELL)?"SELL":"NEUTRAL"+" ("+DoubleToString(RSI2_Buf[0],1)+")"
                          ,clr_Text,Font_Size,(RSI2_Sig==OP_BUY)?clr_Buy:(RSI2_Sig==OP_SELL)?clr_Sell:clr_Null,(RSI2_Sig==OP_BUY)?clr_Buy:(RSI2_Sig==OP_SELL)?clr_Sell:clr_Null);}
    }
+// B54:begin brk-sample
+   // B54 (spec 3.3): entry A's term, computed once per new BRK_TF_ bar and held for that bar, as the six terms are. It feeds
+   // only SignalEntryTrigger and GoatSignalAll, never the MustCheck lines below (they serve the grid's virtual promotion).
+   if(BRK_Mode != BRK_Disabled)
+   {
+    static INTERVAL BRK_Sample;
+    if(BRK_Sample.CheckTF(TF2TF(BRK_TF_))) BRK_Sig=GoatBrkSignal(shift);
+   }
+// B54:end brk-sample
 //-------------------------------------------------------------------------
    if(   ( EMA_Mode==Trade_Disabled|| !EMA_MustCheck || EMA_Sig==OP_BUY || EMA_Sig==OP_BUYSELL)
       && ( ADX_Mode==Trade_Disabled|| !ADX_MustCheck || ADX_Sig==OP_BUY || ADX_Sig==OP_BUYSELL)
@@ -8702,12 +8882,15 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_BUY|| ADX_Sig==OP_BUYSELL)
       && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_BUY||  BB_Sig==OP_BUYSELL)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
-      && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
+      && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
+      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY)) // B54 (spec 3.6): entry A's term, ANDed with the six
    {
     if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0) GoatSingleRandomRecord(OP_BUY); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_B
     {
      int gate_active_b=GoatGateActiveMask();
+     bool b54_armed_b=(Engine_Mode==Engine_Single && g_GoatSingleArmed[OP_BUY]); // B54 (spec 3.5): a single opened below for this buy signal latches its D
+     if(Engine_Mode==Engine_Single && GoatBrkLatched(OP_BUY)) {} else // B54 (spec 3.5): PriorDay, one single per buy signal per level D (before the draw)
      if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_BUY); else // B51 (beta-1a): the benchmark's coin-flip side for this buy-signal episode (same timing and gates)
      if(Reverse_Seq)
      {
@@ -8727,6 +8910,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
      }
+     if(b54_armed_b && !g_GoatSingleArmed[OP_BUY]) GoatBrkLatch(OP_BUY); // B54 (spec 3.5): the single opened (either side, or the draw's)
      if((GoatGateActiveMask()&~gate_active_b)!=0) GoatGateLog("ALLOW",OP_BUY); // B44 item 4: log only
     }
     else
@@ -8746,12 +8930,15 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_SELL|| ADX_Sig==OP_BUYSELL)
       && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_SELL||  BB_Sig==OP_BUYSELL)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
-      && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
+      && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
+      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)) // B54 (spec 3.6): entry A's term, ANDed with the six
    {
     if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_SELL]==0) GoatSingleRandomRecord(OP_SELL); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_S
     {
      int gate_active_s=GoatGateActiveMask();
+     bool b54_armed_s=(Engine_Mode==Engine_Single && g_GoatSingleArmed[OP_SELL]); // B54 (spec 3.5): a single opened below for this sell signal latches its D
+     if(Engine_Mode==Engine_Single && GoatBrkLatched(OP_SELL)) {} else // B54 (spec 3.5): PriorDay, one single per sell signal per level D (before the draw)
      if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_SELL); else // B51 (beta-1a): the benchmark's coin-flip side for this sell-signal episode (same timing and gates)
      if(Reverse_Seq)
      {
@@ -8770,6 +8957,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
      }
+     if(b54_armed_s && !g_GoatSingleArmed[OP_SELL]) GoatBrkLatch(OP_SELL); // B54 (spec 3.5): the single opened (either side, or the draw's)
      if((GoatGateActiveMask()&~gate_active_s)!=0) GoatGateLog("ALLOW",OP_SELL); // B44 item 4: log only
     }
     else
@@ -10210,14 +10398,16 @@ bool GoatSignalAll(const int op)
             && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_BUY|| ADX_Sig==OP_BUYSELL)
             && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_BUY||  BB_Sig==OP_BUYSELL)
             && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
-            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL));
+            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
+            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY)); // B54 (spec 5): in lockstep with SignalEntryTrigger
    if(op==OP_SELL)
       return(  ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_SELL)
             && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_SELL|| EMA_Sig==OP_BUYSELL)
             && ( ADX_Mode==Trade_Disabled|| ADX_Sig==OP_SELL|| ADX_Sig==OP_BUYSELL)
             && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_SELL||  BB_Sig==OP_BUYSELL)
             && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
-            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL));
+            && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
+            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)); // B54 (spec 5): in lockstep with SignalEntryTrigger
    return false;
   }
 // GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence, before the entry check, in

@@ -83,7 +83,7 @@ An axis is an `input` that is not a string; an `sinput` never is (controller/stu
 | # | Name | Decl | Type | Default | Range (OnInit) | Axis | Meaning |
 |---|---|---|---|---|---|---|---|
 |A1|BRK_Mode|sinput|ENUM_MODE_BRK {BRK_Disabled=0, BRK_NBar=1, BRK_PriorDay=2}|BRK_Disabled|enum|no|Family off / N-bar / prior day|
-|A2|BRK_TF_|input|ENUM_MODE_TFs|TF_H1|any; PriorDay: not TF_D1|Y|Trigger bar TF (NBar: also the level TF)|
+|A2|BRK_TF_|input|ENUM_MODE_TFs|TF_H1|any; PriorDay: not TF_D1, and not TF_Cur on a chart of D1 or longer|Y|Trigger bar TF (NBar: also the level TF)|
 |A3|BRK_Bars|input|int|20|2..500 (NBar)|Y|N, the channel length|
 |A4|BRK_Buffer_ATR|input|double|0.0|0..5|Y|The close must clear the level by this x ATR|
 |A5|BRK_Once_Per_Level|input|bool|true|-|Y|PriorDay only: at most one single per signal direction per day D (NBar ignores it)|
@@ -135,6 +135,10 @@ six terms do: computed once per new trigger bar and held for that bar.
      `Single_Flat_Only` pattern (main:8717).
    - It is rebuilt at OnInit from deal history: any `DEAL_ENTRY_IN` of this `MAGIC1` and side since the current D1
      bar opened. This reads history, not state, as design:396-399 does (ruling 13).
+   - As built in PR A (Claude-Mac 6766613697, P2): the key is D's open time, not the day holding the trigger bar. So
+     days that read one level share one latch: a Sunday stub and Monday, or a 7-day symbol's Saturday to Monday.
+     The rebuild latches a deal whose trigger bar (the `BRK_TF_` bar before the one holding the deal) reads the
+     current D.
 3. **Reverse_Seq.** The episode flag and the latch stay keyed by the signal direction, as `g_GoatSingleArmed` is
    (main:8718, 8761). So an up-cross that opened a faded sell blocks a second faded sell on the same D and leaves the
    down-cross free to open a buy.
@@ -163,10 +167,10 @@ Lim = 1020 (17:00 NY) under the NewYork anchor, and 1260 (21:00 London) under th
 |---|---|---|---|---|---|---|---|
 |B1|ORB_Mode|sinput|ENUM_MODE_ORB {ORB_Disabled=0, ORB_Breakout=1}|ORB_Disabled|enum|no|Family off / on|
 |B2|ORB_Clock|sinput|ENUM_ORB_CLOCK {ORB_Clock_NewYork=0, ORB_Clock_London=1}|ORB_Clock_NewYork|enum|no|Clock anchor for B4-B6|
-|B3|ORB_TF_|input|ENUM_MODE_TFs|TF_M5|resolves to M1..H1|Y|Trigger bar TF|
+|B3|ORB_TF_|input|ENUM_MODE_TFs|TF_M5|TF_M1, TF_M5, TF_M15 or TF_H1; TF_Cur is refused (B4 and B5 count in minutes the SET names)|Y|Trigger bar TF|
 |B4|ORB_Start_Minute|input|int|570|0..Lim-5; multiple of the B3 minutes|Y|Range start, minutes after the anchor's midnight|
 |B5|ORB_Range_Minutes|input|int|30|5..240; multiple of the B3 minutes; B4+B5 < Lim|Y|Range length|
-|B6|ORB_Entry_Minutes|input|int|0|0..Lim; B4+B5+B6 <= Lim|Y|Entry window after the range (0 = until 17:00 NY)|
+|B6|ORB_Entry_Minutes|input|int|0|0..Lim, checked before the sum (a 32-bit int sum can wrap); B4+B5+B6 <= Lim|Y|Entry window after the range (0 = until 17:00 NY)|
 |B7|ORB_Buffer_ATR|input|double|0.0|0..5|Y|The close must clear the range by this x ATR|
 |B8|ORB_Min_Range_ATR|input|double|0.0|>=0|Y|No trade that day if the range < this x atr_r (0 = off)|
 |B9|ORB_Max_Range_ATR|input|double|0.0|>=0; > B8 when both > 0|Y|No trade that day if the range > this x atr_r (0 = off)|
@@ -246,6 +250,21 @@ Each returns INIT_PARAMETERS_INCORRECT unless noted:
 - the pre-2007 rules (4.4);
 - ORB on a live chart: INIT_FAILED, `NOT_PORTED`, as at main:5120 (ruling 7).
 
+As built in PR A (GOAT-EA#304; Claude-Mac 6764975563):
+- **Scope.** A family's range, alignment and Lim rules apply only while its mode is on; a disabled family's inputs are
+  never read.
+- **Bounds before sums.** Each input is bounded on its own before a sum reads it: B4 and B5 before B4+B5 < Lim, and B6
+  <= Lim before B4+B5+B6 <= Lim, because a 32-bit int sum can wrap.
+- **Not-built refusals.** Until a mode value has its signal term, the tree refuses it outright with INIT_FAILED, in the
+  tester and on a live chart (the ruling on GOAT-EA#303, condition 3).
+  - Each is ported to EA_INIT_RULES, since it reads one input value, so validate-set refuses such a SET first.
+  - They are the block's last lines, so the range and Lim rules stay reachable and tested.
+  - The commit that adds a value's term removes its line. PR A removed `BRK_NBar`'s and `BRK_PriorDay`'s; PR B removes
+    `ORB_Breakout`'s.
+- **Mirror.** Ported to EA_INIT_RULES: the rules on input values. TESTER_INIT_RULES: the two pre-2007 test starts.
+  NOT_PORTED: the M_Current cadence (3.3) and PriorDay on TF_Cur (A2), which read the chart's timeframe, and ORB on a live
+  chart.
+
 ## 5 Exits (reuse of Engine_Single, no new exit code; ruling 9)
 
 - **Stop and TP.** `Size_SL = Single_SL_ATR x ATR` on the closed bar, and the TP from `Single_TP_R` or `Single_TP_ATR`
@@ -315,13 +334,15 @@ Per file:
     cross and gap open; the buffer ATR found by time; NBar re-entry only after the signal reads false, with and
     without `Single_Flat_Only`.
   - **The latch** blocks a second PriorDay entry on the same D (up-cross, stop-out, dip, second up-cross) and is
-    rebuilt from history after a restart.
+    rebuilt from history after a restart. A Sunday stub's up-cross latches Monday's, since both read Friday as D,
+    and the rebuild on Monday reads Sunday's entry.
   - **`Reverse_Seq`:** the second faded sell on D is blocked, and the down-cross opens a buy.
   - **`Random_Direction`:** for each seed, the entry times equal the strategy's, the latch blocks the second entry
     whichever side was drawn, and the sides are the reference's draws.
   - **Also:** the opposite exit, unreadable data, FastSpeed both ways, and every refusal.
   - **Mutants that must fail:** the latch removed, the latch keyed by position side, `Close[0]` read, bar 1 inside
-    the level, `>=` for `>`, the Sunday stub kept, D taken at evaluation time.
+    the level, `>=` for `>`, the Sunday stub kept, D taken at evaluation time. PR A adds the latch, and the rebuild,
+    keyed on bar s's day.
 - **`test_b54_orb.cjs`** with mutants.
   - **Windows:** the window edges (S in, S+R out); the M1-count rule; B8/B9; the Friday 16:55 NY cutoff; the entry
     window's end; one entry per direction per T.
@@ -353,6 +374,9 @@ Per file:
 - **Templates:** `single-brk-nbar`, `single-brk-pday` and `single-orb`.
   - Each sets `Engine_Single`, `RSI_Mode=RSI_Disabled` and an explicit `ATR_TF_`.
   - Each declares at most 4 axes before any run (the 81-frame grid), in its own prereg section with the B54 build pin.
+  - One SET per trigger timeframe. `check_enum_ladders` admits only step-1 runs of consecutive enum values, which on
+    `ENUM_MODE_TFs` (0, 1, 5, 15, 60, 240, 1440) leaves only `TF_Cur..TF_M1`. So `BRK_TF_` and `ORB_TF_` are never a
+    ladder across timeframes, as in the hunt-d1 SETs.
   - They go through the app's build-set and seed loop, with no added strategy gates; only product qualification
     applies.
   - Family labels stay out of public feeds until the installed desktop's strict readers accept them.

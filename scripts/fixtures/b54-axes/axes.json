@@ -19,8 +19,6 @@
   "ORB_BUFFER_RANGE": "Initialization Failed: ORB_Buffer_ATR must be between 0 and 5.",
   "ORB_RANGE_FILTER_NEGATIVE": "Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off).",
   "ORB_RANGE_FILTER_ORDER": "Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on.",
-  "BRK_NBAR_NOT_BUILT": "Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet.",
-  "BRK_PRIOR_DAY_NOT_BUILT": "Initialization Failed: BRK_Mode=BRK_PriorDay has no signal term in this build yet.",
   "ORB_BREAKOUT_NOT_BUILT": "Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."
  },
  "codes": {
@@ -37,8 +35,6 @@
   "ORB_BUFFER_RANGE": "INIT_PARAMETERS_INCORRECT",
   "ORB_RANGE_FILTER_NEGATIVE": "INIT_PARAMETERS_INCORRECT",
   "ORB_RANGE_FILTER_ORDER": "INIT_PARAMETERS_INCORRECT",
-  "BRK_NBAR_NOT_BUILT": "INIT_FAILED",
-  "BRK_PRIOR_DAY_NOT_BUILT": "INIT_FAILED",
   "ORB_BREAKOUT_NOT_BUILT": "INIT_FAILED"
  },
  "sets": [
@@ -53,17 +49,17 @@
     "BRK_Once_Per_Level": "true||false||1||true||Y"
    },
    "probes": {
-    "current": "BRK_NBAR_NOT_BUILT",
-    "BRK_TF_@start": "BRK_NBAR_NOT_BUILT",
-    "BRK_TF_@stop": "BRK_NBAR_NOT_BUILT",
-    "BRK_Bars@start": "BRK_NBAR_NOT_BUILT",
-    "BRK_Bars@stop": "BRK_NBAR_NOT_BUILT",
-    "BRK_Buffer_ATR@start": "BRK_NBAR_NOT_BUILT",
-    "BRK_Buffer_ATR@stop": "BRK_NBAR_NOT_BUILT",
-    "BRK_Once_Per_Level@start": "BRK_NBAR_NOT_BUILT",
-    "BRK_Once_Per_Level@stop": "BRK_NBAR_NOT_BUILT"
+    "current": "ok",
+    "BRK_TF_@start": "ok",
+    "BRK_TF_@stop": "ok",
+    "BRK_Bars@start": "ok",
+    "BRK_Bars@stop": "ok",
+    "BRK_Buffer_ATR@start": "ok",
+    "BRK_Buffer_ATR@stop": "ok",
+    "BRK_Once_Per_Level@start": "ok",
+    "BRK_Once_Per_Level@stop": "ok"
    },
-   "ladder": "BRK_NBAR_NOT_BUILT"
+   "ladder": "ok"
   },
   {
    "file": "brk-nbar-bars-ends.set",
@@ -73,7 +69,7 @@
     "BRK_Bars": "20||1||1||501||Y"
    },
    "probes": {
-    "current": "BRK_NBAR_NOT_BUILT",
+    "current": "ok",
     "BRK_Bars@start": "BRK_BARS_RANGE",
     "BRK_Bars@stop": "BRK_BARS_RANGE"
    },
@@ -88,9 +84,9 @@
     "BRK_Buffer_ATR": "0.0||-0.5||0.5||5.5||Y"
    },
    "probes": {
-    "current": "BRK_PRIOR_DAY_NOT_BUILT",
-    "BRK_Bars@start": "BRK_PRIOR_DAY_NOT_BUILT",
-    "BRK_Bars@stop": "BRK_PRIOR_DAY_NOT_BUILT",
+    "current": "ok",
+    "BRK_Bars@start": "ok",
+    "BRK_Bars@stop": "ok",
     "BRK_Buffer_ATR@start": "BRK_BUFFER_RANGE",
     "BRK_Buffer_ATR@stop": "BRK_BUFFER_RANGE"
    },

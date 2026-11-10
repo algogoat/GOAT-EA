@@ -149,11 +149,9 @@ class PortedRuleTests(RuleCase):
         'ORB_RANGE_FILTER_NEGATIVE': (dict(ORB, ORB_Min_Range_ATR='0.5', ORB_Max_Range_ATR='2.0'), dict(ORB, ORB_Min_Range_ATR='-0.5')),
         'ORB_RANGE_FILTER_ORDER': (dict(ORB, ORB_Min_Range_ATR='0.5', ORB_Max_Range_ATR='2.0'),
                                    dict(ORB, ORB_Min_Range_ATR='2.0', ORB_Max_Range_ATR='2.0')),
-        'BRK_NBAR_NOT_BUILT': (S, NBAR),
-        'BRK_PRIOR_DAY_NOT_BUILT': (S, PDAY),
         'ORB_BREAKOUT_NOT_BUILT': (S, ORB),
     }
-    UNBUILT = {'BRK_NBAR_NOT_BUILT', 'BRK_PRIOR_DAY_NOT_BUILT', 'ORB_BREAKOUT_NOT_BUILT'}
+    UNBUILT = {'ORB_BREAKOUT_NOT_BUILT'}   # BRK_NBar and BRK_PriorDay have their terms (PR A's signal commit)
 
     def passes_or_unbuilt(self, **changes):
         try:
@@ -253,13 +251,13 @@ class PortedRuleTests(RuleCase):
         self.refused('ORB_TF_NOT_M1_TO_H1', **dict(orb, ORB_TF_='0'))                                     # TF_Cur
         self.refused('ORB_TF_NOT_M1_TO_H1', **dict(orb, ORB_TF_='1440'))
         # BRK_Bars bounds N-bar only (spec 3.1 A3); a disabled family's inputs are never read.
-        self.assertEqual(self.passes_or_unbuilt(**dict(self.PDAY, BRK_Bars='1')), 'BRK_PRIOR_DAY_NOT_BUILT')
+        self.passes(**dict(self.PDAY, BRK_Bars='1'))
         self.refused('BRK_BARS_RANGE', **dict(self.NBAR, BRK_Bars='1'))
         self.passes(**dict(self.S, BRK_Bars='1', BRK_Buffer_ATR='9.0', BRK_TF_='1440', ORB_TF_='240', ORB_Start_Minute='5000',
                            ORB_Range_Minutes='1', ORB_Entry_Minutes='-1', ORB_Buffer_ATR='-1.0', ORB_Min_Range_ATR='3.0',
                            ORB_Max_Range_ATR='1.0'))
         # A ladder reaching a refused value refuses and names it.
-        self.passes_or_unbuilt(**dict(self.NBAR, BRK_Bars='20||2||1||500||Y'))
+        self.passes(**dict(self.NBAR, BRK_Bars='20||2||1||500||Y'))
         self.assertIn('(reachable through the optimization range of BRK_Bars)',
                       self.refused('BRK_BARS_RANGE', **dict(self.NBAR, BRK_Bars='20||1||1||500||Y')))
 
@@ -636,13 +634,13 @@ class InventoryTests(unittest.TestCase):
         # B49b (F1 full) adds the live manage-only INIT_FAILED after adoption (NOT_PORTED: licence and expiry, live only).
         # The merged line (B50 + B51 with B49b) carries both sets. B52 (its review) adds two: the benchmark under the
         # first-order gate (ported) and the New York clock on a live chart (not ported: run context).
-        # B54 (spec 4.6, PR A) adds 22: 18 INIT_PARAMETERS_INCORRECT (13 ported; the two pre-2007 test starts, tester rules;
-        # three that read the chart's timeframe, not ported) and 4 INIT_FAILED (ORB on a live chart, not ported; the three
-        # mode values without a signal term yet, ported).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (110, 8, 114))
+        # B54 (spec 4.6, PR A) adds 20: 18 INIT_PARAMETERS_INCORRECT (13 ported; the two pre-2007 test starts, tester rules;
+        # three that read the chart's timeframe, not ported) and 2 INIT_FAILED (ORB on a live chart, not ported; ORB_Breakout,
+        # which has no signal term yet, ported). PR A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's.
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (108, 8, 112))
         self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 68)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (60, 4, 50))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (58, 4, 50))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [4434, 4545, 4562, 4837])

@@ -10,8 +10,8 @@
 //    *_NOT_BUILT line, or this test fails both ways.
 // 3. The rules the controller cannot port: the chart's timeframe (PriorDay on TF_Cur, the M_Current cadence), ORB on a live
 //    chart, and the two pre-2007 test starts, each refused and each next to an accepted neighbour.
-// 4. Load-bearing: mutants of the entrypoint (a *_NOT_BUILT line removed, a term added without removing its line, Lim
-//    1260 -> 1320, BRK_Bars' bound 500 -> 501, the D1 chart bound >= -> >) must each be caught.
+// 4. Load-bearing: mutants of the entrypoint (ORB's *_NOT_BUILT line removed, a BRK one restored, an ORB term added without
+//    removing its line, Lim 1260 -> 1320, BRK_Bars' bound 500 -> 501, the D1 chart bound >= -> >) must each be caught.
 // What it does not prove: compile cleanliness (MetaEditor), MT5's own SET reader, or any trade.
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
@@ -107,7 +107,8 @@ function condition3(files){
    if(rule(tester)!==notBuilt(label)) problems.push(label+' has no signal term, but the tester gives '+show(tester));
    if(live.ok||live.code!==CODE.INIT_FAILED||![TABLE.alerts[notBuilt(label)],ORB_LIVE].includes(live.alert)) problems.push(label+' has no signal term, but a live chart gives '+show(live));
   }else{
-   if(rule(tester)===notBuilt(label)) problems.push(label+' has a signal term and is still refused as not built');
+   if(!tester.ok) problems.push(label+' has a signal term, but the tester gives '+show(tester));
+   if(!live.ok) problems.push(label+' has a signal term, but a live chart gives '+show(live));
   }
  }
  return problems;
@@ -117,7 +118,7 @@ function condition3(files){
 function chart(files){
  const problems=[],expect=(what,r,want)=>{const got=r.ok?'ok':r.alert;if(got!==want)problems.push(what+': '+show(r)+', wanted '+want);};
  const pday={...BASE,BRK_Mode:2,BRK_TF_:0},nbar={...BASE,BRK_Mode:1},orb={...BASE,ORB_Mode:1};
- const NB=TABLE.alerts.BRK_NBAR_NOT_BUILT,PB=TABLE.alerts.BRK_PRIOR_DAY_NOT_BUILT,OB=TABLE.alerts.ORB_BREAKOUT_NOT_BUILT;
+ const NB='ok',PB='ok',OB=TABLE.alerts.ORB_BREAKOUT_NOT_BUILT;   // N-bar and prior day have their terms (PR A's signal commit)
  expect('PriorDay on TF_Cur, D1 chart',init(files,pday,{world:{period:K.PERIOD_D1}}),CHART.pdayCur);
  expect('PriorDay on TF_Cur, W1 chart',init(files,pday,{world:{period:K.PERIOD_W1}}),CHART.pdayCur);
  expect('PriorDay on TF_Cur, H4 chart',init(files,pday,{world:{period:K.PERIOD_H4}}),PB);
@@ -149,13 +150,14 @@ const mark=tree[H.MAIN].indexOf('// B54:begin b54-init');assert.ok(mark>0,'the b
 const {runs}=axes(tree);
 const problems=all(tree);
 assert.deepEqual(problems,[],'b54-init on the tree');
-assert.equal(terms(tree[H.MAIN]).size,0,'PR A commit 1: no signal term yet, so every mode value is refused');
+assert.deepEqual([...terms(tree[H.MAIN])].sort(),['BRK_NBar','BRK_PriorDay'],'PR A: entry A has its terms; ORB_Breakout has none until PR B');
 
 // 4. Mutants.
 const mutate=(from,to,count=1)=>{const text=tree[H.MAIN];const n=text.split(from).length-1;assert.equal(n,count,'mutant anchor '+JSON.stringify(from));return {...tree,[H.MAIN]:text.split(from).join(to)};};
 const MUTANTS=[
- ['the N-bar not-built line removed',mutate('   if(BRK_Mode==BRK_NBar)                                   {Alert("Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet."); return INIT_FAILED;}\n',''),'BRK_NBar has no signal term, but the tester gives'],
- ['a term added, its line kept',mutate('// B54:begin b54-init','// B54:begin brk-signal\n   if(BRK_Mode==BRK_NBar) {}\n// B54:end brk-signal\n// B54:begin b54-init'),'BRK_NBar has a signal term and is still refused'],
+ ['the ORB not-built line removed',mutate('   if(ORB_Mode==ORB_Breakout)                               {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}\n',''),'ORB_Breakout has no signal term, but the tester gives'],
+ ['a BRK not-built line restored',mutate('// B54:end b54-init','   if(BRK_Mode==BRK_NBar) {Alert("Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet."); return INIT_FAILED;}\n// B54:end b54-init'),'BRK_NBar has a signal term, but the tester gives'],
+ ['a term added, its line kept',mutate('// B54:begin b54-init','// B54:begin orb-signal\n   if(ORB_Mode==ORB_Breakout) {}\n// B54:end orb-signal\n// B54:begin b54-init'),'ORB_Breakout has a signal term, but the tester gives'],
  ['Lim 1260 -> 1320',mutate('? 1260 : 1020','? 1320 : 1020',3),'orb-london-lim.set ORB_Start_Minute@stop'],
  ['BRK_Bars bound 500 -> 501',mutate('BRK_Bars>500','BRK_Bars>501'),'brk-nbar-bars-ends.set BRK_Bars@stop'],
  ['D1 chart bound >= -> >',mutate('PeriodSeconds(PERIOD_CURRENT)>=PeriodSeconds(PERIOD_D1)','PeriodSeconds(PERIOD_CURRENT)>PeriodSeconds(PERIOD_D1)'),'PriorDay on TF_Cur, D1 chart'],

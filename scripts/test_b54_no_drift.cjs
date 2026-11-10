@@ -28,6 +28,14 @@ const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSetting
 const ADDED=[];
 // Every B53 line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
+ // PR A (spec 6.3): entry A's term closes SignalEntryTrigger's two conditions and GoatSignalAll's two returns, so their
+ // closing-paren lines are replaced.
+ 'GOAT V1.49.mq5':[
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))',
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))',
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL));',
+  '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL));',
+ ],
  'GOATStudioSettingTypes.mqh':[
   '+"Random_Seed|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|Single_Partial_ATR|Single_Partial_Fraction|Single_Partial_BE|"; // B51 (beta-1a, beta-1b, section 8.3): the B50-beta optimization axes (Random_Direction is an sinput, never one)', // A0: the list continues with the B54 axes
  ],

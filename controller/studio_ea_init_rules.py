@@ -269,7 +269,7 @@ def _single(v):
     return v['Engine_Mode'] == v.choice('Engine_Mode', 'Engine_Single')
 
 
-# B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.6, GOAT V1.49.mq5:5122-5152): the breakout entries' families and ORB's window.
+# B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.6, GOAT V1.49.mq5:5122-5150): the breakout entries' families and ORB's window.
 def _brk(v):
     return v['BRK_Mode'] != v.choice('BRK_Mode', 'BRK_Disabled')
 
@@ -500,7 +500,7 @@ EA_INIT_RULES = (
           'Single_Partial_ATR>0.0 && Ledger_Mode!=Ledger_PositionJoin',
           'Initialization Failed: Single_Partial_ATR needs Ledger_Mode=Ledger_PositionJoin (Ledger_Legacy would drop the partial\'s profit from the sequence).',
           lambda v: v['Single_Partial_ATR'] > 0.0 and v['Ledger_Mode'] != v.choice('Ledger_Mode', 'Ledger_PositionJoin')),
-    # B54 (spec 4.6, GOAT V1.49.mq5:5122-5152): the breakout entries. A schema without the B54 group (B53 and earlier)
+    # B54 (spec 4.6, GOAT V1.49.mq5:5122-5150): the breakout entries. A schema without the B54 group (B53 and earlier)
     # belongs to a build without these rules (applicable_rules, APPENDED_GROUPS). A family's ranges apply while it is on.
     _rule('BRK_WITHOUT_SINGLE', [5128], 'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single',
           ['BRK_Mode', 'Engine_Mode'], {'BRK_Mode': ['BRK_Disabled'], 'Engine_Mode': ['Engine_Single']},
@@ -586,16 +586,9 @@ EA_INIT_RULES = (
           and v['ORB_Max_Range_ATR'] <= v['ORB_Min_Range_ATR']),
     # B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term the tree does not have yet. Ported, although
     # the EA answers INIT_FAILED: it reads one input value, so validate-set refuses such a SET before any tester sees it.
-    # The commit that adds a value's term removes its EA line and its rule here (the inventory test keeps them in step).
-    _rule('BRK_NBAR_NOT_BUILT', [5149], 'if(BRK_Mode==BRK_NBar)', ['BRK_Mode'], {'BRK_Mode': ['BRK_NBar']},
-          'BRK_Mode==BRK_NBar (no signal term in this tree yet)',
-          'Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet.',
-          lambda v: v['BRK_Mode'] == v.choice('BRK_Mode', 'BRK_NBar')),
-    _rule('BRK_PRIOR_DAY_NOT_BUILT', [5150], 'if(BRK_Mode==BRK_PriorDay)', ['BRK_Mode'], {'BRK_Mode': ['BRK_PriorDay']},
-          'BRK_Mode==BRK_PriorDay (no signal term in this tree yet)',
-          'Initialization Failed: BRK_Mode=BRK_PriorDay has no signal term in this build yet.',
-          lambda v: v['BRK_Mode'] == v.choice('BRK_Mode', 'BRK_PriorDay')),
-    _rule('ORB_BREAKOUT_NOT_BUILT', [5151], 'if(ORB_Mode==ORB_Breakout)', ['ORB_Mode'], {'ORB_Mode': ['ORB_Breakout']},
+    # The commit that adds a value's term removes its EA line and its rule here (the inventory test keeps them in step):
+    # PR A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's; PR B removes this one.
+    _rule('ORB_BREAKOUT_NOT_BUILT', [5149], 'if(ORB_Mode==ORB_Breakout)', ['ORB_Mode'], {'ORB_Mode': ['ORB_Breakout']},
           'ORB_Mode==ORB_Breakout (no signal term in this tree yet; PR B adds it)',
           'Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet.',
           lambda v: v['ORB_Mode'] == v.choice('ORB_Mode', 'ORB_Breakout')),
@@ -667,7 +660,7 @@ NOT_PORTED = (
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
     dict(lines=(4516,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4528,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5232)',
+    dict(lines=(4528,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5233)',
          reason='current time vs build expiry'),
     dict(lines=(4690,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
          reason='run context (live chart)'),
@@ -725,22 +718,22 @@ NOT_PORTED = (
     dict(lines=(5146,), anchor='ORB_Mode is tester-only in B54', condition='ORB_Mode!=ORB_Disabled on a live chart (ruling 7)',
          reason='run context (live chart)'),
     # B49b (F7 SIG-01): every enabled signal indicator's handle, as ATR's.
-    dict(lines=(5165,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5166,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5167,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5168,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5169,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
+    dict(lines=(5166,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5167,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5168,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5169,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5170,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
          reason='symbol/indicator runtime (the indicator file)'),
-    dict(lines=(5170,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5171,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
     # B49b (F1 full): live trading charts only (GoatManageOnlyLive); in the tester manage-only is never set.
-    dict(lines=(5232,), anchor='manage_only_init==INIT_FAILED',
+    dict(lines=(5233,), anchor='manage_only_init==INIT_FAILED',
          condition='live, a refused licence or an expired build (or a rejected credential whose replacement cannot begin) with no open basket to manage',
          reason='license service response and build expiry on a live chart'),
-    dict(lines=(5238,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(5239,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(5239,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(5247,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(5252,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(5240,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(5248,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(5253,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 

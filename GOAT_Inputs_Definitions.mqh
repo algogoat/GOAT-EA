@@ -624,6 +624,23 @@ if(Single_Partial_ATR!=0.0)               FileWrite(FileSET_handle,"Single_Parti
 if(Single_Partial_Fraction!=0.0)          FileWrite(FileSET_handle,"Single_Partial_Fraction="+(string)Single_Partial_Fraction);
 if(Single_Partial_BE)                     FileWrite(FileSET_handle,"Single_Partial_BE="+(string)Single_Partial_BE);
 // B51:end b51-writeset
+// B54:begin b54-writeset
+// B54 (A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md section 6.1): likewise for the breakout inputs, so a default SET stays B53's bytes.
+if(BRK_Mode!=BRK_Disabled)                FileWrite(FileSET_handle,"BRK_Mode="+(string)(int)BRK_Mode);
+if(BRK_TF_!=TF_H1)                        FileWrite(FileSET_handle,"BRK_TF_="+(string)(int)BRK_TF_);
+if(BRK_Bars!=20)                          FileWrite(FileSET_handle,"BRK_Bars="+(string)BRK_Bars);
+if(BRK_Buffer_ATR!=0.0)                   FileWrite(FileSET_handle,"BRK_Buffer_ATR="+(string)BRK_Buffer_ATR);
+if(!BRK_Once_Per_Level)                   FileWrite(FileSET_handle,"BRK_Once_Per_Level="+(string)BRK_Once_Per_Level);
+if(ORB_Mode!=ORB_Disabled)                FileWrite(FileSET_handle,"ORB_Mode="+(string)(int)ORB_Mode);
+if(ORB_Clock!=ORB_Clock_NewYork)          FileWrite(FileSET_handle,"ORB_Clock="+(string)(int)ORB_Clock);
+if(ORB_TF_!=TF_M5)                        FileWrite(FileSET_handle,"ORB_TF_="+(string)(int)ORB_TF_);
+if(ORB_Start_Minute!=570)                 FileWrite(FileSET_handle,"ORB_Start_Minute="+(string)ORB_Start_Minute);
+if(ORB_Range_Minutes!=30)                 FileWrite(FileSET_handle,"ORB_Range_Minutes="+(string)ORB_Range_Minutes);
+if(ORB_Entry_Minutes!=0)                  FileWrite(FileSET_handle,"ORB_Entry_Minutes="+(string)ORB_Entry_Minutes);
+if(ORB_Buffer_ATR!=0.0)                   FileWrite(FileSET_handle,"ORB_Buffer_ATR="+(string)ORB_Buffer_ATR);
+if(ORB_Min_Range_ATR!=0.0)                FileWrite(FileSET_handle,"ORB_Min_Range_ATR="+(string)ORB_Min_Range_ATR);
+if(ORB_Max_Range_ATR!=0.0)                FileWrite(FileSET_handle,"ORB_Max_Range_ATR="+(string)ORB_Max_Range_ATR);
+// B54:end b54-writeset
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -948,6 +965,44 @@ ulong    g_GoatSingleDemoSinceMs=0;
 long     g_GoatSingleDemoLogin=0;       // the login of that reading: the read after the settling must agree
 bool     g_GoatSingleQuotesStale=false;
 // B51:end b51-inputs
+// B54:begin b54-inputs
+// B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md sections 3.1, 4.1 and 6.1): the breakout entry families of Engine_Single, A (an
+// N-bar or prior-day high/low breakout) and B (a session opening-range breakout), in their own group at the very end of
+// the inputs. PR A0 (gate 0) declares them only: no trading logic reads them yet. Both modes default to Disabled, every
+// default reproduces B53, and WriteSet writes each one only when it differs from its default. The enums are new and take
+// explicit numbers; no existing enum gains a value.
+enum ENUM_MODE_BRK
+  {
+   BRK_Disabled=0,        // Disabled
+   BRK_NBar=1,            // N-bar high/low breakout
+   BRK_PriorDay=2         // Prior-day high/low breakout
+  };
+enum ENUM_MODE_ORB
+  {
+   ORB_Disabled=0,        // Disabled
+   ORB_Breakout=1         // Opening-range breakout
+  };
+enum ENUM_ORB_CLOCK
+  {
+   ORB_Clock_NewYork=0,   // New York
+   ORB_Clock_London=1     // London
+  };
+input    group                   "====SINGLE BREAKOUT ENTRIES (B54)====";
+sinput   ENUM_MODE_BRK           BRK_Mode                      =                  BRK_Disabled;       // Breakout A: off, N-bar or prior-day high/low
+input    ENUM_MODE_TFs           BRK_TF_                       =                         TF_H1;       // Breakout A: trigger bar timeframe (N-bar: the levels too)
+input    int                     BRK_Bars                      =                            20;       // Breakout A: N, the channel length in bars (N-bar)
+input    double                  BRK_Buffer_ATR                =                           0.0;       // Breakout A: the close clears the level by N ATR
+input    bool                    BRK_Once_Per_Level            =                          true;       // Breakout A: prior day: one single per direction per day
+sinput   ENUM_MODE_ORB           ORB_Mode                      =                  ORB_Disabled;       // Breakout B: session opening-range breakout
+sinput   ENUM_ORB_CLOCK          ORB_Clock                     =             ORB_Clock_NewYork;       // Breakout B: clock of the range and entry window
+input    ENUM_MODE_TFs           ORB_TF_                       =                         TF_M5;       // Breakout B: trigger bar timeframe
+input    int                     ORB_Start_Minute              =                           570;       // Breakout B: range start, minutes after the clock's midnight
+input    int                     ORB_Range_Minutes             =                            30;       // Breakout B: range length in minutes
+input    int                     ORB_Entry_Minutes             =                             0;       // Breakout B: entry window after the range (0 = to 17:00 NY)
+input    double                  ORB_Buffer_ATR                =                           0.0;       // Breakout B: the close clears the range by N ATR
+input    double                  ORB_Min_Range_ATR             =                           0.0;       // Breakout B: no trade if the range is below N ATR (0 = off)
+input    double                  ORB_Max_Range_ATR             =                           0.0;       // Breakout B: no trade if the range is above N ATR (0 = off)
+// B54:end b54-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label

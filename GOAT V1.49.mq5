@@ -5119,6 +5119,37 @@ int OnInit()
 // B51:end b51-init
    if(Clock_Mode==Clock_NewYork && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: the New York clock is tester-only in this build (its day end, Friday close and no-tick exits are not yet integrated with B49b's live protections); use Clock_Server on a live chart."); return INIT_FAILED;} // B52 (review P1): must be tested before live use
    if(Random_Direction && Gate_Recheck==Gate_AtFirstOrder) {Alert("Initialization Failed: Random_Direction cannot run with Gate_Recheck=Gate_AtFirstOrder (the first-order gate reads the signal's side; the draw can pick the other)."); return INIT_PARAMETERS_INCORRECT;} // B52 (review P3)
+// B54:begin b54-init
+   // B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.6): the breakout entries refuse an incoherent SET. A rule that reads input
+   // values only is ported to the controller's EA_INIT_RULES (a test start rule to TESTER_INIT_RULES); one that reads the
+   // chart's timeframe or the live chart is NOT_PORTED. A family's ranges (3.1, 4.1) apply while its mode is on. Lim (4.1,
+   // 4.4) is 1020 (17:00 NY) under ORB_Clock_NewYork and 1260 (21:00 London) under ORB_Clock_London; B6 <= Lim follows
+   // from B4+B5+B6 <= Lim. ORB_TF_ names its minutes (TF_M1=1 ... TF_H1=60), so the range is counted in them.
+   if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: ORB_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && ORB_Mode!=ORB_Disabled)     {Alert("Initialization Failed: BRK_Mode and ORB_Mode cannot both be on (one breakout family per SET)."); return INIT_PARAMETERS_INCORRECT;} // ruling 15
+   if(BRK_Mode==BRK_NBar && (BRK_Bars<2 || BRK_Bars>500))   {Alert("Initialization Failed: BRK_Bars must be between 2 and 500 with BRK_Mode=BRK_NBar."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && (BRK_Buffer_ATR<0.0 || BRK_Buffer_ATR>5.0)) {Alert("Initialization Failed: BRK_Buffer_ATR must be between 0 and 5."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode==BRK_PriorDay && BRK_TF_==TF_D1)             {Alert("Initialization Failed: BRK_Mode=BRK_PriorDay needs a trigger timeframe below D1 (BRK_TF_=TF_D1 is the prior day's own timeframe)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode==BRK_PriorDay && BRK_TF_==TF_Cur && PeriodSeconds(PERIOD_CURRENT)>=PeriodSeconds(PERIOD_D1)) {Alert("Initialization Failed: BRK_Mode=BRK_PriorDay with BRK_TF_=TF_Cur needs a chart timeframe below D1."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && Signal_Sample_Period==M_Current && PeriodSeconds(TF2TF(BRK_TF_))<PeriodSeconds(PERIOD_CURRENT)) {Alert("Initialization Failed: Signal_Sample_Period=M_Current checks once per chart bar, so a BRK_TF_ shorter than the chart's would skip trigger bars."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_TF_!=TF_M1 && ORB_TF_!=TF_M5 && ORB_TF_!=TF_M15 && ORB_TF_!=TF_H1) {Alert("Initialization Failed: ORB_TF_ must be TF_M1, TF_M5, TF_M15 or TF_H1 (the range is counted in its minutes)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Start_Minute<0 || ORB_Start_Minute>(ORB_Clock==ORB_Clock_London ? 1260 : 1020)-5 || ORB_Start_Minute%((int)ORB_TF_)!=0)) {Alert("Initialization Failed: ORB_Start_Minute must be between 0 and Lim-5 (Lim is 1020 under ORB_Clock_NewYork, 1260 under ORB_Clock_London) and a multiple of ORB_TF_'s minutes."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Range_Minutes<5 || ORB_Range_Minutes>240 || ORB_Range_Minutes%((int)ORB_TF_)!=0 || ORB_Start_Minute+ORB_Range_Minutes>=(ORB_Clock==ORB_Clock_London ? 1260 : 1020))) {Alert("Initialization Failed: ORB_Range_Minutes must be between 5 and 240, a multiple of ORB_TF_'s minutes, and end before Lim (ORB_Start_Minute+ORB_Range_Minutes < Lim)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Entry_Minutes<0 || ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>(ORB_Clock==ORB_Clock_London ? 1260 : 1020))) {Alert("Initialization Failed: ORB_Entry_Minutes cannot be negative, and the entry window must end by Lim (ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Buffer_ATR<0.0 || ORB_Buffer_ATR>5.0)) {Alert("Initialization Failed: ORB_Buffer_ATR must be between 0 and 5."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && (ORB_Min_Range_ATR<0.0 || ORB_Max_Range_ATR<0.0)) {Alert("Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_Min_Range_ATR>0.0 && ORB_Max_Range_ATR>0.0 && ORB_Max_Range_ATR<=ORB_Min_Range_ATR) {Alert("Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && Signal_Sample_Period==M_Current && PeriodSeconds(TF2TF(ORB_TF_))<PeriodSeconds(PERIOD_CURRENT)) {Alert("Initialization Failed: Signal_Sample_Period=M_Current checks once per chart bar, so an ORB_TF_ shorter than the chart's would skip trigger bars."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_NewYork with a fixed or EU DST server model needs a test start on or after 2007.03.11 (the US DST rules it applies)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_London && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_London needs a test start on or after 2007.03.11 under every server model (its UTC comes through the 2007 US DST rules)."); return INIT_PARAMETERS_INCORRECT;}
+   if(ORB_Mode!=ORB_Disabled && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: ORB_Mode is tester-only in B54 (ruling 7); use ORB_Disabled on a live chart."); return INIT_FAILED;}
+   // B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term this tree does not have is refused, in the tester
+   // and on a live chart. The commit that adds a value's term removes its line (scripts/test_b54_init.cjs reads the terms).
+   if(BRK_Mode==BRK_NBar)                                   {Alert("Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet."); return INIT_FAILED;}
+   if(BRK_Mode==BRK_PriorDay)                               {Alert("Initialization Failed: BRK_Mode=BRK_PriorDay has no signal term in this build yet."); return INIT_FAILED;}
+   if(ORB_Mode==ORB_Breakout)                               {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}
+// B54:end b54-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
                                   //EMA2_handle    = iMA    (Symbol(),EMA_TF,EMA2_Period,0,EMA_Method,EMA_Price);

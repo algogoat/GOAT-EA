@@ -129,8 +129,65 @@ class PortedRuleTests(RuleCase):
                                                         Single_Flat_Only='true', Gate_Recheck='1')),
     }
 
+    # B54 (spec 4.6, GOAT V1.49.mq5:5122-5152): the breakout entries on a valid single. Until a mode value has its signal
+    # term, the tree refuses it outright (*_NOT_BUILT, the block's last lines), so a "good" SET with a family on passes
+    # every rule but that one: it is refused only by a *_NOT_BUILT rule (passes_or_unbuilt), and so by no earlier rule.
+    S = dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0')
+    NBAR, PDAY, ORB = dict(S, BRK_Mode='1'), dict(S, BRK_Mode='2'), dict(S, ORB_Mode='1')
+    B54_CASES = {
+        'BRK_WITHOUT_SINGLE': (NBAR, dict(BRK_Mode='1', Engine_Mode='0')),
+        'ORB_WITHOUT_SINGLE': (ORB, dict(ORB_Mode='1', Engine_Mode='0')),
+        'BRK_WITH_ORB': (PDAY, dict(PDAY, ORB_Mode='1')),
+        'BRK_BARS_RANGE': (dict(NBAR, BRK_Bars='500'), dict(NBAR, BRK_Bars='501')),
+        'BRK_BUFFER_RANGE': (dict(PDAY, BRK_Buffer_ATR='5.0'), dict(PDAY, BRK_Buffer_ATR='-0.1')),
+        'BRK_PRIOR_DAY_ON_D1': (dict(PDAY, BRK_TF_='240'), dict(PDAY, BRK_TF_='1440')),
+        'ORB_TF_NOT_M1_TO_H1': (dict(ORB, ORB_TF_='60', ORB_Start_Minute='540', ORB_Range_Minutes='60'), dict(ORB, ORB_TF_='240')),
+        'ORB_START_RANGE': (dict(ORB, ORB_Start_Minute='0'), dict(ORB, ORB_Start_Minute='1020')),
+        'ORB_RANGE_MINUTES': (dict(ORB, ORB_Range_Minutes='240'), dict(ORB, ORB_Range_Minutes='245')),
+        'ORB_ENTRY_WINDOW': (dict(ORB, ORB_Entry_Minutes='420'), dict(ORB, ORB_Entry_Minutes='425')),
+        'ORB_BUFFER_RANGE': (dict(ORB, ORB_Buffer_ATR='5.0'), dict(ORB, ORB_Buffer_ATR='5.5')),
+        'ORB_RANGE_FILTER_NEGATIVE': (dict(ORB, ORB_Min_Range_ATR='0.5', ORB_Max_Range_ATR='2.0'), dict(ORB, ORB_Min_Range_ATR='-0.5')),
+        'ORB_RANGE_FILTER_ORDER': (dict(ORB, ORB_Min_Range_ATR='0.5', ORB_Max_Range_ATR='2.0'),
+                                   dict(ORB, ORB_Min_Range_ATR='2.0', ORB_Max_Range_ATR='2.0')),
+        'BRK_NBAR_NOT_BUILT': (S, NBAR),
+        'BRK_PRIOR_DAY_NOT_BUILT': (S, PDAY),
+        'ORB_BREAKOUT_NOT_BUILT': (S, ORB),
+    }
+    UNBUILT = {'BRK_NBAR_NOT_BUILT', 'BRK_PRIOR_DAY_NOT_BUILT', 'ORB_BREAKOUT_NOT_BUILT'}
+
+    def passes_or_unbuilt(self, **changes):
+        try:
+            validate_strategy(self.values(**changes), self.schema)
+        except ValueError as refusal:
+            found = re.search(r'Rule (\w+) \(', str(refusal))
+            self.assertTrue(found and found[1] in self.UNBUILT, str(refusal))
+            return found[1]
+        return None
+
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
-        self.assertEqual(set(self.CASES) | set(self.B50_CASES), {rule['id'] for rule in EA_INIT_RULES})
+        self.assertEqual(set(self.CASES) | set(self.B50_CASES) | set(self.B54_CASES), {rule['id'] for rule in EA_INIT_RULES})
+        for rule_id, (good, bad) in self.B54_CASES.items():
+            with self.subTest(rule=rule_id):
+                self.passes_or_unbuilt(**good)
+                self.refused(rule_id, **bad)
+        # B54: a schema without the B54 group (B53's) carries none of its rules and every other one; a B54 schema that lost
+        # one of its inputs or labels fails closed.
+        b54 = set(self.B54_CASES)
+        b53 = copy.deepcopy(SCHEMAS['1.49'])
+        for name in ('BRK_Mode', 'BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_Mode', 'ORB_Clock', 'ORB_TF_',
+                     'ORB_Start_Minute', 'ORB_Range_Minutes', 'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR'):
+            del b53['inputs'][name]
+        self.assertEqual({rule['id'] for rule in applicable_rules(b53)}, {rule['id'] for rule in EA_INIT_RULES} - b54)
+        self.assertEqual(applicable_rules(b53, TESTER_INIT_RULES), list(TESTER_INIT_RULES[:2]))
+        for lost in ('ORB_Clock', 'BRK_Bars', 'ORB_Max_Range_ATR'):
+            with self.subTest(lost=lost):
+                damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs'][lost]
+                with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no ' + lost):
+                    applicable_rules(damaged)
+        damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs']['ORB_TF_']['enum_choices']['TF_M15']
+        with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no ORB_TF_.TF_M15 for EA init rule '
+                                    'ORB_TF_NOT_M1_TO_H1'):
+            applicable_rules(damaged)
         for version, schema in SCHEMAS.items():
             for rule_id, (good, bad) in self.CASES.items():
                 with self.subTest(version=version, rule=rule_id):
@@ -176,6 +233,35 @@ class PortedRuleTests(RuleCase):
                     ' 9:30-16:00', '+9:30-16:00', '09:30-16:00 ', '9:3a-16:00', '09:30-09:30', '09:30:00-16:00'):
             with self.subTest(bad=bad):
                 self.refused('NY_SESSION_FORMAT', NY_Session=bad)
+
+    def test_b54_windows_follow_the_anchor_and_the_trigger_minutes(self):
+        # Spec 4.1/4.4: Lim is 1020 under the New York anchor and 1260 under the London one; S and R count in ORB_TF_'s minutes.
+        orb, london = self.ORB, dict(self.ORB, ORB_Clock='1')
+        self.refused('ORB_RANGE_MINUTES', **dict(orb, ORB_Start_Minute='1015', ORB_Range_Minutes='5'))    # S+R = Lim
+        self.assertEqual(self.passes_or_unbuilt(**dict(orb, ORB_Start_Minute='1010', ORB_Range_Minutes='5', ORB_Entry_Minutes='5')),
+                         'ORB_BREAKOUT_NOT_BUILT')                                                        # S+R+E = Lim
+        self.refused('ORB_ENTRY_WINDOW', **dict(orb, ORB_Start_Minute='1010', ORB_Range_Minutes='5', ORB_Entry_Minutes='6'))
+        self.refused('ORB_START_RANGE', **dict(orb, ORB_Start_Minute='1020', ORB_Range_Minutes='5'))
+        self.passes_or_unbuilt(**dict(london, ORB_Start_Minute='1250', ORB_Range_Minutes='5', ORB_Entry_Minutes='5'))
+        self.passes_or_unbuilt(**dict(london, ORB_Start_Minute='1020', ORB_Range_Minutes='5'))            # past NY's Lim
+        self.refused('ORB_RANGE_MINUTES', **dict(london, ORB_Start_Minute='1255', ORB_Range_Minutes='5'))
+        self.refused('ORB_START_RANGE', **dict(london, ORB_Start_Minute='1260', ORB_Range_Minutes='5'))
+        self.refused('ORB_START_RANGE', **dict(orb, ORB_TF_='15', ORB_Start_Minute='575'))
+        self.passes_or_unbuilt(**dict(orb, ORB_TF_='1', ORB_Start_Minute='575', ORB_Range_Minutes='7'))
+        self.refused('ORB_RANGE_MINUTES', **dict(orb, ORB_TF_='15', ORB_Range_Minutes='20'))
+        self.refused('ORB_START_RANGE', **dict(orb, ORB_Start_Minute='-5'))
+        self.refused('ORB_TF_NOT_M1_TO_H1', **dict(orb, ORB_TF_='0'))                                     # TF_Cur
+        self.refused('ORB_TF_NOT_M1_TO_H1', **dict(orb, ORB_TF_='1440'))
+        # BRK_Bars bounds N-bar only (spec 3.1 A3); a disabled family's inputs are never read.
+        self.assertEqual(self.passes_or_unbuilt(**dict(self.PDAY, BRK_Bars='1')), 'BRK_PRIOR_DAY_NOT_BUILT')
+        self.refused('BRK_BARS_RANGE', **dict(self.NBAR, BRK_Bars='1'))
+        self.passes(**dict(self.S, BRK_Bars='1', BRK_Buffer_ATR='9.0', BRK_TF_='1440', ORB_TF_='240', ORB_Start_Minute='5000',
+                           ORB_Range_Minutes='1', ORB_Entry_Minutes='-1', ORB_Buffer_ATR='-1.0', ORB_Min_Range_ATR='3.0',
+                           ORB_Max_Range_ATR='1.0'))
+        # A ladder reaching a refused value refuses and names it.
+        self.passes_or_unbuilt(**dict(self.NBAR, BRK_Bars='20||2||1||500||Y'))
+        self.assertIn('(reachable through the optimization range of BRK_Bars)',
+                      self.refused('BRK_BARS_RANGE', **dict(self.NBAR, BRK_Bars='20||1||1||500||Y')))
 
     def test_schema_defaults_pass(self):
         for version, schema in SCHEMAS.items():
@@ -363,6 +449,25 @@ class TesterInitRuleTests(RuleCase):
             check_tester_init(self.values(**ny), self.schema, from_date='2007-03-11')
         check_tester_init(self.values(Mode_Bias='1'), SCHEMAS['1.48'], from_date='2005.01.03')   # V1.48: no B50 rule
 
+    def test_the_opening_range_before_2007_is_refused_in_a_test_starting_then(self):
+        # B54 (spec 4.4): the New York anchor under a fixed or EU DST model, the London anchor under every model.
+        orb = dict(Mode_Bias='1', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0', ORB_Mode='1')
+        for model in ('1', '2'):
+            with self.subTest(anchor='NY', model=model):
+                with self.assertRaises(ValueError) as caught:
+                    check_tester_init(self.values(Server_Clock_Model=model, **orb), self.schema, from_date='2007.03.10')
+                self.assertIn('Rule ORB_NY_TEST_BEFORE_2007 (GOAT V1.49.mq5:5144)', str(caught.exception))
+                check_tester_init(self.values(Server_Clock_Model=model, **orb), self.schema, from_date='2007.03.11')
+        check_tester_init(self.values(Server_Clock_Model='0', **orb), self.schema, from_date='2005.01.03')   # NYClose
+        for model in ('0', '1', '2'):
+            with self.subTest(anchor='London', model=model):
+                with self.assertRaises(ValueError) as caught:
+                    check_tester_init(self.values(Server_Clock_Model=model, ORB_Clock='1', **orb), self.schema, from_date='2007.03.10')
+                self.assertIn('Rule ORB_LONDON_TEST_BEFORE_2007 (GOAT V1.49.mq5:5145)', str(caught.exception))
+                check_tester_init(self.values(Server_Clock_Model=model, ORB_Clock='1', **orb), self.schema, from_date='2007.03.11')
+                check_tester_init(self.values(Server_Clock_Model=model, ORB_Clock='1', **orb), self.schema)   # no FromDate
+        check_tester_init(self.values(Mode_Bias='1', Server_Clock_Model='1', ORB_Clock='1'), self.schema, from_date='2005.01.03')   # ORB off
+
     def test_ai_off_or_legacy_recorded_passes_in_the_tester(self):
         for protocol in ('0', '1', '2'):
             check_tester_init(self.values(Mode_Bias='1', Bias_Protocol=protocol), self.schema)
@@ -531,10 +636,13 @@ class InventoryTests(unittest.TestCase):
         # B49b (F1 full) adds the live manage-only INIT_FAILED after adoption (NOT_PORTED: licence and expiry, live only).
         # The merged line (B50 + B51 with B49b) carries both sets. B52 (its review) adds two: the benchmark under the
         # first-order gate (ported) and the New York clock on a live chart (not ported: run context).
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (88, 8, 92))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 50)
+        # B54 (spec 4.6, PR A) adds 22: 18 INIT_PARAMETERS_INCORRECT (13 ported; the two pre-2007 test starts, tester rules;
+        # three that read the chart's timeframe, not ported) and 4 INIT_FAILED (ORB on a live chart, not ported; the three
+        # mode values without a signal term yet, ported).
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (110, 8, 114))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 68)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (44, 2, 46))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (60, 4, 50))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [4434, 4545, 4562, 4837])

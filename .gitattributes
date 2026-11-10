@@ -13,3 +13,5 @@ controller/contracts/house-manifest/** -text
 scripts/fixtures/hunt-d1/** -text
 # B54 gate 0's pool: the 61 qualified SETs, byte-identical (UTF-16LE; sha256 per file in its manifest.json): never normalise them.
 scripts/fixtures/b54-pool/** -text
+# B54 PR A: synthetic axis SETs (UTF-16LE, CRLF) and their table, byte-exact as controller/test_b54_init.py renders them.
+scripts/fixtures/b54-axes/** -text

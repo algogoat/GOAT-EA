@@ -8881,7 +8881,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_B
     {
      int gate_active_b=GoatGateActiveMask();
-     bool b54_armed_b=g_GoatSingleArmed[OP_BUY]; // B54 (spec 3.5): a single opened below for this buy signal latches its day
+     bool b54_armed_b=(Engine_Mode==Engine_Single && g_GoatSingleArmed[OP_BUY]); // B54 (spec 3.5): a single opened below for this buy signal latches its day
      if(Engine_Mode==Engine_Single && GoatBrkLatched(OP_BUY)) {} else // B54 (spec 3.5): PriorDay, one single per buy signal per day (before the draw)
      if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_BUY); else // B51 (beta-1a): the benchmark's coin-flip side for this buy-signal episode (same timing and gates)
      if(Reverse_Seq)
@@ -8929,7 +8929,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_S
     {
      int gate_active_s=GoatGateActiveMask();
-     bool b54_armed_s=g_GoatSingleArmed[OP_SELL]; // B54 (spec 3.5): a single opened below for this sell signal latches its day
+     bool b54_armed_s=(Engine_Mode==Engine_Single && g_GoatSingleArmed[OP_SELL]); // B54 (spec 3.5): a single opened below for this sell signal latches its day
      if(Engine_Mode==Engine_Single && GoatBrkLatched(OP_SELL)) {} else // B54 (spec 3.5): PriorDay, one single per sell signal per day (before the draw)
      if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_SELL); else // B51 (beta-1a): the benchmark's coin-flip side for this sell-signal episode (same timing and gates)
      if(Reverse_Seq)

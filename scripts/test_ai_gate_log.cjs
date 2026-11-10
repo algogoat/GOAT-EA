@@ -35,7 +35,7 @@ const ENUMS={Bias_Disabled:0,Bias_Display:1,Bias_Opens:2,Bias_Close_low:3};
 function model(source=SIGNAL,{tester=false,state=null,v2=true,mode='Bias_Opens',reverse=false,fail=false}={}){
  const calls=[],prints=[];
  const c={OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,RSI_Disabled:0,Trade_Disabled:0,BB_Disabled:0,Long_and_Short:0,Long:1,Short:2,
-  RSI_Mode:0,EMA_Mode:0,ADX_Mode:0,BB_Mode:0,MACD_Mode:0,RSI2_Mode:0,RSI_Sig:0,EMA_Sig:0,ADX_Sig:0,BB_Sig:0,MACD_Sig:0,RSI2_Sig:0,
+  RSI_Mode:0,EMA_Mode:0,ADX_Mode:0,BB_Mode:0,MACD_Mode:0,RSI2_Mode:0,RSI_Sig:0,EMA_Sig:0,ADX_Sig:0,BB_Sig:0,MACD_Sig:0,RSI2_Sig:0,BRK_Mode:0,BRK_Disabled:0,BRK_Sig:-1,
   Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
   Reverse_Seq:reverse,Mode_Trade:0,Delay_Trade:0,Allow_Opposite_Seq:true,bid:1.1,ask:1.2,MAGIC1:1342177,LastBuySignal:false,LastSellSignal:false,
   DashboardEntryAllowed:()=>true,MathAbs:Math.abs,...ENUMS,
@@ -103,7 +103,10 @@ try{b43Signal=unit(norm(execFileSync('git',['show',B43_SOURCE+':GOAT V1.49.mq5']
    .replace(/GoatStartBiasOpen\(GoatStartBiasSide\(OP_BUY\)\)/g,'Sequence_New_Bias_B').replace(/GoatStartBiasOpen\(GoatStartBiasSide\(OP_SELL\)\)/g,'Sequence_New_Bias_S')
    .replace(/\{if\(GoatStartBiasSide\(OP_(BUY|SELL)\)==OP_BUY\) Sequence_Skipped_Bias_B\+\+; else Sequence_Skipped_Bias_S\+\+; GoatGateLog\("VETO",GoatStartBiasSide\(OP_(?:BUY|SELL)\)\);\} \/\/ B44 item 4: log only; B49b \(F5\): counted on the bias side that vetoed/g,
      (m,side)=>'{Sequence_Skipped_Bias_'+(side==='BUY'?'B':'S')+'++; GoatGateLog("VETO",OP_'+side+');} // B44 item 4: log only');
- const stripped=b49bLegacy(SIGNAL).split('\n').filter(l=>!/int gate_active_[bs]=GoatGateActiveMask\(\);|GoatGateLog\("ALLOW"|\/\/ B50 \(A1\)|\/\/ B51 \(beta-1a\)/.test(l)).join('\n')
+ // B54 (PR A): entry A's term, its armed snapshot and its latch lines are marked "// B54 (spec 3.5)" / "(spec 3.6)"
+ // (test_b54_breakout.cjs and test_b54_no_drift.cjs); the RSI2 line they follow gets its closing paren back.
+ const stripped=b49bLegacy(SIGNAL).split('\n').filter(l=>!/int gate_active_[bs]=GoatGateActiveMask\(\);|GoatGateLog\("ALLOW"|\/\/ B50 \(A1\)|\/\/ B51 \(beta-1a\)|\/\/ B54 \(spec 3\.[56]\)/.test(l)).join('\n')
+  .replace(/\) \/\/ B54: the term below closes the condition/g,'))')
   .replace(/\{(Sequence_Skipped_Bias_[BS])\+\+; GoatGateLog\("VETO",OP_(?:BUY|SELL)\);\} \/\/ B44 item 4: log only/g,'$1++;');
  if(b43Signal){assert.equal(stripped,b43Signal,'SignalEntryTrigger is B43 plus the log lines only');ok();}
  let seed=20261012;const rnd=()=>(seed=(seed*48271)%2147483647)/2147483647;

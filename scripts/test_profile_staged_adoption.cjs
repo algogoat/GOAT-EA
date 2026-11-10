@@ -307,7 +307,7 @@ function run(src=readSources()){
     ArraySize:a=>a.length,GoatChildGVName:(m,s,f)=>'K_ID_'+m+'_'+s+'_'+f,GlobalVariableGet:(k,set)=>{gateCalls.push(k);if(!gv.has(k))return false;set(gv.get(k));return true;},
     g_GoatStudioMonitorRunPath:runPath,MAGIC1:magic,Symbol:()=> 'EURUSD',DashboardTradeAllowed:()=>trade,DashboardExposureConflict:()=>conflict,
     OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,EMA_Mode:0,Trade_Disabled:0,EMA_Sig:-1,ADX_Mode:0,ADX_Sig:-1,BB_Mode:0,BB_Disabled:0,BB_Sig:-1,
-    MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
+    MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,BRK_Mode:0,BRK_Disabled:0,BRK_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
     Mode_Trade:0,Long_and_Short:0,Long:1,Short:2,Delay_Trade:0,Allow_Opposite_Seq:true,MathAbs:Math.abs,ask:1.2,bid:1.19,
     Engine_Mode:0,Engine_Single:1,g_GoatSingleArmed:[true,true],   // B50 (A1): the grid engine (the single's branches: test_b50_single.cjs)
     Random_Direction:false,g_GoatRandomEpisodeBar:[0,0],   // B51 (beta-1a): no benchmark (test_b51_random.cjs)

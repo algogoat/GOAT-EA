@@ -11,3 +11,5 @@ controller/contracts/deploy-identity/** -text
 controller/contracts/house-manifest/** -text
 # The D1 hunt's preregistered design SETs, byte-identical (UTF-16LE; goatai docs/preregs/d1-hunt-20261107/SET-SHA256SUMS.sha256): never normalise them.
 scripts/fixtures/hunt-d1/** -text
+# B54 gate 0's pool: the 61 qualified SETs, byte-identical (UTF-16LE; sha256 per file in its manifest.json): never normalise them.
+scripts/fixtures/b54-pool/** -text

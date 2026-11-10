@@ -1,0 +1,625 @@
+{
+ "pool": "B54 gate 0 pool: docs/b54/BREAKOUT_ENTRIES_SPEC.md section 6.2 (ruling 2), committed byte-identical",
+ "inventory": {
+  "path": "G:\\GOAT-Build-Artifacts\\interim-ops-20261108\\nonrr-round08\\qualified-inventory-final.json",
+  "sha256": "f4337e1bd296f7a4de3c5e53d6f7acab9d7454d8b6172739eb5729183984936c",
+  "rows": 61,
+  "sequence": 59,
+  "single": 2,
+  "round12_path": "G:\\GOAT-Build-Artifacts\\interim-ops-20261108\\nonrr-round12\\qualified-inventory-final.json",
+  "round12_sha256": "f4337e1bd296f7a4de3c5e53d6f7acab9d7454d8b6172739eb5729183984936c",
+  "note": "rounds 09-12 admitted no SET: the round-12 inventory is byte-identical to round 08"
+ },
+ "files": [
+  {
+   "file": "01-EURCAD-sequence.set",
+   "sha256": "d472b85a6f6e07a308f9a0b2708516ecc7b654f936fad918832ddd62a4a36d37",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R02e95e62a759f147485b\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=324_Prf=1099_DD=441_PF=2.57_SR=3.17_ARF=0.789.set",
+   "asset": "EURCAD",
+   "engine": "sequence",
+   "setup": "R02e95e62a759f147485b",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "02-EURCAD-sequence.set",
+   "sha256": "969b72fa67fad27ed4ad5f20fbfd222e0fb3fb00e33eafa36303e59d27f6d30f",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R02e95e62a759f147485b\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=409_Prf=1331_DD=486_PF=2.47_SR=3.15_ARF=0.991.set",
+   "asset": "EURCAD",
+   "engine": "sequence",
+   "setup": "R02e95e62a759f147485b",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "03-EURCAD-sequence.set",
+   "sha256": "a408087a231e2f64b49bf4cecbeb0646272438f13d408fd685a6e4271d40ed9f",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R02e95e62a759f147485b\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=423_Prf=1030_DD=437_PF=2.20_SR=2.89_ARF=0.633.set",
+   "asset": "EURCAD",
+   "engine": "sequence",
+   "setup": "R02e95e62a759f147485b",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "04-AUDUSD-sequence.set",
+   "sha256": "89464bedabe30dfe5507220e23f0ed67b847145a6ffd665fd045dc6f63989240",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R551b91b9530074e7a71c\\AUDUSD\\GOAT V1.49 AUDUSD,M1_Trds=260_Prf=3452_DD=899_PF=2.22_SR=4.80_ARF=1.237.set",
+   "asset": "AUDUSD",
+   "engine": "sequence",
+   "setup": "R551b91b9530074e7a71c",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "05-GBPUSD-sequence.set",
+   "sha256": "0d413c822ce363b3c4e1db8a5b10f7cb3bce9a4099b801dd8a7f1b5eaea3249c",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R8122347feca4cb9fef24\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=206_Prf=599_DD=290_PF=2.39_SR=3.47_ARF=0.695.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "R8122347feca4cb9fef24",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "06-GBPUSD-sequence.set",
+   "sha256": "0dd139ddc708b17a7336b98f87ab479a9285b0fc610fc671cce72ebf6f1d6e5f",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R8122347feca4cb9fef24\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=355_Prf=818_DD=454_PF=2.03_SR=2.73_ARF=0.567.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "R8122347feca4cb9fef24",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "07-GBPUSD-sequence.set",
+   "sha256": "5bf6737e820f073f96cdbaeea15493dbc1092f6035c20714a769b4f070a0e5ea",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R8122347feca4cb9fef24\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=490_Prf=779_DD=408_PF=2.10_SR=3.23_ARF=0.753.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "R8122347feca4cb9fef24",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "08-XAUUSD-sequence.set",
+   "sha256": "558fbd8ab473482d74c8e9c1a9a0c293b0d456146c8de23e65b981e0645a2a21",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R868804e52b376fcf6d1b\\XAUUSD\\GOAT V1.49 XAUUSD,M1_Trds=279_Prf=2389_DD=1152_PF=1.64_SR=3.23_ARF=0.565.set",
+   "asset": "XAUUSD",
+   "engine": "sequence",
+   "setup": "R868804e52b376fcf6d1b",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "09-USDCHF-sequence.set",
+   "sha256": "d6976a1b696d177817ae810ac80e79654319923f2eee1b3ca9d3bd0c352d5026",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\Raa118c04318855cc867f\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=146_Prf=844_DD=227_PF=3.05_SR=4.92_ARF=0.991.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "Raa118c04318855cc867f",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "10-USDCHF-sequence.set",
+   "sha256": "07ce628eeeb41d35bd2610982719d6bf886cb1f8fd0a967f41caa63a9c98545b",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\Raa118c04318855cc867f\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=153_Prf=653_DD=294_PF=2.44_SR=4.52_ARF=0.754.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "Raa118c04318855cc867f",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "11-USDCHF-sequence.set",
+   "sha256": "948b93e1ea3ab678af90be8896e8aacaf6e2d1f654524bc7beeae1ef86ec7631",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\Raa118c04318855cc867f\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=186_Prf=876_DD=448_PF=2.06_SR=2.79_ARF=0.637.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "Raa118c04318855cc867f",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "12-USDCHF-sequence.set",
+   "sha256": "6c96be695fdc7b4a8318f92307c6218a139f5e4ffd32656484de321232f5c8c8",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\Raa118c04318855cc867f\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=205_Prf=1396_DD=259_PF=4.40_SR=9.45_ARF=1.590.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "Raa118c04318855cc867f",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "13-USDCHF-sequence.set",
+   "sha256": "b8c762f59210fc7c447874a9acf67134ecc6c96d3dc3dc4210ffedf4c134e3de",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\Rf64fe00cc2a1aef94bac\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=190_Prf=1041_DD=275_PF=3.97_SR=7.93_ARF=1.334.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "Rf64fe00cc2a1aef94bac",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "14-USDCHF-sequence.set",
+   "sha256": "128410ce9b9e1c891053fff35a9d976466e9575463c84f4a04184ea9b190bc34",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\Rf64fe00cc2a1aef94bac\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=250_Prf=711_DD=240_PF=2.11_SR=4.01_ARF=1.068.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "Rf64fe00cc2a1aef94bac",
+   "run": "hunt-t3-catalog-o3-01-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "15-EURUSD-sequence.set",
+   "sha256": "e32d6bfc3e4dec46695d44892bc4ffb52fcb001ec0ae70452d26241168233aab",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\R3cf6233e5a77b988718d\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=259_Prf=2224_DD=1171_PF=1.55_SR=3.28_ARF=0.620.set",
+   "asset": "EURUSD",
+   "engine": "sequence",
+   "setup": "R3cf6233e5a77b988718d",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "16-WS30-sequence.set",
+   "sha256": "9465667b6e99e51bd370ce571600acda83a4774fe3f49b95e70573836c172071",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\R608dc1c96f6f7896c94f\\WS30\\GOAT V1.49 WS30,M1_Trds=224_Prf=1549_DD=477_PF=3.11_SR=5.54_ARF=0.846.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R608dc1c96f6f7896c94f",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "17-WS30-sequence.set",
+   "sha256": "60a5e9f2568c84e4916abf56e330d0389e632257cc588d85fb18fd682d2d5e15",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\R608dc1c96f6f7896c94f\\WS30\\GOAT V1.49 WS30,M1_Trds=482_Prf=1245_DD=707_PF=1.65_SR=3.37_ARF=0.626.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R608dc1c96f6f7896c94f",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "18-WS30-sequence.set",
+   "sha256": "fd1305e99d09a72154df61d791c32f70d4ee54521ceb2864f8cd2dc30b48e8a8",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\R66ab950ee1d1ee70d93f\\WS30\\GOAT V1.49 WS30,M1_Trds=346_Prf=1422_DD=1035_PF=1.60_SR=3.47_ARF=0.327.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R66ab950ee1d1ee70d93f",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "19-EURCAD-sequence.set",
+   "sha256": "e328ce9dac6a41c6611efcea45426d80c9923923a265d1144415e9742502b510",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\R88328ff3a6bd3db7ed42\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=323_Prf=1159_DD=459_PF=1.90_SR=2.79_ARF=0.689.set",
+   "asset": "EURCAD",
+   "engine": "sequence",
+   "setup": "R88328ff3a6bd3db7ed42",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "20-WS30-sequence.set",
+   "sha256": "e071ea595ec34ef0e723189300acb775cf8e1a80fba7352b4f5d477fa2bd3b37",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\R9e08e663c7f3311daa97\\WS30\\GOAT V1.49 WS30,M1_Trds=784_Prf=2366_DD=873_PF=1.43_SR=3.56_ARF=0.811.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R9e08e663c7f3311daa97",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "21-WS30-sequence.set",
+   "sha256": "240cde54f0303ea00c279648268251d3ec34c7ca736ef5f9526a76622d3f1a9d",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rf72c8d80a2c5\\deploy\\Rdb827162eeb1ca9d978f\\WS30\\GOAT V1.49 WS30,M1_Trds=135_Prf=251_DD=122_PF=3.31_SR=6.87_ARF=0.698.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Rdb827162eeb1ca9d978f",
+   "run": "hunt-t3-catalog-o3-01b-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "22-EURUSD-sequence.set",
+   "sha256": "081af8b132b50e656946d4683251f676ed6baa81e9ac899a44519d03baf431e5",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R3d84f9767455\\deploy\\R614538082c71b5057c91\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=378_Prf=1509_DD=1139_PF=1.44_SR=2.57_ARF=0.588.set",
+   "asset": "EURUSD",
+   "engine": "sequence",
+   "setup": "R614538082c71b5057c91",
+   "run": "hunt-t3-r34-seqp-01-foos",
+   "route": "D1"
+  },
+  {
+   "file": "23-XAUUSD-single.set",
+   "sha256": "b72effc28c88fa160e23a1b150c9329ea983592020e691c1c0096963496d501e",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R2459ecea550f\\deploy\\R903253e87a23f0542211\\XAUUSD\\GOAT V1.49 XAUUSD,M1_Trds=163_Prf=10463_DD=4328_PF=1.43_SR=4.62_ARF=0.901.set",
+   "asset": "XAUUSD",
+   "engine": "single",
+   "setup": "R903253e87a23f0542211",
+   "run": "hunt-t3-r34-singlep-01-foos",
+   "route": "D1"
+  },
+  {
+   "file": "24-GBPUSD-sequence.set",
+   "sha256": "6be642e90e5b643176fd19b6c7b129f26381b7995cdb2a9059ce5fe94be0e27e",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R6dfffd79cfcb\\deploy\\Rbe508f2b6e9281fb5fd3\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=268_Prf=306_DD=217_PF=1.87_SR=2.52_ARF=0.357.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "Rbe508f2b6e9281fb5fd3",
+   "run": "hunt-t3-seqp-01-foos-b",
+   "route": "D1"
+  },
+  {
+   "file": "25-WS30-sequence.set",
+   "sha256": "1edfb5b6c8c78659f721a27a59919920da68f92bf359948edfda726e23110f4b",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R6dfffd79cfcb\\deploy\\Rd33fc875e46130facfe8\\WS30\\GOAT V1.49 WS30,M1_Trds=255_Prf=1412_DD=873_PF=1.81_SR=3.57_ARF=0.385.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Rd33fc875e46130facfe8",
+   "run": "hunt-t3-seqp-01-foos-b",
+   "route": "D1"
+  },
+  {
+   "file": "26-WS30-sequence.set",
+   "sha256": "5f73685eba11db5fd63d746cac24fae23c4e17c2115bded6708a20d764ec726b",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R6dfffd79cfcb\\deploy\\Rd33fc875e46130facfe8\\WS30\\GOAT V1.49 WS30,M1_Trds=309_Prf=1407_DD=1329_PF=1.59_SR=3.10_ARF=0.252.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Rd33fc875e46130facfe8",
+   "run": "hunt-t3-seqp-01-foos-b",
+   "route": "D1"
+  },
+  {
+   "file": "27-AUDCAD-sequence.set",
+   "sha256": "f976d4f17ec3dd68847d6abe06a59f105c970a8070f45ce82dd8716b3ef08b8f",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R6dfffd79cfcb\\deploy\\Rdb29885c243753f1d92c\\AUDCAD\\GOAT V1.49 AUDCAD,M1_Trds=197_Prf=981_DD=400_PF=2.89_SR=4.73_ARF=0.979.set",
+   "asset": "AUDCAD",
+   "engine": "sequence",
+   "setup": "Rdb29885c243753f1d92c",
+   "run": "hunt-t3-seqp-01-foos-b",
+   "route": "D1"
+  },
+  {
+   "file": "28-AUDCAD-sequence.set",
+   "sha256": "6a2ec8f6f4a007b229aa78a7f756d76791d9bcfc9f228f1fabb04a9e313732e8",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R6dfffd79cfcb\\deploy\\Rdb29885c243753f1d92c\\AUDCAD\\GOAT V1.49 AUDCAD,M1_Trds=204_Prf=993_DD=400_PF=2.89_SR=4.54_ARF=0.991.set",
+   "asset": "AUDCAD",
+   "engine": "sequence",
+   "setup": "Rdb29885c243753f1d92c",
+   "run": "hunt-t3-seqp-01-foos-b",
+   "route": "D1"
+  },
+  {
+   "file": "29-GBPCAD-sequence.set",
+   "sha256": "8e618712f5626edebd13bb63fc12c6b0c7e2242542e5848f2fd107bc72d6a522",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R9695cbd048cf\\deploy\\R2791178cbaeeb41af25f\\GBPCAD\\GOAT V1.49 GBPCAD,M1_Trds=234_Prf=232_DD=133_PF=2.07_SR=3.54_ARF=0.660.set",
+   "asset": "GBPCAD",
+   "engine": "sequence",
+   "setup": "R2791178cbaeeb41af25f",
+   "run": "hunt-t3-seqp-02a-foos",
+   "route": "D1"
+  },
+  {
+   "file": "30-GBPCAD-sequence.set",
+   "sha256": "0df6bfc8e0a4c8f8afe355037b3f21091a37c84af585b1ca74d323237f1b3497",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R9695cbd048cf\\deploy\\R2791178cbaeeb41af25f\\GBPCAD\\GOAT V1.49 GBPCAD,M1_Trds=282_Prf=251_DD=133_PF=1.72_SR=2.77_ARF=0.590.set",
+   "asset": "GBPCAD",
+   "engine": "sequence",
+   "setup": "R2791178cbaeeb41af25f",
+   "run": "hunt-t3-seqp-02a-foos",
+   "route": "D1"
+  },
+  {
+   "file": "31-EURUSD-sequence.set",
+   "sha256": "cd16549583b022566b57c92f42e985eab2fce8daaebd647813f498ee4e9d48e3",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R9695cbd048cf\\deploy\\Ra128d8877c0ec5e29c2e\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=288_Prf=427_DD=197_PF=2.65_SR=5.07_ARF=0.511.set",
+   "asset": "EURUSD",
+   "engine": "sequence",
+   "setup": "Ra128d8877c0ec5e29c2e",
+   "run": "hunt-t3-seqp-02a-foos",
+   "route": "D1"
+  },
+  {
+   "file": "32-EURUSD-sequence.set",
+   "sha256": "8089c78f3106d15f77a298a87b33aa6ef737f3c55cbb8b3907ce24fb34c22860",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R9695cbd048cf\\deploy\\Ra128d8877c0ec5e29c2e\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=340_Prf=551_DD=199_PF=2.67_SR=5.20_ARF=1.017.set",
+   "asset": "EURUSD",
+   "engine": "sequence",
+   "setup": "Ra128d8877c0ec5e29c2e",
+   "run": "hunt-t3-seqp-02a-foos",
+   "route": "D1"
+  },
+  {
+   "file": "33-WS30-single.set",
+   "sha256": "ca3be1c49f9b291bf579cd11265e9256f5c71f3d5ccf9ae0fe0e42687686ac26",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R09e953e6a506\\deploy\\Rdf22a55cf2941f7d45fe\\WS30\\GOAT V1.49 WS30,M1_Trds=210_Prf=7561_DD=4982_PF=1.22_SR=3.51_ARF=0.649.set",
+   "asset": "WS30",
+   "engine": "single",
+   "setup": "Rdf22a55cf2941f7d45fe",
+   "run": "hunt-t3-singlep-01-foos",
+   "route": "D1"
+  },
+  {
+   "file": "34-XAGUSD-sequence.set",
+   "sha256": "875ab9f99ecb6591760b3cde9f26f7ac850e8381dc1b685add44a1762a962be6",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R1c1a3aab93739f289e14\\XAGUSD\\GOAT V1.49 XAGUSD,M1_Trds=361_Prf=5544_DD=1254_PF=1.84_SR=4.58_ARF=1.307.set",
+   "asset": "XAGUSD",
+   "engine": "sequence",
+   "setup": "R1c1a3aab93739f289e14",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "35-XAUUSD-sequence.set",
+   "sha256": "2f1cd11d4c8941d6a700ee0b814c4487ffa0917f62d0b132988cc18655b2dd2b",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R25f8e025e9dff0bb1fc6\\XAUUSD\\GOAT V1.49 XAUUSD,M1_Trds=273_Prf=2655_DD=956_PF=1.69_SR=3.18_ARF=0.799.set",
+   "asset": "XAUUSD",
+   "engine": "sequence",
+   "setup": "R25f8e025e9dff0bb1fc6",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "36-WS30-sequence.set",
+   "sha256": "6742518c4f7dd6b28dc744128c7a6242b6897c1a0baa0fddd8275bcc9ed1fe67",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R299b47b607fe920f415f\\WS30\\GOAT V1.49 WS30,M1_Trds=273_Prf=1570_DD=739_PF=1.93_SR=3.41_ARF=0.503.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R299b47b607fe920f415f",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "37-WS30-sequence.set",
+   "sha256": "6d19a45cdc73274b6e2b9560210756837244a2fcbaa5ea651678720eec67bac0",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R299b47b607fe920f415f\\WS30\\GOAT V1.49 WS30,M1_Trds=287_Prf=1529_DD=761_PF=1.81_SR=2.99_ARF=0.689.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R299b47b607fe920f415f",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "38-USDCHF-sequence.set",
+   "sha256": "02af3dfdd180a153010ea36d10213ee580d9e7e25b8dcb315dc0c7ad67de5317",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R329b50f07a2baa2b64fb\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=169_Prf=892_DD=227_PF=2.89_SR=4.77_ARF=1.045.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "R329b50f07a2baa2b64fb",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "39-WS30-sequence.set",
+   "sha256": "4b3a9e4ac3849b94ed4f14dcb342053077485d8b634b79de5b0f8f65dc8239db",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R48b97122d7d7028944f7\\WS30\\GOAT V1.49 WS30,M1_Trds=217_Prf=1561_DD=662_PF=1.61_SR=3.37_ARF=0.687.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R48b97122d7d7028944f7",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "40-USDCHF-sequence.set",
+   "sha256": "ec330bdc2bf70263f9fd01e75548e1730c00101f334c9cc4c7c75bceba36c80f",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R5ff763e3d1f18e08a0e6\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=211_Prf=854_DD=389_PF=2.19_SR=2.71_ARF=0.607.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "R5ff763e3d1f18e08a0e6",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "41-XAGUSD-sequence.set",
+   "sha256": "576cae332666f0c4d39f32e22a211e9a563cbfaab8e1f4c49f2f33bf1be11e24",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R902c5a5668b32897d8aa\\XAGUSD\\GOAT V1.49 XAGUSD,M1_Trds=135_Prf=821_DD=541_PF=1.46_SR=2.71_ARF=0.390.set",
+   "asset": "XAGUSD",
+   "engine": "sequence",
+   "setup": "R902c5a5668b32897d8aa",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "42-XAGUSD-sequence.set",
+   "sha256": "bdb2c85a765dcae01a58ccac6c429faa6798673da60b271aecdef893a3e1330a",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\Ra648300a4141720d5ca1\\XAGUSD\\GOAT V1.49 XAGUSD,M1_Trds=351_Prf=1913_DD=965_PF=1.39_SR=2.69_ARF=0.591.set",
+   "asset": "XAGUSD",
+   "engine": "sequence",
+   "setup": "Ra648300a4141720d5ca1",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "43-EURCAD-sequence.set",
+   "sha256": "908275642744a1c5e344e52d55a40f6bc330f8397342c5a0bd7813af36b6c755",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\Rbd274c24ac38c1d87fc1\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=265_Prf=924_DD=382_PF=1.97_SR=2.66_ARF=0.668.set",
+   "asset": "EURCAD",
+   "engine": "sequence",
+   "setup": "Rbd274c24ac38c1d87fc1",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "44-EURCAD-sequence.set",
+   "sha256": "9645a6a6dba938d22ca23cd8a018860b5eb27b9d2dfe071e820e4c83d760c046",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\Rc16dd6f77a9ae5414e06\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=639_Prf=1117_DD=534_PF=1.93_SR=2.82_ARF=0.732.set",
+   "asset": "EURCAD",
+   "engine": "sequence",
+   "setup": "Rc16dd6f77a9ae5414e06",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "45-GBPUSD-sequence.set",
+   "sha256": "9014ee46f5fb1f579006fe5229b105ddf77a4e86815516f0333f5d88e2d55782",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\Rd476d0cfa8df4b6186fe\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=323_Prf=1024_DD=263_PF=3.01_SR=4.24_ARF=1.155.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "Rd476d0cfa8df4b6186fe",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "46-GBPUSD-sequence.set",
+   "sha256": "9bf9acb5a420212e6592382c218820d8629eecac63ee05625c0fc7ac3040437e",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\Rd476d0cfa8df4b6186fe\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=351_Prf=1113_DD=471_PF=2.38_SR=2.73_ARF=0.726.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "Rd476d0cfa8df4b6186fe",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "47-GBPUSD-sequence.set",
+   "sha256": "d13450355cd6f2d35938541ba321e36d725fb420f86ddc7f604eb3fc10850975",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\Rd476d0cfa8df4b6186fe\\GBPUSD\\GOAT V1.49 GBPUSD,M1_Trds=374_Prf=1132_DD=496_PF=2.31_SR=2.64_ARF=0.672.set",
+   "asset": "GBPUSD",
+   "engine": "sequence",
+   "setup": "Rd476d0cfa8df4b6186fe",
+   "run": "hunt-t3-catalog-o3-02-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "48-NDX-sequence.set",
+   "sha256": "d4dc0a70189262b4368e41a5d3c0458be8531cbcc45e536d99f825c0b831a45f",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rcfefcb4a3aef\\deploy\\R68c68b7da20d3ebf22cc\\NDX\\GOAT V1.49 NDX,M1_Trds=128_Prf=2616_DD=1691_PF=1.51_SR=6.46_ARF=0.531.set",
+   "asset": "NDX",
+   "engine": "sequence",
+   "setup": "R68c68b7da20d3ebf22cc",
+   "run": "hunt-t3-catalog-o3-04-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "49-SP500-sequence.set",
+   "sha256": "ae7744e5b43d70352423c8fb031cc3c7acae959f154948058fddd35abaf526a3",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rcfefcb4a3aef\\deploy\\R7fdbf479d1c76536d472\\SP500\\GOAT V1.49 SP500,M1_Trds=241_Prf=1518_DD=811_PF=1.80_SR=3.08_ARF=0.669.set",
+   "asset": "SP500",
+   "engine": "sequence",
+   "setup": "R7fdbf479d1c76536d472",
+   "run": "hunt-t3-catalog-o3-04-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "50-SP500-sequence.set",
+   "sha256": "86334442b179ef4c76da68661d264a1a3214d141c202b5e868c2b89f95d0aff5",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R1139eede186f\\deploy\\Rff3abdca44d9ce25735f\\SP500\\GOAT V1.49 SP500,M1_Trds=313_Prf=913_DD=950_PF=1.37_SR=2.52_ARF=0.227.set",
+   "asset": "SP500",
+   "engine": "sequence",
+   "setup": "Rff3abdca44d9ce25735f",
+   "run": "hunt-t3-catalog-o3-05-foos",
+   "route": "catalog"
+  },
+  {
+   "file": "51-USDCHF-sequence.set",
+   "sha256": "0a421ecd7859f0cc02246b5593efc134f5cb7257b4548ac346920afaad73e5f1",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R1222a9262945\\deploy\\R01a1c2f0b37287577490\\USDCHF\\GOAT V1.49 USDCHF,M1_Trds=262_Prf=484_DD=341_PF=1.66_SR=3.55_ARF=0.482.set",
+   "asset": "USDCHF",
+   "engine": "sequence",
+   "setup": "R01a1c2f0b37287577490",
+   "run": "hunt-t3-nonrr-fitness-foos-03",
+   "route": "catalog"
+  },
+  {
+   "file": "52-WS30-sequence.set",
+   "sha256": "2d652b8f4238b88f0c8ef47cd2d554b3a19f078ce46aac59988d0aa9a31bb135",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R853c83146d7d\\deploy\\R21518cc1c57db2fca377\\WS30\\GOAT V1.49 WS30,M1_Trds=256_Prf=1027_DD=767_PF=1.56_SR=3.60_ARF=0.317.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R21518cc1c57db2fca377",
+   "run": "hunt-t3-nonrr-fitness-foos-04",
+   "route": "catalog"
+  },
+  {
+   "file": "53-WS30-sequence.set",
+   "sha256": "034d141d8c7fa79b593379073be20b2c093e6e498954ffd2802ce06f660c3147",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R853c83146d7d\\deploy\\R21518cc1c57db2fca377\\WS30\\GOAT V1.49 WS30,M1_Trds=306_Prf=1611_DD=911_PF=1.67_SR=4.35_ARF=0.707.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R21518cc1c57db2fca377",
+   "run": "hunt-t3-nonrr-fitness-foos-04",
+   "route": "catalog"
+  },
+  {
+   "file": "54-EURUSD-sequence.set",
+   "sha256": "439b643f899d614bb1d4cb56ddbac5a40a1b2e439c2c27b4325f303a2ff3b810",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Re8ad6d9c609c\\deploy\\Ra32a2e0975ef9faa5b63\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=205_Prf=508_DD=434_PF=1.53_SR=2.82_ARF=0.475.set",
+   "asset": "EURUSD",
+   "engine": "sequence",
+   "setup": "Ra32a2e0975ef9faa5b63",
+   "run": "hunt-t3-nonrr-untried-foos-07",
+   "route": "catalog"
+  },
+  {
+   "file": "55-XAUUSD-sequence.set",
+   "sha256": "c75034d95c641994a0d357df2801b6a9589868f10ec780e677f460e3fcb3c7e6",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\R5c137113ef4cc7620e34\\XAUUSD\\GOAT V1.49 XAUUSD,M1_Trds=166_Prf=859_DD=507_PF=1.71_SR=3.52_ARF=0.697.set",
+   "asset": "XAUUSD",
+   "engine": "sequence",
+   "setup": "R5c137113ef4cc7620e34",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  },
+  {
+   "file": "56-EURGBP-sequence.set",
+   "sha256": "58280bab7ab3930c88232ebeff4b50e4fdccde4958a9f737fd501f1355843072",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\R82bfad4262fc4d3fecf5\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=181_Prf=515_DD=211_PF=2.09_SR=2.89_ARF=0.690.set",
+   "asset": "EURGBP",
+   "engine": "sequence",
+   "setup": "R82bfad4262fc4d3fecf5",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  },
+  {
+   "file": "57-WS30-sequence.set",
+   "sha256": "c556c4a0069da1f5c298d828f5025e95506526b9e4e4db81a2a85a4fefa8ff7b",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\R9378a8d1d581a3661da5\\WS30\\GOAT V1.49 WS30,M1_Trds=263_Prf=505_DD=302_PF=1.58_SR=2.53_ARF=0.471.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "R9378a8d1d581a3661da5",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  },
+  {
+   "file": "58-WS30-sequence.set",
+   "sha256": "8c77356dcf3300a5d1340ac3c29bda27e03db13878ba4eab06962afbccad2bae",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\Re283bda754d33e59665b\\WS30\\GOAT V1.49 WS30,M1_Trds=171_Prf=863_DD=382_PF=2.58_SR=5.81_ARF=0.572.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Re283bda754d33e59665b",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  },
+  {
+   "file": "59-WS30-sequence.set",
+   "sha256": "c3db5218df392977501594064eec05960c2fdebfe2b5f4a5fd62ddf4b7783ff7",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\Re283bda754d33e59665b\\WS30\\GOAT V1.49 WS30,M1_Trds=193_Prf=915_DD=393_PF=2.23_SR=4.66_ARF=0.800.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Re283bda754d33e59665b",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  },
+  {
+   "file": "60-WS30-sequence.set",
+   "sha256": "941ef53764a2973d06aed0a66a6d28c618cf51b08ad9edb42165fe5df392dcfb",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\Re283bda754d33e59665b\\WS30\\GOAT V1.49 WS30,M1_Trds=232_Prf=919_DD=500_PF=1.94_SR=3.82_ARF=0.487.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Re283bda754d33e59665b",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  },
+  {
+   "file": "61-WS30-sequence.set",
+   "sha256": "2f5044019497178ff1d5deab53ba41f0140b39d48535af694e8a61ef1fabadc8",
+   "original_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\Re283bda754d33e59665b\\WS30\\GOAT V1.49 WS30,M1_Trds=235_Prf=735_DD=392_PF=1.96_SR=4.00_ARF=0.735.set",
+   "asset": "WS30",
+   "engine": "sequence",
+   "setup": "Re283bda754d33e59665b",
+   "run": "hunt-t3-nonrr-remaining-foos-08",
+   "route": "catalog"
+  }
+ ]
+}

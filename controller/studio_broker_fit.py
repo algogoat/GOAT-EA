@@ -606,8 +606,12 @@ def offset_neutral(values, defaults, timeframe):
         stop_tf = _number(values, defaults, 'Single_Time_Stop_TF')
         if stop_tf is None or stop_tf in SERVER_DAY_TFS:
             reasons.append('Single_Time_Stop_TF=' + SERVER_DAY_TFS.get(stop_tf, 'unreadable'))
-    # B54 (spec 7): the prior day is the broker's D1 bar, which starts at the server's midnight (ruling 5).
-    if _number(values, defaults, 'BRK_Mode') == 2:
+    # B54 (spec 7): the prior day is the broker's D1 bar, which starts at the server's midnight (ruling 5). A BRK_Mode the
+    # SET or schema gives but GOAT cannot read could be the prior day: never neutral (Claude-Mac 6764975563, optional item).
+    brk_mode = _number(values, defaults, 'BRK_Mode')
+    if brk_mode is None and ('BRK_Mode' in values or 'BRK_Mode' in defaults):
+        reasons.append('BRK_Mode unreadable')
+    elif brk_mode == 2:
         reasons.append('BRK_Mode=BRK_PriorDay')
     if _number(values, defaults, 'Clock_Mode') not in (None, 0):
         reasons.append('Clock_Mode=Clock_NewYork')

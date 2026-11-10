@@ -15,7 +15,7 @@
   "ORB_TF_NOT_M1_TO_H1": "Initialization Failed: ORB_TF_ must be TF_M1, TF_M5, TF_M15 or TF_H1 (the range is counted in its minutes).",
   "ORB_START_RANGE": "Initialization Failed: ORB_Start_Minute must be between 0 and Lim-5 (Lim is 1020 under ORB_Clock_NewYork, 1260 under ORB_Clock_London) and a multiple of ORB_TF_'s minutes.",
   "ORB_RANGE_MINUTES": "Initialization Failed: ORB_Range_Minutes must be between 5 and 240, a multiple of ORB_TF_'s minutes, and end before Lim (ORB_Start_Minute+ORB_Range_Minutes < Lim).",
-  "ORB_ENTRY_WINDOW": "Initialization Failed: ORB_Entry_Minutes cannot be negative, and the entry window must end by Lim (ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim).",
+  "ORB_ENTRY_WINDOW": "Initialization Failed: ORB_Entry_Minutes must be between 0 and Lim, and the entry window must end by Lim (ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim).",
   "ORB_BUFFER_RANGE": "Initialization Failed: ORB_Buffer_ATR must be between 0 and 5.",
   "ORB_RANGE_FILTER_NEGATIVE": "Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off).",
   "ORB_RANGE_FILTER_ORDER": "Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on.",
@@ -245,6 +245,66 @@
     "ORB_Start_Minute@stop": "ORB_BREAKOUT_NOT_BUILT"
    },
    "ladder": "ORB_START_RANGE"
+  },
+  {
+   "file": "orb-h1-start-misaligned.set",
+   "about": "H1 trigger: ORB_Start_Minute 570 is not a multiple of 60 (a probe end)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "60",
+    "ORB_Range_Minutes": "60",
+    "ORB_Start_Minute": "540||540||30||570||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_START_RANGE"
+   },
+   "ladder": "ORB_START_RANGE"
+  },
+  {
+   "file": "orb-m15-range-misaligned.set",
+   "about": "M15 trigger: ORB_Range_Minutes 20 is not a multiple of 15 (a probe end)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "15",
+    "ORB_Range_Minutes": "15||15||5||20||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Range_Minutes@stop": "ORB_RANGE_MINUTES"
+   },
+   "ladder": "ORB_RANGE_MINUTES"
+  },
+  {
+   "file": "orb-ny-sum-lim.set",
+   "about": "New York anchor: 1010+5 ends before Lim, 1015+5 = Lim 1020 does not",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Start_Minute": "1010||1010||5||1015||Y",
+    "ORB_Range_Minutes": "5"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Start_Minute@stop": "ORB_RANGE_MINUTES"
+   },
+   "ladder": "ORB_RANGE_MINUTES"
+  },
+  {
+   "file": "orb-entry-int-max.set",
+   "about": "ORB_Entry_Minutes at the int maximum: bounded by Lim before any sum reads it",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Entry_Minutes": "0||0||2147483647||2147483647||Y"
+   },
+   "probes": {
+    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "ORB_Entry_Minutes@stop": "ORB_ENTRY_WINDOW"
+   },
+   "ladder": "ORB_ENTRY_WINDOW"
   }
  ]
 }

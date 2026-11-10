@@ -11,7 +11,9 @@
 // 3. The rules the controller cannot port: the chart's timeframe (PriorDay on TF_Cur, the M_Current cadence), ORB on a live
 //    chart, and the two pre-2007 test starts, each refused and each next to an accepted neighbour.
 // 4. Load-bearing: mutants of the entrypoint (ORB's *_NOT_BUILT line removed, a BRK one restored, an ORB term added without
-//    removing its line, Lim 1260 -> 1320, BRK_Bars' bound 500 -> 501, the D1 chart bound >= -> >) must each be caught.
+//    removing its line, Lim 1260 -> 1320, either alignment term removed, B4+B5 >= Lim -> >, BRK_Bars' bound 500 -> 501, the
+//    D1 chart bound >= -> >) must each be caught. Not shown here: the 32-bit wrap that ORB_Entry_Minutes' own bound guards;
+//    the harness computes in JS numbers, which never wrap, so orb-entry-int-max.set is refused with or without that term.
 // What it does not prove: compile cleanliness (MetaEditor), MT5's own SET reader, or any trade.
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
@@ -158,7 +160,11 @@ const MUTANTS=[
  ['the ORB not-built line removed',mutate('   if(ORB_Mode==ORB_Breakout)                               {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}\n',''),'ORB_Breakout has no signal term, but the tester gives'],
  ['a BRK not-built line restored',mutate('// B54:end b54-init','   if(BRK_Mode==BRK_NBar) {Alert("Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet."); return INIT_FAILED;}\n// B54:end b54-init'),'BRK_NBar has a signal term, but the tester gives'],
  ['a term added, its line kept',mutate('// B54:begin b54-init','// B54:begin orb-signal\n   if(ORB_Mode==ORB_Breakout) {}\n// B54:end orb-signal\n// B54:begin b54-init'),'ORB_Breakout has a signal term, but the tester gives'],
- ['Lim 1260 -> 1320',mutate('? 1260 : 1020','? 1320 : 1020',3),'orb-london-lim.set ORB_Start_Minute@stop'],
+ ['Lim 1260 -> 1320',mutate('? 1260 : 1020','? 1320 : 1020',4),'orb-london-lim.set ORB_Start_Minute@stop'],
+ // Claude-Mac 6764975563 fix 2: the alignment terms and B4+B5 < Lim, each reached by a probe end through OnInit.
+ ['ORB_Start_Minute alignment removed',mutate(' || ORB_Start_Minute%((int)ORB_TF_)!=0',''),'orb-h1-start-misaligned.set ORB_Start_Minute@stop'],
+ ['ORB_Range_Minutes alignment removed',mutate(' || ORB_Range_Minutes%((int)ORB_TF_)!=0',''),'orb-m15-range-misaligned.set ORB_Range_Minutes@stop'],
+ ['B4+B5 >= Lim -> >',mutate('ORB_Start_Minute+ORB_Range_Minutes>=(','ORB_Start_Minute+ORB_Range_Minutes>('),'orb-ny-sum-lim.set ORB_Start_Minute@stop'],
  ['BRK_Bars bound 500 -> 501',mutate('BRK_Bars>500','BRK_Bars>501'),'brk-nbar-bars-ends.set BRK_Bars@stop'],
  ['D1 chart bound >= -> >',mutate('PeriodSeconds(PERIOD_CURRENT)>=PeriodSeconds(PERIOD_D1)','PeriodSeconds(PERIOD_CURRENT)>PeriodSeconds(PERIOD_D1)'),'PriorDay on TF_Cur, D1 chart'],
 ];

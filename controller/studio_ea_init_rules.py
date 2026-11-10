@@ -558,14 +558,15 @@ EA_INIT_RULES = (
           lambda v: _orb(v) and (v['ORB_Range_Minutes'] < 5 or v['ORB_Range_Minutes'] > 240
                                  or _orb_misaligned(v, 'ORB_Range_Minutes')
                                  or v['ORB_Start_Minute'] + v['ORB_Range_Minutes'] >= _orb_lim(v))),
-    _rule('ORB_ENTRY_WINDOW', [5139], 'ORB_Entry_Minutes<0 || ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>',
+    _rule('ORB_ENTRY_WINDOW', [5139], 'ORB_Entry_Minutes<0 || ORB_Entry_Minutes>(ORB_Clock==ORB_Clock_London ? 1260 : 1020) || ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>',
           ['ORB_Mode', 'ORB_Entry_Minutes', 'ORB_Start_Minute', 'ORB_Range_Minutes', 'ORB_Clock'],
           {'ORB_Mode': ['ORB_Disabled'], 'ORB_Clock': ['ORB_Clock_London']},
-          'ORB_Mode!=ORB_Disabled && (ORB_Entry_Minutes<0 || ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>Lim) '
-          '(spec 4.1 B6; B6 <= Lim follows)',
-          'Initialization Failed: ORB_Entry_Minutes cannot be negative, and the entry window must end by Lim '
+          'ORB_Mode!=ORB_Disabled && (ORB_Entry_Minutes<0 || ORB_Entry_Minutes>Lim '
+          '|| ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes>Lim) (spec 4.1 B6; B6 is bounded before the sum, which a '
+          '32-bit int could wrap: Claude-Mac 6764975563)',
+          'Initialization Failed: ORB_Entry_Minutes must be between 0 and Lim, and the entry window must end by Lim '
           '(ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim).',
-          lambda v: _orb(v) and (v['ORB_Entry_Minutes'] < 0
+          lambda v: _orb(v) and (v['ORB_Entry_Minutes'] < 0 or v['ORB_Entry_Minutes'] > _orb_lim(v)
                                  or v['ORB_Start_Minute'] + v['ORB_Range_Minutes'] + v['ORB_Entry_Minutes'] > _orb_lim(v))),
     _rule('ORB_BUFFER_RANGE', [5140], 'ORB_Mode!=ORB_Disabled && (ORB_Buffer_ATR<0.0 || ORB_Buffer_ATR>5.0)',
           ['ORB_Mode', 'ORB_Buffer_ATR'], {'ORB_Mode': ['ORB_Disabled']},

@@ -608,6 +608,7 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='2'), defaults, 'M1'), (False, ['BRK_Mode=BRK_PriorDay']))
         self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='2', BRK_TF_='240'), defaults, 'M1')[1], ['BRK_TF_=H4', 'BRK_Mode=BRK_PriorDay'])
         self.assertIn('BRK_TF_ unreadable', bf.offset_neutral(dict(single, BRK_TF_='H4'), defaults, 'M1')[1])
+        self.assertIn('BRK_Mode unreadable', bf.offset_neutral(dict(single, BRK_Mode='BRK_PriorDay'), defaults, 'M1')[1])
         b53 = {name: text for name, text in defaults.items() if not name.startswith(('BRK_', 'ORB_'))}
         self.assertEqual(bf.offset_neutral({k: v for k, v in values.items() if not k.startswith(('BRK_', 'ORB_'))}, b53, 'M1'), (True, []))
 

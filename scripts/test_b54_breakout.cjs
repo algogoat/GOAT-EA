@@ -17,7 +17,8 @@
 // 4. Load-bearing: the spec's mutants (6.3: the latch removed, the latch keyed by position side, Close[0] read, bar 1 inside
 //    the level, >= for >, the Sunday stub kept, D taken at evaluation time) plus the ATR read at evaluation time and the
 //    fresh-cross condition dropped must each be caught.
-// Not here yet (later PR A commits): Random_Direction, the opposite exit, FastSpeed both ways, and flags-off parity.
+// Also: FastSpeed both ways; the opposite exit as the opposite break; Random_Direction with the latch, for five seeds.
+// Flags-off parity against B53 is scripts/test_b54_parity.cjs.
 'use strict';
 const assert=require('node:assert/strict');
 const H=require('./b50_tick_harness.cjs');
@@ -32,8 +33,8 @@ const tree=H.loadSources();
 const OP=(()=>{const m=H.compile(tree).macros;return {BUY:Number(m.get('OP_BUY').body),SELL:Number(m.get('OP_SELL').body),NULL:Number(m.get('OP_NULL').body)};})();
 const BASE={EMA_Mode:'Trade_Disabled',ADX_Mode:'Trade_Disabled',RSI_Mode:'RSI_Disabled',Mode_Bias:'Bias_Disabled',
  Engine_Mode:'Engine_Single',Single_SL_ATR:1.5,BRK_TF_:'TF_H1'};
-function world(files,{inputs={},at,bars={},atr=()=>0.0010}={}){
- return H.build({files},{tester:true,start:at,inputs:{...BASE,...inputs},series:seriesOf(bars),
+function world(files,{inputs={},at,bars={},atr=()=>0.0010,fastSpeed=true}={}){
+ return H.build({files},{tester:true,fastSpeed,start:at,inputs:{...BASE,...inputs},series:seriesOf(bars),
   indicator:(name,buffer,shift,w)=>name==='ATR_MA'?atr(shift,w):undefined});
 }
 const name=v=>v===OP.BUY?'BUY':v===OP.SELL?'SELL':v===OP.NULL?'NULL':String(v);
@@ -89,7 +90,7 @@ function path(points){   // a tick every 20 s (7 s past), linear between [time, 
 const at=(h,m=0)=>T(2026,10,6,h,m);
 function ticks(files){
  const P=[];
- const run=(inputs,points)=>{const W=world(files,{inputs:{BRK_Mode:'BRK_PriorDay',...inputs},at:at(9,59),bars:DAY_BARS});W.run(path(points));return W;};
+ const run=(inputs,points,fastSpeed=true)=>{const W=world(files,{inputs:{BRK_Mode:'BRK_PriorDay',...inputs},at:at(9,59),bars:DAY_BARS,fastSpeed});W.run(path(points));return W;};
  const sends=W=>W.w.trace.filter(x=>x.op==='OrderSend');
  // The buy from the 09:00 up-cross is stopped out at 10:40 (SL 1.5 x 0.0010 below); the 11:00 up-cross is the same day's.
  const down=[[at(10),1.1000],[at(10,30),1.1000],[at(10,40),1.0970],[at(14),1.0990]];
@@ -105,6 +106,29 @@ function ticks(files){
  const R=run({Reverse_Seq:true},up);
  const types=sends(R).map(x=>x.type===0?'buy':'sell');
  if(types.join(',')!=='sell,buy') P.push('Reverse_Seq: orders '+types.join(',')+', wanted sell,buy');
+ // FastSpeed both ways: the same orders, prices, stops, closes and times. Only the order comment differs (FastSpeed sends
+ // none, as B53 does), so it is left out of the comparison.
+ const bare=W=>JSON.stringify(W.w.trace.map(({comment,...x})=>x));
+ for(const [label,inputs,points] of [['plain',{},down],['Reverse_Seq',{Reverse_Seq:true},up]]){
+  const fast=run(inputs,points,true),visual=run(inputs,points,false);
+  if(bare(fast)!==bare(visual)) P.push('FastSpeed true and false trade alike ('+label+')');
+ }
+ // The opposite exit is the opposite break (spec 5): with Single_Exit_Opposite the 10:00 buy, never stopped on a flat
+ // path, is closed at 13:00 by the 12:00 down-cross (GoatSignalAll carries the term), and the sell opens then.
+ const E=run({Single_Exit_Opposite:true},[[at(10),1.1000],[at(14),1.1000]]);
+ const closes=E.w.trace.filter(x=>/^(PositionClose|BrokerStop|BrokerTake)$/.test(x.op)).map(x=>new Date(x.time*1000).toISOString().slice(11,13));
+ if(kinds(E)!=='buy@10,sell@13'||closes[0]!=='13') P.push('opposite exit: orders '+kinds(E)+', first close at '+closes[0]+', wanted buy@10,sell@13 and a 13:00 close');
+ // Random_Direction (spec 3.5 item 4): the latch is checked before the draw and recorded for the signal, so for every
+ // seed the day's second up-cross opens nothing, whichever side the first draw took (a 30-bar time stop frees the
+ // first by 10:31); with BRK_Once_Per_Level=false it opens at 12:00.
+ const RD={Random_Direction:true,Single_Flat_Only:true,Single_Time_Stop_Bars:30,Single_Time_Stop_TF:'TF_Cur'};
+ const flat=[[at(10),1.1000],[at(12,30),1.1000]];
+ for(const seed of [1,2,3,4,5]){
+  const L=run({...RD,Random_Seed:seed},flat),O=run({...RD,Random_Seed:seed,BRK_Once_Per_Level:false},flat);
+  const hours=W=>sends(W).map(x=>new Date(x.time*1000).toISOString().slice(11,13)).join(',');
+  if(hours(L)!=='10') P.push('Random_Direction seed '+seed+': entries at '+hours(L)+', wanted 10 only');
+  if(hours(O)!=='10,12') P.push('Random_Direction seed '+seed+', latch off: entries at '+hours(O)+', wanted 10,12');
+ }
  return {P,W};
 }
 
@@ -148,6 +172,7 @@ const MUTANTS=[
  ['D taken at evaluation time','int k=GoatBrkBarAt(PERIOD_D1,open_s);','int k=GoatBrkBarAt(PERIOD_D1,TimeCurrent());'],
  ['the ATR read at evaluation time','double atr=GoatBrkATR(open_s+PeriodSeconds(tf));','double atr=GoatBrkATR(TimeCurrent());'],
  ['the fresh cross dropped','if(close_s>pdh+buf && prev<=pdh+buf) return OP_BUY;','if(close_s>pdh+buf) return OP_BUY;'],
+ ['GoatSignalAll without the sell term','            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)); // B54 (spec 5)','            ); // B54 (spec 5)'],
 ];
 const caught=[];
 for(const [label,from,to] of MUTANTS){const found=all(mutate(from,to));assert.ok(found.length>0,'mutant "'+label+'" is caught');caught.push(label+': '+found[0]);}

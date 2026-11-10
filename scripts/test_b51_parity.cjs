@@ -131,6 +131,9 @@ function adoptedBasket(){
 const ALL=[...Object.entries(FIXTURES),['adopted_basket',adoptedBasket()],['adopted_single',adoptedSingle()]];
 const BETA_OFF={Random_Seed:1,Single_Flat_Only:false,Single_BE_ATR:0,Single_Trail_Start_ATR:0,Single_Trail_ATR:0,Single_Partial_ATR:0,Single_Partial_Fraction:0,Single_Partial_BE:false};   // this tree's B50-beta inputs, at their defaults (spelt out)
 function worldFor(source,fx,fastSpeed,extra={}){return H.build(source,{...fx,inputs:{...fx.inputs,...(source===undefined?extra:{})},fastSpeed,tester:fx.tester??true});}
+// B54 (PR A, spec 6.3): scripts/test_b54_parity.cjs runs these same fixtures against B53. Required as a module, this file
+// only hands them over; run directly, it runs as before.
+if(require.main!==module){module.exports={ALL,MON,H1,DAY,path};return;}
 const runs={};
 for(const [name,fx0] of ALL){
  for(const fastSpeed of [true,false]){

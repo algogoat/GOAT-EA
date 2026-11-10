@@ -600,6 +600,16 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(bf.offset_neutral(dict(single, Single_Time_Stop_TF='60'), defaults, 'M1'), (True, []))
         self.assertEqual(bf.offset_neutral(dict(single, Single_Time_Stop_TF='240', Engine_Mode='0'), defaults, 'M1'), (True, []),
                          'the grid engine never runs the time stop')
+        # B54 (spec 7; GOAT-EA#303 ruling, condition 5): BRK_TF_ is a timeframe input like the others, and the prior day is
+        # the broker's D1 bar. A SET and schema from before B54 (no BRK_TF_ at all) are neutral as before.
+        self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='1', BRK_TF_='240'), defaults, 'M1'), (False, ['BRK_TF_=H4']))
+        self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='1', BRK_TF_='1440'), defaults, 'M1'), (False, ['BRK_TF_=D1']))
+        self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='1'), defaults, 'M1'), (True, []))
+        self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='2'), defaults, 'M1'), (False, ['BRK_Mode=BRK_PriorDay']))
+        self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='2', BRK_TF_='240'), defaults, 'M1')[1], ['BRK_TF_=H4', 'BRK_Mode=BRK_PriorDay'])
+        self.assertIn('BRK_TF_ unreadable', bf.offset_neutral(dict(single, BRK_TF_='H4'), defaults, 'M1')[1])
+        b53 = {name: text for name, text in defaults.items() if not name.startswith(('BRK_', 'ORB_'))}
+        self.assertEqual(bf.offset_neutral({k: v for k, v in values.items() if not k.startswith(('BRK_', 'ORB_'))}, b53, 'M1'), (True, []))
 
     def test_a_broker_worth_more_per_point_never_rounds_the_start_lot_up(self):
         # Codex P1 on 8975f1b: reference start lot 0.01 (VOLUME_MIN) and a broker whose value per point is 1.25x the

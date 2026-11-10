@@ -443,7 +443,7 @@ class UnlicensedMonitorTests(PauseFixture):
         self.assertEqual(record['phase'], 'cancel_expired_awaiting_receipt')
         self.assertEqual(record['cancels'][0]['request_id'], original)
         self.assertTrue(record['cancels'][0]['adopted'])
-        self.assertIn('replaced by another terminal', record['blocker']['message'])
+        self.assertIn('waiting for its sign-in to be approved', record['blocker']['message'])
         self.assertIn('re-pair', pause.plain(record))
         self.assertEqual(len(self.issued()), 1)
         self.assertFalse((self.c.root / 'cancel-successors').exists())

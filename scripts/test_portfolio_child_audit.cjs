@@ -127,6 +127,24 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
  }
  assert.equal(api.GoatChildAuditMaps(original+'Random_Seed=7\n',0,50,2,child+b51.replace('Random_Seed=1','Random_Seed=7')+tail,expert),true,'a seed SET and its child');passed++;
  assert.equal(api.GoatChildAuditMaps(original+'Random_Seed=7\n',0,50,2,child+tail,expert),false,'a seed SET, a B50-alpha child without the input');passed++;}
+// B54 (A0): a B54 child also carries the breakout inputs at the end, which WriteSet writes only when they differ from their
+// defaults: a SET without them maps only to a child holding the defaults (both families Disabled).
+{const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'
+  +'Single_Time_Stop_TF=0\nClock_Mode=0\nServer_Clock_Model=0\nServer_UTC_Offset=2\nNY_Session=09:30-16:00\nRollover_Block_Minutes=0\n';
+ const b49b='Fix_MoneyVolume=0\nGate_Recheck=0\nFix_ClosePath=0\nMax_Spread_Points=0\nMin_Margin_Level_PC=0.0\nFix_Clock=0\nFix_FeedGuard=0\nDiag_TickTiming=0\nFix_TickLoad=0\n';
+ const b51='Random_Direction=false\nRandom_Seed=1\nSingle_Flat_Only=false\nSingle_BE_ATR=0.0\nSingle_Trail_Start_ATR=0\nSingle_Trail_ATR=0.00\nSingle_Partial_ATR=0\nSingle_Partial_Fraction=0.0\nSingle_Partial_BE=false\n';
+ const b54='BRK_Mode=0\nBRK_TF_=60\nBRK_Bars=20\nBRK_Buffer_ATR=0.0\nBRK_Once_Per_Level=true\nORB_Mode=0\nORB_Clock=0\nORB_TF_=5\n'
+  +'ORB_Start_Minute=570\nORB_Range_Minutes=30\nORB_Entry_Minutes=0\nORB_Buffer_ATR=0.00\nORB_Min_Range_ATR=0\nORB_Max_Range_ATR=0.0\n';
+ const child=head+inputs+declared+'BlindExport=false\nLedger_Mode=0\n'+b50+b49b+b51;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b54+tail,expert),true,'B49a SET, B54 child at the defaults');passed++;
+ for(const [from,to] of [['BRK_Mode=0','BRK_Mode=1'],['BRK_TF_=60','BRK_TF_=15'],['BRK_Bars=20','BRK_Bars=21'],['BRK_Buffer_ATR=0.0','BRK_Buffer_ATR=0.5'],
+  ['BRK_Once_Per_Level=true','BRK_Once_Per_Level=false'],['ORB_Mode=0','ORB_Mode=1'],['ORB_Clock=0','ORB_Clock=1'],['ORB_TF_=5','ORB_TF_=15'],
+  ['ORB_Start_Minute=570','ORB_Start_Minute=480'],['ORB_Range_Minutes=30','ORB_Range_Minutes=60'],['ORB_Entry_Minutes=0','ORB_Entry_Minutes=120'],
+  ['ORB_Buffer_ATR=0.00','ORB_Buffer_ATR=0.1'],['ORB_Min_Range_ATR=0','ORB_Min_Range_ATR=0.5'],['ORB_Max_Range_ATR=0.0','ORB_Max_Range_ATR=3.5']]){
+  assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b54.replace(from,to)+tail,expert),false,'B49a SET, child at '+to);passed++;
+ }
+ assert.equal(api.GoatChildAuditMaps(original+'BRK_Bars=55\n',0,50,2,child+b54.replace('BRK_Bars=20','BRK_Bars=55')+tail,expert),true,'a B54 SET and its child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'BRK_Bars=55\n',0,50,2,child+tail,expert),false,'a B54 SET, a B53 child without the inputs');passed++;}
 // The merged line (B50 + B51 with B49b): a child carries B50's, B49b's and B51's inputs, in the header's order (each
 // written only when it differs from its default); a SET without them maps only to a child holding every default.
 {const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'

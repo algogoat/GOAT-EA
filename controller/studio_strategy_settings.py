@@ -76,6 +76,9 @@ def numeric(value, definition, *, step=False):
 # break-even and trailing (beta-1b) and its partial close (section 8.3). Their defaults (no benchmark, seed 1, no
 # break-even, no trailing, no partial) reproduce B50-alpha. On the merged line (B50 + B51 with B49b) the order is B50's,
 # then B49b's, then B51's. Each group is a build generation: a schema declares all of it or none.
+# B54 (PR A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md sections 6.2 and 7) appends the breakout entries of Engine_Single after B51's,
+# in their own group: family A (BRK_*, an N-bar or prior-day breakout) and family B (ORB_*, a session opening range). Their
+# defaults (both modes Disabled) reproduce B53; scripts/test_b54_gate0.cjs and test_b54_gate0.py prove it on the pool.
 B50_INPUTS = ('Engine_Mode', 'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite',
               'Single_Time_Stop_Bars', 'Single_Time_Stop_TF', 'Clock_Mode', 'Server_Clock_Model', 'Server_UTC_Offset',
               'NY_Session', 'Rollover_Block_Minutes')
@@ -83,8 +86,10 @@ B49B_INPUTS = ('Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_P
                'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad')
 B51_INPUTS = ('Random_Direction', 'Random_Seed', 'Single_Flat_Only', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR',
               'Single_Partial_ATR', 'Single_Partial_Fraction', 'Single_Partial_BE')
-APPENDED_INPUTS = ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS
-APPENDED_GROUPS = (B50_INPUTS, B49B_INPUTS, B51_INPUTS)
+B54_INPUTS = ('BRK_Mode', 'BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_Mode', 'ORB_Clock', 'ORB_TF_',
+              'ORB_Start_Minute', 'ORB_Range_Minutes', 'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR')
+APPENDED_INPUTS = ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS
+APPENDED_GROUPS = (B50_INPUTS, B49B_INPUTS, B51_INPUTS, B54_INPUTS)
 
 
 def appended_default(definition):

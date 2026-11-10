@@ -120,6 +120,8 @@ class RealSchemaPinningTests(unittest.TestCase):
         # B50 (A0, GOAT-EA#269 P1): the complete template omits the B50 axes, which are pinned at their defaults, fixed.
         b50 = {'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite', 'Single_Time_Stop_Bars', 'Single_Time_Stop_TF',
                'Rollover_Block_Minutes'} | {'Random_Seed', 'Single_BE_ATR', 'Single_Trail_Start_ATR', 'Single_Trail_ATR', 'Single_Partial_ATR', 'Single_Partial_Fraction', 'Single_Partial_BE'}   # B51 (B50-beta-1): the appended B50-beta axes likewise
+        b50 |= {'BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_TF_', 'ORB_Start_Minute', 'ORB_Range_Minutes',
+                'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR'}   # B54 (A0): the breakout axes likewise
         self.assertEqual(set(pinned), set(source) | b50)
         self.assertFalse(b50 & set(source))
         for name in b50:

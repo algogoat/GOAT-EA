@@ -29,6 +29,10 @@
 // commit and is superseded, never installed: its binary refused every RiskperSeq single at OnInit. B53's assembly makes the
 // tree B53's identity (candidate-builds/beta17-B53/identity.json): every source hashes to it, its sources are exactly the
 // compile closure, and the build ID and marker are its own (IDENTITY_LINES, the one unmarked change).
+// B54 (PR A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md section 6.3): B53's tree is merged (216e1622, GOAT-EA#296) and B54 builds
+// on it, so this guard now proves B53's own tree, read from that commit (as test_b50_no_drift.cjs proves B50-alpha's), and
+// that the working tree descends from it. scripts/test_b54_no_drift.cjs proves the working tree against B53, so the chain
+// B49a -> B50 -> B53 -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B51 change is marked, listed and reviewable. Neutrality with
 // the new inputs at their defaults is proven by scripts/test_b51_parity.cjs (the converted OnTick region of B50-alpha
 // and of this tree on the same fixtures, single and grid, and the WriteSet golden) and, natively, by the tester parity.
@@ -89,11 +93,15 @@ const B49B_REPLACED_BY_B52=[
   '       else {if(!GoatPreTradeRefusalCode(LastRetCode)) Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2) // B49b (F6): a pre-trade refusal is logged once a minute (GoatPreTradeRefusal), not every tick',
   '// per-tick "Failed" line (GoatPreTradeRefusalCode).',
   'bool GoatPreTradeRefusalCode(const uint code) {return(code==741 || code==742);}'];
-const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
 // .mq5/.mqh check out as CRLF (.gitattributes), so a blob hashes as the tree would.
 const checkedOut=(name,data)=>/\.mq[5h]$/.test(name)?Buffer.from(data.toString('utf8').replace(/\r\n/g,'\n').replace(/\n/g,'\r\n'),'utf8'):data;
+// B54 (A0): B53's files as its commit checks them out (the working tree is a B54 descendant; test_b54_no_drift.cjs reads it).
+const B53_TREE='216e16225441cfc1bfe0546c1c70adaf327405cf';
+const read=f=>checkedOut(f,git(['show',B53_TREE+':'+f]));
+const existsAtB53=f=>{try{git(['cat-file','-e',B53_TREE+':'+f]);return true;}catch{return false;}};
+git(['merge-base','--is-ancestor',B53_TREE,'HEAD']);   // throws unless the working tree descends from B53
 const b50=JSON.parse(git(['show',B50_SOURCE+':candidate-builds/beta17-B50/identity.json']).toString('utf8'));
 git(['merge-base','--is-ancestor',B50_SOURCE,'HEAD']);   // throws unless the working tree descends from B50-alpha
 git(['merge-base','--is-ancestor',B49B_SOURCE,'HEAD']);   // the final build: and from B49b
@@ -127,7 +135,7 @@ function closure(){
  while(todo.length){
   const f=todo.pop();if(seen.has(f))continue;seen.add(f);
   const text=read(f).toString('utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');
-  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(fs.existsSync(path.join(ROOT,inc)))todo.push(inc);}
+  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(existsAtB53(inc))todo.push(inc);}
  }
  return [...seen].sort();
 }
@@ -164,7 +172,7 @@ for(const f of ALL_CHANGED){
  const lines=read(f).toString('utf8').replace(/^﻿/,'').split(/\r\n/);
  const inBlock=markedBlocks(lines),inB49b=markedBlocks(lines,'B49b'),inB52=markedBlocks(lines,'B52');
  const b49bText=atB49b(f),b49bLines=new Set(b49bText===null?[]:b49bText.split('\r\n'));
- const diff=git(['diff','--no-color','--no-ext-diff','-U0',B50_SOURCE,'--',f]).toString('utf8').split('\n');
+ const diff=git(['diff','--no-color','--no-ext-diff','-U0',B50_SOURCE,B53_TREE,'--',f]).toString('utf8').split('\n');
  let newLine=0,hunk=null;const hunks=[],removedLines=[];
  for(const line of diff){
   const h=line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_sha256": "b5c462ed82ffba6f820a15a0e3ae4fcc3e0cbbfed3794bec28834980bbae7be4",
+  "source_sha256": "728d7b3ba739941c5c77fd9de072eadfac930cbb09e553e3c864324e81a5fdd8",
   "defines": {
     "GOAT_VERSION_LABEL": "\"1.49\"",
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
@@ -1443,6 +1443,144 @@
       "type": "bool",
       "declaration": "input",
       "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "BRK_Mode": {
+      "type": "ENUM_MODE_BRK",
+      "declaration": "sinput",
+      "default_expression": "BRK_Disabled",
+      "optimizable": false,
+      "enum_choices": {
+        "BRK_Disabled": 0,
+        "BRK_NBar": 1,
+        "BRK_PriorDay": 2
+      },
+      "dependency_audited": false
+    },
+    "BRK_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_H1",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240,
+        "TF_D1": 1440
+      },
+      "dependency_audited": false
+    },
+    "BRK_Bars": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "20",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "BRK_Buffer_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "BRK_Once_Per_Level": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "true",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ORB_Mode": {
+      "type": "ENUM_MODE_ORB",
+      "declaration": "sinput",
+      "default_expression": "ORB_Disabled",
+      "optimizable": false,
+      "enum_choices": {
+        "ORB_Disabled": 0,
+        "ORB_Breakout": 1
+      },
+      "dependency_audited": false
+    },
+    "ORB_Clock": {
+      "type": "ENUM_ORB_CLOCK",
+      "declaration": "sinput",
+      "default_expression": "ORB_Clock_NewYork",
+      "optimizable": false,
+      "enum_choices": {
+        "ORB_Clock_NewYork": 0,
+        "ORB_Clock_London": 1
+      },
+      "dependency_audited": false
+    },
+    "ORB_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M5",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240,
+        "TF_D1": 1440
+      },
+      "dependency_audited": false
+    },
+    "ORB_Start_Minute": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "570",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ORB_Range_Minutes": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "30",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ORB_Entry_Minutes": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ORB_Buffer_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ORB_Min_Range_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ORB_Max_Range_ATR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
       "optimizable": true,
       "enum_choices": null,
       "dependency_audited": false

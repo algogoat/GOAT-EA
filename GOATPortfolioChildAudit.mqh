@@ -247,6 +247,20 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(!GoatChildAuditAdd(names,values,b51_names[b51_n],b51_values[b51_n])) return false;b51_found=true;}
    }
    // B51:end b51-audit
+   // B54:begin b54-audit
+   // B54 (A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md section 7): the same rule for the breakout inputs, appended at the end of
+   // the inputs; their defaults (both families Disabled) reproduce B53.
+   string b54_names[14]={"BRK_Mode","BRK_TF_","BRK_Bars","BRK_Buffer_ATR","BRK_Once_Per_Level","ORB_Mode","ORB_Clock","ORB_TF_",
+                         "ORB_Start_Minute","ORB_Range_Minutes","ORB_Entry_Minutes","ORB_Buffer_ATR","ORB_Min_Range_ATR","ORB_Max_Range_ATR"};
+   string b54_values[14]={"0","60","20","0.0","true","0","0","5","570","30","0","0.0","0.0","0.0"};
+   for(int b54_n=0;b54_n<14;b54_n++)
+   {
+      bool b54_found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]==b54_names[b54_n]) b54_found=true;
+      for(int j=0;j<ArraySize(actual_names) && !b54_found;j++) if(actual_names[j]==b54_names[b54_n])
+      {if(!GoatChildAuditAdd(names,values,b54_names[b54_n],b54_values[b54_n])) return false;b54_found=true;}
+   }
+   // B54:end b54-audit
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

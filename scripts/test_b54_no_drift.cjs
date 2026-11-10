@@ -2,7 +2,8 @@
 // 216e1622 of GOAT-EA#296; its source hashes are committed in candidate-builds/beta17-B53/identity.json) plus the breakout
 // entries, each in its own reviewed PR. PR A0 (gate 0, section 6.2) declares the 14 inputs and their enums, WriteSet's
 // lines, the Studio types, axes and defaults and the child audit's names. PR A's first commit adds the entrypoint's b54-init
-// block (spec 4.6; GOAT-EA#303 ruling, condition 3): OnInit refusals only; no trading logic reads the inputs yet. Against B53:
+// block (spec 4.6; GOAT-EA#303 ruling, condition 3), its later commits entry A; PR B adds entry B and the clock module's
+// London time. Against B53:
 // - every file of B53's compile closure outside CHANGED is byte-identical to B53;
 // - in the CHANGED files, every line added or replaced since B53 carries the marker "B54" or sits inside a
 //   "// B54:begin <item>" ... "// B54:end <item>" block, so nothing changes unmarked; pure deletions are refused, and every
@@ -23,8 +24,9 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B53_SOURCE='216e16225441cfc1bfe0546c1c70adaf327405cf';
-// Each item PR adds the files it changes, so the review sees the list grow.
-const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATPortfolioChildAudit.mqh'];
+// Each item PR adds the files it changes, so the review sees the list grow. PR B adds the clock module (entry B's London
+// anchor, GoatLondonTime, in its own marked block).
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATPortfolioChildAudit.mqh','GOAT_NYClock.mqh'];
 const ADDED=[];
 // Every B53 line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={

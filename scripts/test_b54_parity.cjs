@@ -9,7 +9,8 @@
 //   so a disabled family reads none of its inputs.
 // - The WriteSet golden: a default SET written by this tree is B53's, line for line; each B54 input that differs from its
 //   default adds exactly one line, after B53's, in input order (A0 wrote them; gate 0 proves them on the 61 pool files).
-// - Load-bearing: the term read with the mode off, and the prior-day latch read with the mode off, must each be caught.
+// - Load-bearing: each family's term read with its mode off, and each family's latch read with its mode off (entry A's
+//   prior-day latch, entry B's trade-date latch, PR B), must each be caught.
 // What it does not prove: the native tester (the Banker deal-table parity on all 61, ruling 3, on the final candidate EX5).
 'use strict';
 const assert=require('node:assert/strict');
@@ -45,8 +46,11 @@ const killed=[];
 {const main=H.readSource(undefined,H.MAIN);
  const swap=(text,from,to)=>{assert.equal(text.split(from).length,2,'the mutant site is unique: '+from);return text.replace(from,to);};
  const mutants=[
-  ['the buy term read with BRK_Mode off',swap(main,'      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY)) // B54 (spec 3.6)','      && ( BRK_Sig==OP_BUY)) // B54 (spec 3.6)'),['single_stop_tp','single_reverse']],
+  ['the buy term read with BRK_Mode off',swap(main,'      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY) // B54 (spec 3.6)','      && ( BRK_Sig==OP_BUY) // B54 (spec 3.6)'),['single_stop_tp','single_reverse']],
   ['the latch read with BRK_Mode off',swap(main,'return(BRK_Mode==BRK_PriorDay && BRK_Once_Per_Level && g_GoatBrkDay>0 && g_GoatBrkLatchDay[signal]==g_GoatBrkDay);','return(g_GoatBrkLatchDay[signal]==g_GoatBrkDay);'),['single_stop_tp','single_exits']],
+  // PR B: entry B's term and latch, likewise.
+  ['the buy term read with ORB_Mode off',swap(main,'      && ( ORB_Mode==ORB_Disabled  || ORB_Sig==OP_BUY)) // B54 (spec 4.3)','      && ( ORB_Sig==OP_BUY)) // B54 (spec 4.3)'),['single_stop_tp','single_reverse']],
+  ['the latch read with ORB_Mode off',swap(main,'return(ORB_Mode==ORB_Breakout && g_GoatOrbDay>0 && g_GoatOrbLatchDay[signal]==g_GoatOrbDay);','return(g_GoatOrbLatchDay[signal]==g_GoatOrbDay);'),['single_stop_tp','single_exits']],
  ];
  const byName=Object.fromEntries(ALL);
  for(const [what,text,names] of mutants){

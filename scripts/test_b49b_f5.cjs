@@ -159,7 +159,7 @@ function trigger({gate=1,reverse=true,bias='bullish',signal=0}){
  const [b,s]=BIAS[bias];
  const g=gates({Sequence_New_Bias_B:b,Sequence_New_Bias_S:s});
  Object.assign(g,{Gate_Recheck:gate,Reverse_Seq:reverse,Delay_Trade:0,RSI_Disabled:0,RSI_Mode:1,RSI_Sig:signal,EMA_Mode:0,ADX_Mode:0,BB_Mode:0,MACD_Mode:0,
-  RSI2_Mode:0,BRK_Mode:0,BRK_Disabled:0,BRK_Sig:-1,Trade_Disabled:0,BB_Disabled:0,OP_BUYSELL:2,ask:1.1001,bid:1.1,Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
+  RSI2_Mode:0,BRK_Mode:0,BRK_Disabled:0,BRK_Sig:-1,ORB_Mode:0,ORB_Disabled:0,ORB_Sig:-1,Trade_Disabled:0,BB_Disabled:0,OP_BUYSELL:2,ask:1.1001,bid:1.1,Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
   LastBuySignal:false,LastSellSignal:false,opened:[],vetoes:[],GoatGateActiveMask:()=>0,GoatGateLog:(kind,op)=>g.vetoes.push(kind+':'+op),
   MathAbs:Math.abs,
   Engine_Mode:0,Engine_Grid:0,Engine_Single:1,g_GoatSingleArmed:[true,true],Random_Direction:false,g_GoatRandomEpisodeBar:[0,0]});   // the final build: B50's grid engine, no B51 benchmark (flags off)

@@ -9,8 +9,8 @@ gate 0's item 5) and for the whole ladder (every rung of every axis; this module
 
 Here the controller (validate_strategy, so EA_INIT_RULES over the reachable values) must give each probe and each ladder
 exactly that rule; scripts/test_b54_init.cjs runs the same files through the EA's OnInit (b50_tick_harness), so the
-mirror and the EA agree on the same files. N-bar and prior day have their signal terms, so a probe inside every bound is
-'ok'; ORB_Breakout has none yet, so every ORB probe ends at ORB_BREAKOUT_NOT_BUILT, or earlier (it is the block's last line).
+mirror and the EA agree on the same files. Every mode value has its signal term (N-bar and prior day since PR A, ORB_Breakout
+since PR B), so a probe inside every bound is 'ok'.
 """
 import json
 from pathlib import Path
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DIR = ROOT / 'scripts' / 'fixtures' / 'b54-axes'
 TABLE = json.loads((DIR / 'axes.json').read_text(encoding='utf-8'))
 SCHEMA = contracts('1.49')[0]
-B54_LINES = range(5122, 5151)   # GOAT V1.49.mq5's b54-init block
+B54_LINES = range(5122, 5148)   # GOAT V1.49.mq5's b54-init block
 AXES = ('BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_TF_', 'ORB_Start_Minute', 'ORB_Range_Minutes',
         'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR')
 
@@ -66,7 +66,7 @@ class B54AxisSetTests(unittest.TestCase):
     def test_the_alerts_and_codes_are_the_eas(self):
         source = (ROOT / EA_SOURCE).read_text(encoding='utf-8-sig').split('\n')
         b54 = [rule for rule in EA_INIT_RULES if rule['lines'][0] in B54_LINES]
-        self.assertEqual(len(b54), 14)
+        self.assertEqual(len(b54), 13)
         self.assertEqual(TABLE['alerts'], {rule['id']: rule['alert'] for rule in b54})
         for rule in b54:
             line = source[rule['lines'][0]-1]

@@ -124,7 +124,7 @@ function signals(text,{modes,feed,buffers={},closes=[1.1,1.09],opens=[1.095,1.1]
   IntegerToString:v=>String(v),GetLastError:()=>4806,Print:(...a)=>c.logs.push(a.join('')),ArraySize:a=>a.length,
   RSI_TF:1,EMA_TF:1,ADX_TF:1,BB_TF:1,MACD_TF:1,RSI2_TF:1,RSI_Level:70,RSI2_Level:70,ADX_Level:25,EMA_Count:3,
   EMA_MustCheck:true,ADX_MustCheck:true,BB_MustCheck:true,MACD_MustCheck:true,RSI2_MustCheck:true,
-  RSI_Sig:9,EMA_Sig:9,ADX_Sig:9,BB_Sig:9,MACD_Sig:9,RSI2_Sig:9,MustCheck_Buy:null,MustCheck_Sell:null,BRK_Mode:0,BRK_Disabled:0,BRK_Sig:9, // B54: entry A off (its own test is test_b54_breakout)
+  RSI_Sig:9,EMA_Sig:9,ADX_Sig:9,BB_Sig:9,MACD_Sig:9,RSI2_Sig:9,MustCheck_Buy:null,MustCheck_Sell:null,BRK_Mode:0,BRK_Disabled:0,BRK_Sig:9,ORB_Mode:0,ORB_Disabled:0,ORB_Sig:9, // B54: entries A and B off (their own tests are test_b54_breakout and test_b54_orb)
   RSI_handle:H.RSI,EMA_handles:H.EMA,ADX_handle:H.ADX,BB_handle:H.BB,MACD_handle:H.MACD,RSI2_handle:H.RSI2,
   RSI_Buf:buf('RSI'),ADX_Main_Buf:buf('ADX0'),ADX_PLS_Buf:buf('ADX1'),ADX_MNS_Buf:buf('ADX2'),BB_Mi_Buf:buf('BB0'),BB_Hi_Buf:buf('BB1'),
   BB_Lo_Buf:buf('BB2'),MACD_Clr_Buf:buf('MACD'),RSI2_Buf:buf('RSI2'),EMAs:[0,1,2].map(i=>({Buf:buf('EMA'+i)})),

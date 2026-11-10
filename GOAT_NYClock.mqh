@@ -121,6 +121,17 @@ datetime GoatNYTime(const datetime server_time)
    if(Server_Clock_Model==ServerClock_NYClose) return server_time-7*3600;
    return GoatNYFromUTC(GoatNYServerToUTC(server_time));
   }
+// B54:begin london-clock
+// B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.2): GoatLondonTime(server_time), the London wall-clock time of a server time
+// under Server_Clock_Model, for entry B's London anchor. The UK changes its clocks on the EU dates, so London is UTC, plus
+// 1 h while EU DST is active (GoatNYEUDST, UTC in). Pure but for the three model inputs, as GoatNYTime is.
+datetime GoatLondonTime(const datetime server_time)
+  {
+   datetime utc=GoatNYServerToUTC(server_time);
+   if(GoatNYEUDST(utc)) return utc+3600;
+   return utc;
+  }
+// B54:end london-clock
 
 //--- the session and the rollover window (pure)
 // The phase of a New York time (dow: NY calendar weekday, minute: minutes after NY midnight) in the NY_Session window

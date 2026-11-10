@@ -33,7 +33,8 @@ concurrency:
 #           test_b51_partial,
 #           test_b49b_f7, test_b49b_f5, test_b49b_f3,
 #           test_b49b_f3b, test_b49b_f6, test_b49b_f4, test_b49b_lag, test_b49b_f8,
-#           test_b49b_f1, test_b52_review, test_hunt_sets_init, test_b54_gate0, test_b54_init, test_b54_breakout, test_b54_parity,
+#           test_b49b_f1, test_b52_review, test_hunt_sets_init, test_b54_gate0, test_b54_init, test_b54_breakout, test_b54_orb,
+#           test_b54_parity,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -229,6 +230,8 @@ jobs:
         run: node scripts/test_b54_init.cjs
       - name: B54 entry A (the N-bar and prior-day signal on closed bars, the prior-day latch with Reverse_Seq, its rebuild from deal history; the spec's mutants)
         run: node scripts/test_b54_breakout.cjs
+      - name: B54 entry B (the opening range on M1 history, its windows and clocks 2007-2035 under all three models and both anchors, one single per direction per trade date and its rebuild; the spec's mutants)
+        run: node scripts/test_b54_orb.cjs
       - name: B54 flags-off parity with B53 (test_b51_parity's grid and single fixtures, FastSpeed both ways, every B54 input moved with the modes off; WriteSet golden; mutants)
         run: node scripts/test_b54_parity.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions

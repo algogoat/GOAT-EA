@@ -34,7 +34,10 @@ verify(active,'wrong',false,'description');verify(active.replace('RSI_Period=2\r
 {const pool=fs.readFileSync(path.join(root,'controller/fixtures/oosc/r8/deploy/R1696f82a0d700d5c7279/USDCHF/GOAT V1.49 USDCHF,M1_Trds=198_Prf=1990_DD=415_PF=3.82_SR=8.73_ARF=0.295.set')).toString('utf16le').replace(/^\uFEFF/,'');
  // B51 (B50-beta-1a): the benchmark seed is an appended axis too, written the same way (Random_Direction is an sinput).
  const B50={Single_SL_ATR:'0.0',Single_TP_ATR:'0.0',Single_TP_R:'0.0',Single_Exit_Opposite:'false',Single_Time_Stop_Bars:'0',Single_Time_Stop_TF:'0',Rollover_Block_Minutes:'0',
-  Random_Seed:'1',Single_BE_ATR:'0.0',Single_Trail_Start_ATR:'0.0',Single_Trail_ATR:'0.0',Single_Partial_ATR:'0.0',Single_Partial_Fraction:'0.0',Single_Partial_BE:'false'};   // beta-1b: the break-even and trailing axes
+  Random_Seed:'1',Single_BE_ATR:'0.0',Single_Trail_Start_ATR:'0.0',Single_Trail_ATR:'0.0',Single_Partial_ATR:'0.0',Single_Partial_Fraction:'0.0',Single_Partial_BE:'false',   // beta-1b: the break-even and trailing axes
+  // B54 (A0): the breakout axes, appended after B51's and written the same way (BRK_Mode, ORB_Mode and ORB_Clock are sinputs).
+  BRK_TF_:'60',BRK_Bars:'20',BRK_Buffer_ATR:'0.0',BRK_Once_Per_Level:'true',ORB_TF_:'5',ORB_Start_Minute:'570',ORB_Range_Minutes:'30',
+  ORB_Entry_Minutes:'0',ORB_Buffer_ATR:'0.0',ORB_Min_Range_ATR:'0.0',ORB_Max_Range_ATR:'0.0'};
  const desc=pool.match(/^EA_Desc=(.*?)\r?$/m)[1];
  for(const n of Object.keys(B50)) assert.ok(!pool.includes('\n'+n+'='),'the pool SET predates '+n);
  assert.deepEqual(names.filter(n=>!pool.includes('\n'+n+'=')).sort(),Object.keys(B50).sort(),'it carries every other axis');

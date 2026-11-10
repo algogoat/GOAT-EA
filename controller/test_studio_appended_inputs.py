@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import unittest
 
-from studio_strategy_settings import (APPENDED_INPUTS, B49B_INPUTS, B50_INPUTS, B51_INPUTS, appended_default,
+from studio_strategy_settings import (APPENDED_INPUTS, B49B_INPUTS, B50_INPUTS, B51_INPUTS, B54_INPUTS, appended_default,
                                       complete_appended_inputs, read_values, validate_strategy)
 from studio_input_readback import explicit_paste_inputs, verify_input_readback
 from studio_export_inputs import verify_export_inputs
@@ -39,7 +39,7 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(len(self.schema['inputs']), 114 + len(APPENDED_INPUTS))
         # B49b: its nine follow B50-alpha's and come before B51's (B49b's header: Claude-Mac 6433854745 ruling 6).
         self.assertEqual(B49B_INPUTS, ('Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC', 'Fix_Clock', 'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad'))
-        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS)
+        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS)   # B54 (A0): last
         definition = self.schema['inputs']['Ledger_Mode']
         self.assertEqual((definition['type'], definition['declaration'], definition['default_expression']),
                          ('ENUM_LEDGER_MODE', 'sinput', 'Ledger_Legacy'))
@@ -87,9 +87,9 @@ class AppendedInputTests(unittest.TestCase):
                          {'Single_SL_ATR', 'Single_TP_ATR', 'Single_TP_R', 'Single_Exit_Opposite', 'Single_Time_Stop_Bars',
                           'Single_Time_Stop_TF', 'Rollover_Block_Minutes'})
 
-    def test_the_b51_inputs_come_last_and_default_to_b50_alpha(self):
-        # B51 (B50-beta-1a, docs/b50/B50_ALPHA_DESIGN.md section 8): appended at the very end of the header; every default
-        # reproduces B50-alpha, and each is the default the tester report pins for an omitted input.
+    def test_the_b51_inputs_come_before_b54s_and_default_to_b50_alpha(self):
+        # B51 (B50-beta-1a, docs/b50/B50_ALPHA_DESIGN.md section 8): appended at the end of the header, where B54's now follow
+        # them; every default reproduces B50-alpha, and each is the default the tester report pins for an omitted input.
         expected = {'Random_Direction': ('bool', 'sinput', 'false'), 'Random_Seed': ('int', 'input', '1'),
                     'Single_Flat_Only': ('bool', 'sinput', 'false'),
                     'Single_BE_ATR': ('double', 'input', '0.0'), 'Single_Trail_Start_ATR': ('double', 'input', '0.0'),
@@ -97,8 +97,9 @@ class AppendedInputTests(unittest.TestCase):
                     'Single_Partial_ATR': ('double', 'input', '0.0'), 'Single_Partial_Fraction': ('double', 'input', '0.0'),
                     'Single_Partial_BE': ('bool', 'input', 'false')}
         self.assertEqual(B51_INPUTS, tuple(expected))
-        self.assertEqual(APPENDED_INPUTS[-len(B51_INPUTS):], B51_INPUTS)
-        self.assertEqual(list(self.schema['inputs'])[-len(B51_INPUTS):], list(B51_INPUTS))
+        before_b54 = -len(B54_INPUTS)
+        self.assertEqual(APPENDED_INPUTS[before_b54-len(B51_INPUTS):before_b54], B51_INPUTS)
+        self.assertEqual(list(self.schema['inputs'])[before_b54-len(B51_INPUTS):before_b54], list(B51_INPUTS))
         for name, (kind, declaration, default) in expected.items():
             definition = self.schema['inputs'][name]
             self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
@@ -127,6 +128,50 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual((observed['Random_Direction'], observed['Random_Seed']), ('false', '1'))
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Random_Direction'):
             verify_input_readback(dict(self.old), dict(observed, Random_Direction='true'), self.schema)
+
+    def test_the_b54_inputs_come_last_and_default_to_b53(self):
+        # B54 (PR A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md sections 3.1, 4.1 and 7): the breakout inputs, appended at the very end
+        # of the header after B51's; both modes default to Disabled, every default reproduces B53, and each is the default the
+        # tester report pins for an omitted input. Nothing reads them yet (gate 0: scripts/test_b54_gate0.cjs, test_b54_gate0.py).
+        expected = {'BRK_Mode': ('ENUM_MODE_BRK', 'sinput', '0'), 'BRK_TF_': ('ENUM_MODE_TFs', 'input', '60'),
+                    'BRK_Bars': ('int', 'input', '20'), 'BRK_Buffer_ATR': ('double', 'input', '0.0'),
+                    'BRK_Once_Per_Level': ('bool', 'input', 'true'), 'ORB_Mode': ('ENUM_MODE_ORB', 'sinput', '0'),
+                    'ORB_Clock': ('ENUM_ORB_CLOCK', 'sinput', '0'), 'ORB_TF_': ('ENUM_MODE_TFs', 'input', '5'),
+                    'ORB_Start_Minute': ('int', 'input', '570'), 'ORB_Range_Minutes': ('int', 'input', '30'),
+                    'ORB_Entry_Minutes': ('int', 'input', '0'), 'ORB_Buffer_ATR': ('double', 'input', '0.0'),
+                    'ORB_Min_Range_ATR': ('double', 'input', '0.0'), 'ORB_Max_Range_ATR': ('double', 'input', '0.0')}
+        self.assertEqual(B54_INPUTS, tuple(expected))
+        self.assertEqual(APPENDED_INPUTS[-len(B54_INPUTS):], B54_INPUTS)
+        self.assertEqual(list(self.schema['inputs'])[-len(B54_INPUTS):], list(B54_INPUTS))
+        for name, (kind, declaration, default) in expected.items():
+            definition = self.schema['inputs'][name]
+            self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
+                             (kind, declaration, default), name)
+            self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), default, name)
+        self.assertEqual(self.schema['inputs']['BRK_Mode']['enum_choices'], {'BRK_Disabled': 0, 'BRK_NBar': 1, 'BRK_PriorDay': 2})
+        self.assertEqual(self.schema['inputs']['ORB_Mode']['enum_choices'], {'ORB_Disabled': 0, 'ORB_Breakout': 1})
+        self.assertEqual(self.schema['inputs']['ORB_Clock']['enum_choices'], {'ORB_Clock_NewYork': 0, 'ORB_Clock_London': 1})
+        for name in ('BRK_TF_', 'ORB_TF_'):
+            self.assertEqual(self.schema['inputs'][name]['enum_choices'], self.schema['inputs']['ATR_TF_']['enum_choices'], name)
+        # The axes: every input that is not an sinput (the three modes) and not a string (spec section 7).
+        self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']},
+                         set(expected) - {'BRK_Mode', 'ORB_Mode', 'ORB_Clock'})
+        # A B53 SET (none of them) validates and keeps its own values; a mode is never an axis; an undeclared mode is refused.
+        b53 = {k: v for k, v in self.full.items() if k not in B54_INPUTS}
+        self.assertEqual(validate_strategy(dict(b53), self.schema)['values'], b53)
+        with self.assertRaisesRegex(ValueError, 'BRK_Mode: Input not exposed for optimization'):
+            validate_strategy(dict(self.old, BRK_Mode='0||0||1||2||Y'), self.schema)
+        with self.assertRaisesRegex(ValueError, 'ORB_Clock: Undeclared enum value'):
+            validate_strategy(dict(self.old, ORB_Clock='2'), self.schema)
+        # The readback wants the defaults for a SET that omits them, and catches a run the SET never asked for.
+        observed = complete_appended_inputs(dict(self.full), self.schema)
+        self.assertEqual({name: observed[name] for name in B54_INPUTS}, {name: d for name, (_, _, d) in expected.items()})
+        self.assertEqual(verify_input_readback(dict(self.old), complete_appended_inputs(dict(self.old), self.schema),
+                                               self.schema)['status'], 'INPUT_READBACK_MATCH')
+        for name, value in (('BRK_Mode', '1'), ('ORB_Mode', '1'), ('BRK_Bars', '55')):
+            with self.assertRaisesRegex(ValueError, 'Fixed input value changed: ' + name):
+                verify_input_readback(dict(self.old), dict(complete_appended_inputs(dict(self.old), self.schema), **{name: value}),
+                                      self.schema)
 
     def test_a_b49a_set_may_choose_the_single_engine_and_its_axes(self):
         # The fixture runs Smart Rescue, which the single engine refuses (Claude-Mac ruling 4): hard close instead.
@@ -186,11 +231,11 @@ class AppendedInputTests(unittest.TestCase):
         self.assertNotIn('Ledger_Mode', self.old)
         self.assertEqual(complete_appended_inputs(dict(self.old, Ledger_Mode='1'), self.schema)['Ledger_Mode'], '1')
         self.assertEqual(complete_appended_inputs(dict(self.old, Fix_MoneyVolume='1'), self.schema)['Fix_MoneyVolume'], '1')
-        # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no B50 input, fix flag or B51 input) adds
+        # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no B50 input, fix flag, B51 or B54 input) adds
         # only Ledger_Mode.
         v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in APPENDED_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, v148), self.old)
-        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in B50_INPUTS + B49B_INPUTS + B51_INPUTS})
+        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, b49a), dict(self.old, Ledger_Mode='0'))
 
     def test_the_paste_sets_the_default_instead_of_inheriting_the_last_run(self):

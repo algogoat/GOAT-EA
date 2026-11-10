@@ -13,6 +13,11 @@ B51_EXPLICIT=('Random_Seed=1||1||0||1||N\r\n'   # B51 (beta-1a): the benchmark s
  'Single_BE_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_Start_ATR=0.0||0.0||0||0.0||N\r\nSingle_Trail_ATR=0.0||0.0||0||0.0||N\r\n'   # beta-1b
  'Single_Partial_ATR=0.0||0.0||0||0.0||N\r\nSingle_Partial_Fraction=0.0||0.0||0||0.0||N\r\nSingle_Partial_BE=false||false||0||false||N\r\n')   # section 8.3
 
+B54_EXPLICIT=('BRK_TF_=60||60||0||60||N\r\nBRK_Bars=20||20||0||20||N\r\nBRK_Buffer_ATR=0.0||0.0||0||0.0||N\r\n'   # B54 (A0): the breakout axes
+ 'BRK_Once_Per_Level=true||true||0||true||N\r\nORB_TF_=5||5||0||5||N\r\nORB_Start_Minute=570||570||0||570||N\r\n'
+ 'ORB_Range_Minutes=30||30||0||30||N\r\nORB_Entry_Minutes=0||0||0||0||N\r\nORB_Buffer_ATR=0.0||0.0||0||0.0||N\r\n'
+ 'ORB_Min_Range_ATR=0.0||0.0||0||0.0||N\r\nORB_Max_Range_ATR=0.0||0.0||0||0.0||N\r\n')   # (BRK_Mode, ORB_Mode and ORB_Clock are sinputs)
+
 class OptimizationInputsTests(unittest.TestCase):
  def setUp(self):
   self.repo=Path(__file__).resolve().parent.parent
@@ -45,7 +50,7 @@ class OptimizationInputsTests(unittest.TestCase):
   text=path.read_bytes().decode('utf-16')
   self.assertNotIn('Single_SL_ATR',text)
   native=explicit_optimization_inputs(text,self.schema)
-  self.assertTrue(native.endswith(B50_EXPLICIT+B51_EXPLICIT))
+  self.assertTrue(native.endswith(B50_EXPLICIT+B51_EXPLICIT+B54_EXPLICIT))
   self.assertEqual(explicit_optimization_inputs(native,self.schema),native,'idempotent')
   values=read_values(native.encode('utf-16'))
   axes={k for k,v in read_values(path.read_bytes()).items() if k in self.schema['inputs'] and v.endswith('||Y')}

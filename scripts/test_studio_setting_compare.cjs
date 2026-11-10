@@ -117,6 +117,17 @@ compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults,true);
 for(const [from,to,key] of [['Fix_MoneyVolume=0','Fix_MoneyVolume=1','Fix_MoneyVolume'],['Max_Spread_Points=0','Max_Spread_Points=30','Max_Spread_Points'],
  ['Fix_FeedGuard=0','Fix_FeedGuard=1','Fix_FeedGuard'],['Fix_TickLoad=0','Fix_TickLoad=1','Fix_TickLoad']])
  compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults.replace(from,to)+b51Defaults,false,key);
+// B54 (A0): the breakout inputs, appended after B51's, likewise: MT5 reports each at its default for a SET written before
+// them (an optimizable one may read back as a dormant N tuple), which is accepted; another value or an active axis is refused.
+const b54Defaults='BRK_Mode=0\nBRK_TF_=60||60||1||240||N\nBRK_Bars=20||20||1||200||N\nBRK_Buffer_ATR=0.0\nBRK_Once_Per_Level=true||false||0||true||N\n'
+ +'ORB_Mode=0\nORB_Clock=0\nORB_TF_=5\nORB_Start_Minute=570\nORB_Range_Minutes=30||30||5||60||N\nORB_Entry_Minutes=0\nORB_Buffer_ATR=0.00\nORB_Min_Range_ATR=0\nORB_Max_Range_ATR=0.0\n';
+compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults+b54Defaults,true);
+for(const [from,to,key] of [['BRK_Mode=0','BRK_Mode=1','BRK_Mode'],['BRK_TF_=60||60||1||240||N','BRK_TF_=15','BRK_TF_'],['BRK_Bars=20||20||1||200||N','BRK_Bars=20||20||1||200||Y','BRK_Bars'],
+ ['BRK_Buffer_ATR=0.0','BRK_Buffer_ATR=0.5','BRK_Buffer_ATR'],['BRK_Once_Per_Level=true||false||0||true||N','BRK_Once_Per_Level=false','BRK_Once_Per_Level'],['ORB_Mode=0','ORB_Mode=1','ORB_Mode'],
+ ['ORB_Clock=0','ORB_Clock=1','ORB_Clock'],['ORB_TF_=5','ORB_TF_=15','ORB_TF_'],['ORB_Start_Minute=570','ORB_Start_Minute=480','ORB_Start_Minute'],['ORB_Range_Minutes=30||30||5||60||N','ORB_Range_Minutes=60','ORB_Range_Minutes'],
+ ['ORB_Entry_Minutes=0','ORB_Entry_Minutes=120','ORB_Entry_Minutes'],['ORB_Buffer_ATR=0.00','ORB_Buffer_ATR=0.1','ORB_Buffer_ATR'],['ORB_Min_Range_ATR=0','ORB_Min_Range_ATR=0.5','ORB_Min_Range_ATR'],
+ ['ORB_Max_Range_ATR=0.0','ORB_Max_Range_ATR=3.5','ORB_Max_Range_ATR']])
+ compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults+b54Defaults.replace(from,to),false,key);
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

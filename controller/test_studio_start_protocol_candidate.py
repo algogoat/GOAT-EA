@@ -42,8 +42,20 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # fixes on GOAT-EA#296. Its own identity, because B52's binary refused every RiskperSeq single at OnInit (Codex
         # 4502334956) and a fixed tree is never pinned under an old build's name. Every source hashes to the tree.
         self.assertEqual(sorted(identity['consolidates']), ['B53.1', 'B53.2', 'B53.3', 'B53.4', 'B53.c1'])
+        # B54 in progress (PR A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md): the tree is B53 plus marked B54 lines in the files
+        # scripts/test_b54_no_drift.cjs lists, and every other B53 source is byte-identical (proven there, against B53's
+        # commit). Those files carry B54's lines by design, so each is checked where it hashes to B53's identity: B53's own
+        # commit (216e1622, checked out with CRLF as .gitattributes does). A B54 assembly binds the tree to its own identity.
+        b54_guard = (ROOT / 'scripts/test_b54_no_drift.cjs').read_text(encoding='utf-8')
+        b54_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b54_guard, re.M)[1].replace("'", '"') + ']'))
+        self.assertTrue({'GOAT_Inputs_Definitions.mqh'} <= b54_changed)
         for relative, expected in identity['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b54_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                blob = subprocess.run(['git', 'show', '216e1622:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+                blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B53 commit)')
         # B52 (retained, superseded: its compile receipt says do_not_install, and studio_installed_build pins no row for it).
         # Its sources hash to its own commit (a98ea439, checked out with CRLF as .gitattributes does); B53 differs from it in
         # exactly scripts/test_b51_no_drift.cjs's B52_LATER_CHANGED (the Codex fixes and B53's identity lines, marked there).

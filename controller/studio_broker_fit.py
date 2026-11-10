@@ -125,9 +125,9 @@ BIAS_EXIT_SMART_RESCUE = 1
 POINT_INPUTS = ('Grid_Size', 'Grid_Min', 'Grid_Max', 'Lock_Profit_Size', 'SL_Pips', 'TSL_Size')
 FIXED_MONEY_INPUTS = ('MaxLossLocal', 'MaxLossGlobal', 'MaxDailyLossLocal', 'MaxDailyProfitLocal', 'MinLevelEquity', 'MaxLevelEquity')
 TF_INPUTS = ('ATR_TF_', 'RSI_TF_', 'EMA_TF_', 'ADX_TF_', 'BB_TF_', 'MACD_TF_', 'RSI2_TF_',
-             'BRK_TF_')   # B54 (spec 7; GOAT-EA#303 ruling, condition 5): the breakout's trigger bars
-# B54: a SET and schema from before B54 (B53 and earlier) have no BRK_TF_; their build has no breakout, so it is neutral there.
-B54_TF_INPUTS = ('BRK_TF_',)
+             'BRK_TF_', 'ORB_TF_')   # B54 (spec 7; GOAT-EA#303 ruling, condition 5): the breakouts' trigger bars
+# B54: a SET and schema from before B54 (B53 and earlier) have neither; their build has no breakout, so it is neutral there.
+B54_TF_INPUTS = ('BRK_TF_', 'ORB_TF_')
 TF_H4 = 240
 TF_D1 = 1440                           # B50 (A0): appended to ENUM_MODE_TFs; its bars start at the server's midnight too
 SERVER_DAY_TFS = {TF_H4: 'H4', TF_D1: 'D1'}
@@ -586,8 +586,9 @@ def offset_neutral(values, defaults, timeframe):
     """(True, []) when the member's trading cannot depend on the broker's UTC offset, else (False, reasons).
 
     Neutral means: a chart of M1..H1 (H4/D1 bars start at the server's midnight); no indicator on H4 or D1 (any *_TF_ =
-    TF_H4 or TF_D1, and B50's single-trade time stop on either); the server clock (B50: no Clock_NewYork, no rollover
-    block, which read the New York clock through the broker's clock model);
+    TF_H4 or TF_D1, and B50's single-trade time stop on either); no prior-day breakout (B54: the broker's D1 bar); the
+    server clock (B50: no Clock_NewYork, no rollover block; B54: no opening-range breakout; each reads New York or London
+    time through the broker's clock model);
     trading 24 hours on every weekday (Active_Time_Weekday = SESS_ALL, Active_Time_Friday = SESSION_ALL or
     SESSION_FRI, and the sessions spanning 00:00-24:00, the EA's own span rule); no end-of-day or Friday action; new
     sequences allowed on Friday; news off or display-only (event times); no daily loss/profit limit (server day)."""
@@ -613,6 +614,13 @@ def offset_neutral(values, defaults, timeframe):
         reasons.append('BRK_Mode unreadable')
     elif brk_mode == 2:
         reasons.append('BRK_Mode=BRK_PriorDay')
+    # B54 (spec 7): the opening range keys its range and entry window to New York or London time through the broker's clock
+    # model, as Clock_NewYork does; an ORB_Mode that cannot be read could be on.
+    orb_mode = _number(values, defaults, 'ORB_Mode')
+    if orb_mode is None and ('ORB_Mode' in values or 'ORB_Mode' in defaults):
+        reasons.append('ORB_Mode unreadable')
+    elif orb_mode not in (None, 0):
+        reasons.append('ORB_Mode=ORB_Breakout' if orb_mode == 1 else 'ORB_Mode=' + str(orb_mode))
     if _number(values, defaults, 'Clock_Mode') not in (None, 0):
         reasons.append('Clock_Mode=Clock_NewYork')
     if _number(values, defaults, 'Rollover_Block_Minutes') not in (None, 0):

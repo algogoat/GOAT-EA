@@ -609,6 +609,15 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(bf.offset_neutral(dict(single, BRK_Mode='2', BRK_TF_='240'), defaults, 'M1')[1], ['BRK_TF_=H4', 'BRK_Mode=BRK_PriorDay'])
         self.assertIn('BRK_TF_ unreadable', bf.offset_neutral(dict(single, BRK_TF_='H4'), defaults, 'M1')[1])
         self.assertIn('BRK_Mode unreadable', bf.offset_neutral(dict(single, BRK_Mode='BRK_PriorDay'), defaults, 'M1')[1])
+        # B54 PR B: ORB_TF_ is a timeframe input too, and the opening range reads the clock model as Clock_NewYork does,
+        # under either anchor; an unreadable ORB_Mode is never neutral.
+        self.assertEqual(bf.offset_neutral(dict(single, ORB_Mode='1'), defaults, 'M1'), (False, ['ORB_Mode=ORB_Breakout']))
+        self.assertEqual(bf.offset_neutral(dict(single, ORB_Mode='1', ORB_Clock='1'), defaults, 'M1'), (False, ['ORB_Mode=ORB_Breakout']))
+        self.assertEqual(bf.offset_neutral(dict(single, ORB_Mode='1', ORB_TF_='240'), defaults, 'M1')[1], ['ORB_TF_=H4', 'ORB_Mode=ORB_Breakout'])
+        self.assertEqual(bf.offset_neutral(dict(single, ORB_TF_='1440'), defaults, 'M1'), (False, ['ORB_TF_=D1']))
+        self.assertEqual(bf.offset_neutral(dict(single, ORB_TF_='60', ORB_Clock='1'), defaults, 'M1'), (True, []), 'ORB off: neutral')
+        self.assertIn('ORB_TF_ unreadable', bf.offset_neutral(dict(single, ORB_TF_='H1'), defaults, 'M1')[1])
+        self.assertIn('ORB_Mode unreadable', bf.offset_neutral(dict(single, ORB_Mode='ORB_Breakout'), defaults, 'M1')[1])
         b53 = {name: text for name, text in defaults.items() if not name.startswith(('BRK_', 'ORB_'))}
         self.assertEqual(bf.offset_neutral({k: v for k, v in values.items() if not k.startswith(('BRK_', 'ORB_'))}, b53, 'M1'), (True, []))
 

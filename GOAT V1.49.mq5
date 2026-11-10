@@ -5144,12 +5144,12 @@ int OnInit()
    if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_NewYork && Server_Clock_Model!=ServerClock_NYClose && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_NewYork with a fixed or EU DST server model needs a test start on or after 2007.03.11 (the US DST rules it applies)."); return INIT_PARAMETERS_INCORRECT;}
    if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_London && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_London needs a test start on or after 2007.03.11 under every server model (its UTC comes through the 2007 US DST rules)."); return INIT_PARAMETERS_INCORRECT;}
    if(ORB_Mode!=ORB_Disabled && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: ORB_Mode is tester-only in B54 (ruling 7); use ORB_Disabled on a live chart."); return INIT_FAILED;}
-   // B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term this tree does not have is refused, in the tester
-   // and on a live chart. The commit that adds a value's term removes its line (scripts/test_b54_init.cjs reads the terms).
-   if(ORB_Mode==ORB_Breakout)                               {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}
 // B54:end b54-init
 // B54:begin brk-init
+   // B54 (ruling on GOAT-EA#303, condition 3): every BRK_Mode and ORB_Mode value now has its signal term, so no not-built
+   // refusal is left (PR A removed BRK_NBar's and BRK_PriorDay's, PR B ORB_Breakout's; scripts/test_b54_init.cjs reads the terms).
    GoatBrkLatchRebuild(); // B54 (spec 3.5, ruling 13): BRK_Sig, the day and the PriorDay latch, from deal history (a live re-init keeps EA globals)
+   GoatOrbLatchRebuild(); // B54 (spec 4.4-4.5, ruling 13): the ORB clock's evidence line; ORB_Sig, T and the T latch, from deal history
 // B54:end brk-init
    if(RSI_Mode != RSI_Disabled)     RSI_handle     = iRSI   (Symbol(),RSI_TF,RSI_Period,RSI_Price);
    if(EMA_Mode != Trade_Disabled)  {for(int i=0;i<EMA_Count;i++)
@@ -8584,6 +8584,159 @@ void GoatBrkLatchRebuild()
    g_GoatBrkDay=day;
   }
 // B54:end brk-signal
+// B54:begin orb-signal
+// B54 (docs/b54/BREAKOUT_ENTRIES_SPEC.md 4.2-4.5): entry B, the session opening-range breakout. UpdateCurrentSignals
+// computes ORB_Sig once per new ORB_TF_ bar from the closed trigger bar s (= Shift_Sig = 1) and holds it for that bar, as
+// entry A does: the forming bar and the bid are never read.
+// - The anchor: GoatNYTime or GoatLondonTime (GOAT_NYClock.mqh) of a server time. The trade date T is the anchor's calendar
+//   date, Mon-Fri only. Every DST change, and every server model's, falls on a Sunday, so on one T the anchor is a fixed
+//   offset from server time and a window in anchor minutes is one span of server time.
+// - The range: H and L of the M1 bars whose anchor-local open lies in W = [S, S+R), read once per T from M1 history at the
+//   first evaluation after S+R, never built up from ticks. It needs at least ceil(R/2) bars (ruling 14). B8/B9 compare it
+//   with atr_r, the ATR at t* (the close of the last ORB_TF_ bar at or before S+R), found by time, so a restart mid-session
+//   cannot change the day's verdict.
+// - Bar s is eligible when its anchor-local open is at or after S+R and its close is before the end of E (S+R plus
+//   ORB_Entry_Minutes, or 17:00 NY when that is 0; no later than 16:55 NY on a Friday), so its entry, on the first tick
+//   after the close, lands inside E (Claude-Mac 6777812433). The signal is held through the forming bar after s, so a
+//   gated entry can still land in that one bar. It is a fresh cross of H+buf or L-buf. Any unreadable input gives OP_NULL,
+//   logged once per cause.
+int      ORB_Sig=OP_NULL;
+datetime g_GoatOrbDay=0;              // T of the last evaluated Mon-Fri trigger bar (the latch's key)
+datetime g_GoatOrbRangeDay=0;         // the T whose range verdict is held below (0 = none read yet)
+bool     g_GoatOrbRangeOk=false;      // that T has an ORB: enough M1 bars, and inside B8/B9
+double   g_GoatOrbHigh=0.0;           // that T's range high and low
+double   g_GoatOrbLow=0.0;
+datetime g_GoatOrbLatchDay[2]={0,0};  // per signal direction, the T a single opened on (ruling 11)
+bool     g_GoatOrbLatchUnread=false;  // OnInit could not read the history, so the first T read is latched both ways
+string   g_GoatOrbCause="";           // the last unreadable-data cause logged
+int GoatOrbNull(const string cause)
+  {
+   if(cause!=g_GoatOrbCause) {g_GoatOrbCause=cause; Print("GOAT signals: ORB ",cause," symbol=",_Symbol," (signal NEUTRAL, no entry on it until it reads)");}
+   return OP_NULL;
+  }
+// The anchor's wall-clock time of a server time (ORB_Clock).
+datetime GoatOrbAnchor(const datetime server_time)
+  {
+   if(ORB_Clock==ORB_Clock_London) return GoatLondonTime(server_time);
+   return GoatNYTime(server_time);
+  }
+// T for a server time: the anchor's calendar date, at 00:00 anchor time.
+datetime GoatOrbDate(const datetime server_time)
+  {
+   datetime a=GoatOrbAnchor(server_time);
+   return (datetime)(a-a%86400);
+  }
+// T's range, read once (spec 4.2): off is the anchor minus server time on T. Returns false while an input cannot be read
+// (nothing is held, so the next trigger bar reads again); true once T's verdict is held in g_GoatOrbRangeOk.
+bool GoatOrbReadRange(const datetime day,const long off)
+  {
+   datetime w0=(datetime)(day+ORB_Start_Minute*60-off);
+   datetime w1=(datetime)(w0+ORB_Range_Minutes*60);
+   datetime w_last=(datetime)(w1-1);                // CopyRates by start and stop time: the bars opening in [w0, w1)
+   MqlRates r[];
+   int n=CopyRates(_Symbol,PERIOD_M1,w0,w_last,r);
+   if(n<0) {GoatOrbNull("M1 range unreadable"); return false;}
+   double hi=0.0,lo=0.0;
+   int m=0;
+   for(int i=0;i<n;i++)
+     {
+      if(r[i].time<w0 || r[i].time>=w1) continue;   // W is [S, S+R): the bar opening at S+R is outside
+      if(!(r[i].high>0.0) || !(r[i].low>0.0)) {GoatOrbNull("M1 range bar unreadable"); return false;}
+      if(m==0 || r[i].high>hi) hi=r[i].high;
+      if(m==0 || r[i].low<lo) lo=r[i].low;
+      m++;
+     }
+   bool ok=(2*m>=ORB_Range_Minutes);                // at least ceil(R/2) M1 bars (ruling 14: holidays and short days)
+   string why=(ok ? "" : "only "+IntegerToString(m)+" of "+IntegerToString(ORB_Range_Minutes)+" M1 bars in the range");
+   if(ok && (ORB_Min_Range_ATR>0.0 || ORB_Max_Range_ATR>0.0))
+     {
+      // t*: the close of the last completed ORB_TF_ bar at or before S+R, found by time; atr_r: the ATR at t*.
+      ENUM_TIMEFRAMES tf=TF2TF(ORB_TF_);
+      int k=GoatBrkBarAt(tf,w1-1);
+      if(k>=0 && iTime(_Symbol,tf,k)+PeriodSeconds(tf)>w1) k++;
+      datetime t_star=(k>=0 ? (datetime)(iTime(_Symbol,tf,k)+PeriodSeconds(tf)) : 0);
+      double atr_r=(t_star>0 ? GoatBrkATR(t_star) : 0.0);
+      if(!(atr_r>0.0)) {GoatOrbNull("range ATR unreadable"); return false;}
+      if(ORB_Min_Range_ATR>0.0 && hi-lo<ORB_Min_Range_ATR*atr_r) {ok=false; why="the range is below ORB_Min_Range_ATR x ATR";}
+      if(ORB_Max_Range_ATR>0.0 && hi-lo>ORB_Max_Range_ATR*atr_r) {ok=false; why="the range is above ORB_Max_Range_ATR x ATR";}
+     }
+   g_GoatOrbRangeDay=day; g_GoatOrbRangeOk=ok; g_GoatOrbHigh=hi; g_GoatOrbLow=lo;
+   if(!ok) Print("GOAT signals: ORB no trade on ",TimeToString(day,TIME_DATE),": ",why," symbol=",_Symbol);
+   return true;
+  }
+int GoatOrbSignal(const int s)
+  {
+   if(ORB_Mode!=ORB_Breakout) return OP_NULL;
+   ENUM_TIMEFRAMES tf=TF2TF(ORB_TF_);
+   datetime open_s=iTime(_Symbol,tf,s);
+   double close_s=iClose(_Symbol,tf,s),prev=iClose(_Symbol,tf,s+1);
+   if(open_s<=0 || !(close_s>0.0) || !(prev>0.0)) return GoatOrbNull("trigger bar unreadable");
+   datetime close_t=(datetime)(open_s+PeriodSeconds(tf));   // bar s's close
+   datetime a=GoatOrbAnchor(open_s);
+   datetime day=(datetime)(a-a%86400);
+   int dow=GoatNYWeekday(day);
+   if(dow<1 || dow>5) return OP_NULL;               // a weekend trade date has no session
+   g_GoatOrbDay=day;
+   if(g_GoatOrbLatchUnread) {g_GoatOrbLatchDay[OP_BUY]=g_GoatOrbLatchDay[OP_SELL]=g_GoatOrbDay; g_GoatOrbLatchUnread=false;}
+   long off=(long)(a-open_s),off_ny=(long)(GoatNYTime(open_s)-open_s);
+   int sr=ORB_Start_Minute+ORB_Range_Minutes;
+   if(a<day+sr*60) return OP_NULL;                  // the range is still forming
+   datetime e_end=(datetime)(ORB_Entry_Minutes>0 ? day+(sr+ORB_Entry_Minutes)*60-off : day+17*3600-off_ny);
+   if(dow==5 && e_end>day+(16*60+55)*60-off_ny) e_end=(datetime)(day+(16*60+55)*60-off_ny);   // the Friday cutoff (clock:151)
+   if(close_t>=e_end) return OP_NULL;               // bar s must close before E's end (Claude-Mac 6777812433: its entry lands after the close)
+   if(g_GoatOrbRangeDay!=day && !GoatOrbReadRange(day,off)) return OP_NULL;
+   if(!g_GoatOrbRangeOk) return OP_NULL;
+   double atr=GoatBrkATR(close_t);                  // the buffer's ATR, found by time as in 3.2
+   if(!(atr>0.0)) return GoatOrbNull("ATR unreadable");
+   double buf=ORB_Buffer_ATR*atr;
+   g_GoatOrbCause="";
+   if(close_s>g_GoatOrbHigh+buf && prev<=g_GoatOrbHigh+buf) return OP_BUY;
+   if(close_s<g_GoatOrbLow-buf && prev>=g_GoatOrbLow-buf) return OP_SELL;
+   return OP_NULL;
+  }
+// One single per signal direction per trade date T (spec 4.5, ruling 11): keyed by T and the signal's direction, as entry
+// A's latch is, so Reverse_Seq and Random_Direction (3.5 items 3-4) latch the signal whatever side the position takes.
+bool GoatOrbLatched(const int signal)
+  {
+   return(ORB_Mode==ORB_Breakout && g_GoatOrbDay>0 && g_GoatOrbLatchDay[signal]==g_GoatOrbDay);
+  }
+void GoatOrbLatch(const int signal)
+  {
+   if(ORB_Mode==ORB_Breakout) g_GoatOrbLatchDay[signal]=g_GoatOrbDay;
+  }
+// OnInit (spec 4.4-4.5, ruling 13): the evidence line, and the T latch rebuilt from deal history, never from saved state. A
+// DEAL_ENTRY_IN of MAGIC1 on this symbol whose trigger bar (the ORB_TF_ bar before the one holding the deal) has the
+// current trigger bar's T latches its signal direction: the position's side, flipped under Reverse_Seq. A history that
+// cannot be read latches the first T read both ways. The range is not held: the first evaluation reads it again.
+void GoatOrbLatchRebuild()
+  {
+   ORB_Sig=OP_NULL; g_GoatOrbDay=0; g_GoatOrbRangeDay=0; g_GoatOrbRangeOk=false; g_GoatOrbHigh=0.0; g_GoatOrbLow=0.0;
+   g_GoatOrbLatchDay[0]=g_GoatOrbLatchDay[1]=0; g_GoatOrbLatchUnread=false; g_GoatOrbCause="";
+   if(ORB_Mode!=ORB_Breakout) return;
+   Print("GOAT signals: ORB clock: the tester trusts Server_Clock_Model=",(int)Server_Clock_Model,", Server_UTC_Offset=",Server_UTC_Offset,
+         ", ORB_Clock=",(int)ORB_Clock," (range ",ORB_Start_Minute,"+",ORB_Range_Minutes," min, entry ",ORB_Entry_Minutes," min)");
+   ENUM_TIMEFRAMES tf=TF2TF(ORB_TF_);
+   datetime open_1=iTime(_Symbol,tf,1);
+   datetime day=(open_1>0 ? GoatOrbDate(open_1) : 0);
+   long off=(open_1>0 ? (long)(GoatOrbAnchor(open_1)-open_1) : 0);
+   if(day<=0 || !HistorySelect((datetime)(day-off-PeriodSeconds(PERIOD_D1)),TimeCurrent()+60))
+     {g_GoatOrbLatchUnread=true; Print("GOAT signals: ORB latch: history unreadable at OnInit; the first trade date read is latched both ways"); return;}
+   for(int i=HistoryDealsTotal()-1;i>=0;i--)
+     {
+      ulong deal=HistoryDealGetTicket(i);
+      if(deal==0) continue;
+      if(HistoryDealGetInteger(deal,DEAL_MAGIC)!=MAGIC1 || HistoryDealGetString(deal,DEAL_SYMBOL)!=_Symbol) continue;
+      if(HistoryDealGetInteger(deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
+      long type=HistoryDealGetInteger(deal,DEAL_TYPE);
+      if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL) continue;
+      int held=GoatBrkBarAt(tf,(datetime)HistoryDealGetInteger(deal,DEAL_TIME));
+      if(held<0 || GoatOrbDate(iTime(_Symbol,tf,held+1))!=day) continue;
+      int side=(type==DEAL_TYPE_BUY ? OP_BUY : OP_SELL);
+      g_GoatOrbLatchDay[Reverse_Seq ? 1-side : side]=day;
+     }
+   g_GoatOrbDay=day;
+  }
+// B54:end orb-signal
 void UpdateRSI(int shift)
   {
    if((RSI_Mode!=RSI_Disabled) && GoatSignalReady(0,"RSI",GoatSignalBufferReady(RSI_handle,0,shift+0,2,(RSI_Mode==RSI_OverBS) ? 1 : 2,RSI_Buf),RSI_Sig)) // B49b (F7 SIG-02)
@@ -8823,6 +8976,14 @@ void UpdateCurrentSignals(int shift)
     if(BRK_Sample.CheckTF(TF2TF(BRK_TF_))) BRK_Sig=GoatBrkSignal(shift);
    }
 // B54:end brk-sample
+// B54:begin orb-sample
+   // B54 (spec 4.3): entry B's term, computed once per new ORB_TF_ bar and held for that bar, as entry A's is.
+   if(ORB_Mode != ORB_Disabled)
+   {
+    static INTERVAL ORB_Sample;
+    if(ORB_Sample.CheckTF(TF2TF(ORB_TF_))) ORB_Sig=GoatOrbSignal(shift);
+   }
+// B54:end orb-sample
 //-------------------------------------------------------------------------
    if(   ( EMA_Mode==Trade_Disabled|| !EMA_MustCheck || EMA_Sig==OP_BUY || EMA_Sig==OP_BUYSELL)
       && ( ADX_Mode==Trade_Disabled|| !ADX_MustCheck || ADX_Sig==OP_BUY || ADX_Sig==OP_BUYSELL)
@@ -8883,7 +9044,8 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_BUY||  BB_Sig==OP_BUYSELL)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
-      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY)) // B54 (spec 3.6): entry A's term, ANDed with the six
+      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY) // B54 (spec 3.6): entry A's term, ANDed with the six
+      && ( ORB_Mode==ORB_Disabled  || ORB_Sig==OP_BUY)) // B54 (spec 4.3): entry B's term, likewise
    {
     if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0) GoatSingleRandomRecord(OP_BUY); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_BUY))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_B
@@ -8891,6 +9053,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
      int gate_active_b=GoatGateActiveMask();
      bool b54_armed_b=(Engine_Mode==Engine_Single && g_GoatSingleArmed[OP_BUY]); // B54 (spec 3.5): a single opened below for this buy signal latches its D
      if(Engine_Mode==Engine_Single && GoatBrkLatched(OP_BUY)) {} else // B54 (spec 3.5): PriorDay, one single per buy signal per level D (before the draw)
+     if(Engine_Mode==Engine_Single && GoatOrbLatched(OP_BUY)) {} else // B54 (spec 4.5, ruling 11): ORB, one single per buy signal per trade date T (before the draw)
      if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_BUY); else // B51 (beta-1a): the benchmark's coin-flip side for this buy-signal episode (same timing and gates)
      if(Reverse_Seq)
      {
@@ -8911,6 +9074,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
      }
      if(b54_armed_b && !g_GoatSingleArmed[OP_BUY]) GoatBrkLatch(OP_BUY); // B54 (spec 3.5): the single opened (either side, or the draw's)
+     if(b54_armed_b && !g_GoatSingleArmed[OP_BUY]) GoatOrbLatch(OP_BUY); // B54 (spec 4.5): likewise, entry B's T
      if((GoatGateActiveMask()&~gate_active_b)!=0) GoatGateLog("ALLOW",OP_BUY); // B44 item 4: log only
     }
     else
@@ -8931,7 +9095,8 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_SELL||  BB_Sig==OP_BUYSELL)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
-      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)) // B54 (spec 3.6): entry A's term, ANDed with the six
+      && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL) // B54 (spec 3.6): entry A's term, ANDed with the six
+      && ( ORB_Mode==ORB_Disabled  || ORB_Sig==OP_SELL)) // B54 (spec 4.3): entry B's term, likewise
    {
     if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_SELL]==0) GoatSingleRandomRecord(OP_SELL); // B51 (beta-1a): the episode starts: its signal bar and ordinal (the draw's)
     if(Sequence_New_News&&GoatStartBiasOpen(GoatStartBiasSide(OP_SELL))) // B49b (F5): the position's bias side under Gate_AtFirstOrder + Reverse_Seq; Legacy reads Sequence_New_Bias_S
@@ -8939,6 +9104,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
      int gate_active_s=GoatGateActiveMask();
      bool b54_armed_s=(Engine_Mode==Engine_Single && g_GoatSingleArmed[OP_SELL]); // B54 (spec 3.5): a single opened below for this sell signal latches its D
      if(Engine_Mode==Engine_Single && GoatBrkLatched(OP_SELL)) {} else // B54 (spec 3.5): PriorDay, one single per sell signal per level D (before the draw)
+     if(Engine_Mode==Engine_Single && GoatOrbLatched(OP_SELL)) {} else // B54 (spec 4.5, ruling 11): ORB, one single per sell signal per trade date T (before the draw)
      if(Engine_Mode==Engine_Single && Random_Direction) GoatSingleRandomEntry(OP_SELL); else // B51 (beta-1a): the benchmark's coin-flip side for this sell-signal episode (same timing and gates)
      if(Reverse_Seq)
      {
@@ -8958,6 +9124,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
      }
      if(b54_armed_s && !g_GoatSingleArmed[OP_SELL]) GoatBrkLatch(OP_SELL); // B54 (spec 3.5): the single opened (either side, or the draw's)
+     if(b54_armed_s && !g_GoatSingleArmed[OP_SELL]) GoatOrbLatch(OP_SELL); // B54 (spec 4.5): likewise, entry B's T
      if((GoatGateActiveMask()&~gate_active_s)!=0) GoatGateLog("ALLOW",OP_SELL); // B44 item 4: log only
     }
     else
@@ -10399,7 +10566,8 @@ bool GoatSignalAll(const int op)
             && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_BUY||  BB_Sig==OP_BUYSELL)
             && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
             && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
-            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY)); // B54 (spec 5): in lockstep with SignalEntryTrigger
+            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_BUY) // B54 (spec 5): in lockstep with SignalEntryTrigger
+            && ( ORB_Mode==ORB_Disabled  || ORB_Sig==OP_BUY)); // B54 (spec 5): entry B's term, likewise
    if(op==OP_SELL)
       return(  ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_SELL)
             && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_SELL|| EMA_Sig==OP_BUYSELL)
@@ -10407,7 +10575,8 @@ bool GoatSignalAll(const int op)
             && (  BB_Mode==BB_Disabled   ||  BB_Sig==OP_SELL||  BB_Sig==OP_BUYSELL)
             && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
             && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL) // B54: the term below closes the condition
-            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)); // B54 (spec 5): in lockstep with SignalEntryTrigger
+            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL) // B54 (spec 5): in lockstep with SignalEntryTrigger
+            && ( ORB_Mode==ORB_Disabled  || ORB_Sig==OP_SELL)); // B54 (spec 5): entry B's term, likewise
    return false;
   }
 // GoatSingleSignalExits(checked): the single's opposite-signal exit on the signal cadence, before the entry check, in

@@ -585,14 +585,9 @@ EA_INIT_RULES = (
           'Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on.',
           lambda v: _orb(v) and v['ORB_Min_Range_ATR'] > 0.0 and v['ORB_Max_Range_ATR'] > 0.0
           and v['ORB_Max_Range_ATR'] <= v['ORB_Min_Range_ATR']),
-    # B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term the tree does not have yet. Ported, although
-    # the EA answers INIT_FAILED: it reads one input value, so validate-set refuses such a SET before any tester sees it.
-    # The commit that adds a value's term removes its EA line and its rule here (the inventory test keeps them in step):
-    # PR A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's; PR B removes this one.
-    _rule('ORB_BREAKOUT_NOT_BUILT', [5149], 'if(ORB_Mode==ORB_Breakout)', ['ORB_Mode'], {'ORB_Mode': ['ORB_Breakout']},
-          'ORB_Mode==ORB_Breakout (no signal term in this tree yet; PR B adds it)',
-          'Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet.',
-          lambda v: v['ORB_Mode'] == v.choice('ORB_Mode', 'ORB_Breakout')),
+    # B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term the tree did not have yet was refused here and
+    # in the EA (INIT_FAILED) until the commit that added its term removed both (the inventory test keeps them in step). PR
+    # A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's, and PR B's ORB signal commit ORB_Breakout's: none is left.
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live

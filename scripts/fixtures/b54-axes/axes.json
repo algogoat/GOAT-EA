@@ -1,5 +1,5 @@
 {
- "about": "B54 PR A synthetic axis SETs (Claude-Mac, GOAT-EA#303 condition 4). Not pool files. Each is a complete SET at the schema's defaults plus base and lines; probes: the SET's values (current), then each Y axis at its start and stop with the others at their values; ladder: every rung (controller only). Read by controller/test_b54_init.py and scripts/test_b54_init.cjs.",
+ "about": "B54 PR A synthetic axis SETs (PR B: ORB_Breakout has its term, so no probe ends at a not-built refusal) (Claude-Mac, GOAT-EA#303 condition 4). Not pool files. Each is a complete SET at the schema's defaults plus base and lines; probes: the SET's values (current), then each Y axis at its start and stop with the others at their values; ladder: every rung (controller only). Read by controller/test_b54_init.py and scripts/test_b54_init.cjs.",
  "base": {
   "Engine_Mode": "1",
   "Single_SL_ATR": "1.0",
@@ -18,8 +18,7 @@
   "ORB_ENTRY_WINDOW": "Initialization Failed: ORB_Entry_Minutes must be between 0 and Lim, and the entry window must end by Lim (ORB_Start_Minute+ORB_Range_Minutes+ORB_Entry_Minutes <= Lim).",
   "ORB_BUFFER_RANGE": "Initialization Failed: ORB_Buffer_ATR must be between 0 and 5.",
   "ORB_RANGE_FILTER_NEGATIVE": "Initialization Failed: ORB_Min_Range_ATR and ORB_Max_Range_ATR cannot be negative (0 = off).",
-  "ORB_RANGE_FILTER_ORDER": "Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on.",
-  "ORB_BREAKOUT_NOT_BUILT": "Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."
+  "ORB_RANGE_FILTER_ORDER": "Initialization Failed: ORB_Max_Range_ATR must be above ORB_Min_Range_ATR when both are on."
  },
  "codes": {
   "BRK_WITHOUT_SINGLE": "INIT_PARAMETERS_INCORRECT",
@@ -34,8 +33,7 @@
   "ORB_ENTRY_WINDOW": "INIT_PARAMETERS_INCORRECT",
   "ORB_BUFFER_RANGE": "INIT_PARAMETERS_INCORRECT",
   "ORB_RANGE_FILTER_NEGATIVE": "INIT_PARAMETERS_INCORRECT",
-  "ORB_RANGE_FILTER_ORDER": "INIT_PARAMETERS_INCORRECT",
-  "ORB_BREAKOUT_NOT_BUILT": "INIT_FAILED"
+  "ORB_RANGE_FILTER_ORDER": "INIT_PARAMETERS_INCORRECT"
  },
  "sets": [
   {
@@ -120,21 +118,21 @@
     "ORB_Max_Range_ATR": "0.0||0.0||1.5||3.0||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@stop": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Range_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Range_Minutes@stop": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Entry_Minutes@stop": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Buffer_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Buffer_ATR@stop": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Min_Range_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Min_Range_ATR@stop": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Max_Range_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Max_Range_ATR@stop": "ORB_BREAKOUT_NOT_BUILT"
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
+    "ORB_Start_Minute@stop": "ok",
+    "ORB_Range_Minutes@start": "ok",
+    "ORB_Range_Minutes@stop": "ok",
+    "ORB_Entry_Minutes@start": "ok",
+    "ORB_Entry_Minutes@stop": "ok",
+    "ORB_Buffer_ATR@start": "ok",
+    "ORB_Buffer_ATR@stop": "ok",
+    "ORB_Min_Range_ATR@start": "ok",
+    "ORB_Min_Range_ATR@stop": "ok",
+    "ORB_Max_Range_ATR@start": "ok",
+    "ORB_Max_Range_ATR@stop": "ok"
    },
-   "ladder": "ORB_BREAKOUT_NOT_BUILT"
+   "ladder": "ok"
   },
   {
    "file": "orb-ny-lim.set",
@@ -145,8 +143,8 @@
     "ORB_Range_Minutes": "5"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
     "ORB_Start_Minute@stop": "ORB_START_RANGE"
    },
    "ladder": "ORB_START_RANGE"
@@ -162,11 +160,11 @@
     "ORB_Entry_Minutes": "0||0||5||15||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
     "ORB_Start_Minute@stop": "ORB_START_RANGE",
-    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Entry_Minutes@stop": "ORB_BREAKOUT_NOT_BUILT"
+    "ORB_Entry_Minutes@start": "ok",
+    "ORB_Entry_Minutes@stop": "ok"
    },
    "ladder": "ORB_START_RANGE"
   },
@@ -178,8 +176,8 @@
     "ORB_Entry_Minutes": "0||0||5||425||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Entry_Minutes@start": "ok",
     "ORB_Entry_Minutes@stop": "ORB_ENTRY_WINDOW"
    },
    "ladder": "ORB_ENTRY_WINDOW"
@@ -192,7 +190,7 @@
     "ORB_Range_Minutes": "30||0||5||245||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
     "ORB_Range_Minutes@start": "ORB_RANGE_MINUTES",
     "ORB_Range_Minutes@stop": "ORB_RANGE_MINUTES"
    },
@@ -206,9 +204,9 @@
     "ORB_TF_": "1||0||1||1||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
     "ORB_TF_@start": "ORB_TF_NOT_M1_TO_H1",
-    "ORB_TF_@stop": "ORB_BREAKOUT_NOT_BUILT"
+    "ORB_TF_@stop": "ok"
    },
    "ladder": "ORB_TF_NOT_M1_TO_H1"
   },
@@ -222,8 +220,8 @@
     "ORB_Max_Range_ATR": "2.0"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Buffer_ATR@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Buffer_ATR@start": "ok",
     "ORB_Buffer_ATR@stop": "ORB_BUFFER_RANGE",
     "ORB_Min_Range_ATR@start": "ORB_RANGE_FILTER_NEGATIVE",
     "ORB_Min_Range_ATR@stop": "ORB_RANGE_FILTER_ORDER"
@@ -240,9 +238,9 @@
     "ORB_Start_Minute": "540||540||30||600||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@stop": "ORB_BREAKOUT_NOT_BUILT"
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
+    "ORB_Start_Minute@stop": "ok"
    },
    "ladder": "ORB_START_RANGE"
   },
@@ -256,8 +254,8 @@
     "ORB_Start_Minute": "540||540||30||570||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
     "ORB_Start_Minute@stop": "ORB_START_RANGE"
    },
    "ladder": "ORB_START_RANGE"
@@ -271,8 +269,8 @@
     "ORB_Range_Minutes": "15||15||5||20||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Range_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Range_Minutes@start": "ok",
     "ORB_Range_Minutes@stop": "ORB_RANGE_MINUTES"
    },
    "ladder": "ORB_RANGE_MINUTES"
@@ -286,8 +284,8 @@
     "ORB_Range_Minutes": "5"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Start_Minute@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
     "ORB_Start_Minute@stop": "ORB_RANGE_MINUTES"
    },
    "ladder": "ORB_RANGE_MINUTES"
@@ -300,11 +298,54 @@
     "ORB_Entry_Minutes": "0||0||2147483647||2147483647||Y"
    },
    "probes": {
-    "current": "ORB_BREAKOUT_NOT_BUILT",
-    "ORB_Entry_Minutes@start": "ORB_BREAKOUT_NOT_BUILT",
+    "current": "ok",
+    "ORB_Entry_Minutes@start": "ok",
     "ORB_Entry_Minutes@stop": "ORB_ENTRY_WINDOW"
    },
    "ladder": "ORB_ENTRY_WINDOW"
+  },
+  {
+   "file": "orb-london-inside.set",
+   "about": "PR B: opening range, London anchor on M15, three ORB axes at Y and every rung inside Lim 1260 (540+120+240)",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_Clock": "1",
+    "ORB_TF_": "15",
+    "ORB_Start_Minute": "480||420||30||540||Y",
+    "ORB_Range_Minutes": "30||15||15||120||Y",
+    "ORB_Entry_Minutes": "0||0||60||240||Y"
+   },
+   "probes": {
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
+    "ORB_Start_Minute@stop": "ok",
+    "ORB_Range_Minutes@start": "ok",
+    "ORB_Range_Minutes@stop": "ok",
+    "ORB_Entry_Minutes@start": "ok",
+    "ORB_Entry_Minutes@stop": "ok"
+   },
+   "ladder": "ok"
+  },
+  {
+   "file": "orb-m1-inside.set",
+   "about": "PR B: opening range, New York anchor on M1, three ORB axes at Y: one-minute rungs for S and R, every rung inside Lim 1020",
+   "lines": {
+    "ORB_Mode": "1",
+    "ORB_TF_": "1",
+    "ORB_Start_Minute": "575||570||1||580||Y",
+    "ORB_Range_Minutes": "7||5||1||9||Y",
+    "ORB_Buffer_ATR": "0.5||0.0||0.5||2.0||Y"
+   },
+   "probes": {
+    "current": "ok",
+    "ORB_Start_Minute@start": "ok",
+    "ORB_Start_Minute@stop": "ok",
+    "ORB_Range_Minutes@start": "ok",
+    "ORB_Range_Minutes@stop": "ok",
+    "ORB_Buffer_ATR@start": "ok",
+    "ORB_Buffer_ATR@stop": "ok"
+   },
+   "ladder": "ok"
   }
  ]
 }

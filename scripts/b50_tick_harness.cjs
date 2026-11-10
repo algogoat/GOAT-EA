@@ -466,6 +466,7 @@ const MQL_STRUCT_FIELDS={
  MqlTradeResult:{retcode:0,deal:0,order:0,volume:0,price:0,bid:0,ask:0,comment:'',request_id:0,retcode_external:0},
  MqlTradeTransaction:{deal:0,order:0,symbol:'',type:0,order_type:0,order_state:0,deal_type:0,time_type:0,time_expiration:0,price:0,price_trigger:0,price_sl:0,price_tp:0,volume:0,position:0,position_by:0},
  MqlTradeCheckResult:{retcode:0,balance:0,equity:0,profit:0,margin:0,margin_free:0,margin_level:0,comment:''},
+ MqlRates:{time:0,open:0,high:0,low:0,close:0,tick_volume:0,spread:0,real_volume:0},   // B54 PR B (entry B's M1 range)
 };
 // An inert object for anything the model does not represent (the panel, dialogs): any member, any call, answers 0.
 function inert(){const f=function(){return 0;};const p=new Proxy(f,{get:(o,k)=>k===Symbol.toPrimitive?()=>0:(k==='length'?0:p),apply:()=>0,set:()=>true});return p;}
@@ -617,6 +618,16 @@ function terminalModel(w,K){
   iTime:(s,tf,sh)=>barTime(tf,sh),iOpen:(s,tf,sh)=>bar(tf,sh).open,iHigh:(s,tf,sh)=>bar(tf,sh).high,iLow:(s,tf,sh)=>bar(tf,sh).low,iClose:(s,tf,sh)=>bar(tf,sh).close,
   iBarShift:(s,tf,t,exact)=>{const sec=tfSec(tf);return Math.floor((barTime(tf,0)-Math.floor(t/sec)*sec)/sec);},
   iHighest:()=>0,iLowest:()=>0,iBars:()=>100000,Bars:()=>100000,
+  // B54 PR B: CopyRates by start and stop time only (MT5's third form): the closed and forming bars of tf whose open lies in
+  // [start, stop], oldest first, from the same series as iHigh/iLow. world.missingRates(tf,time,w) true: no bar opens then
+  // (a holiday or a short day); world.rejectRates(tf,start,stop,w) true: the read fails (-1).
+  CopyRates:(s,tf,start,stop,arr)=>{
+   if(typeof start!=='number'||typeof stop!=='number'||stop<start)throw new Error('b50_tick_harness: CopyRates is modelled by start and stop time only');
+   if(w.rejectRates&&w.rejectRates(tf,start,stop,w))return -1;
+   const sec=tfSec(tf),now=barTime(tf,0),rows=[];
+   for(let t=Math.ceil(start/sec)*sec;t<=stop&&t<=now;t+=sec){if(w.missingRates&&w.missingRates(tf,t,w))continue;const b=bar(tf,(now-t)/sec);
+    rows.push({time:t,open:b.open,high:b.high,low:b.low,close:b.close,tick_volume:1,spread:0,real_volume:0});}
+   arr.length=0;arr.push(...rows);return rows.length;},
   CopyBuffer:(h,b,start,count,arr)=>{
    const name=w.handleNames[h];if(name===undefined)return -1;
    const vals=[];for(let k=0;k<count;k++){const v=w.indicator(name,b,start+k,w);if(v===undefined||v===null)return -1;vals.push(v);}

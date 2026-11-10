@@ -5,14 +5,15 @@
 //    same INIT code and alert as that rule of the controller's EA_INIT_RULES. controller/test_b54_init.py gives the same
 //    files to validate_strategy and checks the same table, so the EA and its mirror agree on every probe.
 // 2. Condition 3: every BRK_Mode / ORB_Mode value whose signal term this tree does not have is refused at OnInit, in the
-//    tester and on a live chart; a value that has a term is not refused for it. A value has a term when code inside a
-//    "// B54:begin <item>-signal" block of the entrypoint names its label; the commit that adds one removes the value's
-//    *_NOT_BUILT line, or this test fails both ways.
+//    tester and on a live chart; a value that has a term is not refused for it (ORB stays refused on a live chart by ruling
+//    7, INIT_FAILED). A value has a term when code inside a "// B54:begin <item>-signal" block of the entrypoint names its
+//    label; the commit that adds one removes the value's *_NOT_BUILT line, or this test fails both ways. Since PR B every
+//    value has its term, so no *_NOT_BUILT line is left.
 // 3. The rules the controller cannot port: the chart's timeframe (PriorDay on TF_Cur, the M_Current cadence), ORB on a live
 //    chart, and the two pre-2007 test starts, each refused and each next to an accepted neighbour.
-// 4. Load-bearing: mutants of the entrypoint (ORB's *_NOT_BUILT line removed, a BRK one restored, an ORB term added without
-//    removing its line, Lim 1260 -> 1320, either alignment term removed, B4+B5 >= Lim -> >, BRK_Bars' bound 500 -> 501, the
-//    D1 chart bound >= -> >) must each be caught. Not shown here: the 32-bit wrap that ORB_Entry_Minutes' own bound guards;
+// 4. Load-bearing: mutants of the entrypoint (a BRK or the ORB *_NOT_BUILT line restored, ORB's term taken out of its
+//    -signal block, Lim 1260 -> 1320, either alignment term removed, B4+B5 >= Lim -> >, BRK_Bars' bound 500 -> 501, the D1
+//    chart bound >= -> >) must each be caught. Not shown here: the 32-bit wrap that ORB_Entry_Minutes' own bound guards;
 //    the harness computes in JS numbers, which never wrap, so orb-entry-int-max.set is refused with or without that term.
 // What it does not prove: compile cleanliness (MetaEditor), MT5's own SET reader, or any trade.
 'use strict';
@@ -110,7 +111,8 @@ function condition3(files){
    if(live.ok||live.code!==CODE.INIT_FAILED||![TABLE.alerts[notBuilt(label)],ORB_LIVE].includes(live.alert)) problems.push(label+' has no signal term, but a live chart gives '+show(live));
   }else{
    if(!tester.ok) problems.push(label+' has a signal term, but the tester gives '+show(tester));
-   if(!live.ok) problems.push(label+' has a signal term, but a live chart gives '+show(live));
+   const liveWant=input==='ORB_Mode'?ORB_LIVE:null;   // ruling 7: ORB is tester-only, whatever it has built
+   if(liveWant?(live.ok||live.code!==CODE.INIT_FAILED||live.alert!==liveWant):!live.ok) problems.push(label+' has a signal term, but a live chart gives '+show(live));
   }
  }
  return problems;
@@ -120,7 +122,7 @@ function condition3(files){
 function chart(files){
  const problems=[],expect=(what,r,want)=>{const got=r.ok?'ok':r.alert;if(got!==want)problems.push(what+': '+show(r)+', wanted '+want);};
  const pday={...BASE,BRK_Mode:2,BRK_TF_:0},nbar={...BASE,BRK_Mode:1},orb={...BASE,ORB_Mode:1};
- const NB='ok',PB='ok',OB=TABLE.alerts.ORB_BREAKOUT_NOT_BUILT;   // N-bar and prior day have their terms (PR A's signal commit)
+ const NB='ok',PB='ok',OB='ok';   // every mode value has its term (N-bar and prior day: PR A; ORB: PR B)
  expect('PriorDay on TF_Cur, D1 chart',init(files,pday,{world:{period:K.PERIOD_D1}}),CHART.pdayCur);
  expect('PriorDay on TF_Cur, W1 chart',init(files,pday,{world:{period:K.PERIOD_W1}}),CHART.pdayCur);
  expect('PriorDay on TF_Cur, H4 chart',init(files,pday,{world:{period:K.PERIOD_H4}}),PB);
@@ -152,14 +154,15 @@ const mark=tree[H.MAIN].indexOf('// B54:begin b54-init');assert.ok(mark>0,'the b
 const {runs}=axes(tree);
 const problems=all(tree);
 assert.deepEqual(problems,[],'b54-init on the tree');
-assert.deepEqual([...terms(tree[H.MAIN])].sort(),['BRK_NBar','BRK_PriorDay'],'PR A: entry A has its terms; ORB_Breakout has none until PR B');
+assert.deepEqual([...terms(tree[H.MAIN])].sort(),['BRK_NBar','BRK_PriorDay','ORB_Breakout'],'every mode value has its term (entry A: PR A; entry B: PR B)');
 
 // 4. Mutants.
-const mutate=(from,to,count=1)=>{const text=tree[H.MAIN];const n=text.split(from).length-1;assert.equal(n,count,'mutant anchor '+JSON.stringify(from));return {...tree,[H.MAIN]:text.split(from).join(to)};};
+const mutateAll=pairs=>{let text=tree[H.MAIN];for(const [from,to,count=1] of pairs){const n=text.split(from).length-1;assert.equal(n,count,'mutant anchor '+JSON.stringify(from));text=text.split(from).join(to);}return {...tree,[H.MAIN]:text};};
+const mutate=(from,to,count=1)=>mutateAll([[from,to,count]]);
 const MUTANTS=[
- ['the ORB not-built line removed',mutate('   if(ORB_Mode==ORB_Breakout)                               {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}\n',''),'ORB_Breakout has no signal term, but the tester gives'],
+ ['the ORB not-built line restored',mutate('// B54:end b54-init','   if(ORB_Mode==ORB_Breakout) {Alert("Initialization Failed: ORB_Mode=ORB_Breakout has no signal term in this build yet."); return INIT_FAILED;}\n// B54:end b54-init'),'ORB_Breakout has a signal term, but the tester gives'],
  ['a BRK not-built line restored',mutate('// B54:end b54-init','   if(BRK_Mode==BRK_NBar) {Alert("Initialization Failed: BRK_Mode=BRK_NBar has no signal term in this build yet."); return INIT_FAILED;}\n// B54:end b54-init'),'BRK_NBar has a signal term, but the tester gives'],
- ['a term added, its line kept',mutate('// B54:begin b54-init','// B54:begin orb-signal\n   if(ORB_Mode==ORB_Breakout) {}\n// B54:end orb-signal\n// B54:begin b54-init'),'ORB_Breakout has a signal term, but the tester gives'],
+ ['ORB\'s term taken out of its -signal block, no not-built line',mutateAll([['// B54:begin orb-signal','// B54:begin orb-helpers'],['// B54:end orb-signal','// B54:end orb-helpers']]),'ORB_Breakout has no signal term, but the tester gives'],
  ['Lim 1260 -> 1320',mutate('? 1260 : 1020','? 1320 : 1020',4),'orb-london-lim.set ORB_Start_Minute@stop'],
  // Claude-Mac 6764975563 fix 2: the alignment terms and B4+B5 < Lim, each reached by a probe end through OnInit.
  ['ORB_Start_Minute alignment removed',mutate(' || ORB_Start_Minute%((int)ORB_TF_)!=0',''),'orb-h1-start-misaligned.set ORB_Start_Minute@stop'],

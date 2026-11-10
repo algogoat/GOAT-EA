@@ -204,7 +204,7 @@ const MUTANTS=[
   'if(Engine_Mode==Engine_Single && Random_Direction && g_GoatRandomEpisodeBar[OP_BUY]==0 && !GoatBrkLatched(OP_BUY)) GoatSingleRandomRecord(OP_BUY);',/the latched episode is recorded/],
  ['the ATR read at evaluation time','double atr=GoatBrkATR(open_s+PeriodSeconds(tf));','double atr=GoatBrkATR(TimeCurrent());'],
  ['the fresh cross dropped','if(close_s>pdh+buf && prev<=pdh+buf) return OP_BUY;','if(close_s>pdh+buf) return OP_BUY;'],
- ['GoatSignalAll without the sell term','            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL)); // B54 (spec 5)','            ); // B54 (spec 5)'],
+ ['GoatSignalAll without the sell term','            && ( BRK_Mode==BRK_Disabled  || BRK_Sig==OP_SELL) // B54 (spec 5)','            // B54 (spec 5)'],
 ];
 const caught=[];
 for(const [label,from,a,b] of MUTANTS){

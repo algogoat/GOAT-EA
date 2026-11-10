@@ -194,16 +194,26 @@ Lim = 1020 (17:00 NY) under the NewYork anchor, and 1260 (21:00 London) under th
   - `atr_r` is the `ATR_MA_handle` value of the newest `ATR_TF_` bar closed at or before t*, located with `iBarShift`,
     never by a shift from the current bar.
   - So a restart mid-session cannot change the day's verdict (change 2).
+- **As built in PR B:**
+  - On one T the anchor is a fixed offset from server time, since every DST change, and every server model's, falls on a
+    Sunday. So W and E are each one span of server time, found from bar s's offset.
+  - The range is `CopyRates(_Symbol,PERIOD_M1,start,stop)` by time, over the bars opening in [S, S+R).
+  - A failed read (-1) holds nothing, so the next trigger bar reads again. A read with fewer than ceil(R/2) bars is that
+    day's verdict: no ORB, logged once.
+  - t* and `atr_r` use entry A's by-time helpers (`GoatBrkBarAt`, `GoatBrkATR`).
 
 ### 4.3 Signal and evaluation timing
 
 The term is evaluated on each new bar of `TF2TF(ORB_TF_)` (`static INTERVAL ORB_Sample`), in the same block as Entry
 A, at bar close only, as in 3.3.
-- **Eligible bar.** Bar s is eligible when its anchor-local open is at or after S+R and its close is at or before E's
-  end.
+- **Eligible bar.** Bar s is eligible when its anchor-local open is at or after S+R and its close is before E's end
+  (Claude-Mac 6777812433, reading 1: strict; 4.4).
 - **Signal.** `ORB_Sig = OP_BUY` if `Close[s] > H+buf` and `Close[s+1] <= H+buf`. A sell is the mirror image against
   L. Here `buf = ORB_Buffer_ATR x atr`, with `atr` as in 3.2.
 - **Unreadable data** gives `OP_NULL`, logged once per cause.
+- **As built in PR B:** E's end with `ORB_Entry_Minutes=0` is 17:00 NY on T's calendar date under either anchor, found
+  from bar s's New York offset (`GoatNYTime`), so under the London anchor it is 21:00 London in the mismatch weeks and
+  22:00 otherwise. A weekend T has no session and gives `OP_NULL` without a log line. The range is not read before S+R.
 
 ### 4.4 Clock and DST
 
@@ -220,6 +230,16 @@ A, at bar close only, as in 3.3.
   - London midnight is already past 17:00 NY of the previous NY date (19:00 or 20:00 NY).
   - So under either anchor a window stays inside trade date T and never crosses 17:00 NY in either DST state. OnInit
     refuses any B4-B6 combination that could (4.1).
+- **Entries close before E's end (Claude-Mac 6777812433, reading 1).**
+  - A trade enters on the first tick after its trigger bar closes, so bar s is eligible only when it closes before E's
+    end. That holds for every form of the end: S+R+`ORB_Entry_Minutes`, 17:00 NY when that is 0, and the Friday 16:55 NY
+    cutoff.
+  - So an E-minute window holds entries in [S+R+TF, S+R+E), and none lands at the rollover, even with S+R+E = Lim.
+  - The signal of the last eligible bar is still held through its own forming bar (3.3), so a gated entry can land
+    later in that one bar, still before E's end.
+- **London anchor with `ORB_Entry_Minutes=0` (Claude-Mac note 3).** E then runs to 17:00 NY: 22:00 London in
+  ordinary weeks and 21:00 London in the mismatch weeks. An explicit window stops at Lim, 21:00 London. Both follow from
+  the rules above, and neither is a defect.
 - **Pre-2007.** A tester start before 2007-03-11 is refused for ORB with the NewYork anchor under Fixed or EUDST, as
   main:5053 does. Under the London anchor it is refused under every model, because NYClose derives UTC through the
   2007 US rule (clock:103-109).
@@ -227,6 +247,8 @@ A, at bar close only, as in 3.3.
   OnInit with `Server_Clock_Model`, `Server_UTC_Offset` and `ORB_Clock` for the evidence.
   - B54 leaves clock:189 unchanged.
   - The live self-check for ORB belongs to the controller clock-model PR and a later live admission (ruling 8).
+  - As built in PR B: `GoatOrbLatchRebuild` prints the line at OnInit ("GOAT signals: ORB clock: the tester trusts
+    Server_Clock_Model=..., Server_UTC_Offset=..., ORB_Clock=..."), with the range and entry minutes.
 
 ### 4.5 Direction, re-entry, filters
 
@@ -235,6 +257,9 @@ A, at bar close only, as in 3.3.
   - The latch is keyed by T and the signal direction, so 3.5 items 3 and 4 apply unchanged.
   - It is rebuilt at OnInit from T's deal history (ruling 13).
   - A buy and a sell on the same T are both allowed unless `Single_Flat_Only` forbids the overlap.
+  - As built in PR B: `GoatOrbLatched` and `GoatOrbLatch` sit beside entry A's skip and latch lines, before the draw. The
+    key is the T of the last evaluated Mon-Fri trigger bar. The rebuild latches a `MAGIC1` entry whose trigger bar (the
+    `ORB_TF_` bar before the one holding the deal) has the current T, flipped under `Reverse_Seq`.
 - **Filters** work as in 3.6. An entry also needs `Active`.
   - There is no Studio refusal for a session that misses E (ruling 10).
   - The rollover block applies.
@@ -259,8 +284,8 @@ As built in PR A (GOAT-EA#304; Claude-Mac 6764975563):
   tester and on a live chart (the ruling on GOAT-EA#303, condition 3).
   - Each is ported to EA_INIT_RULES, since it reads one input value, so validate-set refuses such a SET first.
   - They are the block's last lines, so the range and Lim rules stay reachable and tested.
-  - The commit that adds a value's term removes its line. PR A removed `BRK_NBar`'s and `BRK_PriorDay`'s; PR B removes
-    `ORB_Breakout`'s.
+  - The commit that adds a value's term removes its line. PR A removed `BRK_NBar`'s and `BRK_PriorDay`'s; PR B removed
+    `ORB_Breakout`'s, so none is left.
 - **Mirror.** Ported to EA_INIT_RULES: the rules on input values. TESTER_INIT_RULES: the two pre-2007 test starts.
   NOT_PORTED: the M_Current cadence (3.3) and PriorDay on TF_Cur (A2), which read the chart's timeframe, and ORB on a live
   chart.
@@ -352,6 +377,15 @@ Per file:
     and October mismatch weeks; the Lim refusals under both DST states; the pre-2007 refusals; the live INIT_FAILED.
   - **Mutants that must fail:** atr_r read at evaluation time, London from the US rule, NY time from raw server time,
     the first Sunday in place of the second, Lim = 1320, the range built from ticks, S+R included in the range.
+  - **As built in PR B:** thirteen more mutants: the S bar left out, the latch removed, the latch keyed by position side,
+    the Friday cutoff dropped, 17:00 NY read on the anchor's clock, a bar closing at E's end eligible, the M1-count rule
+    dropped, a weekend T traded, `GoatSignalAll` without entry B's term, the buffer's ATR read at evaluation time, the
+    fresh cross dropped, an unreadable range held as a no-ORB day, and the trigger bar evaluated before S+R. Every mutant
+    must raise its named problem. The harness gains `CopyRates` by start and stop time, with a gap hook for holidays.
+  - **The latest entry** (reading 1) is checked in ticks: the first tick after the last eligible bar's close, before E's
+    end, for E=0 on a weekday, on a Friday, and for S+R+E = Lim under both anchors. A cross on the bar closing at the end
+    opens nothing. A test also pins the hold through the forming bar: a buy gated by `Single_Flat_Only` opens later in
+    that bar.
 - **Updated tests:** `test_b50_exits` (8-term text match), `test_studio_appended_inputs`, `test_studio_ea_init_rules`,
   `test_studio_pinned_tester_inputs`, `test_studio_optimization_inputs`, `test_studio_broker_fit`,
   `test_portfolio_child_audit`, `test_studio_setting_compare`, `test_hunt_sets_init`.

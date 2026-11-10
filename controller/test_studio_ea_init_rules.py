@@ -129,9 +129,8 @@ class PortedRuleTests(RuleCase):
                                                         Single_Flat_Only='true', Gate_Recheck='1')),
     }
 
-    # B54 (spec 4.6, GOAT V1.49.mq5:5122-5152): the breakout entries on a valid single. Until a mode value has its signal
-    # term, the tree refuses it outright (*_NOT_BUILT, the block's last lines), so a "good" SET with a family on passes
-    # every rule but that one: it is refused only by a *_NOT_BUILT rule (passes_or_unbuilt), and so by no earlier rule.
+    # B54 (spec 4.6, GOAT V1.49.mq5:5122-5147): the breakout entries on a valid single. Every mode value has its signal term
+    # (entry A since PR A, entry B since PR B), so no *_NOT_BUILT rule is left and a "good" SET with a family on passes.
     S = dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0')
     NBAR, PDAY, ORB = dict(S, BRK_Mode='1'), dict(S, BRK_Mode='2'), dict(S, ORB_Mode='1')
     B54_CASES = {
@@ -149,24 +148,14 @@ class PortedRuleTests(RuleCase):
         'ORB_RANGE_FILTER_NEGATIVE': (dict(ORB, ORB_Min_Range_ATR='0.5', ORB_Max_Range_ATR='2.0'), dict(ORB, ORB_Min_Range_ATR='-0.5')),
         'ORB_RANGE_FILTER_ORDER': (dict(ORB, ORB_Min_Range_ATR='0.5', ORB_Max_Range_ATR='2.0'),
                                    dict(ORB, ORB_Min_Range_ATR='2.0', ORB_Max_Range_ATR='2.0')),
-        'ORB_BREAKOUT_NOT_BUILT': (S, ORB),
     }
-    UNBUILT = {'ORB_BREAKOUT_NOT_BUILT'}   # BRK_NBar and BRK_PriorDay have their terms (PR A's signal commit)
-
-    def passes_or_unbuilt(self, **changes):
-        try:
-            validate_strategy(self.values(**changes), self.schema)
-        except ValueError as refusal:
-            found = re.search(r'Rule (\w+) \(', str(refusal))
-            self.assertTrue(found and found[1] in self.UNBUILT, str(refusal))
-            return found[1]
-        return None
 
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
         self.assertEqual(set(self.CASES) | set(self.B50_CASES) | set(self.B54_CASES), {rule['id'] for rule in EA_INIT_RULES})
+        self.assertFalse([rule['id'] for rule in EA_INIT_RULES if rule['id'].endswith('_NOT_BUILT')], 'PR B: every mode value has its term')
         for rule_id, (good, bad) in self.B54_CASES.items():
             with self.subTest(rule=rule_id):
-                self.passes_or_unbuilt(**good)
+                self.passes(**good)
                 self.refused(rule_id, **bad)
         # B54: a schema without the B54 group (B53's) carries none of its rules and every other one; a B54 schema that lost
         # one of its inputs or labels fails closed.
@@ -236,16 +225,15 @@ class PortedRuleTests(RuleCase):
         # Spec 4.1/4.4: Lim is 1020 under the New York anchor and 1260 under the London one; S and R count in ORB_TF_'s minutes.
         orb, london = self.ORB, dict(self.ORB, ORB_Clock='1')
         self.refused('ORB_RANGE_MINUTES', **dict(orb, ORB_Start_Minute='1015', ORB_Range_Minutes='5'))    # S+R = Lim
-        self.assertEqual(self.passes_or_unbuilt(**dict(orb, ORB_Start_Minute='1010', ORB_Range_Minutes='5', ORB_Entry_Minutes='5')),
-                         'ORB_BREAKOUT_NOT_BUILT')                                                        # S+R+E = Lim
+        self.passes(**dict(orb, ORB_Start_Minute='1010', ORB_Range_Minutes='5', ORB_Entry_Minutes='5'))  # S+R+E = Lim
         self.refused('ORB_ENTRY_WINDOW', **dict(orb, ORB_Start_Minute='1010', ORB_Range_Minutes='5', ORB_Entry_Minutes='6'))
         self.refused('ORB_START_RANGE', **dict(orb, ORB_Start_Minute='1020', ORB_Range_Minutes='5'))
-        self.passes_or_unbuilt(**dict(london, ORB_Start_Minute='1250', ORB_Range_Minutes='5', ORB_Entry_Minutes='5'))
-        self.passes_or_unbuilt(**dict(london, ORB_Start_Minute='1020', ORB_Range_Minutes='5'))            # past NY's Lim
+        self.passes(**dict(london, ORB_Start_Minute='1250', ORB_Range_Minutes='5', ORB_Entry_Minutes='5'))
+        self.passes(**dict(london, ORB_Start_Minute='1020', ORB_Range_Minutes='5'))            # past NY's Lim
         self.refused('ORB_RANGE_MINUTES', **dict(london, ORB_Start_Minute='1255', ORB_Range_Minutes='5'))
         self.refused('ORB_START_RANGE', **dict(london, ORB_Start_Minute='1260', ORB_Range_Minutes='5'))
         self.refused('ORB_START_RANGE', **dict(orb, ORB_TF_='15', ORB_Start_Minute='575'))
-        self.passes_or_unbuilt(**dict(orb, ORB_TF_='1', ORB_Start_Minute='575', ORB_Range_Minutes='7'))
+        self.passes(**dict(orb, ORB_TF_='1', ORB_Start_Minute='575', ORB_Range_Minutes='7'))
         self.refused('ORB_RANGE_MINUTES', **dict(orb, ORB_TF_='15', ORB_Range_Minutes='20'))
         self.refused('ORB_START_RANGE', **dict(orb, ORB_Start_Minute='-5'))
         self.refused('ORB_TF_NOT_M1_TO_H1', **dict(orb, ORB_TF_='0'))                                     # TF_Cur
@@ -634,13 +622,13 @@ class InventoryTests(unittest.TestCase):
         # B49b (F1 full) adds the live manage-only INIT_FAILED after adoption (NOT_PORTED: licence and expiry, live only).
         # The merged line (B50 + B51 with B49b) carries both sets. B52 (its review) adds two: the benchmark under the
         # first-order gate (ported) and the New York clock on a live chart (not ported: run context).
-        # B54 (spec 4.6, PR A) adds 20: 18 INIT_PARAMETERS_INCORRECT (13 ported; the two pre-2007 test starts, tester rules;
-        # three that read the chart's timeframe, not ported) and 2 INIT_FAILED (ORB on a live chart, not ported; ORB_Breakout,
-        # which has no signal term yet, ported). PR A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's.
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (108, 8, 112))
+        # B54 (spec 4.6) adds 19: 18 INIT_PARAMETERS_INCORRECT (13 ported; the two pre-2007 test starts, tester rules; three
+        # that read the chart's timeframe, not ported) and 1 INIT_FAILED (ORB on a live chart, not ported). The not-built
+        # INIT_FAILED lines went with their terms: BRK_NBar's and BRK_PriorDay's in PR A, ORB_Breakout's in PR B.
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (107, 8, 111))
         self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 68)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (58, 4, 50))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (57, 4, 50))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [4434, 4545, 4562, 4837])

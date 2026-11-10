@@ -1,4 +1,4 @@
-"""Keep the forward B53 candidate, and the retained B52 (superseded, never installed), B51, B50, B49a, B47, B46, B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward B54 candidate (research only), the retained B53 (the experiments' final build), B52 (superseded, never installed), B51, B50, B49a, B47, B46, B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
@@ -7,7 +7,8 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/beta17-B53'
+CANDIDATE = ROOT / 'candidate-builds/beta17-B54'
+RETAINED_B53 = ROOT / 'candidate-builds/beta17-B53'
 RETAINED_B52 = ROOT / 'candidate-builds/beta17-B52'
 RETAINED_B51 = ROOT / 'candidate-builds/beta17-B51'
 RETAINED_B50 = ROOT / 'candidate-builds/beta17-B50'
@@ -29,14 +30,44 @@ RETAINED_ROOT_BINARY = '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568
 
 
 class StartProtocolCandidateTests(unittest.TestCase):
-    def test_forward_candidate_binds_to_exact_source(self):
-        identity = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
+    def test_forward_b54_candidate_binds_to_exact_source(self):
+        # B54 (Claude-Mac goatai#2750 6781557904 item 1): the research build for breakout entries, B53 plus entry A
+        # (GOAT-EA#304) and entry B (#305), its own identity. It supersedes no candidate: B53 stays the experiments' final
+        # build, and B54 has no demo or live admission until Claude-Mac rules. Every source hashes to the tree.
+        b54 = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
         text = (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
-        self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
-        self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
+        self.assertIn('#define   GOAT_BUILD_ID "' + b54['build_id'] + '"', text)
+        self.assertIn('#define   GOAT_BUILD_MARKER "' + b54['build_marker'] + '"', text)
+        self.assertEqual((b54['build_id'], b54['build_marker']), ('V1.49-BETA17-54', 'B54'))
+        self.assertIsNone(b54['supersedes_candidate'])
+        self.assertEqual(b54['source_base'], '216e16225441cfc1bfe0546c1c70adaf327405cf', 'B54 is built on B53\'s commit')
+        self.assertEqual(b54['consolidates'], ['B54.s', 'B54.0', 'B54.A', 'B54.B'])
+        self.assertEqual(list(b54['consolidated_heads']), b54['consolidates'])
+        for relative, expected in b54['sources'].items():
+            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+        b53 = json.loads((RETAINED_B53 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(b54['sources']), sorted(b53['sources']), 'same compile closure as B53')
+        b54_guard = (ROOT / 'scripts/test_b54_no_drift.cjs').read_text(encoding='utf-8')
+        b54_changed = json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b54_guard, re.M)[1].replace("'", '"') + ']')
+        self.assertEqual(sorted(name for name in b54['sources'] if b54['sources'][name] != b53['sources'][name]), sorted(b54_changed),
+                         'B54 differs from B53 in exactly the files scripts/test_b54_no_drift.cjs marks')
+        self.assertFalse(b54['native_qualified'])
+        self.assertFalse(b54['customer_delivery'])
+        serialized = json.dumps(b54)
+        for host in ('C:\\', 'G:\\', 'AppData'):
+            self.assertNotIn(host, serialized)
+
+    def test_forward_candidate_binds_to_exact_source(self):
+        # B53, retained (B54 is the forward candidate): the experiments' final build, not superseded.
+        identity = json.loads((RETAINED_B53 / 'identity.json').read_text(encoding='utf-8'))
+        text = (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig')
+        self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-53', 'B53'))
         self.assertEqual(identity['supersedes_candidate'], 'beta17-B52')
+        b53_receipt = json.loads((RETAINED_B53 / 'compile-receipt.json').read_text(encoding='utf-8'))
+        self.assertNotIn('do_not_install', b53_receipt)
+        self.assertNotIn('superseded_by', b53_receipt)
         # B53 is the final build (goatai#2750, GOAT-EA#296): B51 with GOAT-EA#292's follow-ups, merged with B49b (claude-pc/b49b
         # 808ff728, GOAT-EA#290), the fixes of two independent reads of that merge, #294's controller change, and Codex's three
         # fixes on GOAT-EA#296. Its own identity, because B52's binary refused every RiskperSeq single at OnInit (Codex
@@ -248,7 +279,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_B52, 'B52', 'beta17-B51'), (RETAINED_B51, 'B51', 'beta17-B50'), (RETAINED_B50, 'B50', 'beta17-B49a'), (RETAINED_B49A, 'B49a', 'beta17-B47'), (RETAINED_B47, 'B47', 'beta17-B46'), (RETAINED_B46, 'B46', 'beta17-B45'), (RETAINED_B45, 'B45', 'beta17-B44'), (RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
+        for folder, marker, supersedes in ((RETAINED_B53, 'B53', 'beta17-B52'), (RETAINED_B52, 'B52', 'beta17-B51'), (RETAINED_B51, 'B51', 'beta17-B50'), (RETAINED_B50, 'B50', 'beta17-B49a'), (RETAINED_B49A, 'B49a', 'beta17-B47'), (RETAINED_B47, 'B47', 'beta17-B46'), (RETAINED_B46, 'B46', 'beta17-B45'), (RETAINED_B45, 'B45', 'beta17-B44'), (RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
                                            (RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'), (RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
                                            (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))

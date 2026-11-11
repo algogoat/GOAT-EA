@@ -1036,6 +1036,7 @@ tools need no broker; the rest use the seed lane's checks, start record
 & $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 3600
 & $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 3600
 & $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
+& $py $tool --installation $install tester-journal-check --catchup-id 'catchup-20261002'   # or --batch-id <Prove batch>
 ```
 
 **Unverified exports (GOAT-EA#315).** A Prove batch's report marks an export `unverified` when its
@@ -1050,6 +1051,34 @@ re-tested as it is. To re-test one anyway, the plan names it and the tag it is c
 its status and carries `unverified_disclosed`, and the member and its evidence version carry
 `original.unverified_disclosed` (`batch_id`, `reason`, `tag`). A batch result that cannot be read
 refuses the scan.
+
+**Tester journal copies (GOAT-EA#315).** MT5 rewrites the tester's day log
+(`Tester\logs\<yyyymmdd>.log`) at every optimisation start, today's file included, and removes
+the older ones, so the next optimisation on a terminal destroys the journal of whatever ran
+before it. A catch-up member is a single test, not an optimisation, and the day log survives a
+whole catch-up; the controller keeps each member's block because the next optimisation start
+would destroy it. In the pass that sees a catch-up member end, its own block of lines (its
+MT5 start to its MT5 exit) is copied into its evidence folder as
+`tester-journal.<yyyymmdd>.log` (beside the folder, as `<member>.tester-journal.<yyyymmdd>.log`,
+when the member left none) and recorded on the member in `catchups\<id>\state.json`
+(`tester_journal`: path, SHA-256, bytes, lines, first and last line time). When a Prove batch
+finishes, what is left of its block of each day log is copied, gzip, to
+`attempts\<attempt>\tester-journal\<yyyymmdd>.log.gz` and recorded in `result.json`
+(`tester_journal`). **That copy holds the batch's last member only**, because each member's
+optimisation start rewrote the log: the record says `covers:"last_member_only"` with the first
+line's time in `covers_plain`, and it is never the batch's journal. A Prove member's proof stays
+its report, its `effective-inputs.set` and its capture. Only the run's own lines are copied, never a whole day log; the journal is
+only read. A day log that is gone, or holds no line of the run, is recorded as `missing` with
+the reason. `tester-journal-check` is read-only: per catch-up member (or for the batch) it says
+whether the copy is in place and still matches its recorded SHA-256, and exits 2 with
+`ok:false`, `code:"TESTER_JOURNAL_MISSING"` when one is missing or changed, or the run has not
+finished. `ok` means the recorded copies are intact (integrity); `complete` says whether they
+are the run's whole journal (coverage): true only for a catch-up whose every member's copy is
+intact and whole, always false for a Prove batch (`covers:"last_member_only"`). A member's copy
+is not whole when its block ran past the 64 MiB bound (the first and last half are kept) or
+when a later day of its run had no log; each member row carries `coverage` (`whole`,
+`truncated`, `days_without_lines`, `plain`) and `partial` names the members that are not
+whole. A round close runs it for every catch-up it counts and requires `complete:true`.
 
 The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
 paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the

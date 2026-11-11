@@ -3721,6 +3721,21 @@ class DemoAgent:
     def catchup_report(self, catchup_id):
         return self._lane_report('catchup', catchup_id)
 
+    def tester_journal_check(self, *, catchup_id=None, batch_id=None):
+        """Read-only (GOAT-EA#315): is every tester journal copy of a finished catch-up or Prove batch in place and
+        unchanged (studio_tester_journal)? ``ok`` is false when one is missing or changed. No terminal effect; the
+        retained state is read as it is and nothing is written."""
+        from studio_tester_journal import check_batch, check_catchup
+        if (catchup_id is None) == (batch_id is None):
+            raise ValueError('tester-journal-check needs exactly one of --catchup-id or --batch-id')
+        if catchup_id is not None:
+            return check_catchup(self.root, catchup_id)
+        from studio_research_status import queue_jobs
+        job = next((item for item in queue_jobs(self.root, self.session) if item['job_id'] == batch_id), None)
+        if job is None:
+            raise ValueError('No batch %s in this terminal\'s queue' % batch_id)
+        return check_batch(self.root, job)
+
     # ------------------------------------------------------------------ Hold-up test (Prove)
     #
     # One frozen, hash-bound SET, one MT5 pass on a chosen window, read from MT5's own report
@@ -4194,6 +4209,10 @@ def main(argv=None):
                                                                'rule version, next to their stored verdict; writes nothing')
     oos_recount.add_argument('--catchup-id', action='append', help='A stored catch-up to judge again; repeatable')
     oos_recount.add_argument('--all', action='store_true', help='Every stored catch-up of this installation')
+    journal_check = commands.add_parser('tester-journal-check', help='Read-only: is every tester journal copy of a finished '
+                                                                     'catch-up or Prove batch in place and unchanged (exit 2 when not)')
+    journal_check.add_argument('--catchup-id')
+    journal_check.add_argument('--batch-id')
     commands.add_parser('holdup-validate', help='Non-executing hold-up test plan check').add_argument('--plan', type=Path, required=True)
     holdup_prep = commands.add_parser('holdup-prepare', help='Freeze one MT5 pass per frozen, hash-bound SET; no launch')
     holdup_prep.add_argument('--holdup-id', required=True)
@@ -4310,6 +4329,7 @@ def main(argv=None):
         elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
         elif args.command == 'catchup-reconcile': result = agent.catchup_reconcile(args.catchup_id)
         elif args.command == 'catchup-report': result = agent.catchup_report(args.catchup_id)
+        elif args.command == 'tester-journal-check': result = agent.tester_journal_check(catchup_id=args.catchup_id, batch_id=args.batch_id)
         elif args.command == 'holdup-validate': result = agent.holdup_validate(args.plan)
         elif args.command == 'holdup-prepare': result = agent.holdup_prepare(args.holdup_id, args.plan)
         elif args.command == 'holdup-start': result = agent.holdup_start(args.holdup_id, args.max_seconds, detach=_lane_detached(args))
@@ -4321,6 +4341,11 @@ def main(argv=None):
         elif args.command == 'holdup-report': result = agent.holdup_report(args.holdup_id)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
+                             sort_keys=True, default=str), file=sys.stderr)
+            return 2
+        if args.command == 'tester-journal-check' and not result.get('ok'):
+            # A missing or changed copy is the answer the round close must not pass: the same shape as stop_unconfirmed.
+            print(json.dumps(dict(ok=False, code='TESTER_JOURNAL_MISSING', result=result),
                              sort_keys=True, default=str), file=sys.stderr)
             return 2
         # Held-out lock (goatai#2221 §4.3): a reply is unchanged unless a lock binds part of it.

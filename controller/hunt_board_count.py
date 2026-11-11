@@ -47,7 +47,12 @@ It REFUSES (exit 3; the rule, the file and the reason on stdout and stderr) when
   R6  a file that would be counted, round or migrated, carries a duplicate hit (the refusal names what it
       duplicates); or a counted migrated file's re-test did not run the inputs its SET states.
 
-Only a file that would be counted can refuse (R4, R5, R6): a reserve with a bad record does not stop the count.
+  R7  a judged file has no Prove export record, or its ``prove_status`` differs from that record's status (clean
+      and disclosed are read from the status the tags were checked against, so the two copies must agree).
+
+Only a file that would be counted can refuse under R4, R5 and R6: a reserve with a bad record does not stop the count.
+R7 covers every judged file. A counted file without proof is not counted: its state is ``apart`` and every breakdown
+(by machine, clean / disclosed, groups, assets, families) is built from the proven files only.
 
 Nothing here judges a strategy: the verdicts, the duplicate check and the input comparisons are the close's records.
 """
@@ -167,6 +172,13 @@ def count(folder):
         if e['source_ledger'] is not None or e['ini_ledger'] is not None or e['export_ledger'] != '1':
             raise Refused('R3', tag['set_path'], 'not an inherited-ledger case (source %s, start config %s, export %s)'
                           % (e['source_ledger'], e['ini_ledger'], e['export_ledger']))
+    # R7: the judged copy of the Prove status must be the export record's (Codex, GOAT-EA#316 review 4536282619)
+    for x in judged:
+        e = exports.get(x['source'].lower())
+        if e is None:
+            raise Refused('R7', x['source'], 'judged, but the Prove reports have no export record for it')
+        if x['prove_status'] != e['status']:
+            raise Refused('R7', x['source'], 'judged as %r, but its Prove export record says %r' % (x['prove_status'], e['status']))
     # R4
     states = cap_states(rules, pool, judged)
     passes = [x for x in judged if x['rule'] == 'pass']
@@ -242,6 +254,8 @@ def count(folder):
             x['proof'] = None
     proven = [x for x in counted if x['proof']]
     apart = [x for x in counted if not x['proof']]
+    for x in apart:   # no proof, no count: the file leaves every counted breakdown (Codex, GOAT-EA#316 review 4536282628)
+        states[x['source'].lower()] = 'apart'
     machines = rules['machines']
     kind = lambda x: 'disclosed' if x['prove_status'] == 'unverified' else 'clean'
     return dict(
@@ -255,12 +269,13 @@ def count(folder):
         report_crosscheck=dict(runs=len(reports), passed=sum(1 for r in reports.values() if r.get('passed'))),
         apart=dict(machines=sorted({x['machine'] for x in apart}), reason='no tester-journal proof and no identical MT5 report: no proof, no count',
                    clean=sum(kind(x) == 'clean' for x in apart), disclosed=sum(kind(x) == 'disclosed' for x in apart), files=len(apart)),
-        counted_by_machine={m: dict(clean=sum(1 for x in counted if x['machine'] == m and kind(x) == 'clean'),
-                                    disclosed=sum(1 for x in counted if x['machine'] == m and kind(x) == 'disclosed')) for m in machines},
+        counted_by_machine={m: dict(clean=sum(1 for x in proven if x['machine'] == m and kind(x) == 'clean'),
+                                    disclosed=sum(1 for x in proven if x['machine'] == m and kind(x) == 'disclosed')) for m in machines},
+        apart_by_machine={m: sum(1 for x in apart if x['machine'] == m) for m in machines},
         reserves={m: sum(1 for x in passes if x['machine'] == m and states[x['source'].lower()] == 'reserve') for m in machines},
         reserves_disclosed=sum(1 for x in passes if states[x['source'].lower()] == 'reserve' and kind(x) == 'disclosed'),
         clean_counted_with_ledger_stated_in_their_own_source=sum(
-            1 for x in counted if kind(x) == 'clean' and proof[x['source'].lower()].get('original_ledger_mode') == '1'),
+            1 for x in proven if kind(x) == 'clean' and proof[x['source'].lower()].get('original_ledger_mode') == '1'),
         unverified_exports=len(unverified), tagged=len(tags), duplicates=sum(1 for x in judged if x.get('duplicate')),
         files=[dict(machine=x['machine'], part=x['part'], index=x['index'], position=x['position'], alias=x['alias'], asset=x['asset'],
                     family=x['family'], template=x['template'], group=x['held_group'] or 'new:' + x['member'],

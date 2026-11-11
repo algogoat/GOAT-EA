@@ -40,7 +40,7 @@ name: Controller mutation shard
 # per-mutant time budget (scripts/mutation_budget.py: each mutant's seconds, a budget line per step and
 # a ::warning:: for any mutant over GOAT_MUTANT_BUDGET_SECONDS, default 60 s), so drift is visible in
 # the run summary before it cancels a shard. The B47 CID guard step (~3 s) is on shard 1.
-# The hunt board counter step (GOAT-EA#316: 16 mutants on three copied files, seconds) is on shard 1 too.
+# The hunt board counter step (GOAT-EA#316: 20 mutants on three copied files, seconds) is on shard 1 too.
 # A new mutation check goes in the shard with the most headroom, into STEP_SEEDS of
 # scripts/ci_mutation_select.py and into the expected set of controller/test_ci_mutation_shards.py;
 # keep each shard's slowest-observed sum well under its timeout.

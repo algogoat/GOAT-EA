@@ -233,6 +233,40 @@ class HuntBoardCountTests(unittest.TestCase):
         folder.alter('journals.json', lambda data: data['banker'].update(proven=True, matched=33, gaps=0))
         self.assertEqual(board.count(folder.path)['proof_by_machine']['banker'], ['tester journal'])
 
+    def test_r7_refuses_a_judged_status_that_differs_from_its_export_record(self):
+        # real negative: with the two copies agreeing the file is counted as disclosed (9 clean + 3 disclosed)
+        b = board.count(FIXTURE)
+        self.assertEqual(next(f for f in b['files'] if f['alias'] == DISCLOSED_BANKER)['kind'], 'disclosed')
+        self.assertEqual((b['counted']['clean'], b['counted']['disclosed']), (9, 3))
+        # real positive (Codex 4536282619): only the judged copy says "candidate"; before, this gave 10 clean + 2 disclosed
+        for alias, status in ((DISCLOSED_BANKER, 'native_threshold_candidate'), (CLEAN_COUNTED, 'unverified'), (THRUSH[2], 'unverified')):
+            folder = Folder(self)
+            folder.alter('judged.json', lambda rows: [r.update(prove_status=status) for r in rows if r['alias'] == alias])
+            refusal = self.refused(folder)
+            self.assertEqual((refusal.rule, refusal.path.lower()), ('R7', judged(folder, alias)['source'].lower()))
+            self.assertIn(status, refusal.why)
+        folder = Folder(self)   # a judged file the Prove reports do not list at all
+        source = judged(folder, CLEAN_COUNTED)['source']
+        folder.alter('prove-exports.json', lambda rows: rows.remove(next(r for r in rows if r['set_path'].lower() == source.lower())))
+        refusal = self.refused(folder)
+        self.assertEqual((refusal.rule, refusal.path.lower()), ('R7', source.lower()))
+
+    def test_an_apart_file_leaves_every_counted_breakdown_and_gets_its_own_state(self):
+        # real negative: proven by its report, the file is counted and in the Banker breakdown
+        b = board.count(FIXTURE)
+        self.assertEqual(next(f for f in b['files'] if f['alias'] == DISCLOSED_BANKER)['state'], 'counted')
+        self.assertEqual((b['counted_by_machine']['banker'], b['apart_by_machine']), (dict(clean=0, disclosed=2), dict(t3=0, banker=0)))
+        # real positive (Codex 4536282628): without proof it is apart everywhere, not only in the headline
+        folder = self.alter_report(DISCLOSED_BANKER, lambda r: r.update(history_quality='99% real ticks'))
+        b = board.count(folder.path)
+        row = next(f for f in b['files'] if f['alias'] == DISCLOSED_BANKER)
+        self.assertEqual((row['state'], row['proof']), ('apart', None))
+        self.assertEqual(b['counted_by_machine']['banker'], dict(clean=0, disclosed=1))
+        self.assertEqual(b['apart_by_machine'], dict(t3=0, banker=1))
+        self.assertEqual(sum(f['state'] == 'counted' for f in b['files']) + b['pool']['files'] + b['counted']['o3pool'], b['counted']['total'])
+        self.assertEqual((b['counted']['total'], b['counted']['disclosed'], b['apart']['files']), (15, 2, 1))
+        self.assertEqual(b['reserves'], dict(t3=2, banker=1))   # the apart file frees no slot: the reserve stays a reserve
+
     def test_a_folder_without_a_record_file_is_an_error_not_a_board(self):
         folder = Folder(self)
         (folder.path / 'holdout.json').unlink()

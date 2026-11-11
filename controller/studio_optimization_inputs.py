@@ -13,6 +13,16 @@ the final ``N`` matters.) Literal strings are never touched.
 """
 
 
+def self_named_inputs(schema):
+    """The inputs the EA names itself in a native member's config when the member's SET omits them: the appended
+    optimization axes. GoatStudioExplicitOptimizationInputs writes each at its default, fixed
+    (GOATOptimizationInputs.mqh:21-31), as explicit_optimization_inputs does below for the config the controller
+    stages. In APPENDED_INPUTS order. No other omitted input is named for a member (GOAT-EA#315)."""
+    from studio_strategy_settings import APPENDED_INPUTS
+    return tuple(name for name in APPENDED_INPUTS
+                 if (schema['inputs'].get(name) or {}).get('optimizable') and schema['inputs'][name]['type'] != 'string')
+
+
 def explicit_optimization_inputs(text, schema):
     lines=[]
     for line in text.splitlines(keepends=True):
@@ -30,12 +40,11 @@ def explicit_optimization_inputs(text, schema):
     from studio_strategy_settings import APPENDED_INPUTS, appended_default
     present = {line.split('=', 1)[0].strip() for line in lines if '=' in line and not line.lstrip().startswith(';')}
     axes = {name for name, definition in schema['inputs'].items() if definition['optimizable'] and definition['type'] != 'string'}
-    for name in (APPENDED_INPUTS if axes - set(APPENDED_INPUTS) <= present else ()):
-        definition = schema['inputs'].get(name)
-        if definition and definition['optimizable'] and definition['type'] != 'string' and name not in present:
+    for name in (self_named_inputs(schema) if axes - set(APPENDED_INPUTS) <= present else ()):
+        if name not in present:
             if lines and not lines[-1].endswith('\n'):
                 lines[-1] += '\r\n'
-            value = appended_default(definition)
+            value = appended_default(schema['inputs'][name])
             lines.append(name+'='+value+'||'+value+'||0||'+value+'||N\r\n')
     return ''.join(lines)
 

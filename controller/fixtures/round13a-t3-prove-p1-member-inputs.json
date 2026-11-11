@@ -1,0 +1,42 @@
+{
+  "schema": "goat-fixture-batch-member-input-names-v1",
+  "batch": "hunt-t3-depth-prove-13a-p1",
+  "terminal": "T3",
+  "build": "V1.49-BETA17-54",
+  "incident": "GOAT-EA#315",
+  "source": "Hunt round 13a, 2026-11-10/11. The input names each member's own SET states, in the SET's order, read on 2026-11-11 through the read-only gate (goat-ro.ps1) from the promoted robustness.set each member of Ops' plan prove-plan-hunt-t3-depth-prove-13a-p1.json names. Names only: no value was read except each member's Ledger_Mode line, which is Ledger_Mode=1 in members 17, 20 and 25 and absent in the other 25, as the round close recorded (ledger-mode-by-member.json). Members 17, 20 and 25 are the local D1 designs.",
+  "name_lists": {
+    "plain": ["Mode_Operation", "EA_Desc", "Signal_Sample_Period", "Sequence_Sample_Period", "Trailing_Sample_Period", "Allow_New_Sequence", "Allow_Opposite_Seq", "Reverse_Seq", "Mode_Trade", "Grid_Size", "Grid_Min", "Grid_Max", "Grid_Exponent", "Grid_Factor", "Lock_Profit_Size", "Lock_Profit_Flexibility", "TP_Pips", "SL_Pips", "RRR", "Mode_RRR", "TSL_Size", "Mode_Trail", "Delay_Trade", "Delay_Trade_Live", "Delay_Lots_Add", "Max_Seq_Trades", "CloseAtMaxLevels", "ATR_TF_", "ATR_Period", "ATR_Method", "Mode_Lots", "Risk", "Sequence_MLPS_Hard_Close", "Lots_Input", "Lots_Max", "Lots_Max_Cum", "Lots_Exponent", "Lots_Factor", "Mode_Lots_Prog", "Peak_Lots_Pos_PC", "Partial_Profit_Factor", "Peak_Smart_Release_PC", "Peak_Smart_Max_Close_PC", "MaxLossLocal", "MaxLossGlobal", "MaxDailyLossLocal", "MaxDailyProfitLocal", "MinLevelEquity", "MaxLevelEquity", "Mode_Restart", "RSI_Mode", "RSI_TF_", "RSI_Period", "RSI_Price", "RSI_Level", "EMA_Mode", "EMA_TF_", "EMA_Method", "EMA_Price", "EMA_Count", "EMA_Period", "EMA_Exponent", "EMA_MustCheck", "ADX_Mode", "ADX_TF_", "ADX_Period", "ADX_Level", "ADX_MustCheck", "BB_Mode", "BB_TF_", "BB_Period", "BB_Deviation", "BB_MustCheck", "MACD_Mode", "MACD_Mode_Trend", "MACD_TF_", "MACD_Fast", "MACD_Slow", "MACD_Signal", "MACD_Deviations", "MACD_Price", "MACD_MustCheck", "RSI2_Mode", "RSI2_TF_", "RSI2_Period", "RSI2_Price", "RSI2_Level", "RSI2_MustCheck", "Active_Time_Weekday", "Active_Time_Friday", "Active_Time_ASIA", "Active_Time_EU", "Active_Time_US", "Action_Dayend", "Action_Friday", "Trade_Friday", "Bias_Protocol", "Mode_Bias", "Mode_Bias_Trades", "Mode_Bias_Exit", "Bias_Exit_Max_Exposure_Adds", "Bias_threshold", "Mode_News", "News_threshold", "News_beforeMinutes", "News_afterMinutes", "Mode_Download", "Download_StartDate", "Mode_Opti", "Seq_min_inp", "Trades_min_inp", "Trades_Max", "Minutes_Max", "Trade_December", "Single_SL_ATR", "Single_TP_ATR", "Single_TP_R", "Single_Exit_Opposite", "Single_Time_Stop_Bars", "Single_Time_Stop_TF", "Rollover_Block_Minutes", "Random_Seed", "Single_BE_ATR", "Single_Trail_Start_ATR", "Single_Trail_ATR", "Single_Partial_ATR", "Single_Partial_Fraction", "Single_Partial_BE", "BRK_TF_", "BRK_Bars", "BRK_Buffer_ATR", "BRK_Once_Per_Level", "ORB_TF_", "ORB_Start_Minute", "ORB_Range_Minutes", "ORB_Entry_Minutes", "ORB_Buffer_ATR", "ORB_Min_Range_ATR", "ORB_Max_Range_ATR"],
+    "d1": ["Mode_Operation", "EA_Desc", "Signal_Sample_Period", "Sequence_Sample_Period", "Trailing_Sample_Period", "Allow_New_Sequence", "Allow_Opposite_Seq", "Reverse_Seq", "Mode_Trade", "Grid_Size", "Grid_Min", "Grid_Max", "Grid_Exponent", "Grid_Factor", "Lock_Profit_Size", "Lock_Profit_Flexibility", "TP_Pips", "SL_Pips", "RRR", "Mode_RRR", "TSL_Size", "Mode_Trail", "Delay_Trade", "Delay_Trade_Live", "Delay_Lots_Add", "Max_Seq_Trades", "CloseAtMaxLevels", "ATR_TF_", "ATR_Period", "ATR_Method", "Mode_Lots", "Risk", "Sequence_MLPS_Hard_Close", "Lots_Input", "Lots_Max", "Lots_Max_Cum", "Lots_Exponent", "Lots_Factor", "Mode_Lots_Prog", "Peak_Lots_Pos_PC", "Partial_Profit_Factor", "Peak_Smart_Release_PC", "Peak_Smart_Max_Close_PC", "MaxLossLocal", "MaxLossGlobal", "MaxDailyLossLocal", "MaxDailyProfitLocal", "MinLevelEquity", "MaxLevelEquity", "Mode_Restart", "RSI_Mode", "RSI_TF_", "RSI_Period", "RSI_Price", "RSI_Level", "EMA_Mode", "EMA_TF_", "EMA_Method", "EMA_Price", "EMA_Count", "EMA_Period", "EMA_Exponent", "EMA_MustCheck", "ADX_Mode", "ADX_TF_", "ADX_Period", "ADX_Level", "ADX_MustCheck", "BB_Mode", "BB_TF_", "BB_Period", "BB_Deviation", "BB_MustCheck", "MACD_Mode", "MACD_Mode_Trend", "MACD_TF_", "MACD_Fast", "MACD_Slow", "MACD_Signal", "MACD_Deviations", "MACD_Price", "MACD_MustCheck", "RSI2_Mode", "RSI2_TF_", "RSI2_Period", "RSI2_Price", "RSI2_Level", "RSI2_MustCheck", "Active_Time_Weekday", "Active_Time_Friday", "Active_Time_ASIA", "Active_Time_EU", "Active_Time_US", "Action_Dayend", "Action_Friday", "Trade_Friday", "Bias_Protocol", "Mode_Bias", "Mode_Bias_Trades", "Mode_Bias_Exit", "Bias_Exit_Max_Exposure_Adds", "Bias_threshold", "Mode_News", "News_threshold", "News_beforeMinutes", "News_afterMinutes", "Mode_Download", "Download_StartDate", "Mode_Opti", "Seq_min_inp", "Trades_min_inp", "Trades_Max", "Minutes_Max", "Trade_December", "Ledger_Mode", "Engine_Mode", "Single_SL_ATR", "Single_TP_ATR", "Single_TP_R", "Single_Exit_Opposite", "Single_Time_Stop_Bars", "Single_Time_Stop_TF", "Clock_Mode", "Server_Clock_Model", "Server_UTC_Offset", "NY_Session", "Rollover_Block_Minutes", "Random_Direction", "Random_Seed", "Single_Flat_Only", "Single_BE_ATR", "Single_Trail_Start_ATR", "Single_Trail_ATR", "Single_Partial_ATR", "Single_Partial_Fraction", "Single_Partial_BE", "BRK_TF_", "BRK_Bars", "BRK_Buffer_ATR", "BRK_Once_Per_Level", "ORB_TF_", "ORB_Start_Minute", "ORB_Range_Minutes", "ORB_Entry_Minutes", "ORB_Buffer_ATR", "ORB_Min_Range_ATR", "ORB_Max_Range_ATR"]
+  },
+  "members": [
+    {"index": 0, "symbol": "EURGBP", "period": "M1", "names": "plain"},
+    {"index": 1, "symbol": "EURGBP", "period": "M1", "names": "plain"},
+    {"index": 2, "symbol": "EURGBP", "period": "M1", "names": "plain"},
+    {"index": 3, "symbol": "EURGBP", "period": "M1", "names": "plain"},
+    {"index": 4, "symbol": "NDX", "period": "M1", "names": "plain"},
+    {"index": 5, "symbol": "NDX", "period": "M1", "names": "plain"},
+    {"index": 6, "symbol": "NDX", "period": "M1", "names": "plain"},
+    {"index": 7, "symbol": "NDX", "period": "M1", "names": "plain"},
+    {"index": 8, "symbol": "NDX", "period": "M1", "names": "plain"},
+    {"index": 9, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 10, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 11, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 12, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 13, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 14, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 15, "symbol": "AUDUSD", "period": "M1", "names": "plain"},
+    {"index": 16, "symbol": "SP500", "period": "M1", "names": "plain"},
+    {"index": 17, "symbol": "AUDCAD", "period": "M1", "names": "d1"},
+    {"index": 18, "symbol": "GBPCAD", "period": "M1", "names": "plain"},
+    {"index": 19, "symbol": "GBPCAD", "period": "M1", "names": "plain"},
+    {"index": 20, "symbol": "GBPCAD", "period": "M1", "names": "d1"},
+    {"index": 21, "symbol": "XAGUSD", "period": "M1", "names": "plain"},
+    {"index": 22, "symbol": "XAGUSD", "period": "M1", "names": "plain"},
+    {"index": 23, "symbol": "XAGUSD", "period": "M1", "names": "plain"},
+    {"index": 24, "symbol": "XAGUSD", "period": "M1", "names": "plain"},
+    {"index": 25, "symbol": "EURUSD", "period": "M1", "names": "d1"},
+    {"index": 26, "symbol": "EURCAD", "period": "M1", "names": "plain"},
+    {"index": 27, "symbol": "EURCAD", "period": "M1", "names": "plain"}
+  ]
+}

@@ -74,6 +74,10 @@ def finish(controller,job_id,*,expected_generation=None):
     # scoreboard they are results for their window, not failures (studio_research_status).
     result['research_outcomes']=research_outcomes
     if research_error is not None:result['research_outcomes_error']=research_error
+    # Exports the report left unverified (they ran other fixed inputs than their member's SET), counted and named once
+    # for the batch (GOAT-EA#315): evidence-scan and catchup-prepare read them from this result (studio_catchup).
+    from studio_export_scan import unverified_summary
+    result['unverified_exports']=unverified_summary(reports)
     # Every member that ran, in the exact shape a closed batch records (studio_batch_close.member_identities), so a
     # research-side trial reader sees finished and closed batches alike (goatai#2350). Additive; never blocks a finish.
     try:

@@ -171,6 +171,102 @@ def oos_windows_evidence(record, evidence):
     return evidence
 
 
+BATCH_MIXED_INPUTS = 'BATCH_MIXED_INPUTS'
+# Builds whose EA names every declared input in each later member's config itself (the EA-side fix of GOAT-EA#315, due
+# with B55: GoatStudioExplicitOptimizationInputs, GOATOptimizationInputs.mqh). None yet. A build's ID is added here
+# when its EA does; check_member_inputs then no longer refuses on it.
+BUILDS_NAMING_EVERY_INPUT = frozenset()
+MAX_NAMED_MEMBERS = 12
+
+
+def _member_words(indexes):
+    shown = [str(index) for index in indexes[:MAX_NAMED_MEMBERS]]
+    more = len(indexes) - len(shown)
+    if more:
+        return 'members ' + ', '.join(shown) + ' and %d more' % more
+    return ('member ' + shown[0]) if len(shown) == 1 else 'members ' + ', '.join(shown[:-1]) + ' and ' + shown[-1]
+
+
+def check_member_inputs(members, schema, install, *, staged=False):
+    """Refuse a batch whose members do not all state the same inputs (BATCH_MIXED_INPUTS, GOAT-EA#315).
+
+    Hunt round 13a: every member after the first ``Ledger_Mode=1`` member ran and exported with ``Ledger_Mode=1``
+    although its own SET omitted it. Only the first member of a batch starts from a config the controller writes, and
+    that config names every declared input (studio_native_request.py:97-103 and :125-127; the paste completes the
+    appended inputs, studio_input_readback.py:11-25; the runtime pins, studio_startup_config.py:36-49). So a batch
+    never inherits from the batch before it, and a batch whose members all state the same inputs is safe after any
+    other batch. Every later member is launched by the EA from the member's own SET bytes
+    (``inputs\\<alias>\\Inputs.GOAT``, prepare_native_campaign.py:177-179; ActivatePending, Optimizer.mqh:3370-3437),
+    and MT5 runs an input that config leaves out at the value the member before it used. The interim rule (Claude-Mac
+    GOAT-EA#315 6791427047 item 4a: members that set an appended input run in their own batch) was applied by hand;
+    this is the mechanism until the EA names every declared input itself (BUILDS_NAMING_EVERY_INPUT).
+
+    ``members`` are the plan's members as read_plan reads them (``strategy.values`` = the SET's own ``name=value``
+    lines). An input is mixed when some members state it and others omit it. Not compared: ``EA_Desc``, which the
+    batch sets to each member's alias (prepare_native_campaign.py:95-100), and the appended optimization axes, which
+    the EA writes at their defaults for a member that omits them (studio_optimization_inputs.self_named_inputs), so
+    they cannot be inherited. An input every member states, at whatever values, is never mixed: each member's own
+    config names it. A batch of one member has no later member and always passes. ``staged``: the batch was staged
+    before this check and has not started (check_staged_inputs); only the sentence differs."""
+    if len(members) < 2:
+        return
+    from studio_optimization_inputs import self_named_inputs
+    ignored = set(self_named_inputs(schema)) | {'EA_Desc'}
+    stated = [set(member['strategy']['values']) - ignored for member in members]
+    mixed = sorted(set.union(*stated) - set.intersection(*stated))
+    if not mixed:
+        return
+    from studio_installed_build import public
+    try:
+        build = public(install).get('build_id')
+    except Exception:
+        build = None                      # a build that cannot be named is never one that names its own inputs
+    if build in BUILDS_NAMING_EVERY_INPUT:
+        return
+    rows = [dict(input=name, stated_by=[index for index, names in enumerate(stated) if name in names],
+                 omitted_by=[index for index, names in enumerate(stated) if name not in names]) for name in mixed]
+    groups = {}
+    for row in rows:
+        groups.setdefault((tuple(row['stated_by']), tuple(row['omitted_by'])), []).append(row['input'])
+    said = ' '.join('%s %s stated by %s and left out by %s.'
+                    % (names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1], 'is' if len(names) == 1 else 'are',
+                       _member_words(list(by)), _member_words(list(without))) for (by, without), names in groups.items())
+    from studio_refusal import Refusal
+    it = 'it' if len(mixed) == 1 else 'them'
+    opening = ('Nothing was started: this batch was staged before GOAT checked that its members all state the same inputs, and '
+               'they do not.' if staged else
+               'Nothing was prepared: the members of this batch do not all state the same inputs.')
+    closing = ('Leave this batch unstarted, and prepare the members that state %s as their own batch and the others as theirs, '
+               'under new batch IDs.' % it if staged else
+               'Run the members that state %s as their own batch, or state %s in every member\'s SET, then prepare again.' % (it, it))
+    raise Refusal('%s After the first member, MT5 runs an input a member\'s SET leaves out at the value the member before it '
+                  'used, not at its default. %s %s Members are numbered from 0, as batch-status lists them.' % (opening, said, closing),
+                  BATCH_MIXED_INPUTS, mixed_inputs=rows, member_count=len(members), installed_build=build, issue='GOAT-EA#315',
+                  staged_before_check=staged,
+                  next_action='Split the plan: the members that state these inputs in one batch, the members that omit them in '
+                              'another. Each batch\'s first member starts from a complete config, so the order of the batches '
+                              'does not matter.')
+
+
+def check_staged_inputs(controller, job):
+    """check_member_inputs for a batch that is already staged and has not started (Claude-Mac goatai#2750 6793203627:
+    staged batches skipped the check). Called where a first start begins, before any journal, reservation or native
+    effect (studio_batch_driver.run, studio_config_start.start, goat_studio.Controller.start), and when prepare-batch
+    reuses a staged batch. A batch that has launched (``launch_intent``) or is no longer pending is never judged again:
+    its members ran, or are running, as they were composed. A job whose members carry no frozen strategy values is not
+    a prepared batch and is refused by the package checks of those same paths, not here."""
+    if 'launch_intent' in job or job.get('status') != 'pending':
+        return
+    members = (job.get('configuration') or {}).get('batch_members') or []
+    # Fewer than two members: no later member can inherit anything, and nothing of the controller is read.
+    if len(members) < 2:
+        return
+    if any(not isinstance(member, dict) or not isinstance((member.get('strategy') or {}).get('values'), dict) for member in members):
+        return
+    # The installation names the build (BUILDS_NAMING_EVERY_INPUT); it is read only when the members are mixed.
+    check_member_inputs(members, controller.schema, getattr(controller, 'install', None), staged=True)
+
+
 def read_plan(controller, plan_path, *, now=None):
     plan_path = Path(plan_path)
     spec, source_plan = _json(plan_path,with_raw=True)
@@ -240,8 +336,13 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     if existing:
         if existing['configuration_sha256'] != sha(config):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
+        # A batch staged before the mixed-inputs check and not started yet is judged now; a launched one never again.
+        check_staged_inputs(controller, existing)
         _, _, manifest = _verify_package(controller, existing)
         return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
+    # Members that do not all state the same inputs (BATCH_MIXED_INPUTS, GOAT-EA#315): a later member would run an
+    # omitted input at the value the member before it used. New staging only, like the check below; nothing is staged yet.
+    check_member_inputs(raw_members, controller.schema, controller.install)
     # Tester-only EA init refusals (TESTER_INIT_REFUSED): valid live, but every pass would end at OnInit. Checked
     # for new staging only, so an already-queued identical batch is still reused as before.
     from studio_ea_init_rules import check_tester_init

@@ -36,6 +36,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm --keep-list '<file>' copies a finished batch's evidence off C: (sources stay); then --complete --confirm removes them after re-verifying; evidence-restore / evidence-repoint
 ```
 
+- **`prepare-batch` refuses a batch whose members do not all state the same inputs** (`BATCH_MIXED_INPUTS`, GOAT-EA#315). Only a batch's first member starts from a config the controller writes, which names every declared input; the EA launches every later member from that member's own SET, and MT5 runs an input the SET leaves out at the value the member before it used (round 13a: 61 exports ran `Ledger_Mode=1` unasked). The refusal comes before anything is staged and lists each mixed input with the members that state it and the members that omit it, numbered from 0 as `batch-status` lists them (`mixed_inputs`: `input`, `stated_by`, `omitted_by`). Split the plan: the members that state those inputs as their own batch, the others as theirs; the order of the batches does not matter. Not compared: `EA_Desc`, and the appended optimization axes, which the EA writes at their defaults for a member that omits them. An input every member states, at whatever values, is fine, and so is a one-member batch. A successor made of a batch's remaining members (`studio_batch.resume_batch`) and a loaded saved batch (`load_batch`) are prepared through the same check. A batch staged before the check and not started is refused the same way (`staged_before_check:true`) when it is prepared again and when `run-batch` or a start begins, before anything is reserved or launched; a batch that has launched is never judged again. The refusal ends for a build whose EA names every declared input itself (`studio_batch.BUILDS_NAMING_EVERY_INPUT`, none today).
 - `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. On a store created from beta.38 on (`auto_vacuum=INCREMENTAL`) each `--apply` then gives the freed pages back at once (`db_reclaim`, at most 30 s); on an older store `studio.sqlite` keeps its size until `studio-db-compact`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
 - **`studio.sqlite` free space** (`studio_db_maintenance.py`, beta.38). Banker's store reached 11.4 GB with 98.8% free pages: before 3e00695 every queue receipt embedded the whole queue (818 MB; 64 receipts held 9.96 GB), and `compact-receipts` freed them in place, but SQLite keeps freed pages until a VACUUM.
   - Every queue-row write (reconcile at each member boundary, finish, launch intent, queue commands, settle/retire/repair) goes through `write_queue`: delete, then insert, in one savepoint. An `UPDATE` of the large row allocated the new copy before freeing the old one, so a freshly compacted store grew by one whole queue copy at the next member boundary (Banker 2026-10-14: 136 MB -> 272 MB at round 3 member 1); now the new copy reuses the freed pages.
@@ -1036,6 +1037,19 @@ tools need no broker; the rest use the seed lane's checks, start record
 & $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 3600
 & $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
 ```
+
+**Unverified exports (GOAT-EA#315).** A Prove batch's report marks an export `unverified` when its
+fixed inputs differ from its member's own SET (`Fixed export input mismatch: <input>`; an input the
+SET omits counts at its default) or when it could not be checked. The batch result
+(`attempts\<attempt>\result.json`, `batch-status` → `result_path`) says it once for the batch in
+`unverified_exports`: `count`, `member_count`, `inputs` (input → exports), `reasons`, `files` and one
+`plain` sentence. `evidence-scan` and `catchup-prepare` read those results: such an export is
+`ineligible` (`code:"UNVERIFIED_EXPORT"`, `unverified_batch_id`, `unverified_reason`) and is never
+re-tested as it is. To re-test one anyway, the plan names it and the tag it is counted under:
+`"disclosed_unverified":{"<export SET sha256>":"ledger PositionJoin, inherited"}`. Its row then keeps
+its status and carries `unverified_disclosed`, and the member and its evidence version carry
+`original.unverified_disclosed` (`batch_id`, `reason`, `tag`). A batch result that cannot be read
+refuses the scan.
 
 The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
 paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the

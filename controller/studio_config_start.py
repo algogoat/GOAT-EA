@@ -213,6 +213,9 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         # Packaged before batches ran on GOAT Research: its launch would open the monitor profile (goatai#2350
         # 6120004490). PACKAGE_PREDATES_RESEARCH_PROFILE: the app re-prepares it automatically (6120693275).
         raise legacy_package_refusal(job_id)
+    # Staged before prepare-batch refused mixed inputs: refused before any reservation or close (BATCH_MIXED_INPUTS).
+    from studio_batch import check_staged_inputs
+    check_staged_inputs(c,job)
     # Read-only, before any reservation or close: the saved ProfileLast this start will switch to GOAT Research.
     _profile_last_precheck(c)
     args=c.native_args()

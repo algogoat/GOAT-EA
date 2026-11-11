@@ -539,6 +539,10 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             # before any consent, journal, archive, reservation or native effect.
             from studio_heldout_guard import check_native_start
             check_native_start(controller, job_id)
+            # A batch staged before prepare-batch refused mixed inputs (BATCH_MIXED_INPUTS, GOAT-EA#315) is refused here,
+            # before any consent, journal, archive, reservation or native effect. A launched batch is never judged again.
+            from studio_batch import check_staged_inputs
+            check_staged_inputs(controller, controller.job(job_id))
             from studio_config_start import config_start_lane, consent_record
             customer = controller.session.get('authority_kind') == 'native_human_control'
             if customer and restart_consent is not True:

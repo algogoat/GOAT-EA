@@ -20,14 +20,40 @@ class Conflict(ValueError):
     pass
 
 
+CONTRACT_ORDER_LOST = 'CONTRACT_ORDER_LOST'
+
+
+def _detached(value):
+    return json.loads(json.dumps(value, allow_nan=False))
+
+
+def held_contract(value, name):
+    """A detached JSON copy of a controller contract (the input schema, the dependency policy) in the order it was given.
+
+    Order is contract data. An enum's ``enum_choices`` are in declaration order, and check_enum_ladders
+    (studio_strategy_settings) judges an optimized enum ladder by that order. Until GOAT-EA#317 this copy was
+    ``json.loads(packed(...))``, and ``packed`` sorts keys: every enum's choices were held in name order
+    (ENUM_MODE_TRADE as 5, 4, 0, 3, 1, 2 instead of 0..5). The store then refused the native ladder
+    ``EMA_Mode=1||0||1||2||Y`` that the seed lane and prepare-batch's own plan check had accepted on the contract as
+    loaded, after the batch was staged, and it would have allowed a ladder that is not native on five other inputs.
+    The copy is compared with what was given, key order included: one that differs is refused, never judged by. The
+    hash of a contract stays ``sha`` of its canonical packed form, which no key order changes."""
+    held = _detached(value)
+    if json.dumps(held, allow_nan=False) != json.dumps(value, allow_nan=False):
+        raise ValueError(CONTRACT_ORDER_LOST + ': the store\'s copy of the ' + name + ' is not in the order of the contract it was '
+                         'given, so nothing is validated against it')
+    return held
+
+
 class StudioStore:
     def __init__(self, path, *, input_schema=None, dependency_policy=None, create=False):
         """Open the controller store. ``create=True`` only from the first bootstrap (goat_studio.bootstrap): every
         other open uses ``connect_existing`` (mode=rw after any interrupted compaction is recovered, refusing while
         one is swapping), so no open can ever create an empty store in place of the real one."""
-        self.input_schema = None if input_schema is None else json.loads(packed(input_schema))
+        # In the contract's own order (held_contract): the enum-ladder check reads each enum's declaration order from it.
+        self.input_schema = None if input_schema is None else held_contract(input_schema, 'input schema')
         self.input_schema_hash = None if input_schema is None else sha(self.input_schema)
-        self.dependency_policy = None if dependency_policy is None else json.loads(packed(dependency_policy))
+        self.dependency_policy = None if dependency_policy is None else held_contract(dependency_policy, 'dependency policy')
         if str(path) == ':memory:':
             self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         elif create:

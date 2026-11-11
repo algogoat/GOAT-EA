@@ -116,9 +116,18 @@ class SeedPromoteTests(unittest.TestCase):
             check_tester_init(values, self.controller.schema)
 
     def test_promoted_sets_carry_an_ai_on_source_through_unchanged(self):
-        # The rule's only producer risk is the source SET itself: an AI-on source stays AI-on and is refused at prepare.
+        # The rule's only producer risk is the source SET itself. The seed lane now runs the tester rule (GOAT-EA#317), so
+        # an AI-on source is refused at seed-prepare, before any seed runs and with nothing prepared.
+        import studio_ea_init_rules
         from studio_ea_init_rules import TESTER_INIT_CODE, check_tester_init
-        for values in self.promoted_with_bias('2'):
+        with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE + r': seed job 1 \(.*source\.set\): '):
+            self.promoted_with_bias('2')
+        self.assertFalse(self.runner.path('batch').exists())
+        # A seed batch prepared before the seed lane ran that rule (the rule switched off for its prepare only) still
+        # promotes: its AI-on source stays AI-on and is refused at prepare-batch.
+        with patch.object(studio_ea_init_rules, 'check_tester_init', lambda *args, **kwargs: None):
+            promoted = self.promoted_with_bias('2')
+        for values in promoted:
             with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE):
                 check_tester_init(values, self.controller.schema)
 

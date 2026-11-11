@@ -539,6 +539,62 @@ class PrepareBatchTesterTests(unittest.TestCase):
         self.assertEqual(len(self.c.state()['queue']), 1)
 
 
+class SeedLaneTesterTests(unittest.TestCase):
+    """seed-validate and seed-prepare refuse a tester-refused job as prepare-batch refuses the member, before any seed
+    is frozen (GOAT-EA#317: a plan that cannot be proved is refused before any seed runs)."""
+    def setUp(self):
+        import test_goat_studio as fixtures
+        from types import SimpleNamespace
+        from campaign_ledger import sha
+        from studio_seed import SeedRunner
+        self.fixture = fixtures.PortableControllerTests(); self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+        self.c = self.fixture.bound(); self.fixture.grant(self.c)
+        real = SCHEMAS['1.49']['inputs']
+        self.c.schema['inputs'].update({name: dict(real[name]) for name in ('Mode_Bias', 'Bias_Protocol', 'Clock_Mode', 'Server_Clock_Model')})
+        self.c.store.input_schema = self.c.schema
+        self.c.store.input_schema_hash = sha(self.c.schema)
+        self.root = self.fixture.root
+        self.runner = SeedRunner(self.c, process=SimpleNamespace(inspect=lambda: None))
+
+    def plan(self, name, *jobs, **tester):
+        """One seed job per (Mode_Bias, Bias_Protocol, Clock_Mode, Server_Clock_Model)."""
+        rows = []
+        for index, values in enumerate(jobs):
+            source = self.root / ('%s-%d.set' % (name, index))
+            source.write_bytes(('EA_Desc=Seed %d\r\nLots=0.1||0.1||0.1||0.3||Y\r\nMode_Bias=%s\r\nBias_Protocol=%s\r\nClock_Mode=%s\r\n'
+                                'Server_Clock_Model=%s\r\n' % ((index,) + values)).encode('utf-16'))
+            rows.append(dict(set_path=str(source), frame_target=2,
+                             tester=self.fixture.tester | {'ForwardMode': 0, 'ForwardDate': '', 'Symbol': 'SYM%d' % index} | tester))
+        return dict(schema_version=1, max_attempts_per_job=1, job_timeout_seconds=30, cutoff=dict(min_fitness=0, min_trades=1), jobs=rows)
+
+    def test_a_refused_in_tester_job_fails_at_seed_validate_and_seed_prepare_and_nothing_is_prepared(self):
+        plan = self.plan('refused', ('1', '2', '0', '0'), ('2', '2', '0', '0'))
+        refusal = ('^' + TESTER_INIT_CODE + r': seed job 2 \(.*refused-1\.set\): the EA refuses this SET in the strategy tester.*'
+                   'TESTER_CONTROL_TOWER_BIAS')
+        with self.assertRaisesRegex(ValueError, refusal):
+            self.runner.validate(plan)
+        with self.assertRaisesRegex(ValueError, refusal):
+            self.runner.prepare('seed-refused', plan)
+        self.assertFalse((self.c.root / 'seeds' / 'seed-refused').exists())
+        self.assertFalse((Path(self.c.install['terminal_data_root']) / 'config/GOATStudio/Seeds').exists())
+        # A ladder that reaches the refused value is refused too, as for a Prove member.
+        with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE + ': seed job 1 '):
+            self.runner.validate(self.plan('laddered', ('1||1||1||2||Y', '1', '0', '0')))
+
+    def test_ai_off_and_legacy_recorded_jobs_validate(self):
+        result = self.runner.validate(self.plan('allowed', ('1', '2', '0', '0'), ('2', '0', '0', '0')))
+        self.assertEqual((result['valid'], result['job_count'], result['writes']), (True, 2, False))
+
+    def test_the_rule_that_reads_the_test_start_uses_the_seed_jobs_own_from_date(self):
+        # The New York clock under a fixed server model needs a test start on or after 2007.03.11 (NY_CLOCK_TEST_BEFORE_2007).
+        ny = ('1', '2', '1', '1')
+        early = dict(FromDate='2006.02.01', ToDate='2006.09.01')
+        with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE + r': seed job 1 \(.*early-0\.set\): .*NY_CLOCK_TEST_BEFORE_2007'):
+            self.runner.validate(self.plan('early', ny, **early))
+        self.assertTrue(self.runner.validate(self.plan('late', ny))['valid'])                      # the fixture's 2026 window
+        self.assertTrue(self.runner.validate(self.plan('server-clock', ('1', '2', '0', '1'), **early))['valid'])
+
+
 def _code_lines(source):
     """Each source line with comments and string/char literal contents blanked (MQL lexing)."""
     out, state, i = [], 'code', 0

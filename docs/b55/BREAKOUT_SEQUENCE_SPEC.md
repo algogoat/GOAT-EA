@@ -1,8 +1,9 @@
 # Spec: a breakout as a sequence's first order (N-bar / prior day on Engine_Grid)
 
-Status: DRAFT for Claude-Mac's review. Spec only: no code, build, test or input change. Scope ruled in goatai#2750
-6789186029: "the two existing breakout terms allowed as a sequence's first-order signal, every new input default off,
-flags-off parity with B54 as gate 0." Issue: GOAT-EA#310.
+Status: APPROVED to proceed to PR A0 by Claude-Mac (goatai#2750 6789761790, item 2), with the recommendation on each of
+the 13 questions of section 8 and three additions, folded in below and listed at the head of section 8. Spec only: no
+code, build, test or input change. Scope ruled in goatai#2750 6789186029: "the two existing breakout terms allowed as a
+sequence's first-order signal, every new input default off, flags-off parity with B54 as gate 0." Issue: GOAT-EA#310.
 
 Source read: GOAT-EA B54, `V1.49-BETA17-54` (`candidate-builds/beta17-B54/identity.json`: entrypoint sha256 `12fffe15...`,
 header `728d7b3b...`, EX5 `5744034e...`), merge `a8c6766` (GOAT-EA#306). Line numbers are at that commit. Short names:
@@ -23,6 +24,7 @@ Non-goals:
 - a breakout term in the adds, in `MustCheck_*` or in the virtual promotion;
 - delayed starts (`Delay_Trade`, `Delay_Trade_Live`) on a breakout sequence (refused, 3.7);
 - dashboard work (b54 ruling 16 stands), any demo or live use (Q8);
+- any change to main:7972 (`Trade_Friday`; addition 3, its own issue GOAT-EA#312);
 - any change to an existing input, enum value, default or alert text.
 
 ## 2 Existing mechanics relied on
@@ -111,6 +113,9 @@ The single-only scope was stated in the brief and carried into the spec. I found
 
 So this spec argues against a scope choice, not against a safety finding. What the rule does protect today: a breakout
 SET that reaches the grid engine by mistake is refused instead of trading the grid's defaults. 3.1 keeps that.
+
+**Ruled (6789761790, addition 2):** the single-only scope was Claude-Mac's brief choice, not a safety finding, and this
+spec is the right way to lift it.
 
 ## 3 Design: the break starts a sequence
 
@@ -265,9 +270,10 @@ In CI, in PR A0. A0 carries the input, the group, the WriteSet line, the regener
 Studio type and default, the child audit name, the init rules and their mirror, with the start path not built (3.7).
 
 - **Baseline.** `S54`, B54's `contracts/v149` at `a8c6766`, against `S55`.
-- **Pool (Q7).** The 61 of `scripts/fixtures/b54-pool` (manifest.json), every SET admitted before A0 merges, and B54's
-  own breakout SETs with `BRK_Mode` on under `Engine_Single`. "Flags off" here means `BRK_Start_Seq=false`, not `BRK_Mode`
-  off, so B54's breakout behaviour is inside the parity claim.
+- **Pool (Q7, with addition 1).** Every file in the pool at A0's merge, not only the 61: the 61 of
+  `scripts/fixtures/b54-pool` (manifest.json), every SET admitted before A0 merges, and B54's own breakout SETs with
+  `BRK_Mode` on under `Engine_Single`. "Flags off" here means `BRK_Start_Seq=false`, not `BRK_Mode` off, so B54's breakout
+  behaviour is inside the parity claim. The native Banker parity (6.3, 6.4 check 2) runs on the same files.
 - **Per file,** b54 6.2 items 1-6 with one new name: the SET does not name it; `pinned_tester_inputs` restricted to S54's
   keys is byte-equal, and the one extra key is `BRK_Start_Seq` at its `appended_default`; `explicit_optimization_inputs`
   is unchanged (an sinput adds no line); `validate_strategy` accepts with the same axes; OnInit gives the same result on
@@ -347,44 +353,70 @@ test, rendered with `Mode_Bias=1` (checks:29-34). No SET with the switch on runs
 - **Register rows:** the restart rebuild under a sequence (3.5 item 4) and the tester-only refusal, both tied to the
   demo/live ruling; dashboard work (b54 ruling 16).
 
-## 8 Open questions (recommendation first)
+## 8 Questions, decided (recommendation first)
+
+**Ruling (Claude-Mac, goatai#2750 6789761790, item 2):** GOAT-EA#311 is approved to proceed to PR A0 with the
+recommendation on all 13 questions below, and three additions:
+
+1. **Gate-0 and native pool** = every file in the pool at A0's merge, not only the 61 (Q7; 6.2, 6.3, 6.4 check 2).
+2. **The single-only scope** of B54 was Claude-Mac's brief choice, not a safety finding, and this spec is the right way to
+   lift it (2.3).
+3. **No change to main:7972 in B55.** It behaves as `==5`, and changing it alters every file's trading, so it gets its own
+   issue (GOAT-EA#312) and its own parity read (section 9).
+
+Each question is decided as its recommendation reads (the first sentence of its item); each item ends with the decision.
 
 1. **One sinput `BRK_Start_Seq`, or no input (the engine alone decides)?** One. It keeps main:5128 guarding a breakout
    SET that lost its `Engine_Mode` line (3.1). Zero inputs would need no schema change, but turns that mistake into a
    live grid.
+   **Decided as recommended (6789761790).**
 2. **Re-entry.** (b) one start per signal direction per trigger bar (3.5 item 1). (a) Nothing, the grid's rule today:
    restarts on a stale break for the rest of a long trigger bar. (c) The single's episode rule (false, then true): needs
    signals kept current under FastSpeed (main:8781) or the tester and a visual run diverge, and, since the flag re-arms
    only where `SignalEntryTrigger` runs (main:9088; in session, main:8279-8292), a new break after a session gap can
    read as the old episode *(inferred)*. (b) is keyed by bar time, so it cannot depend on the run mode.
+   **Decided as recommended (6789761790).**
 3. **Prior-day latch: reuse `BRK_Once_Per_Level` for sequences?** Yes, no new input. At the default: at most one
    sequence start per signal direction per D.
+   **Decided as recommended (6789761790).**
 4. **Refuse `Delay_Trade` / `Delay_Trade_Live` not 0?** Refuse. Otherwise the first real order is not on the break
    (2.2), `MustCheck_*` decides the promotion without the term, and the latch would have to count virtual starts the
    history cannot show. All 61 pool SETs have both at 0.
+   **Decided as recommended (6789761790).**
 5. **Other entry terms: AND as today, no refusal?** Yes, as b54 ruling 4. Templates set `RSI_Disabled`.
+   **Decided as recommended (6789761790).**
 6. **Pip-only grid sizes: create the ATR handles (3.3), or refuse?** Create: one condition widened, no new rule, and
    `BRK_Buffer_ATR` keeps one meaning on both engines.
+   **Decided as recommended (6789761790).**
 7. **Gate-0 and native pool.** The 61, plus every SET admitted before A0 merges, plus B54's breakout SETs with a mode on
    under the single engine (the round 13a wave 3 pilot's eight). The last group is what proves B54's own behaviour
    unchanged.
+   **Decided as recommended, with addition 1: every file in the pool at A0's merge, not only the 61 (6789761790).**
 8. **Tester-only in B55?** Yes: refuse the switch on a live chart (INIT_FAILED), as ORB (main:5146). Then the rebuild's
    over-latch (3.5 item 4) cannot run, and it is fixed with the live admission, not now.
+   **Decided as recommended (6789761790).**
 9. **Identity.** Research-only V1.49 candidate `V1.49-BETA17-55`, marker `B55`, baseline B54 `a8c6766`; no demo or live
    admission until ruled; B53 stays the experiments' final build.
+   **Decided as recommended (6789761790).**
 10. **ORB's owed items** (success line, "M1 history reaches S+R" read check; checks:45-47 say "with the next EA change
     to B54"). Not in B55's PRs: the read check changes ORB-on behaviour and needs its own parity proof. A separate
     small PR, in this build only if you want it there.
+    **Decided as recommended (6789761790).**
 11. **The evidence line at each start (3.3).** Include it. B54 logged nothing on the healthy path and its range check
     had to be rebuilt from deals (checks:40-44).
+    **Decided as recommended (6789761790).**
 12. **PR split.** A0 (input, WriteSet, rules and mirror, gate 0, no-drift, switch refused as not built), then A (the
     start path, 3.5, tests, parity). Spec PR to you first, as GOAT-EA#302.
+    **Decided as recommended (6789761790).**
 13. **Dashboard.** b54 ruling 16 stands: none in B55, required before any breakout SET reaches a tester-facing build.
+    **Decided as recommended (6789761790).**
 
 ## 9 Found while reading (not part of this change)
 
 - main:7972: `stm_cur.day_of_week==5 || stm_cur.day_of_week==5`, the same operand twice (`Trade_Friday`). Harmless as
-  written; the second was probably meant to be another day.
+  written; the second was probably meant to be another day. **Ruled (6789761790, addition 3):** not changed in B55. It
+  behaves as `==5`, and changing it alters every file's trading, so it has its own issue (GOAT-EA#312) and its own parity
+  read.
 - main:8774 and 8967: `cond ? "BUY" : cond2 ? "SELL" : "NEUTRAL"+" ("+value+")"`. The value is appended to NEUTRAL only
   (operator precedence). Panel text, no trading effect.
 - `controller/contracts/v149/dependencies.json`: no rule ties `BRK_*` or `ORB_*` inputs to their mode (its coverage says

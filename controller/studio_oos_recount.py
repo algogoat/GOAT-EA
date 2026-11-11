@@ -23,6 +23,14 @@ SHA-256, the original's evidence end against the recorded one. A member whose in
 changed is listed ``readable: false`` with the reason and gets no verdict. A catch-up whose manifest or state
 cannot be read is listed the same way. Build-migration members hold no verdict and are listed as such.
 
+Self-check
+----------
+``self_check`` (per catch-up in ``counts`` and over all of them in ``totals``) asks one question: does every judged
+file with a stored verdict, judged again under the rule version it was stored with, get that verdict back? It
+compares ``judged_with_stored`` files and nothing else; a judged file with no stored ``oos_rule`` (``stored_missing``:
+for example a ``not_comparable`` re-test stored before the catch-up hook judged those) is left out, never counted as a
+match or a mismatch. ``ok`` is None when it compared no file.
+
 Held-out lock
 -------------
 Every member's verdicts sit under ``oos_rule`` and every catch-up's counts under ``counts``, both keys the
@@ -50,7 +58,14 @@ MAX_CATCHUPS = 500
 UNJUDGED = ('not_comparable', 'unjudged')
 MIGRATION_KIND = 'build_migration_retest'
 SCOPE = ('Read-only recount: each stored catch-up member judged again from its own stored evidence under every OOS '
-         'window rule version. Nothing is written and no stored verdict changes.')
+         'window rule version. Nothing is written and no stored verdict changes. v1_matches_stored and '
+         'v2_matches_stored count, of the judged files with a stored verdict (judged_with_stored), those whose status '
+         'under that version equals the stored one. A judged file with no stored verdict (stored_missing) is compared '
+         'with nothing. self_check is the reproduction check: every judged file with a stored verdict, judged again '
+         'under the rule version it was stored with, matches it (ok); files with no stored verdict are left out of it.')
+# The self-check (Claude-Mac, goatai#2750 6789761790): what it compares, in the words every reply carries.
+SELF_CHECK_BASIS = ('judged files with a stored verdict, each judged again under the rule version it was stored with; a '
+                    'judged file with no stored verdict (stored_missing) is left out, never counted as a match or a mismatch')
 
 
 class Unreadable(Exception):
@@ -200,21 +215,50 @@ def _member(root, manifest, spec, item, versions):
     return row
 
 
+def _stored_version_key(version):
+    """The self-check's key for a stored rule version: 'v1', 'v2', ...; a version the module cannot name is kept as
+    written ('unknown:...'), so it is checked and can only mismatch, never match another version's column."""
+    return label(version) if type(version) is int else 'unknown:%r' % (version,)
+
+
+def self_check(by_version, excluded):
+    """The reproduction check from per-stored-version ``{checked, matches}``: ``ok`` when every checked file matches,
+    None when there was nothing to check (a check that compared nothing is not a pass)."""
+    checked = sum(entry['checked'] for entry in by_version.values())
+    matches = sum(entry['matches'] for entry in by_version.values())
+    return dict(basis=SELF_CHECK_BASIS, checked=checked, matches=matches, mismatches=checked - matches,
+                ok=None if not checked else matches == checked, excluded_stored_missing=excluded,
+                by_stored_version={key: dict(by_version[key]) for key in sorted(by_version)})
+
+
 def count(rows, versions):
     """Counts over one catch-up's member rows. Pass counts cover the re-judged (readable) members only, so the
-    stored and the per-version figures are over the same files; ``stored_pass_unreadable`` names the rest."""
+    stored and the per-version figures are over the same files; ``unreadable`` counts the rest.
+
+    ``judged_with_stored`` is how many judged files carry a stored verdict; ``stored_missing`` how many do not. Each
+    ``<version>_matches_stored`` counts, of the ``judged_with_stored`` files, those whose status under that version
+    equals the stored one. ``self_check`` compares each of those files with the version it was stored under; a file
+    with no stored verdict is in neither."""
     judged = [row for row in rows if row['readable']]
+    stored = [row for row in judged if row['oos_rule']['stored']['present']]
     passes = dict(stored=sum(row['oos_rule']['stored']['status'] == 'pass' for row in judged))
     result = dict(members=len(rows), judged=len(judged), unreadable=len(rows) - len(judged),
-                  stored_missing=sum(not row['oos_rule']['stored']['present'] for row in judged))
+                  judged_with_stored=len(stored), stored_missing=len(judged) - len(stored))
     for version in versions:
         name = label(version)
         passes[name] = sum(row['oos_rule'][name]['status'] == 'pass' for row in judged)
-        result[name + '_matches_stored'] = sum(row['oos_rule'][name + '_matches_stored'] is True for row in judged)
+        result[name + '_matches_stored'] = sum(row['oos_rule'][name + '_matches_stored'] is True for row in stored)
+    by_version = {}
+    for row in stored:
+        key = _stored_version_key(row['oos_rule']['stored']['rule_version'])
+        entry = by_version.setdefault(key, dict(checked=0, matches=0))
+        entry['checked'] += 1
+        entry['matches'] += row['oos_rule'].get(key + '_matches_stored') is True
     compared = [label(versions[0]), label(versions[-1])] if len(versions) > 1 else None
     result.update({'pass': passes, 'compared': compared,
                    'gained': sum(row['oos_rule']['change'] == 'gained' for row in judged) if compared else None,
-                   'lost': sum(row['oos_rule']['change'] == 'lost' for row in judged) if compared else None})
+                   'lost': sum(row['oos_rule']['change'] == 'lost' for row in judged) if compared else None,
+                   'self_check': self_check(by_version, result['stored_missing'])})
     return result
 
 
@@ -261,15 +305,22 @@ def totals(blocks, versions=None):
                   locked_catchups=[block.get('catchup_id') for block in blocks
                                    if isinstance(block.get('counts'), dict) and block['counts'].get('locked')],
                   unreadable_catchups=[block.get('catchup_id') for block in blocks if block.get('readable') is False])
-    for key in ('members', 'judged', 'unreadable', 'stored_missing'):
+    for key in ('members', 'judged', 'unreadable', 'judged_with_stored', 'stored_missing'):
         result[key] = sum(block['counts'][key] for block in counted)
     for version in versions:
         key = label(version) + '_matches_stored'
         result[key] = sum(block['counts'][key] for block in counted)
+    by_version = {}
+    for block in counted:
+        for key, entry in block['counts']['self_check']['by_stored_version'].items():
+            total = by_version.setdefault(key, dict(checked=0, matches=0))
+            total['checked'] += entry['checked']
+            total['matches'] += entry['matches']
     result.update({'pass': {name: sum(block['counts']['pass'][name] for block in counted) for name in names},
                    'compared': compared,
                    'gained': sum(block['counts']['gained'] for block in counted) if compared else None,
-                   'lost': sum(block['counts']['lost'] for block in counted) if compared else None})
+                   'lost': sum(block['counts']['lost'] for block in counted) if compared else None,
+                   'self_check': self_check(by_version, result['stored_missing'])})
     return result
 
 

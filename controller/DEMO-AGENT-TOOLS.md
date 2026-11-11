@@ -1165,7 +1165,12 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   `foos_trades` and the per-window numbers, plus `v1_matches_stored`. Per catch-up `counts`
   and over all of them `totals`: pass counts under `stored` and each version, `gained` and
   `lost` between the oldest and newest version, and how many re-judged files match their
-  stored verdict. It writes nothing (no report, receipt or cache), takes no terminal lease
+  stored verdict. `judged_with_stored` counts the judged files that carry a stored verdict and
+  `stored_missing` those that do not; each `<version>_matches_stored` is over the first group
+  only. `self_check` is the reproduction check: every judged file with a stored verdict, judged
+  again under the rule version it was stored with, matches it (`ok`; `checked`, `matches`,
+  `mismatches`, `by_stored_version`). A file with no stored verdict is left out of it
+  (`excluded_stored_missing`), and a check that compared nothing reads `ok: null`. It writes nothing (no report, receipt or cache), takes no terminal lease
   and reads no process, session or broker, so it is safe while research runs. A member whose
   stored files are missing or changed is listed `readable: false` with the reason and is
   never judged; a catch-up under a held-out lock is redacted and left out of the totals.

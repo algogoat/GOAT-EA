@@ -269,10 +269,15 @@ class RecountTests(FormulaCase):
             name = recount.label(version)
             self.assertEqual(counts['pass'][name], sum(status == 'pass' for status in EXPECTED[name].values()))
         self.assertEqual(counts[recount.label(stored_version) + '_matches_stored'], 6)
+        self.assertEqual(counts['judged_with_stored'], 6)
+        name = recount.label(stored_version)
+        self.assertEqual(counts['self_check'], dict(basis=recount.SELF_CHECK_BASIS, checked=6, matches=6, mismatches=0, ok=True,
+                                                    excluded_stored_missing=0, by_stored_version={name: dict(checked=6, matches=6)}))
         totals = reply['totals']
         self.assertEqual((totals['catchups'], totals['counted_catchups'], totals['locked_catchups'], totals['unreadable_catchups']),
                          (1, 1, [], []))
-        for key in ('members', 'judged', 'unreadable', 'stored_missing', 'pass', 'compared', 'gained', 'lost'):
+        for key in ('members', 'judged', 'unreadable', 'judged_with_stored', 'stored_missing', 'pass', 'compared', 'gained', 'lost',
+                    'self_check'):
             self.assertEqual(totals[key], counts[key], key)
 
     def test_it_writes_nothing_anywhere(self):
@@ -414,6 +419,99 @@ class RecountTests(FormulaCase):
         others = sum(EXPECTED[name][symbol] == 'pass' for symbol in ('USDJPY', 'AUDUSD', 'USDCAD', 'NZDUSD'))
         # EURUSD's stored verdict is gone (it still passes when judged); GBPUSD is not judged; the other four are as stored.
         self.assertEqual((counts['stored_missing'], counts['pass']['stored'], counts['pass'][name]), (1, others, others + 1))
+
+    def rewrite_stored(self, catchup_id, changes):
+        """Rewrite stored results ({symbol: change(result)}) and keep state.json's recorded hashes true."""
+        folder = self.runner.path(catchup_id)
+        state = read_json(folder / 'state.json')
+        manifest = read_json(folder / 'manifest.json')
+        symbols = [spec['tester']['Symbol'] for spec in manifest['members']]
+        for symbol, change in changes.items():
+            item = state['members'][symbols.index(symbol)]
+            result = read_json(item['result']['path'])
+            change(result)
+            Path(item['result']['path']).write_text(json.dumps(result), encoding='utf-8')
+            item['result']['sha256'] = hashlib.sha256(Path(item['result']['path']).read_bytes()).hexdigest()
+        (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+
+    @staticmethod
+    def not_comparable_without_a_stored_rule(result):
+        """The shape of the 28 Banker members of cu1002b40: catch-up verdict not_comparable, no oos_rule stored at all."""
+        result['verdict']['verdict'] = 'not_comparable'
+        del result['verdict']['oos_rule']
+
+    def test_the_self_check_leaves_files_without_a_stored_verdict_out(self):
+        # Claude-Mac, goatai#2750 6789761790: the self-check reads exactly "every judged file with a stored verdict
+        # matches". A catch-up stored under version 1; three of its six members as on Banker's cu1002b40.
+        self.run_catchup(stored_version=1)
+        self.rewrite_stored('cu1', {symbol: self.not_comparable_without_a_stored_rule for symbol in ('GBPUSD', 'AUDUSD', 'NZDUSD')})
+        reply = self.recount('cu1')
+        block, = reply['catchups']
+        rows, counts = self.rows_by_symbol(block), block['counts']
+        for symbol in ('GBPUSD', 'AUDUSD', 'NZDUSD'):
+            rule = rows[symbol]['oos_rule']
+            self.assertEqual((rows[symbol]['readable'], rule['catchup_verdict'], rule['stored']['present'], rule['v1']['status'],
+                              rule['v1_matches_stored'], rule['v2_matches_stored']),
+                             (True, 'not_comparable', False, 'no_data', None, None), symbol)
+        self.assertEqual((counts['judged'], counts['judged_with_stored'], counts['stored_missing']), (6, 3, 3))
+        self.assertEqual((counts['v1_matches_stored'], counts['v2_matches_stored']), (3, 2))     # USDJPY gains a pass under v2
+        check = counts['self_check']
+        self.assertEqual((check['checked'], check['matches'], check['mismatches'], check['ok'], check['excluded_stored_missing']),
+                         (3, 3, 0, True, 3))
+        self.assertEqual(check['by_stored_version'], dict(v1=dict(checked=3, matches=3)))
+        self.assertEqual(check['basis'], recount.SELF_CHECK_BASIS)
+        self.assertIn('never counted as a match or a mismatch', check['basis'])
+        self.assertEqual(reply['totals']['self_check'], check)
+        self.assertIn('of the judged files with a stored verdict (judged_with_stored)', reply['scope'])
+        # One compared file whose stored verdict is not reproduced: the self-check is not ok, and only it is a mismatch.
+        self.rewrite_stored('cu1', dict(EURUSD=lambda result: result['verdict']['oos_rule'].update(status='fail')))
+        block, = self.recount('cu1')['catchups']
+        check = block['counts']['self_check']
+        self.assertEqual((check['checked'], check['matches'], check['mismatches'], check['ok'], check['excluded_stored_missing']),
+                         (3, 2, 1, False, 3))
+        self.assertEqual(check['by_stored_version'], dict(v1=dict(checked=3, matches=2)))
+        self.assertIs(self.rows_by_symbol(block)['EURUSD']['oos_rule']['v1_matches_stored'], False)
+        self.assertEqual(self.recount('cu1')['totals']['self_check']['ok'], False)
+
+    def test_the_self_check_compares_each_file_with_the_version_it_was_stored_under(self):
+        # Stored under version 2 now: GBPUSD and USDJPY pass under v2 and fail under v1, and still match their own version.
+        self.run_catchup()
+        counts = self.recount('cu1')['catchups'][0]['counts']
+        self.assertEqual((counts['v1_matches_stored'], counts['v2_matches_stored']), (4, 6))
+        self.assertEqual((counts['self_check']['ok'], counts['self_check']['by_stored_version']), (True, dict(v2=dict(checked=6, matches=6))))
+        # A stored version this module cannot judge under is checked and can only mismatch.
+        self.rewrite_stored('cu1', dict(EURUSD=lambda result: result['verdict']['oos_rule'].update(ruleVersion=7)))
+        check = self.recount('cu1')['catchups'][0]['counts']['self_check']
+        self.assertEqual((check['checked'], check['matches'], check['ok']), (6, 5, False))
+        self.assertEqual(check['by_stored_version'], {'v2': dict(checked=5, matches=5), 'v7': dict(checked=1, matches=0)})
+
+    def test_a_self_check_that_compared_nothing_is_not_ok(self):
+        self.run_catchup(stored_version=1)
+        self.rewrite_stored('cu1', {symbol: self.not_comparable_without_a_stored_rule for symbol in self.SCENARIOS})
+        reply = self.recount('cu1')
+        counts = reply['catchups'][0]['counts']
+        self.assertEqual((counts['judged'], counts['judged_with_stored'], counts['stored_missing']), (6, 0, 6))
+        self.assertEqual((counts['self_check']['checked'], counts['self_check']['ok'], counts['self_check']['by_stored_version']),
+                         (0, None, {}))
+        self.assertIsNone(reply['totals']['self_check']['ok'])
+
+    def test_totals_add_the_self_check_over_catch_ups(self):
+        # Two catch-ups of different exports: cu1 stored under version 1 (one member as on cu1002b40), cu2 under version 2.
+        self.run_catchup('cu1', symbols=('EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD'), stored_version=1)
+        self.rewrite_stored('cu1', dict(GBPUSD=self.not_comparable_without_a_stored_rule))
+        self.run_catchup('cu2', symbols=('USDCAD', 'NZDUSD'))
+        reply = self.recount(every=True)
+        first, second = (block['counts'] for block in reply['catchups'])
+        self.assertEqual((first['self_check']['checked'], first['stored_missing'], second['self_check']['checked']), (3, 1, 2))
+        totals = reply['totals']
+        self.assertEqual((totals['judged'], totals['judged_with_stored'], totals['stored_missing']), (6, 5, 1))
+        self.assertEqual(totals['self_check'], dict(basis=recount.SELF_CHECK_BASIS, checked=5, matches=5, mismatches=0, ok=True,
+                                                    excluded_stored_missing=1,
+                                                    by_stored_version=dict(v1=dict(checked=3, matches=3), v2=dict(checked=2, matches=2))))
+        # One mismatch in either catch-up makes the totals' self-check not ok.
+        self.rewrite_stored('cu2', dict(NZDUSD=lambda result: result['verdict']['oos_rule'].update(status='fail')))
+        check = self.recount(every=True)['totals']['self_check']
+        self.assertEqual((check['checked'], check['matches'], check['mismatches'], check['ok']), (5, 4, 1, False))
 
     def test_a_held_out_lock_redacts_the_catch_up_and_keeps_it_out_of_the_totals(self):
         self.run_catchup()

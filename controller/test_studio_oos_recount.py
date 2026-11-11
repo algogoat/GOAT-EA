@@ -483,6 +483,30 @@ class RecountTests(FormulaCase):
         return code, json.loads(stdout.getvalue()) if stdout.getvalue() else None, stderr.getvalue()
 
 
+class ArchivedEvidenceTests(unittest.TestCase):
+    """A catch-up whose evidence folder evidence-archive moved: the recount reads the verified archive copy, or refuses."""
+
+    def test_the_retest_unit_is_read_from_its_verified_archive_copy(self):
+        import studio_evidence_archive as archive
+        from test_studio_evidence_archive import CATCHUP, CatchupArchiveTests
+        case = CatchupArchiveTests('test_the_catchup_report_names_the_archived_version')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        self.addCleanup(case.tearDown)
+        self.assertEqual(recount._unit(case.root, str(case.retest)), case.retest)             # not archived: read in place
+        case.run_archive(CATCHUP)
+        case.complete(CATCHUP)
+        self.assertFalse(case.retest.exists())
+        moved = case.folder(CATCHUP) / 'evidence' / sc.evidence_key(CATCHUP) / '00001'
+        self.assertEqual(sc.plain(recount._unit(case.root, str(case.retest))), str(moved / case.retest.name))
+        # A CSV or deals file that no longer matches the archive manifest refuses the unit: the member is then listed
+        # unreadable (``_member`` catches ArchiveUnreachable), never read from anything else.
+        deals = moved / (case.retest.name[:-4] + '.goatseq') / 'deals.csv'
+        deals.write_bytes(deals.read_bytes() + b'more\n')
+        with self.assertRaises(archive.ArchiveUnreachable):
+            recount._unit(case.root, str(case.retest))
+
+
 class RuleVersionSeamTests(unittest.TestCase):
     """The rule module names the versions it can judge under; the recount takes its list from there."""
 

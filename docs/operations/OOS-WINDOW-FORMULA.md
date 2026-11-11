@@ -11,10 +11,11 @@ Revised by Vince on 2026-10-11 ("YES LOCK IT IN", goatai#2350 6106946678; Claude
 **1/3 O (= FWD)**, not 1/2 O, and it is a **lenient "not broken" gate**. Every window record now
 stamps `oosFormula: "boos-1/3"`; see "Stamped windows keep their formula" below.
 
-Revised on 2026-11-11 (Claude-Mac, goatai#2750 comment 6787022949): **rule version 2** of the pass
-rule. The BOOS loss leg applies only when SAMPLE holds at least 10 rolling windows of BOOS's
-length, and the in-sample drawdown both windows are compared with is SAMPLE + FWD's, not SAMPLE's
-alone. Every `oos_rule` names its `ruleVersion`; see "The pass rule" and "Rule versions" below.
+Revised on 2026-11-11 (Claude-Mac, goatai#2750 comments 6787022949 and 6788392334): **rule version
+2** of the pass rule. The BOOS loss leg applies only for an **O of 12 months or more** (52 weeks);
+it is off at 3 and 6 months. The in-sample drawdown both windows are compared with is SAMPLE +
+FWD's, not SAMPLE's alone. Every `oos_rule` names its `ruleVersion`; see "The pass rule" and "Rule
+versions" below.
 
 ## The windows
 
@@ -166,18 +167,25 @@ For each OOS window (BOOS and FOOS):
    on **DD > 1.5 × in-sample DD**. It also fails on a **loss worse than `in_sample_p10`**, the
    10th percentile (linear interpolation, as numpy `linear` and Excel `PERCENTILE.INC`) of the net
    results of every window of **BOOS's own length** inside SAMPLE, the first starting on SAMPLE's
-   first day and each next one **one week** later, but **only when SAMPLE holds at least 10 such
-   windows** (`MIN_LOSS_LEG_WINDOWS`). SAMPLE holds SAMPLE weeks − BOOS weeks + 1 of them: 4, 9, 17
-   and 35 at O = 3, 6, 12 and 24 months. With fewer than 10 the loss leg is **not applied**: a
-   10th percentile of a handful of fitted windows is not a distribution, and applying it made BOOS
-   a profit requirement, which the lock says it never is. A BOOS loss alone then does not fail the
-   file; the drawdown leg still judges it. A BOOS loss whose window count is not known is
-   `not_measured`, and so is a loss the leg applies to with no `in_sample_p10`. BOOS is never a
-   profit requirement and never a ranking input. The BOOS result carries `gate: "lenient_p10"`,
-   `in_sample_p10`, `in_sample_windows`, `loss_leg_applied` and `min_in_sample_windows`; every
-   `oos_rule` carries `ruleVersion`, `in_sample_windows`, `loss_leg_applied`, `oosFormula`,
-   `boosGate` and `oosUsedForSelection: "gate_only"`, and `bar.in_sample` names what the in-sample
-   DD was measured over (`"SAMPLE+FWD"`). (`controller/studio_oos_windows.py`: `percentile`,
+   first day and each next one **one week** later, but **only for an O of 12 months or more**:
+   `o_weeks` ≥ 52 (`MIN_LOSS_LEG_O_WEEKS`, 12 months by the module's own conversion, 13/3 weeks a
+   month). **Below 12 months the loss leg is not applied** (it is off at O = 3 and 6 months):
+   SAMPLE then holds only 4 and 9 such windows (SAMPLE weeks − BOOS weeks + 1), a 10th percentile
+   of a handful of fitted windows is not a distribution, and applying it made BOOS a profit
+   requirement, which the lock says it never is. A BOOS loss alone then does not fail the file;
+   the drawdown leg still judges it. From 12 months up SAMPLE holds 17 windows and more (17 and 35
+   at O = 12 and 24 months). **The leg is decided by O, never by the window count**: the count
+   steps unevenly with O (9, 10, 9, 10 windows at 26, 27, 28, 29 weeks), so a count threshold
+   would flip week by week (Claude-Mac 6788392334). O is SAMPLE + FWD in weeks for every formula:
+   a `boos-1/2` record of 12 months has O = 52 weeks and gets the leg, on its 9 windows. A BOOS
+   loss whose O is not known is `not_measured`, and so is a loss the leg applies to with no
+   `in_sample_p10`. BOOS is never a profit requirement and never a ranking input. The BOOS result
+   carries `gate: "lenient_p10"`, `in_sample_p10`, `in_sample_windows`, `loss_leg_applied`,
+   `o_weeks` and `min_loss_leg_o_weeks`; every `oos_rule` carries `ruleVersion`, `o_weeks`,
+   `loss_leg_applied`, `in_sample_windows` (printed, not a decision input), `oosFormula`,
+   `boosGate` and `oosUsedForSelection: "gate_only"`; `bar.min_loss_leg_o_weeks` (52) and
+   `bar.min_loss_leg_o_months` (12) state the threshold and `bar.in_sample` names what the
+   in-sample DD was measured over (`"SAMPLE+FWD"`). (`controller/studio_oos_windows.py`: `percentile`,
    `_loss_leg`, `judge_window(..., lenient=True)`, and `in_sample_p10` and `in_sample_span` in
    `judge_retest`.) The same lenient bar applies to a 1/2 O export stamped before the lock, on its
    own 1/2 O windows (Claude-Mac 6165051704).
@@ -188,8 +196,8 @@ Window results, in this order:
 |---|---|
 | `no_data` | No such window, the window has not been tested, or there is no trade count for it. |
 | `not_eligible_yet` | Fewer than 30 trades, or FOOS not tested through the export Friday yet. |
-| `fail` | 30+ trades and a measured DD above 1.5 × in-sample DD, or (FOOS) a measured PF below 1.0 (net below 0), or (BOOS, with 10 or more in-sample windows) a loss worse than `in_sample_p10`. |
-| `not_measured` | 30+ trades, nothing measured failed, but PF, the window DD or the in-sample DD (> 0) is missing, or (BOOS) a loss whose in-sample window count is not known. |
+| `fail` | 30+ trades and a measured DD above 1.5 × in-sample DD, or (FOOS) a measured PF below 1.0 (net below 0), or (BOOS, at an O of 12 months or more) a loss worse than `in_sample_p10`. |
+| `not_measured` | 30+ trades, nothing measured failed, but PF, the window DD or the in-sample DD (> 0) is missing, or (BOOS) a loss whose O is not known. |
 | `pass` | 30+ trades, PF ≥ 1.0 (BOOS: not broken) and DD ≤ 1.5 × in-sample DD, all measured. |
 
 A set takes the first of `fail`, `not_eligible_yet`, `not_measured`, `no_data`, `pass` that either
@@ -205,8 +213,8 @@ Every `oos_rule` names the rule it was judged under: `ruleVersion`. The record s
 
 | Version | In-sample DD | BOOS loss leg | Records |
 |---|---|---|---|
-| 2 (current; Claude-Mac, goatai#2750 6787022949, 2026-11-11) | SAMPLE + FWD together | only with 10 or more in-sample windows | `ruleVersion: 2`, `in_sample_windows`, `loss_leg_applied`, `bar.in_sample: "SAMPLE+FWD"` |
-| 1 (2026-10-05 to 2026-11-11) | SAMPLE alone | at every window count | no `ruleVersion` (a record without one is version 1), `bar.in_sample: "SAMPLE"` |
+| 2 (current; Claude-Mac, goatai#2750 6787022949 and 6788392334, 2026-11-11) | SAMPLE + FWD together | only for an O of 12 months or more (`o_weeks` ≥ 52) | `ruleVersion: 2`, `o_weeks`, `loss_leg_applied`, `in_sample_windows`, `bar.in_sample: "SAMPLE+FWD"`, `bar.min_loss_leg_o_weeks: 52` |
+| 1 (2026-10-05 to 2026-11-11) | SAMPLE alone | at every O | no `ruleVersion` (a record without one is version 1), `bar.in_sample: "SAMPLE"` |
 
 Nothing rewrites a stored verdict. `judge`, `judge_window` and `judge_retest` still judge under
 version 1 (`rule_version=1`), value for value as before
@@ -233,7 +241,9 @@ versions, next to its stored verdict, and writes nothing (see `controller/DEMO-A
   day), the peak starting at the span's opening equity. 0 or unknown leaves no limit:
   `not_measured`. (Rule version 1: SAMPLE's DD alone.)
 - **In-sample windows**: the rolling SAMPLE windows of BOOS's own length that `in_sample_p10` is
-  taken over, one week apart. The BOOS loss leg applies from 10 of them.
+  taken over, one week apart. Printed on every record; it does not decide the loss leg.
+- **O for the loss leg**: SAMPLE + FWD in whole weeks (`o_weeks`), for 1/3 O and 1/2 O BOOS
+  windows alike. The BOOS loss leg applies from 52 weeks (12 months).
 - **FOOS with catch-up weeks**: FOOS runs from the Saturday after the optimization end through the
   export Friday. A catch-up re-test that runs later extends FOOS to the re-test's end: those weeks
   follow the optimization end and are never ranked, so they **count toward the 30-trade floor**
@@ -246,12 +256,15 @@ sequence capture); without it the window is `no_data`. DD comes from the re-test
 ### Shared fixture
 
 `controller/fixtures/oos-holdout-gate-cases.json` (schema `goat-oos-holdout-gate-cases-v1`)
-holds the rules, the definitions, 57 window cases, 19 set cases and 5 date cases. Every case names
+holds the rules, the definitions, 63 window cases, 22 set cases and 5 date cases. Every case names
 its `rule_version`: the 32 window and 9 set cases that existed before version 2 are unchanged (now
 `rule_version: 1`) and stay, so stored version 1 verdicts remain reproducible; version 2 cases give `optimization_max_drawdown` (SAMPLE +
-FWD) and `in_sample_windows`. `rule_change_proofs` pairs cases with the same inputs that version 1
-fails and version 2 passes, for each of the two changes; `still_not_a_pass_under_v2` names the
-version 2 cases that still fail, are not eligible yet or are not measured.
+FWD), `o_weeks` (the O that decides the loss leg) and `in_sample_windows` (printed).
+`rule_change_proofs` pairs cases with the same inputs that version 1 fails and version 2 passes,
+for each of the two changes (the loss leg at O = 13 and 26 weeks); `still_not_a_pass_under_v2`
+names the version 2 cases that still fail, are not eligible yet or are not measured (a loss worse
+than the p10 at 52 and 104 weeks, an unknown O). The 51-week case passes where the 52-week case
+with the same loss fails.
 `controller/test_studio_oos_windows.py` runs every case and checks the file's rules against the
 module constants. The same bytes live at goatai `docs/fixtures/oos-holdout-gate-cases.json`, where
 the desktop gate test runs every case. Change it in GOAT-EA first, then copy the identical file to

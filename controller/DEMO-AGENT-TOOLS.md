@@ -1142,10 +1142,12 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   Rule version 2 (`ruleVersion: 2`; Claude-Mac, goatai#2750 6787022949): the in-sample DD is the
   drawdown over SAMPLE and FWD together (`bar.in_sample: "SAMPLE+FWD"`). BOOS is lenient: it fails
   on that DD bar, and on a loss worse than the in-sample p10 of rolling SAMPLE windows of its own
-  length only when SAMPLE holds at least 10 such windows (`in_sample_windows`; 4, 9, 17 and 35 at
-  O = 3, 6, 12 and 24 months). With fewer the loss leg is not applied (`loss_leg_applied: false`)
-  and a BOOS loss alone does not fail. A stored `oos_rule` without `ruleVersion` was judged under
-  version 1 (SAMPLE's DD alone, the loss leg at every window count) and is never rewritten.
+  length only for an O of 12 months or more (`o_weeks` ≥ 52, `bar.min_loss_leg_o_weeks`; Claude-Mac
+  6788392334). At O = 3 and 6 months the loss leg is not applied (`loss_leg_applied: false`) and a
+  BOOS loss alone does not fail. The leg is decided by O, never by the window count, which is
+  still printed (`in_sample_windows`; 4, 9, 17 and 35 at O = 3, 6, 12 and 24 months). A BOOS loss
+  with an unknown O is `not_measured`. A stored `oos_rule` without `ruleVersion` was judged under
+  version 1 (SAMPLE's DD alone, the loss leg at every O) and is never rewritten.
   Records stamp `oosFormula`; 1/2 O batches keep theirs.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
   `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:

@@ -214,7 +214,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertFalse(result['used_for_ranking'])
         # The bar names what the in-sample drawdown was measured over: SAMPLE + FWD since rule version 2.
         self.assertEqual(result['bar'], dict(min_trades=30, min_pf=1.0, max_dd_ratio=1.5, in_sample='SAMPLE+FWD',
-                                             min_in_sample_windows=10))
+                                             min_loss_leg_o_weeks=52, min_loss_leg_o_months=12))
         self.assertEqual(w.judge(window(), window(), in_sample_dd=100.0, rule_version=1)['bar'],
                          dict(min_trades=30, min_pf=1.0, max_dd_ratio=1.5, in_sample='SAMPLE'))
 
@@ -242,10 +242,10 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn('profit factor below 1.0 (1.00)', result['plain'])
         # The PF bar is FOOS's only: every BOOS is lenient, 1/2 O windows too (Claude-Mac 6165051704).
         for formula in ('boos-1/3', 'boos-1/2'):
-            for version, count in ((1, None), (2, 17), (2, 4)):
-                with self.subTest(formula=formula, version=version, count=count):
-                    result = w.judge(window(pf=0.999, pl=-0.5, in_sample_p10=-10.0, in_sample_windows=count), window(),
-                                     in_sample_dd=100.0, oos_formula=formula, rule_version=version)
+            for version, o_weeks in ((1, None), (2, 52), (2, 13)):
+                with self.subTest(formula=formula, version=version, o_weeks=o_weeks):
+                    result = w.judge(window(pf=0.999, pl=-0.5, in_sample_p10=-10.0), window(),
+                                     in_sample_dd=100.0, oos_formula=formula, rule_version=version, o_weeks=o_weeks)
                     self.assertEqual((result['status'], result['boosGate'], result['oosFormula']), ('pass', 'lenient_p10', formula))
                     self.assertNotIn('profit factor', result['plain'])
         self.assertEqual(w.judge(window(pf=None, pf_note='no losing deals'), window(), in_sample_dd=100.0)['status'], 'pass')
@@ -261,15 +261,15 @@ class EvaluationTests(unittest.TestCase):
                  (dict(pf=0.9, pl=-1.0, in_sample_p10=None), 'not_measured'),
                  (dict(pf=0.9, pl=None, in_sample_p10=-50.0), 'not_measured'),
                  (dict(pf=0.5, pl=-40.0, in_sample_p10=-50.0, dd=150.01), 'fail'))
-        # The same verdicts under rule version 1 (the loss leg at every window count) and under version 2 once SAMPLE
-        # holds at least 10 windows of BOOS's length (17 at O = 12 months).
-        for version, count in ((1, None), (1, 4), (2, 10), (2, 17)):
+        # The same verdicts under rule version 1 (the loss leg at every O) and under version 2 for an O of 12 months or
+        # more (52 weeks and up).
+        for version, o_weeks in ((1, None), (1, 13), (2, 52), (2, 104)):
             for extra, status in cases:
-                with self.subTest(version=version, count=count, extra=extra):
-                    result = w.judge(window(in_sample_windows=count, **extra), window(), in_sample_dd=100.0, rule_version=version)
+                with self.subTest(version=version, o_weeks=o_weeks, extra=extra):
+                    result = w.judge(window(**extra), window(), in_sample_dd=100.0, rule_version=version, o_weeks=o_weeks)
                     self.assertEqual(result['status'], status, result['plain'])
                     self.assertEqual(result['windows']['boos']['gate'], 'lenient_p10')
-        result = w.judge(window(pf=0.5, pl=-40.0, in_sample_p10=-50.0, in_sample_windows=17), window(), in_sample_dd=100.0)
+        result = w.judge(window(pf=0.5, pl=-40.0, in_sample_p10=-50.0, in_sample_windows=17), window(), in_sample_dd=100.0, o_weeks=52)
         self.assertEqual((result['oosFormula'], result['boosGate'], result['oosUsedForSelection'], result['used_for_ranking']),
                          ('boos-1/3', 'lenient_p10', 'gate_only', False))
         self.assertEqual(result['windows']['boos']['in_sample_p10'], -50.0)
@@ -346,11 +346,14 @@ class SharedFixtureTests(unittest.TestCase):
         self.assertEqual(tuple(rules['set_order']), w.SET_ORDER)
         self.assertEqual(set(rules['statuses']), set(rules['set_order']))
         # Rule versions: the fixture names the same versions, the same current one and the same loss-leg floor.
-        self.assertEqual((tuple(rules['rule_versions']), rules['current_rule_version'], rules['min_in_sample_windows_for_loss_leg']),
-                         (w.RULE_VERSIONS, w.RULE_VERSION, w.MIN_LOSS_LEG_WINDOWS))
+        self.assertEqual((tuple(rules['rule_versions']), rules['current_rule_version']), (w.RULE_VERSIONS, w.RULE_VERSION))
+        self.assertEqual((rules['min_o_months_for_loss_leg'], rules['min_o_weeks_for_loss_leg']),
+                         (w.MIN_LOSS_LEG_O_MONTHS, w.MIN_LOSS_LEG_O_WEEKS))
+        self.assertNotIn('min_in_sample_windows_for_loss_leg', rules)           # the window count no longer decides
         self.assertEqual({int(version): text.split(' ')[0] for version, text in rules['in_sample_base'].items()}, w.IN_SAMPLE_BASE)
-        self.assertIn('in_sample_windows is at least 10', rules['boos_gate'])
-        for key in ('rule_version', 'optimization_max_drawdown', 'in_sample_windows'):
+        self.assertIn('only for an O of 12 months or more (o_weeks >= 52)', rules['boos_gate'])
+        self.assertIn('never by in_sample_windows', rules['boos_gate'])
+        for key in ('rule_version', 'optimization_max_drawdown', 'in_sample_windows', 'o_weeks'):
             self.assertIn(key, self.fixture['definitions'])
 
     def cases(self):
@@ -395,19 +398,41 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertNotEqual(case['expected'], 'pass')
                 self.assertEqual(w.judge_case(case)['status'], case['expected'])
         self.assertEqual({case['expected'] for case in negatives}, {'fail', 'not_eligible_yet', 'not_measured'})
-        loss = by_id['boos_loss_17_windows_worse_than_p10_v2']
-        self.assertEqual((loss['in_sample_windows'] >= 10, loss['expected']), (True, 'fail'))
+        # Both ways (Claude-Mac 6788392334): O = 13 and 26 weeks are proofs above; from 52 weeks a loss worse than the
+        # p10 fails and one no worse passes; 51 weeks is still under the threshold; an unknown O is not measured.
+        self.assertEqual({proof['v2_case'] for proof in self.fixture['rule_change_proofs'] if proof['change'] == 'boos_loss_leg'},
+                         {'boos_loss_o_13_weeks_v2', 'boos_loss_o_26_weeks_v2', 'boos_loss_o_13_weeks_set_v2', 'boos_loss_o_26_weeks_set_v2'})
+        expected = dict(boos_loss_o_52_weeks_worse_than_p10_v2=(52, 'fail'), boos_loss_o_52_weeks_at_p10_v2=(52, 'pass'),
+                        boos_loss_o_52_weeks_within_p10_v2=(52, 'pass'), boos_loss_o_51_weeks_v2=(51, 'pass'),
+                        boos_loss_o_104_weeks_worse_than_p10_v2=(104, 'fail'), boos_loss_o_unknown_v2=(None, 'not_measured'),
+                        boos_loss_o_13_weeks_v2=(13, 'pass'), boos_loss_o_26_weeks_v2=(26, 'pass'))
+        for name, (o_weeks, status) in expected.items():
+            self.assertEqual((by_id[name]['o_weeks'], by_id[name]['expected'], w.judge_case(by_id[name])['status']),
+                             (o_weeks, status, status), name)
+        self.assertNotIn('o_weeks', by_id['boos_loss_o_absent_v2'])
+        self.assertEqual(w.judge_case(by_id['boos_loss_o_absent_v2'])['status'], 'not_measured')
+        # The 51-week and the 52-week case lose the same amount against the same p10: only O differs in the verdict.
+        near, at = by_id['boos_loss_o_51_weeks_v2'], by_id['boos_loss_o_52_weeks_worse_than_p10_v2']
+        self.assertEqual((near['input'], near['in_sample_p10_pl']), (at['input'], at['in_sample_p10_pl']))
+        # The window count is printed and never decides: 10 windows at 27 weeks pass, 9 windows at 52 weeks fail.
+        self.assertEqual((by_id['boos_loss_o_27_weeks_10_windows_v2']['in_sample_windows'], by_id['boos_loss_o_27_weeks_10_windows_v2']['expected']),
+                         (10, 'pass'))
+        self.assertEqual((by_id['boos_loss_o_52_weeks_9_windows_worse_than_p10_v2']['in_sample_windows'],
+                          by_id['boos_loss_o_52_weeks_9_windows_worse_than_p10_v2']['expected']), (9, 'fail'))
+        self.assertEqual(by_id['boos_loss_o_52_weeks_window_count_unknown_v2']['expected'], 'pass')
         self.assertEqual(by_id['foos_29_trades_v2']['expected'], 'not_eligible_yet')
 
     def test_a_version_2_window_result_states_the_loss_leg(self):
         by_id = {case['id']: case for case in self.fixture['window_cases']}
-        for name, applied in (('boos_loss_4_windows_v2', False), ('boos_loss_9_windows_v2', False),
-                              ('boos_loss_10_windows_worse_than_p10_v2', True), ('boos_loss_window_count_unknown_v2', None)):
+        for name, applied in (('boos_loss_o_13_weeks_v2', False), ('boos_loss_o_26_weeks_v2', False), ('boos_loss_o_51_weeks_v2', False),
+                              ('boos_loss_o_52_weeks_worse_than_p10_v2', True), ('boos_loss_o_unknown_v2', None)):
             result = w.judge_case(by_id[name])
-            self.assertEqual((result['loss_leg_applied'], result['min_in_sample_windows'], result['in_sample_windows']),
-                             (applied, 10, by_id[name]['in_sample_windows']), name)
-        old = w.judge_case(by_id['boos_loss_4_windows_v1'])
+            self.assertEqual((result['loss_leg_applied'], result['o_weeks'], result['min_loss_leg_o_weeks'], result['in_sample_windows']),
+                             (applied, by_id[name]['o_weeks'], 52, by_id[name]['in_sample_windows']), name)
+            self.assertNotIn('min_in_sample_windows', result)
+        old = w.judge_case(by_id['boos_loss_o_13_weeks_v1'])
         self.assertNotIn('loss_leg_applied', old)
+        self.assertNotIn('o_weeks', old)
         self.assertEqual(old['in_sample_windows'], 4)
 
     def test_every_window_case(self):
@@ -659,14 +684,16 @@ class RetestTests(RetestFixture, unittest.TestCase):
         self.assertIn('in-sample 10th-percentile window', worse['plain'])
         # A profitable in-sample history makes any BOOS loss worse than its p10.
         self.assertEqual(self.judge(1, losers=dict(boos=21))['status'], 'fail')
-        # Rule version 2: 4 windows are not a distribution, so the loss leg is not applied and neither loss fails.
+        # Rule version 2: O = 13 weeks is under 12 months, so the loss leg is not applied and neither loss fails.
         for losers in (dict(boos=30, **losing_sample), dict(boos=21)):
             result = self.judge(2, trades=dict(boos=30), losers=losers)
             boos = result['windows']['boos']
             self.assertEqual((result['status'], boos['status'], boos['loss_leg_applied'], boos['in_sample_windows']),
                              ('pass', 'pass', False, 4), result['plain'])
-            self.assertIn('loss leg not applied (4 of 10 in-sample windows)', result['plain'])
-            self.assertEqual((result['ruleVersion'], result['in_sample_windows'], result['loss_leg_applied']), (2, 4, False))
+            self.assertIn('loss leg not applied (O = 13 weeks; it applies from 52 weeks, 12 months)', result['plain'])
+            self.assertEqual((result['ruleVersion'], result['o_weeks'], result['in_sample_windows'], result['loss_leg_applied']),
+                             (2, 13, 4, False))
+            self.assertEqual((boos['o_weeks'], boos['min_loss_leg_o_weeks']), (13, 52))
 
     def test_a_half_o_export_keeps_its_windows_and_gets_the_lenient_bar(self):
         # Claude-Mac 6165051704: the window length follows the stamp, the bar is the lenient rule for EVERY BOOS.
@@ -676,7 +703,7 @@ class RetestTests(RetestFixture, unittest.TestCase):
         self.record = w.compute(26, '2026-10-02', 'boos-1/2')
         self.assertEqual((self.record['weeks']['boos'], self.record['export']['BackOOSDate']), (13, '2025.11.15'))
         losing_sample = dict(sample=30)
-        self.assertEqual(self.judge(2, losers=dict(boos=30, **losing_sample))['status'], 'pass')     # version 2: 5 windows, no loss leg
+        self.assertEqual(self.judge(2, losers=dict(boos=30, **losing_sample))['status'], 'pass')     # version 2: O = 26 weeks, no loss leg
         result = self.judge(1, losers=dict(boos=21, **losing_sample))                 # BOOS 9x10 - 21x5 = -15, PF 0.86
         boos = result['windows']['boos']
         self.assertEqual((result['status'], result['oosFormula'], result['boosGate']), ('pass', 'boos-1/2', 'lenient_p10'),
@@ -697,7 +724,7 @@ class RetestTests(RetestFixture, unittest.TestCase):
         self.assertEqual(w.formula_of(self.record['tester'], back)['oosFormula'], 'boos-1/2')
         self.assertEqual(w.formula_of(self.record['tester'], back, 'boos-1/3'), self.record)
         original, retest = self.build(losers=dict(boos=21))                                      # a BOOS loss
-        for version, status in ((1, 'fail'), (2, 'pass')):       # one SAMPLE window: version 2 does not apply the loss leg
+        for version, status in ((1, 'fail'), (2, 'pass')):       # O = 4 weeks: version 2 does not apply the loss leg
             inferred = w.judge_retest(original, retest, tester=self.record['tester'], rule_version=version)
             stamped = w.judge_retest(original, retest, tester=self.record['tester'], oos_formula='boos-1/3', rule_version=version)
             self.assertEqual((inferred['oosFormula'], stamped['oosFormula']), ('boos-1/2', 'boos-1/3'))
@@ -727,7 +754,12 @@ class RuleVersionTests(unittest.TestCase):
     """Rule version 2 (Claude-Mac, goatai#2750 6787022949): the loss leg needs 10 windows; every record names its version."""
 
     def test_versions(self):
-        self.assertEqual((w.RULE_VERSIONS, w.RULE_VERSION, w.MIN_LOSS_LEG_WINDOWS), ((1, 2), 2, 10))
+        self.assertEqual((w.RULE_VERSIONS, w.RULE_VERSION), ((1, 2), 2))
+        # The loss leg applies from an O of 12 months, in the module's own weeks (13/3 weeks a month, half up): 52.
+        self.assertEqual((w.MIN_LOSS_LEG_O_MONTHS, w.MIN_LOSS_LEG_O_WEEKS), (12, 52))
+        self.assertEqual(w.MIN_LOSS_LEG_O_WEEKS, w.optimization_weeks(months=12))
+        self.assertEqual(w.MIN_LOSS_LEG_O_WEEKS, w.compute(w.optimization_weeks(months=12), '2026-10-02')['o_weeks'])
+        self.assertFalse(hasattr(w, 'MIN_LOSS_LEG_WINDOWS'))                     # the window count no longer decides
         self.assertEqual(w.IN_SAMPLE_BASE, {1: 'SAMPLE', 2: 'SAMPLE+FWD'})
         self.assertEqual(w.MAX_DD_RATIO, Fraction(3, 2))       # the multiple stays 1.5
         self.assertEqual(w.EVALUATION, 'goat-oos-window-rule-v1')   # the record schema name is unchanged: readers match it
@@ -748,69 +780,93 @@ class RuleVersionTests(unittest.TestCase):
         self.assertEqual(w.not_applicable('x')['ruleVersion'], 2)
         self.assertEqual(w.not_applicable('x', 1)['ruleVersion'], 1)
         # A version 1 record has exactly the keys it always had, plus the stamp.
-        self.assertEqual(set(new) - set(old), {'in_sample_windows', 'loss_leg_applied'})
+        self.assertEqual(set(new) - set(old), {'in_sample_windows', 'loss_leg_applied', 'o_weeks'})
         self.assertEqual(set(old), {'schema', 'status', 'reasons', 'windows', 'in_sample_dd', 'bar', 'used_for_ranking',
                                     'boosContaminatedBy', 'oosFormula', 'boosGate', 'oosUsedForSelection', 'plain', 'ruleVersion'})
 
-    def test_the_window_count_and_the_loss_leg_are_stated_on_every_version_2_record(self):
-        for count, applied in ((4, False), (9, False), (10, True), (35, True), (None, None)):
-            result = w.judge(window(in_sample_windows=count), window(), in_sample_dd=100.0)
-            self.assertEqual((result['in_sample_windows'], result['loss_leg_applied'], result['bar']['min_in_sample_windows']),
-                             (count, applied, 10), count)
-        # Also when BOOS is not judged at all: the count is on the record, not only on a judged BOOS window.
-        thin = w.judge(window(trades=3, in_sample_windows=4), window(), in_sample_dd=100.0)
-        self.assertEqual((thin['status'], thin['in_sample_windows'], thin['loss_leg_applied']), ('not_eligible_yet', 4, False))
+    def test_o_the_loss_leg_and_the_window_count_are_stated_on_every_version_2_record(self):
+        for o_weeks, applied in ((13, False), (26, False), (51, False), (52, True), (104, True), (None, None)):
+            result = w.judge(window(in_sample_windows=7), window(), in_sample_dd=100.0, o_weeks=o_weeks)
+            self.assertEqual((result['o_weeks'], result['loss_leg_applied'], result['in_sample_windows']), (o_weeks, applied, 7), o_weeks)
+            self.assertEqual((result['bar']['min_loss_leg_o_weeks'], result['bar']['min_loss_leg_o_months']), (52, 12))
+            self.assertNotIn('min_in_sample_windows', result['bar'])
+        # Also when BOOS is not judged at all: O and the count are on the record, not only on a judged BOOS window.
+        thin = w.judge(window(trades=3, in_sample_windows=4), window(), in_sample_dd=100.0, o_weeks=13)
+        self.assertEqual((thin['status'], thin['o_weeks'], thin['in_sample_windows'], thin['loss_leg_applied']),
+                         ('not_eligible_yet', 13, 4, False))
         self.assertNotIn('in_sample_windows', thin['windows']['boos'])
-        self.assertEqual((w.judge(None, window(), in_sample_dd=100.0)['in_sample_windows']), None)
+        absent = w.judge(None, window(), in_sample_dd=100.0, o_weeks=52)
+        self.assertEqual((absent['in_sample_windows'], absent['o_weeks'], absent['loss_leg_applied']), (None, 52, True))
 
-    def test_the_loss_leg_applies_only_from_ten_windows(self):
+    def test_the_loss_leg_applies_only_from_an_o_of_twelve_months(self):
         loss = dict(pf=0.2, pl=-500.0, in_sample_p10=25.0)        # far worse than a p10 of +25
-        for count in (0, 1, 4, 9):
-            with self.subTest(count=count):
-                result = w.judge(window(in_sample_windows=count, **loss), window(), in_sample_dd=100.0)
+        for o_weeks in (4, 13, 26, 27, 48, 51):
+            with self.subTest(o_weeks=o_weeks):
+                result = w.judge(window(**loss), window(), in_sample_dd=100.0, o_weeks=o_weeks)
                 boos = result['windows']['boos']
-                self.assertEqual((result['status'], boos['loss_leg_applied']), ('pass', False), result['plain'])
-                self.assertIn('loss leg not applied (%d of 10 in-sample windows)' % count, boos['reasons'][0])
-                self.assertEqual(w.judge(window(in_sample_windows=count, **loss), window(), in_sample_dd=100.0,
-                                         rule_version=1)['status'], 'fail')          # version 1 failed every one of them
-        for count in (10, 11, 17, 35):
-            with self.subTest(count=count):
-                result = w.judge(window(in_sample_windows=count, **loss), window(), in_sample_dd=100.0)
+                self.assertEqual((result['status'], boos['loss_leg_applied'], boos['o_weeks']), ('pass', False, o_weeks), result['plain'])
+                self.assertIn('loss leg not applied (O = %d weeks; it applies from 52 weeks, 12 months)' % o_weeks, boos['reasons'][0])
+                self.assertEqual(w.judge(window(**loss), window(), in_sample_dd=100.0, rule_version=1, o_weeks=o_weeks)['status'],
+                                 'fail')                                    # version 1 failed every one of them
+        for o_weeks in (52, 53, 78, 104, 520):
+            with self.subTest(o_weeks=o_weeks):
+                result = w.judge(window(**loss), window(), in_sample_dd=100.0, o_weeks=o_weeks)
                 self.assertEqual((result['status'], result['windows']['boos']['loss_leg_applied']), ('fail', True))
                 self.assertIn('worse than the in-sample 10th-percentile window', result['plain'])
+                within = w.judge(window(pf=0.9, pl=-1.0, in_sample_p10=-50.0), window(), in_sample_dd=100.0, o_weeks=o_weeks)
+                self.assertEqual(within['status'], 'pass')                  # a loss no worse than the p10 passes
+        # Months and weeks agree: every plan of 12 months or more is at least 52 weeks, every shorter one is under it.
+        for months in range(1, 121):
+            self.assertEqual(w.optimization_weeks(months=months) >= w.MIN_LOSS_LEG_O_WEEKS, months >= 12, months)
 
-    def test_a_boos_loss_with_an_unknown_window_count_is_not_measured_never_a_pass(self):
-        loss = dict(pf=0.9, pl=-1.0, in_sample_p10=-50.0)          # a loss well inside the p10
-        for count in (None, -1, 4.0, '4', True):
+    def test_the_window_count_never_decides_the_loss_leg(self):
+        loss = dict(pf=0.2, pl=-500.0, in_sample_p10=25.0)
+        for count in (None, 0, 4, 9, 10, 17, 35):
             with self.subTest(count=count):
-                result = w.judge(window(in_sample_windows=count, **loss), window(), in_sample_dd=100.0)
-                self.assertEqual((result['status'], result['windows']['boos']['loss_leg_applied']), ('not_measured', None))
-                self.assertIn('number of in-sample windows of its length is not known', result['plain'])
-        # A profitable BOOS needs neither the count nor the p10.
-        self.assertEqual(w.judge(window(pl=5.0), window(), in_sample_dd=100.0)['status'], 'pass')
-        # Under the count, the p10 itself is not needed; from 10 windows it is.
-        self.assertEqual(w.judge(window(in_sample_windows=4, pf=0.9, pl=-1.0), window(), in_sample_dd=100.0)['status'], 'pass')
-        self.assertEqual(w.judge(window(in_sample_windows=10, pf=0.9, pl=-1.0), window(), in_sample_dd=100.0)['status'], 'not_measured')
+                short = w.judge(window(in_sample_windows=count, **loss), window(), in_sample_dd=100.0, o_weeks=27)
+                long = w.judge(window(in_sample_windows=count, **loss), window(), in_sample_dd=100.0, o_weeks=52)
+                self.assertEqual((short['status'], long['status']), ('pass', 'fail'))
+                self.assertEqual((short['in_sample_windows'], long['in_sample_windows']), (count, count))   # printed as given
 
-    def test_the_drawdown_leg_and_the_trade_floor_still_judge_a_boos_under_ten_windows(self):
+    def test_a_boos_loss_with_an_unknown_o_is_not_measured_never_a_pass(self):
+        loss = dict(pf=0.9, pl=-1.0, in_sample_p10=-50.0, in_sample_windows=17)      # a loss well inside the p10
+        for o_weeks in (None, 0, -52, 52.0, '52', True):
+            with self.subTest(o_weeks=o_weeks):
+                result = w.judge(window(**loss), window(), in_sample_dd=100.0, o_weeks=o_weeks)
+                self.assertEqual((result['status'], result['windows']['boos']['loss_leg_applied'], result['o_weeks']),
+                                 ('not_measured', None, None))
+                self.assertIn('the optimization period O is not known', result['plain'])
+        self.assertEqual(w.judge(window(**loss), window(), in_sample_dd=100.0)['status'], 'not_measured')    # O not given at all
+        # A profitable BOOS needs neither O nor the p10.
+        self.assertEqual(w.judge(window(pl=5.0), window(), in_sample_dd=100.0)['status'], 'pass')
+        # Under 12 months the p10 itself is not needed; from 12 months it is.
+        self.assertEqual(w.judge(window(pf=0.9, pl=-1.0), window(), in_sample_dd=100.0, o_weeks=13)['status'], 'pass')
+        self.assertEqual(w.judge(window(pf=0.9, pl=-1.0), window(), in_sample_dd=100.0, o_weeks=52)['status'], 'not_measured')
+        # judge_window takes O the same way.
+        self.assertEqual(w.judge_window('BOOS', window(**loss), 100.0, lenient=True)['status'], 'not_measured')
+        self.assertEqual(w.judge_window('BOOS', window(**loss), 100.0, lenient=True, o_weeks=52)['status'], 'pass')
+        self.assertEqual(w.judge_window('BOOS', window(**loss), 100.0, lenient=True, rule_version=1)['status'], 'pass')   # version 1 never reads O
+
+    def test_the_drawdown_leg_and_the_trade_floor_still_judge_a_boos_under_twelve_months(self):
         loss = dict(pf=0.5, pl=-40.0, in_sample_p10=25.0, in_sample_windows=4)
-        self.assertEqual(w.judge(window(dd=150.0, **loss), window(), in_sample_dd=100.0)['status'], 'pass')
-        deep = w.judge(window(dd=150.01, **loss), window(), in_sample_dd=100.0)
+        judge = lambda boos, in_sample_dd=100.0: w.judge(boos, window(), in_sample_dd=in_sample_dd, o_weeks=13)
+        self.assertEqual(judge(window(dd=150.0, **loss))['status'], 'pass')
+        deep = judge(window(dd=150.01, **loss))
         self.assertEqual(deep['status'], 'fail')
         self.assertIn('1.5x the in-sample 100.00', deep['plain'])
-        self.assertEqual(w.judge(window(dd=None, **loss), window(), in_sample_dd=100.0)['status'], 'not_measured')
-        self.assertEqual(w.judge(window(**loss), window(), in_sample_dd=None)['status'], 'not_measured')
-        self.assertIn('no in-sample (SAMPLE+FWD) drawdown', w.judge(window(**loss), window(), in_sample_dd=None)['plain'])
+        self.assertEqual(judge(window(dd=None, **loss))['status'], 'not_measured')
+        self.assertEqual(judge(window(**loss), None)['status'], 'not_measured')
+        self.assertIn('no in-sample (SAMPLE+FWD) drawdown', judge(window(**loss), None)['plain'])
         self.assertIn('no in-sample (SAMPLE) drawdown', w.judge(window(), window(), in_sample_dd=None, rule_version=1)['plain'])
         # BOOS under 30 trades: unchanged, not eligible yet whatever it lost.
-        self.assertEqual(w.judge(window(trades=29, **loss), window(), in_sample_dd=100.0)['status'], 'not_eligible_yet')
-
+        self.assertEqual(judge(window(trades=29, **loss))['status'], 'not_eligible_yet')
     def test_window_counts_by_optimization_period(self):
-        # SAMPLE holds SAMPLE weeks - BOOS weeks + 1 rolling windows of BOOS's length: the loss leg is off at O = 3 and 6
-        # months and on at 12 and 24.
+        # SAMPLE holds SAMPLE weeks - BOOS weeks + 1 rolling windows of BOOS's length: 4 and 9 where the loss leg is off
+        # (O = 3 and 6 months), 17 and 35 where it is on (12 and 24). The count is printed; O decides.
         counts = {months: (lambda s: s['sample'] - s['boos'] + 1)(w.split(w.optimization_weeks(months=months))) for months in MONTHS}
         self.assertEqual(counts, {3: 4, 6: 9, 12: 17, 24: 35})
-        # Rounding up FWD and BOOS makes the count step unevenly with O: 26 weeks hold 9, 27 hold 10, 28 hold 9 again.
+        # Rounding up FWD and BOOS makes the count step unevenly with O (26 weeks hold 9, 27 hold 10, 28 hold 9 again),
+        # which is why the leg is decided by O and not by the count (Claude-Mac 6788392334).
         self.assertEqual({o: (lambda s: s['sample'] - s['boos'] + 1)(w.split(o)) for o in (26, 27, 28, 29, 30)},
                          {26: 9, 27: 10, 28: 9, 29: 10, 30: 11})
 
@@ -892,30 +948,65 @@ class RuleVersion2RetestTests(RetestFixture, unittest.TestCase):
         self.assertIn('no in-sample (SAMPLE+FWD) drawdown to compare with', new['windows']['boos']['reasons'])
         self.assertEqual(new['status'], 'not_eligible_yet')          # FOOS has not been tested yet
 
-    def test_the_window_count_is_unknown_until_sample_is_complete(self):
+    def test_the_window_count_is_printed_as_unknown_until_sample_is_complete(self):
         end = (d(self.record['sample']['first_day']) + timedelta(days=20)).isoformat()
         old = self.judge(1, end=end, losers=dict(boos=21))
         new = self.judge(2, end=end, losers=dict(boos=21))
         self.assertEqual(old['windows']['boos']['in_sample_windows'], 0)            # as version 1 always recorded it
-        self.assertEqual((new['in_sample_windows'], new['loss_leg_applied']), (None, None))
+        # Version 2 prints null, never "0 windows". The count decides nothing: O = 13 weeks keeps the loss leg off, and
+        # BOOS is not measured only because the SAMPLE + FWD drawdown is not there yet.
+        self.assertEqual((new['in_sample_windows'], new['o_weeks'], new['loss_leg_applied']), (None, 13, False))
         self.assertEqual(new['windows']['boos']['status'], 'not_measured')
-        self.assertIn('not known', ' '.join(new['windows']['boos']['reasons']))
+        self.assertEqual(new['windows']['boos']['reasons'], ['no in-sample (SAMPLE+FWD) drawdown to compare with'])
 
-    def test_with_seventeen_windows_a_loss_worse_than_the_p10_still_fails(self):
-        # O = 52 weeks: BOOS 18 weeks, SAMPLE 34 -> 17 rolling windows. Every SAMPLE trade loses 5 (30 trades on its first
-        # 30 weekdays): -150, -125, -100, -75, -50, -25 and eleven zeros, so p10 = -125 + 0.6 x 25 = -110.
-        self.record = w.compute(52, '2026-10-02')
+    def test_at_twelve_months_a_loss_worse_than_the_p10_still_fails(self):
+        # O = 52 weeks (12 months): the loss leg applies. BOOS 18 weeks, SAMPLE 34 -> 17 rolling windows. Every SAMPLE trade
+        # loses 5 (30 trades on its first 30 weekdays): -150, -125, -100, -75, -50, -25 and eleven zeros, so
+        # p10 = -125 + 0.6 x 25 = -110.
+        self.record = w.compute(w.optimization_weeks(months=12), '2026-10-02')
+        self.assertEqual(self.record['o_weeks'], 52)
         losing_sample = dict(sample=30)
         worse = self.judge(2, losers=dict(boos=30, **losing_sample))                   # -150 < -110
         boos = worse['windows']['boos']
-        self.assertEqual((worse['status'], boos['in_sample_windows'], boos['loss_leg_applied']), ('fail', 17, True), worse['plain'])
+        self.assertEqual((worse['status'], worse['o_weeks'], boos['in_sample_windows'], boos['loss_leg_applied']),
+                         ('fail', 52, 17, True), worse['plain'])
         self.assertAlmostEqual(boos['in_sample_p10'], -110.0)
         self.assertIn('in-sample 10th-percentile window', worse['plain'])
         within = self.judge(2, losers=dict(boos=21, **losing_sample))                  # -15 >= -110
-        self.assertEqual((within['status'], within['in_sample_windows'], within['loss_leg_applied']), ('pass', 17, True))
+        self.assertEqual((within['status'], within['o_weeks'], within['in_sample_windows'], within['loss_leg_applied']),
+                         ('pass', 52, 17, True))
         for losers in (dict(boos=30, **losing_sample), dict(boos=21, **losing_sample)):
             self.assertEqual(self.judge(1, losers=losers)['status'], self.judge(2, losers=losers)['status'])   # same verdicts as version 1
 
+    def test_one_week_under_twelve_months_the_loss_leg_is_off(self):
+        # O = 51 weeks: SAMPLE holds 18 windows, more than at 52 weeks, and the leg is still off. Every SAMPLE trade wins,
+        # so any BOOS loss is worse than the p10: version 1 fails it, version 2 does not apply the leg.
+        self.record = w.compute(51, '2026-10-02')
+        old, new = self.judge(1, losers=dict(boos=30)), self.judge(2, losers=dict(boos=30))
+        boos = new['windows']['boos']
+        self.assertEqual((old['status'], new['status'], new['o_weeks'], boos['in_sample_windows'], boos['loss_leg_applied']),
+                         ('fail', 'pass', 51, 18, False), new['plain'])
+        self.assertIn('loss leg not applied (O = 51 weeks; it applies from 52 weeks, 12 months)', new['plain'])
+
+    def test_at_six_months_the_loss_leg_is_off(self):
+        self.record = w.compute(w.optimization_weeks(months=6), '2026-10-02')
+        old, new = self.judge(1, losers=dict(boos=30)), self.judge(2, losers=dict(boos=30))
+        boos = new['windows']['boos']
+        self.assertEqual((old['status'], new['status'], new['o_weeks'], boos['in_sample_windows'], boos['loss_leg_applied']),
+                         ('fail', 'pass', 26, 9, False), new['plain'])
+
+    def test_a_half_o_record_of_twelve_months_gets_the_loss_leg_on_its_own_o(self):
+        # A 'boos-1/2' record: O is still SAMPLE + FWD (52 weeks), BOOS is 26 weeks, so SAMPLE (34 weeks) holds only 9
+        # rolling windows. The leg is decided by O: it applies. Every SAMPLE trade loses 5 (30 trades on its first 30
+        # weekdays): -150, -125, -100, -75, -50, -25, 0, 0, 0, so p10 = -150 + 0.8 x 25 = -130.
+        self.record = w.compute(52, '2026-10-02', 'boos-1/2')
+        self.assertEqual((self.record['weeks']['boos'], self.record['weeks']['sample'], self.record['o_weeks']), (26, 34, 52))
+        worse = self.judge(2, losers=dict(boos=30, sample=30))                         # -150 < -130
+        boos = worse['windows']['boos']
+        self.assertEqual((worse['status'], worse['oosFormula'], worse['o_weeks'], boos['in_sample_windows'], boos['loss_leg_applied']),
+                         ('fail', 'boos-1/2', 52, 9, True), worse['plain'])
+        self.assertAlmostEqual(boos['in_sample_p10'], -130.0)
+        self.assertEqual(self.judge(2, losers=dict(boos=21, sample=30))['status'], 'pass')   # -15 >= -130
     def test_under_thirty_trades_is_still_not_eligible_yet(self):
         for version in w.RULE_VERSIONS:
             self.assertEqual(self.judge(version, trades=dict(foos=29))['status'], 'not_eligible_yet')
@@ -926,14 +1017,19 @@ class RuleVersion2RetestTests(RetestFixture, unittest.TestCase):
         self.assertEqual((old['definitions'], new['definitions']), (w.DEFINITIONS_V1, w.DEFINITIONS))
         self.assertEqual(w.DEFINITIONS_BY_VERSION, {1: w.DEFINITIONS_V1, 2: w.DEFINITIONS})
         self.assertIn('SAMPLE and FWD together', w.DEFINITIONS['in_sample_dd'])
-        self.assertIn('only when in_sample_windows is at least 10', w.DEFINITIONS['in_sample_p10'])
-        self.assertIn('6787022949', w.DEFINITIONS['rule_version'])
+        self.assertIn('not a decision input', w.DEFINITIONS['in_sample_p10'])
+        self.assertIn('O of 12 months or more: o_weeks >= 52', w.DEFINITIONS['loss_leg'])
+        self.assertIn('unknown O is not_measured', w.DEFINITIONS['loss_leg'])
+        self.assertNotIn('loss_leg', w.DEFINITIONS_V1)
+        for ruling in ('6787022949', '6788392334'):
+            self.assertIn(ruling, w.DEFINITIONS['rule_version'])
         self.assertIn('1.5 x SAMPLE DD', w.DEFINITIONS_V1['dd_bar'])
         self.assertNotIn('in_sample_dd', w.DEFINITIONS_V1)
         for key in ('days', 'trades', 'pl', 'pf', 'foos'):
             self.assertEqual(w.DEFINITIONS[key], w.DEFINITIONS_V1[key], key)       # the measurements themselves did not change
         # The lock text says what the code does and keeps a dated note of what version 1 was.
-        for words in ('rule version 2', '6787022949', '2026-11-11', 'SAMPLE and FWD together', 'at least\n10 such windows',
+        for words in ('rule version 2', '6787022949', '6788392334', '2026-11-11', 'SAMPLE and FWD together',
+                      'only for an O of 12 months or\nmore: O >= 52 weeks', 'decided by O, never by the window count',
                       'Rule version 1', 'never rewritten'):
             self.assertIn(words, w.__doc__, words)
 
@@ -945,6 +1041,7 @@ class RuleVersion2RetestTests(RetestFixture, unittest.TestCase):
         result = CatchupRunner._oos_rule(original, retest, spec, dict(verdict='held_up'))
         self.assertEqual((result['status'], result['ruleVersion'], result['bar']['in_sample'], result['in_sample_windows']),
                          ('pass', 2, 'SAMPLE+FWD', 4))
+        self.assertEqual((result['o_weeks'], result['loss_leg_applied'], result['bar']['min_loss_leg_o_weeks']), (13, False, 52))
         explicit = dict(FromDate='2026.02.01', ToDate='2026.09.01', ForwardDate='2026.07.01')
         broken = dict(retest, csv_path=str(self.root / 'missing.csv'))
         for other in (CatchupRunner._oos_rule(original, retest, spec, dict(verdict='not_comparable')),

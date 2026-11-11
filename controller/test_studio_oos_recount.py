@@ -28,7 +28,8 @@ from test_studio_heldout import declaration, write_registry
 # What each member's evidence is built to show (see FormulaCase.SCENARIOS), per rule version.
 EXPECTED = {
     'v1': dict(EURUSD='pass', GBPUSD='fail', USDJPY='fail', AUDUSD='fail', USDCAD='not_eligible_yet', NZDUSD='pass'),
-    # Rule version 2: GBPUSD's BOOS loss no longer fails at 4 windows; USDJPY's FOOS drawdown is within 1.5 x SAMPLE+FWD's.
+    # Rule version 2: GBPUSD's BOOS loss no longer fails at O = 13 weeks (the loss leg applies from 12 months); USDJPY's FOOS
+    # drawdown is within 1.5 x SAMPLE+FWD's.
     'v2': dict(EURUSD='pass', GBPUSD='pass', USDJPY='pass', AUDUSD='fail', USDCAD='not_eligible_yet', NZDUSD='pass'),
 }
 
@@ -207,7 +208,10 @@ class RecountTests(FormulaCase):
         loss, deep = rows['GBPUSD']['oos_rule'], rows['USDJPY']['oos_rule']
         self.assertEqual((loss['v1']['in_sample_windows'], loss['v2']['in_sample_windows'], loss['v2']['loss_leg_applied']), (4, 4, False))
         self.assertIn('in-sample 10th-percentile window', loss['v1']['reasons'][0])
-        self.assertIn('loss leg not applied (4 of 10 in-sample windows)', loss['v2']['reasons'][0])
+        self.assertIn('loss leg not applied (O = 13 weeks; it applies from 52 weeks, 12 months)', loss['v2']['reasons'][0])
+        # The O the leg was decided on is in the judge's own window record, which the reply carries as it is.
+        self.assertEqual((loss['v2']['windows']['boos']['o_weeks'], loss['v2']['windows']['boos']['min_loss_leg_o_weeks']), (13, 52))
+        self.assertNotIn('o_weeks', loss['v1']['windows']['boos'])
         self.assertEqual((deep['v1']['in_sample_dd'], deep['v1']['in_sample_base'], deep['v2']['in_sample_dd'], deep['v2']['in_sample_base']),
                          (100.0, 'SAMPLE', 140.0, 'SAMPLE+FWD'))
         self.assertEqual((deep['stored']['rule_version'], deep['stored']['in_sample_dd']), (1, 100.0))

@@ -1681,6 +1681,10 @@ class CatchupRunner(SeedRunner):
                       ea_desc_metadata=spec['optimization_window']['source'],
                       plain='A new evidence record on %s (%s), never a catch-up verdict on the original export. %s%s'
                             % (bm['target_build'], bm['provenance'], drift['plain'], ' ' + short['plain'] if short else ''))
+        if spec['original'].get('unverified_disclosed') is not None:
+            # The original export was left unverified by its Prove batch and re-tested under a disclosed tag
+            # (apply_unverified): the standalone record says so too, as an evidence version's ``original`` does.
+            record['original']['unverified_disclosed'] = spec['original']['unverified_disclosed']
         record_path = Path(spec['evidence_dir']) / migration.RECORD_FILE
         temporary = record_path.with_name(record_path.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
         with temporary.open('x', encoding='utf-8', newline='\n') as stream:

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from campaign_ledger import sha
 import studio_batch
-from studio_batch import BATCH_MIXED_INPUTS, check_member_inputs, prepare_batch
+from studio_batch import BATCH_MIXED_INPUTS, check_member_inputs, check_staged_inputs, prepare_batch
 import studio_installed_build
 from studio_optimization_inputs import self_named_inputs
 from studio_refusal import Refusal
@@ -126,6 +126,77 @@ class MixedInputRefusalTests(PrepareBatchCase):
         first = self.prepare('same', ['Ledger_Mode=1'], ['Ledger_Mode=1'])
         self.assertTrue(self.prepare('same', ['Ledger_Mode=1'], ['Ledger_Mode=1'])['reused'])
         self.assertEqual(first['member_count'], 2)
+
+
+class StagedBeforeTheCheckTests(PrepareBatchCase):
+    """Claude-Mac goatai#2750 6793203627: a batch staged before the check and not started skipped it. It is judged when
+    it is prepared again and where a first start begins; a batch that has launched is never judged again."""
+
+    def stage_mixed(self, batch_id='staged-mixed'):
+        """A mixed batch as prepare-batch staged it before it refused mixed inputs."""
+        with patch.object(studio_batch, 'check_member_inputs', lambda *args, **kwargs: None):
+            return self.prepare(batch_id, ['Ledger_Mode=1'], [])
+
+    def launch(self, batch_id):
+        """The batch's first start as far as its launch intent (the point after which it has launched)."""
+        import hashlib
+        from studio_launch_intent import record_intent
+        package = self.c.root / 'packages' / batch_id
+        job = self.c.job(batch_id)
+        self.c.submit('queue.reserve', dict(job_id=batch_id, configuration_sha256=job['configuration_sha256'],
+                                            package_sha256=hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest()), batch_id + '-reserve')
+        state = self.c.state()
+        return record_intent(self.c.store, self.c.terminal, self.c.run, batch_id, package, actor='agent',
+                             revision=state['revision'], generation=state['generation'])
+
+    def assert_staged_refusal(self, call):
+        with self.assertRaises(Refusal) as caught:
+            call()
+        error = caught.exception
+        self.assertEqual((error.code, error.fields['staged_before_check']), (BATCH_MIXED_INPUTS, True))
+        self.assertEqual(error.fields['mixed_inputs'], [dict(input='Ledger_Mode', stated_by=[0], omitted_by=[1])])
+        self.assertTrue(str(error).startswith('Nothing was started: this batch was staged before GOAT checked that its members all '
+                                              'state the same inputs, and they do not.'), str(error))
+        self.assertIn('Ledger_Mode is stated by member 0 and left out by member 1. Leave this batch unstarted, and prepare the members '
+                      'that state it as their own batch and the others as theirs, under new batch IDs.', str(error))
+        job = self.c.job('staged-mixed')
+        self.assertEqual((job['status'], 'launch_intent' in job), ('pending', False))      # nothing was reserved or launched
+
+    def test_a_staged_mixed_batch_is_refused_when_it_is_prepared_again(self):
+        self.assertEqual(self.stage_mixed()['member_count'], 2)
+        self.assert_staged_refusal(lambda: self.prepare('staged-mixed', ['Ledger_Mode=1'], []))
+
+    def test_a_staged_mixed_batch_is_refused_where_a_first_start_begins(self):
+        from studio_batch_driver import run
+        self.stage_mixed()
+        self.assert_staged_refusal(lambda: run(self.c, 'staged-mixed', max_seconds=60))      # run-batch: before any journal
+        self.assertFalse((self.c.root / 'batch-drivers' / 'staged-mixed.json').exists())
+        self.assert_staged_refusal(lambda: self.c.start('staged-mixed'))                     # the in-place start
+        self.assert_staged_refusal(lambda: check_staged_inputs(self.c, self.c.job('staged-mixed')))   # what config start calls
+        self.assertEqual([path.name for path in (self.c.root / 'attempts').glob('*')] if (self.c.root / 'attempts').exists() else [], [])
+
+    def test_a_batch_that_has_launched_is_never_judged_again(self):
+        self.stage_mixed()
+        self.launch('staged-mixed')
+        job = self.c.job('staged-mixed')
+        self.assertIn('launch_intent', job)
+        self.assertIsNone(check_staged_inputs(self.c, job))
+        again = self.prepare('staged-mixed', ['Ledger_Mode=1'], [])
+        self.assertEqual((again['reused'], again['native_started']), (True, True))
+        # Nor a finished or cancelled one, whatever its members state.
+        for status in ('completed', 'failed', 'cancelled', 'running', 'starting', 'reserved'):
+            self.assertIsNone(check_staged_inputs(self.c, {k: v for k, v in job.items() if k != 'launch_intent'} | dict(status=status)), status)
+
+    def test_a_staged_uniform_batch_is_reused_and_starts_past_the_check(self):
+        self.prepare('staged-uniform', ['Ledger_Mode=1'], ['Ledger_Mode=1'])
+        self.assertTrue(self.prepare('staged-uniform', ['Ledger_Mode=1'], ['Ledger_Mode=1'])['reused'])
+        self.assertIsNone(check_staged_inputs(self.c, self.c.job('staged-uniform')))
+        # On a build whose EA names every input, a staged mixed batch is not refused either.
+        self.stage_mixed()
+        pinned = patch.dict(studio_installed_build.PINNED_BUILDS, {self.c.install['ea_sha256']: 'V1.49-BETA17-55'})
+        pinned.start(); self.addCleanup(pinned.stop)
+        with patch.object(studio_batch, 'BUILDS_NAMING_EVERY_INPUT', frozenset({'V1.49-BETA17-55'})):
+            self.assertTrue(self.prepare('staged-mixed', ['Ledger_Mode=1'], [])['reused'])
 
 
 class Round13aCompositionTests(unittest.TestCase):

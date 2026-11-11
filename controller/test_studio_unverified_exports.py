@@ -17,6 +17,7 @@ import studio_finish
 from studio_export_scan import scan_exports, unverified_summary
 from studio_bridge import write_json
 import test_studio_benchmark
+import test_studio_build_migration as migration_fixtures   # its MigrationCase fixture (a module attribute, so not collected here)
 import test_studio_catchup as catchup_fixtures
 from test_studio_catchup_verdict import VALUES
 
@@ -243,6 +244,41 @@ class CatchupPlanTests(UnverifiedCase):
                          ('1', '0'))
         with self.assertRaisesRegex(ValueError, 'disclosed_unverified maps the SHA-256'):
             self.runner.validate(self.plan_for(disclosed_unverified={sha256(self.inherited): 7}))
+
+
+class MigrationDisclosureTests(migration_fixtures.MigrationCase):
+    """Codex on GOAT-EA#318: a build-migration record is standalone evidence, so the disclosure reaches it too."""
+
+    def unverified_result(self):
+        folder = self.controller.root / 'attempts' / ('c' * 64)
+        folder.mkdir(parents=True)
+        reports = dict(status='report_batch_verified', members=[dict(index=0, run_alias='Rmig00001', symbol='EURUSD', exports=dict(files=[
+            dict(name=self.behind.name[:-4], status='unverified', reason=MISMATCH,
+                 artifacts=[dict(path=str(self.behind), sha256=sha256(self.behind))])]))])
+        write_json(folder / 'result.json', dict(schema_version=1, job_id='hunt-13a', status='completed', native=dict(native_run=str(self.run)),
+                                                reports=reports, unverified_exports=unverified_summary(reports)))
+        write_json(folder / 'activation.json', dict(run=str(self.run)))
+
+    def record(self, catchup_id, **extra):
+        state, manifest = self.run_all(catchup_id, self.mplan(**extra))
+        self.assertEqual(state['members'][0]['status'], 'completed', state['members'][0].get('error'))
+        member = manifest['members'][0]
+        return member, catchup_fixtures.read_json(Path(member['evidence_dir']) / migration_fixtures.bm.RECORD_FILE)
+
+    def test_a_migration_of_a_disclosed_unverified_export_carries_the_tag_in_its_record(self):
+        self.unverified_result()
+        with self.assertRaisesRegex(ValueError, 'Nothing to catch up .*Unverified by its Prove batch hunt-13a'):
+            self.runner.prepare('bm-undisclosed', self.mplan())                      # undisclosed: never re-tested
+        member, record = self.record('bm-disclosed', disclosed_unverified={sha256(self.behind): TAG})
+        disclosure = dict(batch_id='hunt-13a', reason=MISMATCH, tag=TAG)
+        self.assertEqual(member['original']['unverified_disclosed'], disclosure)
+        self.assertEqual(record['original']['unverified_disclosed'], disclosure)
+        self.assertEqual((record['kind'], record['original']['sha256']), (migration_fixtures.bm.KIND, sha256(self.behind)))
+
+    def test_a_migration_of_an_export_no_report_left_unverified_adds_nothing(self):
+        member, record = self.record('bm-clean')
+        self.assertNotIn('unverified_disclosed', member['original'])
+        self.assertNotIn('unverified_disclosed', record['original'])
 
 
 if __name__ == '__main__':

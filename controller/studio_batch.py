@@ -187,7 +187,7 @@ def _member_words(indexes):
     return ('member ' + shown[0]) if len(shown) == 1 else 'members ' + ', '.join(shown[:-1]) + ' and ' + shown[-1]
 
 
-def check_member_inputs(members, schema, install):
+def check_member_inputs(members, schema, install, *, staged=False):
     """Refuse a batch whose members do not all state the same inputs (BATCH_MIXED_INPUTS, GOAT-EA#315).
 
     Hunt round 13a: every member after the first ``Ledger_Mode=1`` member ran and exported with ``Ledger_Mode=1``
@@ -206,7 +206,8 @@ def check_member_inputs(members, schema, install):
     batch sets to each member's alias (prepare_native_campaign.py:95-100), and the appended optimization axes, which
     the EA writes at their defaults for a member that omits them (studio_optimization_inputs.self_named_inputs), so
     they cannot be inherited. An input every member states, at whatever values, is never mixed: each member's own
-    config names it. A batch of one member has no later member and always passes."""
+    config names it. A batch of one member has no later member and always passes. ``staged``: the batch was staged
+    before this check and has not started (check_staged_inputs); only the sentence differs."""
     if len(members) < 2:
         return
     from studio_optimization_inputs import self_named_inputs
@@ -231,15 +232,36 @@ def check_member_inputs(members, schema, install):
                     % (names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1], 'is' if len(names) == 1 else 'are',
                        _member_words(list(by)), _member_words(list(without))) for (by, without), names in groups.items())
     from studio_refusal import Refusal
-    raise Refusal('Nothing was prepared: the members of this batch do not all state the same inputs. After the first member, MT5 '
-                  'runs an input a member\'s SET leaves out at the value the member before it used, not at its default. %s Run the '
-                  'members that state %s as their own batch, or state %s in every member\'s SET, then prepare again. Members are '
-                  'numbered from 0, as batch-status lists them.'
-                  % (said, 'it' if len(mixed) == 1 else 'them', 'it' if len(mixed) == 1 else 'them'),
+    it = 'it' if len(mixed) == 1 else 'them'
+    opening = ('Nothing was started: this batch was staged before GOAT checked that its members all state the same inputs, and '
+               'they do not.' if staged else
+               'Nothing was prepared: the members of this batch do not all state the same inputs.')
+    closing = ('Leave this batch unstarted, and prepare the members that state %s as their own batch and the others as theirs, '
+               'under new batch IDs.' % it if staged else
+               'Run the members that state %s as their own batch, or state %s in every member\'s SET, then prepare again.' % (it, it))
+    raise Refusal('%s After the first member, MT5 runs an input a member\'s SET leaves out at the value the member before it '
+                  'used, not at its default. %s %s Members are numbered from 0, as batch-status lists them.' % (opening, said, closing),
                   BATCH_MIXED_INPUTS, mixed_inputs=rows, member_count=len(members), installed_build=build, issue='GOAT-EA#315',
+                  staged_before_check=staged,
                   next_action='Split the plan: the members that state these inputs in one batch, the members that omit them in '
                               'another. Each batch\'s first member starts from a complete config, so the order of the batches '
                               'does not matter.')
+
+
+def check_staged_inputs(controller, job):
+    """check_member_inputs for a batch that is already staged and has not started (Claude-Mac goatai#2750 6793203627:
+    staged batches skipped the check). Called where a first start begins, before any journal, reservation or native
+    effect (studio_batch_driver.run, studio_config_start.start, goat_studio.Controller.start), and when prepare-batch
+    reuses a staged batch. A batch that has launched (``launch_intent``) or is no longer pending is never judged again:
+    its members ran, or are running, as they were composed. A job whose members carry no frozen strategy values is not
+    a prepared batch and is refused by the package checks of those same paths, not here."""
+    if 'launch_intent' in job or job.get('status') != 'pending':
+        return
+    members = (job.get('configuration') or {}).get('batch_members') or []
+    if any(not isinstance(member, dict) or not isinstance((member.get('strategy') or {}).get('values'), dict) for member in members):
+        return
+    # The installation names the build (BUILDS_NAMING_EVERY_INPUT); it is read only when the members are mixed.
+    check_member_inputs(members, controller.schema, getattr(controller, 'install', None), staged=True)
 
 
 def read_plan(controller, plan_path, *, now=None):
@@ -311,6 +333,8 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     if existing:
         if existing['configuration_sha256'] != sha(config):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
+        # A batch staged before the mixed-inputs check and not started yet is judged now; a launched one never again.
+        check_staged_inputs(controller, existing)
         _, _, manifest = _verify_package(controller, existing)
         return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
     # Members that do not all state the same inputs (BATCH_MIXED_INPUTS, GOAT-EA#315): a later member would run an

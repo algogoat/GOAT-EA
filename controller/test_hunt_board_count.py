@@ -86,7 +86,11 @@ class HuntBoardCountTests(unittest.TestCase):
     def test_a_pool_file_more_in_the_group_turns_a_counted_file_into_a_reserve(self):
         folder = Folder(self)
         folder.alter('pool.json', lambda pool: pool.append(dict(pool[0], source=pool[0]['source'] + '.copy', group='R82bfad4262fc4d3fecf5')))
+        # the added pool file needs a curve of its own (R8): the first pool file's days in reverse order, another curve
+        folder.alter(board.CURVES, lambda data: data['curves'].append(dict(
+            data['curves'][0], source=data['curves'][0]['source'] + '.copy', curve_sha256='c' * 64, returns=data['curves'][0]['returns'][::-1])))
         b = board.count(folder.path)
+        self.assertEqual(b['duplicates_in_effect'], [])
         trail = [f['state'] for f in b['files'] if f['group'] == 'R82bfad4262fc4d3fecf5']
         self.assertEqual(trail, ['counted', 'reserve'])
 

@@ -56,16 +56,43 @@ Pass bar (``judge`` / ``judge_window``): the source of truth
 Claude-Mac ruled (goatai#1885 comment 6005864453) that this evaluator is the source of truth;
 the desktop sift (goatai#2274) uses the same constants, result names and ``DEFINITIONS``, and
 the shared fixture ``controller/fixtures/oos-holdout-gate-cases.json`` pins both to identical
-results. Each OOS window needs at least 30 trades (positions opened in the window). Fewer is
+results. This is rule version 2 (``RULE_VERSION``; Claude-Mac, goatai#2750 comments 6787022949
+and 6788392334, 2026-11-11). Every ``oos_rule`` names the version it was judged under
+(``ruleVersion``).
+
+Each OOS window needs at least 30 trades (positions opened in the window). Fewer is
 ``not_eligible_yet``; a window is never shortened to reach the floor. With the floor met
-FOOS passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). BOOS is the lenient "not
-broken" gate (Vince 6106946678, Claude-Mac 6106961195), for 'boos-1/2' windows too (Claude-Mac
-6165051704): it fails only on DD > 1.5 x in-sample DD, or on a BOOS net result worse than
-``in_sample_p10``, the 10th percentile of the net results of every rolling SAMPLE window of
-BOOS's own length (1-week step). It is never a profit requirement and never a ranking input.
+FOOS passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD. The in-sample DD is the equity drawdown
+over SAMPLE and FWD together (the whole O span, the drawdown the selection saw), measured the
+way every window's drawdown is (``DEFINITIONS['dd']``: equity with floating P/L, the same
+samples, the peak starting at the span's opening equity). BOOS and FOOS stay outside it.
+
+BOOS is the lenient "not broken" gate (Vince 6106946678, Claude-Mac 6106961195), for 'boos-1/2'
+windows too (Claude-Mac 6165051704). It fails on DD > 1.5 x in-sample DD. It also fails on a
+BOOS net result worse than ``in_sample_p10``, the 10th percentile of the net results of every
+rolling SAMPLE window of BOOS's own length (1-week step), but only for an O of 12 months or
+more: O >= 52 weeks (``MIN_LOSS_LEG_O_WEEKS``, 12 months by this module's own conversion).
+Below that the loss leg is not applied: SAMPLE holds SAMPLE weeks - BOOS weeks + 1 such
+windows, 4 and 9 at O = 3 and 6 months, and a 10th percentile of a handful of fitted windows
+is not a distribution, so a BOOS loss alone does not fail the file, and the drawdown leg still
+judges it. From 12 months up SAMPLE holds 17 windows and more (17 and 35 at O = 12 and 24
+months). The leg is decided by O, never by the window count, which steps unevenly with O
+(Claude-Mac 6788392334). O is SAMPLE + FWD in weeks for every formula, 'boos-1/2' records
+included. A BOOS loss whose O is not known is ``not_measured``. BOOS is never a profit
+requirement and never a ranking input. Every ``oos_rule`` states the O the leg was decided on
+(``o_weeks``), whether the loss leg applied (``loss_leg_applied``), the window count
+(``in_sample_windows``, printed, not a decision input) and what the in-sample DD was measured
+over (``bar.in_sample``).
 Results:
 ``pass | fail | not_eligible_yet | no_data | not_measured``; a missing measurement is
 ``no_data`` or ``not_measured``, never a pass.
+
+Rule version 1 (what this text said until 2026-11-11; every ``oos_rule`` stored before then
+names no version and was judged under it): the in-sample DD was SAMPLE's alone, and the BOOS
+loss leg applied at every O, so at O = 3 months (4 windows) BOOS was in effect a
+profit requirement. ``judge``, ``judge_window`` and ``judge_retest`` still judge under it
+(``rule_version=1``), exactly as before. Stored verdicts are never rewritten; ``oos-rule-recount``
+(studio_oos_recount) shows a stored catch-up under both versions.
 
 Demo (live test after export) continues FOOS but does not scale with O: see ``DEMO_RULE``.
 This module only documents it; nothing here automates demo.
@@ -79,6 +106,16 @@ import math
 
 RULE = 'goat-oos-windows-v1'
 EVALUATION = 'goat-oos-window-rule-v1'
+# The rule versions this evaluator can judge under, oldest first (``judge_retest(..., rule_version=N)``), and the one it
+# judges under when none is named. A stored oos_rule that names no version was judged under version 1
+# (``record_rule_version``). ``oos-rule-recount`` (studio_oos_recount) re-judges stored catch-ups under each of these.
+RULE_VERSIONS = (1, 2)
+RULE_VERSION = 2                        # Claude-Mac, goatai#2750 6787022949 (2026-11-11): the loss leg and the DD base
+# What the in-sample drawdown is measured over, per rule version (``bar.in_sample`` on every judged oos_rule).
+IN_SAMPLE_BASE = {1: 'SAMPLE', 2: 'SAMPLE+FWD'}
+# Version 2: the lenient BOOS loss leg applies only for an O of at least this many months (Claude-Mac, goatai#2750
+# 6788392334). ``MIN_LOSS_LEG_O_WEEKS``, the number the judge compares, is derived from it below ``optimization_weeks``.
+MIN_LOSS_LEG_O_MONTHS = 12
 SPEC_KEY = 'oos_windows'
 WEEKS_PER_MONTH = Fraction(13, 3)       # 52 weeks a year
 MIN_TRADES = 30                         # per OOS window (BOOS and FOOS)
@@ -107,8 +144,9 @@ BOOS_SHARE = {OOS_FORMULA: Fraction(1, 3), LEGACY_OOS_FORMULA: Fraction(1, 2)}
 BOOS_GATE = {OOS_FORMULA: 'lenient_p10', LEGACY_OOS_FORMULA: 'lenient_p10'}
 BOOS_LOSS_QUANTILE = Fraction(1, 10)    # lenient BOOS: no worse than the in-sample 10th-percentile window
 FIXTURE = 'fixtures/oos-holdout-gate-cases.json'
-# The measurement definitions the desktop must match exactly (this controller is the source of truth).
-DEFINITIONS = dict(
+# The measurement definitions the desktop must match exactly (this controller is the source of truth). Rule version 1's
+# are kept word for word: a record judged under version 1 carries them (``DEFINITIONS_BY_VERSION``).
+DEFINITIONS_V1 = dict(
     days='Broker server calendar days; a window is [first_day 00:00, last_day + 1 day 00:00).',
     trades='Positions opened in the window: entry deals (deal_entry 0) whose time is inside the window; the same count '
            'the EA writes as Trades= in its BOOS/SAMPLE/FWD/FOOS header lines.',
@@ -129,6 +167,33 @@ DEFINITIONS = dict(
                   'interpolation, as numpy "linear" and Excel PERCENTILE.INC) of the pl of every window of BOOS\'s own length inside SAMPLE, the first '
                   'starting on SAMPLE\'s first day and each next one week later. BOOS fails only on DD above the dd_bar '
                   'or a loss (pl < 0) below it, worse than that in-sample window; BOOS needs no profit and never ranks.')
+# Rule version 2 (the current rule): the in-sample drawdown is the whole O span's, and the loss leg needs O >= 12 months.
+DEFINITIONS = dict(
+    DEFINITIONS_V1,
+    dd='Equity drawdown in account money: the deepest fall of the sampled equity (one-minute equity rows of the export '
+       'or re-test CSV, floating P/L included, not balance) below its running peak, where the peak starts at the '
+       'window\'s opening equity (the last sample before the window, else its first sample). The same definition for '
+       'the in-sample span (in_sample_dd), BOOS and FOOS.',
+    in_sample_dd='The in-sample drawdown both windows are compared with: dd over SAMPLE and FWD together, from SAMPLE\'s '
+                 'first day through FWD\'s last day (the whole O span, the drawdown the selection saw), the peak starting '
+                 'at that span\'s opening equity. BOOS and FOOS are outside it. Not measured until the test covers the '
+                 'whole span.',
+    dd_bar='DD <= 1.5 x in-sample DD (in_sample_dd), compared exactly (2 x DD <= 3 x in-sample DD). An in-sample DD of 0 '
+           'or unknown leaves no limit: not_measured.',
+    in_sample_p10='Lenient BOOS bar (every BOOS, 1/3 O and 1/2 O windows alike): the 10th percentile (linear '
+                  'interpolation, as numpy "linear" and Excel PERCENTILE.INC) of the pl of every window of BOOS\'s own '
+                  'length inside SAMPLE, the first starting on SAMPLE\'s first day and each next one week later '
+                  '(in_sample_windows of them; that count is printed and is not a decision input). BOOS fails on DD above '
+                  'the dd_bar. It fails on a loss (pl < 0) below that percentile only when the loss leg applies '
+                  '(loss_leg). BOOS needs no profit and never ranks.',
+    loss_leg='The BOOS loss leg applies for an O of 12 months or more: o_weeks >= 52, where O is SAMPLE + FWD in whole '
+             'weeks (a month is 13/3 weeks, so 12 months is 52 weeks) for every formula. Below that it is not applied and '
+             'a BOOS loss alone does not fail; the drawdown leg still judges BOOS. A BOOS loss with an unknown O is '
+             'not_measured.',
+    rule_version='2 (Claude-Mac, goatai#2750 6787022949 and 6788392334, 2026-11-11). Version 1, which every oos_rule '
+                 'that names no ruleVersion was judged under: dd_bar against SAMPLE\'s dd alone, and the BOOS loss leg at '
+                 'every O.')
+DEFINITIONS_BY_VERSION = {1: DEFINITIONS_V1, 2: DEFINITIONS}
 
 DEMO_RULE = dict(
     rule='goat-demo-continuation-v2',
@@ -167,6 +232,10 @@ def optimization_weeks(*, months=None, weeks=None):
     if type(months) is not int or not MONTHS_RANGE[0] <= months <= MONTHS_RANGE[1]:
         raise ValueError('optimization_months must be a whole number %d..%d' % MONTHS_RANGE)
     return _half_up(months * WEEKS_PER_MONTH)
+
+
+# 52: an O of 12 months in this module's own weeks. The version 2 BOOS loss leg applies from here up (o_weeks >= 52).
+MIN_LOSS_LEG_O_WEEKS = optimization_weeks(months=MIN_LOSS_LEG_O_MONTHS)
 
 
 def _formula(formula):
@@ -463,6 +532,19 @@ def assert_foos_held_out(record, evidence_policy):
 # Evaluation: BOOS and FOOS, 30-trade floor, PF and DD bar
 # ---------------------------------------------------------------------------
 
+def _version(value=None):
+    """A rule version this evaluator can judge under (``RULE_VERSIONS``; None = ``RULE_VERSION``). Anything else is refused."""
+    value = RULE_VERSION if value is None else value
+    if type(value) is not int or value not in RULE_VERSIONS:
+        raise ValueError('The OOS window rule has versions %s, not %r' % (', '.join(map(str, RULE_VERSIONS)), value))
+    return value
+
+
+def record_rule_version(record):
+    """The rule version a stored ``oos_rule`` was judged under: its ``ruleVersion``, or 1 when it names none."""
+    return record.get('ruleVersion', 1)
+
+
 def _pf_test(window):
     """(passes PF >= 1.0, printable PF) or (None, None) when PF cannot be measured.
 
@@ -514,11 +596,47 @@ def _lenient_loss_test(window):
     return Fraction(pl) >= Fraction(p10), 'net %+.2f vs in-sample p10 %+.2f' % (pl, p10)
 
 
-def judge_window(name, window, in_sample_dd, *, lenient=False):
+def _o_weeks(value):
+    """O in whole weeks as the loss leg reads it, or None when it is not a known O (never guessed)."""
+    return value if type(value) is int and value > 0 else None
+
+
+def _loss_leg(window, version, o_weeks=None):
+    """The lenient BOOS loss leg under one rule version: (passes, text, applied).
+
+    ``applied``: whether the leg can fail this BOOS. Version 1: always. Version 2: only for an O of 12 months or more
+    (``o_weeks >= MIN_LOSS_LEG_O_WEEKS``); None when O is not known, and then a BOOS loss is not measured (a missing
+    measurement is never a pass). Below 12 months a loss passes this leg whatever its size; the drawdown leg still
+    judges the window. The window count (``window['in_sample_windows']``) is never read here.
+    """
+    if version == 1:
+        return _lenient_loss_test(window) + (True,)
+    o_weeks = _o_weeks(o_weeks)
+    applied = o_weeks >= MIN_LOSS_LEG_O_WEEKS if o_weeks is not None else None
+    pf_ok, pf_text = _pf_test(window)
+    if pf_ok is not False:
+        return pf_ok, pf_text, applied      # no loss (or nothing measured): no profit is required
+    pl = window.get('pl')
+    lost = 'net %+.2f' % pl if isinstance(pl, (int, float)) and not isinstance(pl, bool) else 'PF ' + pf_text
+    if applied is None:
+        return None, 'BOOS lost (%s) but the optimization period O is not known, so the loss leg cannot be decided' % lost, None
+    if not applied:
+        return True, ('%s, loss leg not applied (O = %d weeks; it applies from %d weeks, %d months)'
+                      % (lost, o_weeks, MIN_LOSS_LEG_O_WEEKS, MIN_LOSS_LEG_O_MONTHS)), False
+    return _lenient_loss_test(window) + (True,)
+
+
+def judge_window(name, window, in_sample_dd, *, lenient=False, rule_version=None, o_weeks=None):
     """One OOS window's gate: ``pass | fail | not_eligible_yet | no_data | not_measured`` with reasons.
 
     ``lenient`` (every BOOS): the PF bar is replaced by the loss leg, so the window
     fails only on DD above 1.5x in-sample or a loss worse than ``window['in_sample_p10']``.
+    Under rule version 2 the loss leg applies only for an O of 12 months or more: ``o_weeks``
+    (SAMPLE + FWD in weeks, given by the caller) at least ``MIN_LOSS_LEG_O_WEEKS``
+    (``_loss_leg``). The result says so (``loss_leg_applied``, ``o_weeks``); an unknown O
+    leaves a BOOS loss ``not_measured``. ``window['in_sample_windows']`` is printed only.
+    ``in_sample_dd`` is the in-sample drawdown of ``rule_version`` (default ``RULE_VERSION``):
+    SAMPLE's under version 1, SAMPLE + FWD's under version 2 (``IN_SAMPLE_BASE``).
 
     ``window``: ``trades`` (positions opened in the window), ``pf`` (or ``pf_note`` 'no losing
     deals', or ``pl``, the net of those positions), ``dd`` (equity drawdown in money), optional
@@ -533,6 +651,7 @@ def judge_window(name, window, in_sample_dd, *, lenient=False):
       nothing that was measured failed.
     * pass: PF >= 1.0 and DD <= 1.5x in-sample, both measured.
     """
+    version = _version(rule_version)
     result = dict(window=name, status='no_data', reasons=[], min_trades=MIN_TRADES, min_pf=MIN_PF,
                   max_dd_ratio=float(MAX_DD_RATIO), in_sample_dd=in_sample_dd, dd_limit=None)
     if not isinstance(window, dict) or window.get('present') is False:
@@ -557,7 +676,9 @@ def judge_window(name, window, in_sample_dd, *, lenient=False):
     if lenient:
         result.update(gate='lenient_p10', in_sample_p10=window.get('in_sample_p10'),
                       in_sample_windows=window.get('in_sample_windows'))
-        loss_ok, loss_text = _lenient_loss_test(window)
+        loss_ok, loss_text, applied = _loss_leg(window, version, o_weeks)
+        if version >= 2:
+            result.update(loss_leg_applied=applied, o_weeks=_o_weeks(o_weeks), min_loss_leg_o_weeks=MIN_LOSS_LEG_O_WEEKS)
         if loss_ok is False:
             failed.append('%s loss is worse than the in-sample 10th-percentile window (%s) over %d trades'
                           % (name, loss_text, trades))
@@ -576,7 +697,8 @@ def judge_window(name, window, in_sample_dd, *, lenient=False):
         if not Fraction(dd) * MAX_DD_RATIO.denominator <= Fraction(base) * MAX_DD_RATIO.numerator:
             failed.append('%s drawdown %.2f is above %.2f, 1.5x the in-sample %.2f' % (name, dd, result['dd_limit'], base))
     else:
-        missing.append('%s drawdown not measured' % name if dd is None else 'no in-sample (SAMPLE) drawdown to compare with')
+        missing.append('%s drawdown not measured' % name if dd is None
+                       else 'no in-sample (%s) drawdown to compare with' % IN_SAMPLE_BASE[version])
     if failed:
         result.update(status='fail', reasons=failed)
     elif missing:
@@ -593,50 +715,81 @@ def judge_window(name, window, in_sample_dd, *, lenient=False):
 SET_ORDER = ('fail', 'not_eligible_yet', 'not_measured', 'no_data', 'pass')
 
 
-def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY, oos_formula=OOS_FORMULA):
+def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY, oos_formula=OOS_FORMULA, rule_version=None,
+          o_weeks=None):
     """A set's OOS verdict from its BOOS and FOOS gates (``SET_ORDER``: the first status either window has).
 
     pass only when both windows pass. A set with fewer than 30 FOOS trades is not eligible yet.
     FWD and SAMPLE never change this verdict except through the in-sample drawdown (and, for the
     lenient BOOS gate, the in-sample p10), and neither BOOS nor FOOS is ever a ranking input.
     ``oos_formula`` names the window formula (stamped); the BOOS gate is lenient for both.
+
+    ``rule_version`` (default ``RULE_VERSION``) is stamped as ``ruleVersion``. ``in_sample_dd`` is that version's
+    in-sample drawdown (``bar.in_sample`` names it). ``o_weeks`` is the record's O (SAMPLE + FWD in weeks): the
+    judge is input-driven, so the caller gives it (``judge_retest`` from the formula record, ``judge_case`` from the
+    fixture case). A version 2 record states it (``o_weeks``), whether the loss leg applied (``loss_leg_applied``:
+    O >= ``MIN_LOSS_LEG_O_WEEKS``; None when O is not known), the threshold (``bar.min_loss_leg_o_weeks``) and the
+    BOOS window count (``in_sample_windows``, from ``boos['in_sample_windows']``, printed only). Version 1 does not
+    read O; under it everything but the stamp is as it was before version 2.
     """
+    version = _version(rule_version)
     gate = BOOS_GATE[_formula(oos_formula)]
-    parts = dict(boos=judge_window('BOOS', boos, in_sample_dd, lenient=gate == 'lenient_p10'),
-                 foos=judge_window('FOOS', foos, in_sample_dd))
+    parts = dict(boos=judge_window('BOOS', boos, in_sample_dd, lenient=gate == 'lenient_p10', rule_version=version,
+                                   o_weeks=o_weeks),
+                 foos=judge_window('FOOS', foos, in_sample_dd, rule_version=version))
     states = [parts['boos']['status'], parts['foos']['status']]
     status = next(s for s in SET_ORDER if s in states)
     reasons = [reason for part in parts.values() if part['status'] == status for reason in part['reasons']]
     words = {'pass': 'Passes', 'fail': 'Fails', 'not_eligible_yet': 'Not eligible yet',
              'not_measured': 'Not measured', 'no_data': 'No hold-out data'}
-    return dict(schema=EVALUATION, status=status, reasons=reasons, windows=parts, in_sample_dd=in_sample_dd,
-                bar=dict(min_trades=MIN_TRADES, min_pf=MIN_PF, max_dd_ratio=float(MAX_DD_RATIO), in_sample='SAMPLE'),
-                used_for_ranking=False, boosContaminatedBy=boos_contaminated_by,
-                oosFormula=oos_formula, boosGate=gate, oosUsedForSelection='gate_only',
-                plain=words[status] + ' (OOS window rule): ' + '; '.join(reasons) + '.')
+    result = dict(schema=EVALUATION, status=status, reasons=reasons, windows=parts, in_sample_dd=in_sample_dd,
+                  bar=dict(min_trades=MIN_TRADES, min_pf=MIN_PF, max_dd_ratio=float(MAX_DD_RATIO), in_sample=IN_SAMPLE_BASE[version]),
+                  used_for_ranking=False, boosContaminatedBy=boos_contaminated_by,
+                  oosFormula=oos_formula, boosGate=gate, oosUsedForSelection='gate_only',
+                  plain=words[status] + (' (OOS window rule): ' if version == 1 else ' (OOS window rule v%d): ' % version)
+                  + '; '.join(reasons) + '.', ruleVersion=version)
+    if version >= 2:
+        count = boos.get('in_sample_windows') if isinstance(boos, dict) else None
+        count = count if type(count) is int and count >= 0 else None
+        known = _o_weeks(o_weeks)
+        result['bar'].update(min_loss_leg_o_weeks=MIN_LOSS_LEG_O_WEEKS, min_loss_leg_o_months=MIN_LOSS_LEG_O_MONTHS)
+        result.update(o_weeks=known, in_sample_windows=count,
+                      loss_leg_applied=None if known is None else known >= MIN_LOSS_LEG_O_WEEKS)
+    return result
 
 
 def judge_case(case):
-    """Run one shared fixture case (``fixtures/oos-holdout-gate-cases.json``) through the evaluator."""
+    """Run one shared fixture case (``fixtures/oos-holdout-gate-cases.json``) through the evaluator.
+
+    A case names its rule version (``rule_version``; a case that names none is a version 1 case) and gives that
+    version's in-sample drawdown: ``in_sample_max_drawdown`` (SAMPLE's, version 1) or ``optimization_max_drawdown``
+    (SAMPLE + FWD's, version 2). A version 2 case never falls back to SAMPLE's. ``o_weeks`` is the case's O (SAMPLE +
+    FWD in weeks), which decides the version 2 loss leg; a case without it has an unknown O. ``in_sample_windows`` is
+    the number of rolling SAMPLE windows of BOOS's length the case's ``in_sample_p10_pl`` was taken over (printed only).
+    """
+    version = _version(case.get('rule_version', 1))
+    base = case.get('in_sample_max_drawdown' if version == 1 else 'optimization_max_drawdown')
+    o = case.get('o_weeks')
+
     def window(raw):
         if raw is None:
             return None
         return dict(present=raw.get('present', True), trades=raw.get('trades'), pf=raw.get('pf'), pf_note=raw.get('pf_note'),
                     pl=raw.get('pl'), dd=raw.get('max_drawdown'), complete=raw.get('complete'),
-                    in_sample_p10=case.get('in_sample_p10_pl'))
+                    in_sample_p10=case.get('in_sample_p10_pl'), in_sample_windows=case.get('in_sample_windows'))
     if 'window' in case:
-        return judge_window(case['window'].upper(), window(case['input']), case.get('in_sample_max_drawdown'),
-                            lenient=case['window'] == 'boos')
-    return judge(window(case.get('boos')), window(case.get('foos')), in_sample_dd=case.get('in_sample_max_drawdown'))
+        return judge_window(case['window'].upper(), window(case['input']), base, lenient=case['window'] == 'boos',
+                            rule_version=version, o_weeks=o)
+    return judge(window(case.get('boos')), window(case.get('foos')), in_sample_dd=base, rule_version=version, o_weeks=o)
 
 
-def not_applicable(reason):
+def not_applicable(reason, rule_version=None):
     return dict(schema=EVALUATION, status='not_applicable', reasons=[reason], used_for_ranking=False,
                 boosContaminatedBy=BOOS_CONTAMINATED_BY,
-                plain='The OOS window rule does not apply: ' + reason + '.')
+                plain='The OOS window rule does not apply: ' + reason + '.', ruleVersion=_version(rule_version))
 
 
-def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=None):
+def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=None, rule_version=None):
     """Score one OOS catch-up re-test (the FOOS held-out replay) with the window rule.
 
     ``original``/``retest``: studio_evidence.read_export records; ``tester``: the original
@@ -645,16 +798,23 @@ def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=Non
 
     Measured on the re-test (one non-optimized pass from the BOOS start), with the shared
     definitions (``DEFINITIONS``): trades and PF from its complete deal capture, DD from its
-    equity CSV. FOOS is judged from its first day through the re-test's last day: catch-up weeks
+    equity CSV. The in-sample drawdown is measured on the same equity rows: over SAMPLE and FWD
+    together under rule version 2 (None until the re-test covers FWD's last day), over SAMPLE
+    alone under version 1. The rolling ``in_sample_p10`` windows stay inside SAMPLE. The version
+    2 loss leg is decided on the formula record's O (``o_weeks``: SAMPLE + FWD weeks). FOOS is
+    judged from its first day through the re-test's last day: catch-up weeks
     after the export Friday count toward FOOS (they follow the optimization end and are never
     ranked), but FOOS is never judged before its full 1/4 O has been tested. `evidence_end` is the catch-up's
     resolved end (it may be any closed trading day, `auto_day`); the re-test is judged through the earlier of it
     and the re-test's own end, and the result stamps it as `evidenceEnd`. ``oos_formula``: the export's stamped
-    formula when known (``formula_of``); otherwise it is read from the dates.
+    formula when known (``formula_of``); otherwise it is read from the dates. ``rule_version``: the rule version to
+    judge under (``RULE_VERSIONS``; default ``RULE_VERSION``). Both versions read the same two files, the re-test's
+    equity CSV and its deals.csv; version 2 reads nothing more.
     """
     from pathlib import Path
     from studio_build_migration import refuse
     from studio_catchup_verdict import deal_window, equity_rows, equity_window
+    version = _version(rule_version)
     # Export records only: a build-migration record (or a verdict) handed in here is refused by type.
     refuse(original, 'The OOS-rule judge')
     refuse(retest, 'The OOS-rule judge')
@@ -666,11 +826,11 @@ def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=Non
         back = None
     record = formula_of(tester, back, oos_formula)
     if record is None:
-        return not_applicable('the optimization dates were not set by the OOS window formula')
+        return not_applicable('the optimization dates were not set by the OOS window formula', version)
     original_end = _day(original['evidence_end'])
     if original_end >= _day(record['foos']['first_day']) + timedelta(days=1):
         return not_applicable('the original export already contained FOOS days (it ends %s), so FOOS was not held out'
-                              % original_end.isoformat())
+                              % original_end.isoformat(), version)
     rows = equity_rows(retest['csv_path'])
     capture = retest.get('capture') or {}
     deals = str(Path(capture['path']).parent / 'deals.csv') if capture.get('complete') and capture.get('path') else None
@@ -708,16 +868,33 @@ def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=Non
             first += timedelta(days=7)
         return percentile(totals), len(totals)
 
+    def in_sample_span():
+        """Version 2's in-sample base: the equity drawdown from SAMPLE's first day through FWD's last day (the whole
+        O span), from the rows already read, measured as every window's drawdown is (no carried peak)."""
+        first, last = _day(record['optimization']['first_day']), _day(record['optimization']['last_day'])
+        return dict(name=IN_SAMPLE_BASE[2], first_day=first.isoformat(), last_day=last.isoformat(),
+                    dd=equity_window(rows, first, last, carry_peak=False)['dd'], complete=tested_through >= last)
+
     sample = measure('sample')
     boos, formula = measure('boos'), record['oosFormula']
     if BOOS_GATE[formula] == 'lenient_p10':
         p10, count = in_sample_p10() if sample['complete'] else (None, 0)
+        if version >= 2 and not (sample['complete'] and deals):
+            count = None                 # not measured: an unknown count is printed as null, never as "0 windows"
         boos.update(in_sample_p10=p10, in_sample_windows=count)
-    result = judge(boos, measure('foos', extend=True), in_sample_dd=sample['dd'] if sample['complete'] else None,
-                   oos_formula=formula)
+    if version == 1:
+        span, base = None, sample['dd'] if sample['complete'] else None
+    else:
+        span = in_sample_span()
+        base = span['dd'] if span['complete'] else None      # an incomplete span gives no base: not_measured
+    # O for the loss leg: SAMPLE + FWD in weeks, from the formula record (the same for 'boos-1/3' and 'boos-1/2').
+    result = judge(boos, measure('foos', extend=True), in_sample_dd=base, oos_formula=formula, rule_version=version,
+                   o_weeks=record['o_weeks'])
     result.update(o_weeks=record['o_weeks'], export_friday=record['export_friday'], trade_source='capture_deals' if deals else 'unavailable',
                   windows_dates={key: dict(first_day=record[key]['first_day'], last_day=record[key]['last_day'])
                                  for key in ('boos', 'sample', 'fwd', 'foos')},
-                  foos_judged_through=result['windows']['foos'].get('last_day'), definitions=DEFINITIONS,
+                  foos_judged_through=result['windows']['foos'].get('last_day'), definitions=DEFINITIONS_BY_VERSION[version],
                   evidenceEnd=tested_through.isoformat())
+    if span is not None:
+        result['in_sample_window'] = span
     return result

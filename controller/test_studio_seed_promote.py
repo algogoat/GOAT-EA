@@ -284,6 +284,37 @@ class SeedPromoteTests(unittest.TestCase):
         plain = '; h\r\nEA_Desc=X\r\nPeriod=10||10||5||20||N\r\nSize=1.5\r\nSession=News\r\n'.encode('utf-16')
         self.assertEqual(inspect_set(plain)['canonical_sha256'], inspect_set(plain, strings)['canonical_sha256'])
 
+    def test_a_string_input_is_kept_verbatim_never_read_as_a_number(self):
+        """Codex P2 on GOAT-EA#321 (4541923231): a schema-declared string went through the numeric normalisation, so
+        Session=001 and Session=1 had the same canonical inputs (a changed fork read as same_inputs) and Session=NaN
+        refused the promotion (Nonfinite value). A string is kept exactly as written."""
+        from strategy_registry import inspect_set
+        from studio_seed_promote import lookup, record_fork
+        self.controller.schema['inputs']['Session'] = dict(type='string', optimizable=False)
+        self.source.write_bytes('; Source header\r\nEA_Desc=Original\r\nPeriod=10||10||5||20||Y\r\nSize=1.5\r\nSession=001\r\n'.encode('utf-16'))
+        candidates = self.run_seed()
+        candidate = candidates[0]['candidate_sha256']
+        receipt = promote(self.controller, 'batch', candidate, 'EURUSD Period Ten', runner=self.runner)
+        changed = self.fork_of(receipt['fixed_set']['path'], 'Session one', Session='1')
+        self.assertEqual(lookup(self.controller.root, set_path=changed, schema=self.controller.schema)['matches'], [])
+        record = record_fork(self.controller, 'batch', candidate, changed, fork_id='fork.one', runner=self.runner)
+        self.assertEqual((record['relation'], record['changed_inputs']), ('edited', dict(count=1, inputs=['Session'])))
+        strings = frozenset(['EA_Desc', 'Session'])
+        for text in ('NaN', 'Infinity', '1e3'):
+            raw = ('; h\r\nEA_Desc=X\r\nPeriod=10||10||5||20||N\r\nSize=1.5\r\nSession=' + text + '\r\n').encode('utf-16')
+            self.assertEqual(json.loads(inspect_set(raw, strings)['canonical_json'])['Session'], [text])
+        # A number input is still normalised as before: 1.50 and 1.5 are the same inputs.
+        a = '; h\r\nEA_Desc=X\r\nPeriod=10||10||5||20||N\r\nSize=1.50\r\nSession=001\r\n'.encode('utf-16')
+        b = '; h\r\nEA_Desc=X\r\nPeriod=10||10||5||20||N\r\nSize=1.5\r\nSession=001\r\n'.encode('utf-16')
+        self.assertEqual(inspect_set(a, strings)['canonical_sha256'], inspect_set(b, strings)['canonical_sha256'])
+
+    def test_a_seed_whose_string_input_reads_as_nan_is_promoted(self):
+        self.controller.schema['inputs']['Session'] = dict(type='string', optimizable=False)
+        self.source.write_bytes('; Source header\r\nEA_Desc=Original\r\nPeriod=10||10||5||20||Y\r\nSize=1.5\r\nSession=NaN\r\n'.encode('utf-16'))
+        candidates = self.run_seed()
+        receipt = promote(self.controller, 'batch', candidates[0]['candidate_sha256'], 'EURUSD Period Ten', runner=self.runner)
+        self.assertEqual((receipt['status'], self.sets(receipt)[0]['Session']), ('written', 'NaN'))
+
     def test_repeat_returns_receipt_and_conflicts_refuse(self):
         candidate = self.run_seed()[0]['candidate_sha256']
         first = promote(self.controller, 'batch', candidate, 'Keeper', runner=self.runner)

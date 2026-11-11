@@ -186,6 +186,37 @@ class HuntBoardCountTests(unittest.TestCase):
             refusal = self.refused(folder)
             self.assertEqual((refusal.rule, refusal.path.lower()), ('R6', target.lower()))
 
+    def mark_duplicate(self, alias, hits=('values hash + symbol = pool file X',)):
+        folder = Folder(self)
+        folder.alter('judged.json', lambda rows: [r.update(duplicate=True, **({'duplicate_hits': list(hits)} if hits else {})) for r in rows if r['alias'] == alias])
+        return folder, judged(folder, alias)['source']
+
+    def test_r6_refuses_a_round_file_that_would_be_counted_and_is_a_duplicate(self):
+        # real negative: the same file, not marked, is counted
+        states = {f['alias']: (f['state'], f['duplicate']) for f in board.count(FIXTURE)['files']}
+        self.assertEqual(states[CLEAN_COUNTED], ('counted', False))
+        self.assertEqual(states[DISCLOSED_BANKER], ('counted', False))
+        # real positive: marked, it stops the count and is named with what it duplicates
+        for alias in (CLEAN_COUNTED, DISCLOSED_BANKER):
+            folder, source = self.mark_duplicate(alias)
+            refusal = self.refused(folder)
+            self.assertEqual((refusal.rule, refusal.path.lower()), ('R6', source.lower()))
+            self.assertIn('values hash + symbol = pool file X', refusal.why)
+        folder, source = self.mark_duplicate(CLEAN_COUNTED, hits=None)   # the flag alone is enough
+        refusal = self.refused(folder)
+        self.assertEqual((refusal.rule, refusal.path.lower()), ('R6', source.lower()))
+        self.assertIn('no hit listed', refusal.why)
+
+    def test_a_round_reserve_that_is_a_duplicate_does_not_stop_the_count(self):
+        folder, _ = self.mark_duplicate(THRUSH[2])
+        b = board.count(folder.path)
+        self.assertEqual((b['counted']['total'], b['duplicates']), (16, 1))
+        row = next(f for f in b['files'] if f['alias'] == THRUSH[2])
+        self.assertEqual((row['state'], row['duplicate']), ('reserve', True))
+        # the duplicate keeps its place in the export order: marking the first of the three moves nothing up in silence
+        folder, source = self.mark_duplicate(THRUSH[0])
+        self.assertEqual(self.refused(folder).path.lower(), source.lower())
+
     def test_a_migrated_reserve_with_a_duplicate_does_not_stop_the_count(self):
         folder = Folder(self)
         folder.alter('o3pool.json', lambda data: [r.update(duplicate_hits=['x'], condition1_no_duplicate=False) for r in data['members'] if r['alias'] == MIGRATED_RESERVE])

@@ -13,7 +13,9 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
   judged.json             every file the round's catch-up judged: machine, part, index, position (the product's export
                           order), catchup, alias, source, asset, family, template, member, held_group (the held group a
                           second file belongs to, else null), rule (pass / fail / not_eligible_yet), export_bar,
-                          prove_status, set_sha256, duplicate
+                          prove_status, set_sha256, duplicate (true when the close found the file's SET bytes, values
+                          or key already on the board or earlier in the round), duplicate_hits (optional: what it
+                          duplicates, one line per hit)
   prove-exports.json      every export of the round's Prove reports: set_path, machine, part, index, status, reason,
                           source_ledger, ini_ledger, export_ledger (the Ledger_Mode line of the member's source SET, of
                           its start config and of the exported SET; null when the line is absent)
@@ -24,8 +26,9 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
   o3pool.json             {members: [...]}: migrated older files (candidate, group, duplicate hits, inputs, family)
   journals.json           per machine: tester-journal blocks expected / matched, gaps, flagged lines, proven
 
-How a file is counted: a judged file with rule ``pass`` that passed the export bar and is no duplicate is counted while
-its group has room (cap minus what the pool already holds in that group), in export order; later passes are reserves.
+How a file is counted: a judged file with rule ``pass`` that passed the export bar is counted while its group has room
+(cap minus what the pool already holds in that group), in export order; later passes are reserves. A duplicate is never
+counted and never skipped in silence: one that has room stops the count (R6); one without room is a reserve like any other.
 A counted file whose Prove report says ``unverified`` is shown as disclosed, with the ruled reason. A counted file is
 proven by its machine's tester journal, or by its own identical MT5 report when the ruling in rules.json lets reports
 stand in; a counted file with neither is shown apart and not counted. Migrated files are counted up to the cap per group
@@ -41,7 +44,10 @@ It REFUSES (exit 3; the rule, the file and the reason on stdout and stderr) when
       (an input only in one SET, another value, an appended or inherited input, another ledger, another values hash,
       same_inputs false), or the record is for other SET bytes;
   R5  a counted file (round or migrated) has no MT5-report record, or its record failed;
-  R6  a counted migrated file has a duplicate hit, or its re-test did not run the inputs its SET states.
+  R6  a file that would be counted, round or migrated, carries a duplicate hit (the refusal names what it
+      duplicates); or a counted migrated file's re-test did not run the inputs its SET states.
+
+Only a file that would be counted can refuse (R4, R5, R6): a reserve with a bad record does not stop the count.
 
 Nothing here judges a strategy: the verdicts, the duplicate check and the input comparisons are the close's records.
 """
@@ -85,7 +91,9 @@ def load(folder):
 
 
 def cap_states(rules, pool, judged):
-    """{source: counted | reserve | duplicate | not_counted_export_bar} for every pass, in export order."""
+    """{source: counted | reserve | not_counted_export_bar} for every pass, in export order.
+
+    A duplicate takes its place in the order like any other pass: count() refuses when it lands on ``counted``."""
     rank = {machine: number for number, machine in enumerate(rules['machines'])}
     held = Counter(p['group'] for p in pool)
     used, states = Counter(), {}
@@ -96,8 +104,6 @@ def cap_states(rules, pool, judged):
         room = max(0, rules['cap'] - (held[x['held_group']] if x.get('held_group') else 0))
         if x['export_bar'] != 'passed':
             state = 'not_counted_export_bar'
-        elif x.get('duplicate'):
-            state = 'duplicate'
         elif used[group] < room:
             used[group] += 1
             state = 'counted'
@@ -207,6 +213,10 @@ def count(folder):
         return r
     for x in counted:
         x['report'] = report_ok(x['catchup'], x['alias'], x['source'])
+    for x in counted:
+        if x.get('duplicate') or x.get('duplicate_hits'):
+            raise Refused('R6', x['source'], 'would be counted, but it duplicates a file already on the board or earlier in the round: %s'
+                          % ('; '.join(x.get('duplicate_hits') or []) or 'duplicate flag set, no hit listed'))
     used = Counter()
     migrated, migrated_reserve = [], []
     for r in data['o3pool']['members']:
@@ -216,7 +226,8 @@ def count(folder):
         (migrated if used[r['group']] <= rules['cap'] else migrated_reserve).append(r)
     for r in migrated:
         if r.get('duplicate_hits') or not r.get('condition1_no_duplicate'):
-            raise Refused('R6', r['original_set'], 'counted migrated file with a duplicate hit: %s' % r.get('duplicate_hits'))
+            raise Refused('R6', r['original_set'], 'would be counted (migrated), but it duplicates a file already on the board or earlier in the round: %s'
+                          % ('; '.join(r.get('duplicate_hits') or []) or 'duplicate flag set, no hit listed'))
         if not r.get('same_inputs') or not r.get('condition2_inputs') or r.get('inherited_in_retest') or r.get('appended_differ'):
             raise Refused('R6', r['original_set'], 'counted migrated file whose re-test did not run the inputs its SET states: %s' % r.get('reasons'))
         report_ok(r['catchup'], r['alias'], r['original_set'])
@@ -254,6 +265,7 @@ def count(folder):
         files=[dict(machine=x['machine'], part=x['part'], index=x['index'], position=x['position'], alias=x['alias'], asset=x['asset'],
                     family=x['family'], template=x['template'], group=x['held_group'] or 'new:' + x['member'],
                     state=states[x['source'].lower()], kind=kind(x), disclosure=reason if kind(x) == 'disclosed' else None,
+                    duplicate=bool(x.get('duplicate') or x.get('duplicate_hits')),
                     proof=x.get('proof'), set_sha256=x['set_sha256'], source=x['source']) for x in passes],
         o3_files=[dict(catchup=r['catchup'], alias=r['alias'], asset=r['symbol'], group=r['group'],
                        state='counted' if r in migrated else 'reserve', template=r.get('template'), family=r.get('family') or 'unknown',

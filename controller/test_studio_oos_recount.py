@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import shutil
 import sys
 import unittest
 from unittest.mock import patch
@@ -368,6 +369,34 @@ class RecountTests(FormulaCase):
         name = recount.label(w.RULE_VERSION)                                                   # the two readable members only
         still = sum(EXPECTED[name][symbol] == 'pass' for symbol in ('EURUSD', 'GBPUSD'))
         self.assertEqual((counts['pass']['stored'], counts['pass'][name]), (still, still))
+
+    def test_a_member_whose_captured_deals_are_gone_is_unreadable_not_a_mismatch(self):
+        # Codex on GOAT-EA#309: without deals.csv the judges read "trades unavailable" (no_data), which would count as a
+        # failed reproduction of a stored pass. The member is listed unreadable and stays out of the self-check.
+        self.run_catchup()
+        retest = Path(read_json(self.result_path('EURUSD'))['path'])
+        package = retest.with_name(retest.name[:-4] + '.goatseq')
+        self.assertTrue((package / 'deals.csv').is_file())
+        (package / 'deals.csv').unlink()
+        block, = self.recount('cu1')['catchups']
+        row = self.rows_by_symbol(block)['EURUSD']
+        self.assertEqual((row['readable'], row['oos_rule']), (False, None))
+        self.assertIn('deals.csv is missing', row['unreadable'])
+        counts = block['counts']
+        self.assertEqual((counts['judged'], counts['unreadable']), (5, 1))
+        check = counts['self_check']
+        self.assertEqual((check['checked'], check['matches'], check['mismatches'], check['ok']), (5, 5, 0, True))
+        # The whole capture gone, and the stored verdict says it was measured from it: still unreadable.
+        other = Path(read_json(self.result_path('GBPUSD'))['path'])
+        shutil.rmtree(other.with_name(other.name[:-4] + '.goatseq'))
+        row = self.rows_by_symbol(self.recount('cu1')['catchups'][0])['GBPUSD']
+        self.assertEqual(row['readable'], False)
+        self.assertIn('deals.csv is missing', row['unreadable'])
+        # A member that never had a capture (its stored verdict says so) is judged as it was, not refused.
+        self.rewrite_stored('cu1', dict(GBPUSD=lambda result: result['verdict']['oos_rule'].update(trade_source='unavailable')))
+        row = self.rows_by_symbol(self.recount('cu1')['catchups'][0])['GBPUSD']
+        self.assertEqual(row['readable'], True)
+        self.assertNotEqual(row['oos_rule'][recount.label(w.RULE_VERSION)]['status'], 'pass')   # no deals: nothing to count
 
     def test_a_catch_up_that_cannot_be_read_is_listed_and_an_unknown_one_is_refused(self):
         self.run_catchup()

@@ -195,7 +195,17 @@ def _member(root, manifest, spec, item, versions):
                 raise Unreadable('The re-test equity CSV is missing next to its SET')
             if not retest.get('evidence_end'):
                 raise Unreadable('The re-test export has no evidence end')
-        judged = {label(version): _view(_judge(original, retest, spec, manifest, verdict.get('verdict'), version), version)
+            # Without deals.csv the judges read "trades unavailable" and return no_data, which would count as a failed
+            # reproduction of the stored verdict (Codex on GOAT-EA#309). A member whose stored verdict was measured from
+            # its capture, or whose capture is recorded complete, must still have the deals; one that never had a
+            # capture is judged as it was.
+            capture = retest.get('capture') if isinstance(retest.get('capture'), dict) else {}
+            kept = bool(capture.get('complete') and capture.get('path'))
+            measured = isinstance(verdict.get('oos_rule'), dict) and verdict['oos_rule'].get('trade_source') == 'capture_deals'
+            if (kept or measured) and not (kept and _io(Path(capture['path']).parent / 'deals.csv').is_file()):
+                raise Unreadable("The re-test capture's deals.csv is missing (the capture is recorded complete, or the "
+                                 'stored verdict was measured from it)')
+        judged ={label(version): _view(_judge(original, retest, spec, manifest, verdict.get('verdict'), version), version)
                   for version in versions}
     except Unreadable as exc:
         row['unreadable'] = str(exc)

@@ -8,11 +8,24 @@ controller therefore copies the journal itself when a run ends, before it return
 * a catch-up: each member's own block of lines, from its MT5 start to its MT5 exit, into the member's evidence folder
   (``tester-journal.<yyyymmdd>.log``), or beside that folder (``<member>.tester-journal.<yyyymmdd>.log``) when the member
   left none because it failed before its re-test was collected;
-* a Prove batch: the batch's own block of each day log, from its launch to its finish, into the attempt folder
-  (``attempts\\<attempt>\\tester-journal\\<yyyymmdd>.log.gz``), next to ``result.json``.
+* a Prove batch: what is left of the batch's own block of each day log, from its launch to its finish, into the
+  attempt folder (``attempts\\<attempt>\\tester-journal\\<yyyymmdd>.log.gz``), next to ``result.json``.
+
+What each copy covers (read on T3 by Ops, 2026-11-11). MT5 rewrites the tester's day log at every optimisation
+start, today's file included, and removes the older ones: during a running Prove batch the day log held only the
+lines since the current member's optimisation started, and a 234 MB log of the day before vanished when a batch
+started. A catch-up member is a single test, not an optimisation: the day log survived all 83 members of a
+catch-up. So a catch-up member's copy is its whole block, and it exists because the next optimisation start on
+that terminal destroys the log. A Prove batch's copy, made at its finish, can only hold the lines since its last
+member's optimisation started: its record says ``covers: last_member_only`` and the check never calls it complete
+(Claude-Mac goatai#2750 6792752258: a Prove member's proof stays its report, its effective-inputs.set and its
+capture). Copying each member's block would need the copy between the terminal's exit and its relaunch at a member
+boundary, which the EA drives (TerminalClose, Tester.mqh:161; the relaunch waits for the exit and 500 ms,
+Tester.mqh:69-78) and the batch driver only polls (studio_batch_driver.run, every poll_seconds).
 
 Only the run's own lines are copied, never a whole day log: one day's log was 234 MB on the Ops PC. The block is found
-by the lines' own time stamps (a binary search, since a journal is written in time order, then one bounded scan), so a
+by the lines' own time stamps (a binary search, since a journal is written in time order, then one bounded scan; a
+real T3 day log of 17,414 lines read by Ops on 2026-11-11 had no line earlier than the running maximum), so a
 copy reads the block and a few probe blocks, not the day. A member's copy is plain UTF-16 like the journal and bounded
 (MAX_MEMBER_BYTES: past it the first and last halves are kept and the record says so); a batch's copy is the whole
 block, gzip. Every copied line is byte for byte the journal's line.
@@ -49,6 +62,7 @@ BATCH_FILE = '%s.log.gz'
 ENDED = frozenset(('completed', 'failed', 'timeout', 'missing_output', 'cancelled'))
 FINISHED = frozenset(('completed', 'stopped'))
 SETTLED = frozenset(('completed', 'failed', 'cancelled'))
+LAST_MEMBER_ONLY = 'last_member_only'
 
 
 def _finite(value):
@@ -221,11 +235,12 @@ def _copy(source, target, start, stop, size, day, *, compress, limit):
                 truncated=None if half is None else dict(block_bytes=stop - start, bound_bytes=limit, omitted_lines=omitted))
 
 
-def keep(terminal_data_root, since, until, folder, *, name=MEMBER_FILE, compress=False, limit=MAX_MEMBER_BYTES):
+def keep(terminal_data_root, since, until, folder, *, name=MEMBER_FILE, compress=False, limit=MAX_MEMBER_BYTES, first_day=True):
     """Copy the tester journal lines stamped within [since, until] (epoch seconds) into ``folder``, one file per local
     day, and return the record to store. Never raises: whatever stops a copy is the record's reason.
 
-    ``copied`` needs the lines of the run's first day; a later day with no line is listed (``days_without_lines``)."""
+    ``copied`` needs the lines of the run's first day (``first_day``; a batch, whose earlier days MT5 has removed by
+    its finish, needs any line); every other day with no line is listed (``days_without_lines``)."""
     record = dict(schema=SCHEMA, status='missing', reason=None, source_folder=TESTER_LOG_FOLDER, files=[], days_without_lines=[],
                   window=dict(since_unix=since, until_unix=until),
                   copied_utc=datetime.now(timezone.utc).isoformat(timespec='seconds'))
@@ -262,7 +277,7 @@ def keep(terminal_data_root, since, until, folder, *, name=MEMBER_FILE, compress
                 continue
             record['files'].append(_copy(source, folder / (name % day.strftime('%Y%m%d')), start, stop, size, day,
                                          compress=compress, limit=limit))
-        if record['files'] and record['files'][0]['day'] == first.strftime('%Y%m%d'):
+        if record['files'] and (not first_day or record['files'][0]['day'] == first.strftime('%Y%m%d')):
             record['status'] = 'copied'
         else:
             record['reason'] = record['days_without_lines'][0]['reason']
@@ -279,11 +294,20 @@ def keep_member(install, evidence_dir, since, until):
     return keep(install.get('terminal_data_root'), since, until, folder.parent, name=folder.name + '.' + MEMBER_FILE)
 
 
+def _last_member_words(record):
+    first = next((item['first_line_time'] for item in (record or {}).get('files') or [] if item.get('first_line_time')), None)
+    return ('This copy holds the last member\'s lines only%s: MT5 rewrites the tester day log at every optimisation start. It is '
+            'not the batch\'s journal; each member\'s proof is its report, its effective-inputs.set and its capture.'
+            % ('' if first is None else ' (from %s)' % first))
+
+
 def keep_batch(install, attempt_folder, job, *, now=None):
-    """A Prove batch's journal block, from its launch intent to now, next to the attempt's result.json."""
+    """What is left of a Prove batch's journal at its finish, from its launch intent to now, next to the attempt's
+    result.json: the lines since its last member's optimisation started (``covers: last_member_only``)."""
     since = _wall(((job.get('launch_intent') or {}).get('recorded_at')))
-    return keep(install.get('terminal_data_root'), since, time.time() if now is None else now,
-                Path(attempt_folder) / BATCH_FOLDER, name=BATCH_FILE, compress=True, limit=None)
+    record = keep(install.get('terminal_data_root'), since, time.time() if now is None else now,
+                  Path(attempt_folder) / BATCH_FOLDER, name=BATCH_FILE, compress=True, limit=None, first_day=False)
+    return record | dict(covers=LAST_MEMBER_ONLY, covers_plain=_last_member_words(record))
 
 
 # ---------------------------------------------------------------------------
@@ -321,8 +345,15 @@ def _files(record):
 
 
 def _result(kind, run_id, status, finished, rows, counts):
+    """``ok``: every recorded copy is in place and unchanged. ``complete``: the copies are the run's whole journal,
+    which only a catch-up's can be; a batch's copy holds its last member only and is never complete."""
     ok = finished and not any(counts.get(state) for state in ('missing', 'changed', 'running'))
-    if ok:
+    if ok and kind == 'batch' and not counts.get('ok'):
+        plain = 'Batch %s never launched, so there is no tester journal to keep.' % run_id
+    elif ok and kind == 'batch':
+        plain = ('The tester journal copy of batch %s is in place and matches its recorded SHA-256, but it is not the batch\'s '
+                 'journal. ' % run_id) + _last_member_words(dict(files=[item for row in rows for item in row['files']]))
+    elif ok:
         plain = 'Every tester journal copy of %s %s is in place and matches its recorded SHA-256.' % (kind, run_id)
     elif not finished:
         plain = 'The %s %s has not finished (%s), so its tester journal is not complete yet.' % (kind, run_id, status)
@@ -330,7 +361,8 @@ def _result(kind, run_id, status, finished, rows, counts):
         named = '; '.join('%s: %s' % (row['name'], row['problems'][0]) for row in rows if row['journal'] in ('missing', 'changed'))[:600]
         plain = ('%d of %d tester journal %s of %s %s missing or changed: %s.'
                  % (counts.get('missing', 0) + counts.get('changed', 0), len(rows), 'copies' if len(rows) != 1 else 'copy', kind, run_id, named))
-    return dict(schema=CHECK_SCHEMA, kind=kind, id=run_id, status=status, ok=ok, counts=counts, plain=plain, writes=False)
+    return dict(schema=CHECK_SCHEMA, kind=kind, id=run_id, status=status, ok=ok, complete=ok and kind != 'batch',
+                covers=LAST_MEMBER_ONLY if kind == 'batch' else 'every_member', counts=counts, plain=plain, writes=False)
 
 
 def check_catchup(controller_root, catchup_id):
@@ -365,7 +397,8 @@ def check_catchup(controller_root, catchup_id):
 
 def check_batch(controller_root, job):
     """tester-journal-check for a Prove batch (a Studio queue row read read-only): whether the journal copy its finish
-    recorded (``completion.tester_journal``) exists and matches its recorded hash. One copy covers every member."""
+    recorded (``completion.tester_journal``) exists and matches its recorded hash. That copy holds the batch's last
+    member only, so the result is never ``complete``: ``ok`` says the copy is intact, not that the batch has a journal."""
     record = (job.get('completion') or {}).get('tester_journal') if isinstance(job.get('completion'), dict) else None
     finished = job.get('status') in SETTLED
     if not finished:

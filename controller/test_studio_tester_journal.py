@@ -4,7 +4,7 @@ Banker and T3, 2026-11-10/11: MT5 cleared the tester's older day logs when a lat
 catch-up's journal was gone when the round close needed it. The journals here are fixtures in the journal's own format
 (UTF-16LE with BOM, CRLF, tab-separated, MT5 local time); the catch-up and the Prove batch are the real runners."""
 from contextlib import redirect_stderr
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import io
@@ -146,6 +146,31 @@ class JournalBlockTests(unittest.TestCase):
         record = self.keep(*window)
         self.assertEqual((record['status'], record['reason']), ('missing', 'Tester\\logs\\20261110.log does not exist'))
 
+    def test_a_batch_copy_holds_what_mt5_left_the_last_member_only_and_says_so(self):
+        # T3, 2026-11-11: MT5 rewrites the day log at every optimisation start and removes the older ones. A batch
+        # launched the evening before has, at its finish, only the lines since its last member's optimisation started.
+        next_day = self.day + timedelta(days=1)
+        self.log.unlink()                                            # the launch day's log is gone
+        last = [line(next_day.replace(hour=1, minute=53, second=22), 'EURCAD,M1: optimization started'),
+                line(next_day.replace(hour=2, minute=40), 'optimization finished, total passes 153')]
+        write_log(self.data, next_day, last)
+        job = dict(launch_intent=dict(recorded_at=datetime.fromtimestamp(self.at(22, 0).timestamp(), timezone.utc).isoformat()))
+        finish = next_day.replace(hour=2, minute=41).timestamp()
+        record = journal.keep_batch(dict(terminal_data_root=str(self.data)), self.out, job, now=finish)
+        self.assertEqual((record['status'], record['covers'], [item['day'] for item in record['files']]), ('copied', 'last_member_only', ['20261111']))
+        self.assertEqual(gzip.decompress(Path(record['files'][0]['path']).read_bytes()), BOM + encoded(last))
+        self.assertEqual(record['days_without_lines'], [dict(day='20261110', reason='Tester\\logs\\20261110.log does not exist')])
+        self.assertEqual(record['covers_plain'], 'This copy holds the last member\'s lines only (from 2026-11-11 01:53:22.000): MT5 rewrites the '
+                                                 'tester day log at every optimisation start. It is not the batch\'s journal; each member\'s '
+                                                 'proof is its report, its effective-inputs.set and its capture.')
+        # A catch-up member needs its own first day: the same window is missing for it.
+        member = self.keep(self.at(22, 0).timestamp(), finish)
+        self.assertEqual((member['status'], member['reason'], 'covers' in member), ('missing', 'Tester\\logs\\20261110.log does not exist', False))
+        # No log at all: the batch record is missing, and still says what a copy would have covered.
+        (self.data / 'Tester' / 'logs' / '20261111.log').unlink()
+        record = journal.keep_batch(dict(terminal_data_root=str(self.data)), self.out, job, now=finish)
+        self.assertEqual((record['status'], record['covers'], record['files']), ('missing', 'last_member_only', []))
+
     def test_a_line_mt5_is_still_writing_is_left_out(self):
         partial = line(self.at(7, 41, 1), 'half a li').encode('utf-16-le')
         self.log.write_bytes(self.log.read_bytes() + partial)
@@ -242,6 +267,7 @@ class CatchupJournalTests(unittest.TestCase):
         self.assertEqual(sha256(log), source)
         check = self.agent.tester_journal_check(catchup_id='cu1')
         self.assertEqual((check['ok'], check['writes'], check['counts'], check['status']), (True, False, dict(ok=2), 'completed'))
+        self.assertEqual((check['complete'], check['covers']), (True, 'every_member'))     # each member's whole block
         self.assertEqual([(row['journal'], row['problems'], len(row['files'])) for row in check['members']], [('ok', [], 1)] * 2)
         # A status read after the end copies nothing again and changes no record.
         self.agent.catchup_status('cu1')
@@ -256,7 +282,7 @@ class CatchupJournalTests(unittest.TestCase):
                          [('missing', reason, [])] * 2)
         self.assertFalse((self.data / 'Tester').exists())                             # nothing invented beside the terminal either
         check = self.agent.tester_journal_check(catchup_id='cu1')
-        self.assertEqual((check['ok'], check['counts']), (False, dict(missing=2)))
+        self.assertEqual((check['ok'], check['complete'], check['counts']), (False, False, dict(missing=2)))
         self.assertEqual([row['problems'] for row in check['members']], [[reason]] * 2)
         self.assertIn('2 of 2 tester journal copies of catch-up cu1 missing or changed', check['plain'])
         # The command line says it the way stop_unconfirmed does: ok false on stderr, exit 2.
@@ -326,8 +352,15 @@ class BatchJournalTests(unittest.TestCase):
         self.assertEqual(sha256(fixture.log), fixture.log_sha256)                              # the journal is untouched
         job = self.job(fixture)
         self.assertEqual(job['completion']['tester_journal'], record)                         # the stored result carries it
+        # The record and the check both say what the copy is: the last member's lines, never the batch's journal.
+        self.assertEqual(record['covers'], 'last_member_only')
+        self.assertIn('This copy holds the last member\'s lines only (from %s)' % record['files'][0]['first_line_time'], record['covers_plain'])
         check = journal.check_batch(fixture.c.root, job)
         self.assertEqual((check['ok'], check['journal'], check['member_count'], check['writes']), (True, 'ok', 2, False))
+        self.assertEqual((check['complete'], check['covers']), (False, 'last_member_only'))
+        self.assertIn('is in place and matches its recorded SHA-256, but it is not the batch\'s journal. This copy holds the last '
+                      'member\'s lines only (from %s)' % record['files'][0]['first_line_time'], check['plain'])
+        self.assertNotIn('Every tester journal copy', check['plain'])
         copy.write_bytes(copy.read_bytes() + b'\x00')
         check = journal.check_batch(fixture.c.root, job)
         self.assertEqual((check['ok'], check['journal']), (False, 'changed'))
@@ -348,7 +381,8 @@ class BatchJournalTests(unittest.TestCase):
         self.assertEqual(journal.check_batch(fixture.c.root, dict(job, status='running'))['journal'], 'running')
         never = {key: value for key, value in job.items() if key not in ('launch_intent', 'completion')} | dict(status='cancelled')
         check = journal.check_batch(fixture.c.root, never)
-        self.assertEqual((check['ok'], check['journal']), (True, 'not_run'))
+        self.assertEqual((check['ok'], check['complete'], check['journal']), (True, False, 'not_run'))
+        self.assertEqual(check['plain'], 'Batch customer-batch never launched, so there is no tester journal to keep.')
 
 
 if __name__ == '__main__':

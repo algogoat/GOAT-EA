@@ -227,6 +227,11 @@ class SeedRunner:
             if not isinstance(job['set_path'],str) or not Path(job['set_path']).is_absolute():raise ValueError('Seed source SET path must be absolute')
             source,raw,text=source_bytes(job['set_path']);valid=validate_raw(raw,self.c.schema,self.c.policy,require_optimization=True)
             original_values=read_values(raw)
+            # The EA's tester-only OnInit refusals (TESTER_INIT_REFUSED), with this job's own FromDate, as prepare-batch
+            # applies them to a Prove member (studio_batch.prepare_batch): a seed is an optimization in the tester, so
+            # every frame of a refused SET would end at OnInit. Before anything is frozen or written (GOAT-EA#317).
+            from studio_ea_init_rules import check_tester_init
+            check_tester_init(original_values,self.c.schema,where='seed job %d (%s): '%(index+1,source),from_date=tester['FromDate'])
             for name in valid['active_axes']:
                 definition=self.c.schema['inputs'][name];parts=original_values[name].split('||')
                 for position in (1,2,3):

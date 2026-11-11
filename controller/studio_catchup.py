@@ -1710,15 +1710,16 @@ class CatchupRunner(SeedRunner):
         Formula batches only (their exports stop at the optimization end, so the new weeks are the FOOS hold-out);
         other exports read not_applicable. A re-test that is not the same test as the original is never judged.
         Every result stamps ``evidenceEnd``: the catch-up's resolved end (any closed trading day), or the earlier
-        re-test end it was judged through.
+        re-test end it was judged through. Every result also names the rule version it was judged under
+        (``ruleVersion``: the current ``RULE_VERSION``); a stored result that names none was judged under version 1.
         """
-        from studio_oos_windows import BOOS_CONTAMINATED_BY, EVALUATION, judge_retest
+        from studio_oos_windows import BOOS_CONTAMINATED_BY, EVALUATION, RULE_VERSION, judge_retest
         # OOS-rule judging of a catch-up reads verdicts only: a build-migration member is never judged as one.
         migration.refuse(verdict, 'The OOS-rule catch-up judge')
         migration.refuse(spec.get('build_migration') or {}, 'The OOS-rule catch-up judge')
         if verdict.get('verdict') in ('not_comparable', 'unjudged'):
             reason = 'the re-test was not judged as the same test as the original (%s)' % verdict.get('verdict')
-            result = dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
+            result = dict(schema=EVALUATION, ruleVersion=RULE_VERSION, status='no_data', reasons=[reason], used_for_ranking=False,
                         boosContaminatedBy=BOOS_CONTAMINATED_BY,
                         plain='No hold-out data under the OOS window rule: ' + reason + '.')
         else:
@@ -1726,7 +1727,7 @@ class CatchupRunner(SeedRunner):
                 result = judge_retest(original, retest, tester=spec['original'].get('tester'), evidence_end=evidence_end)
             except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
                 reason = 'could not apply the OOS window rule: ' + str(exc)[:240]
-                result = dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
+                result = dict(schema=EVALUATION, ruleVersion=RULE_VERSION, status='no_data', reasons=[reason], used_for_ranking=False,
                             boosContaminatedBy=BOOS_CONTAMINATED_BY,
                             plain='No hold-out data: ' + reason + '.')
         result.setdefault('evidenceEnd', evidence_end)

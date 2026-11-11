@@ -1,0 +1,194 @@
+{
+ "runs": [
+  {
+   "group": "banker-13a",
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00004",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=212_Prf=1718_DD=726_PF=1.69_SR=3.69_ARF=0.718.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "4223089791b0987f9b3c8e6abec2b1eacf1663601b9390fccc4f943fdc494e6b"
+  },
+  {
+   "group": "banker-13a",
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00005",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=223_Prf=1270_DD=809_PF=1.45_SR=2.64_ARF=0.488.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "ae723123423979bb619d23b2ec8f191b3d05ae542dd97a3affeb08ec455af8c7"
+  },
+  {
+   "group": "banker-13a",
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00006",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=223_Prf=1719_DD=755_PF=1.67_SR=3.72_ARF=0.704.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "6823babbe0137f01aba5836d78281f9b4213f45348004bb3eb8dc618f4302ae5"
+  },
+  {
+   "group": "banker-13a",
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00007",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=244_Prf=1759_DD=759_PF=1.65_SR=3.80_ARF=0.731.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "d26f2c289a65e97232ddd042411e4c80f3ad9e3ae91ddb639f19dc5074878bc8"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00004",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=124_Prf=244_DD=94_PF=2.79_SR=3.68_ARF=0.882.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "394c1c8850dd5af40892f61808784b54d89787c4588bf94890fdda7cefcb3301"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00005",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=129_Prf=239_DD=128_PF=2.16_SR=3.04_ARF=0.688.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "15bc3536566b72c01574f92c0f4e042b784b665fd7e70e059b09ccce6a494502"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00006",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=141_Prf=299_DD=123_PF=2.18_SR=3.12_ARF=0.753.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "6c9da1c8ac92c4338104b7aef280a00bf4c2fb5b96cb66c366faaf4c0e853388"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00007",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=181_Prf=491_DD=216_PF=1.99_SR=2.71_ARF=0.669.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "d378df171ce05ce332cf1178f6bf4564c34a6417c7e64ceb9dc1d4fe25120170"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00069",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rcc6969deafa4926d3085\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=193_Prf=452_DD=138_PF=2.61_SR=3.55_ARF=0.901.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "46bdc8577abc30179ee345fe7ec092b39e0abeb12ab2b808f934b513b428c008"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00080",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=273_Prf=522_DD=146_PF=3.21_SR=5.98_ARF=1.183.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "2bc6e3818b3ea7f7baf2c988ae9ad8e1aaf6b1a06d4f7fe7a662eef5b13ec482"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00081",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=287_Prf=440_DD=144_PF=2.69_SR=5.35_ARF=1.008.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "6c779c40236e5f0e8ba75875117adcee9e5c9b21b3c6f6f4fcd403eacb5001b4"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00082",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=321_Prf=645_DD=207_PF=3.28_SR=5.71_ARF=1.121.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "151e84c66f0123432782200385ad4a104c0348a97c0b311ccae0d1ca71dad0dc"
+  },
+  {
+   "group": "t3-13a",
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00083",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=346_Prf=439_DD=132_PF=2.25_SR=5.24_ARF=1.066.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "e95d5e01fa424e44d4fb885dd8ed0d57b1430da7b6c9aa15f3c7650a9fe43e52"
+  },
+  {
+   "group": "o3pool",
+   "catchup": "hunt-t3-o3pool-migration-b54",
+   "alias": "C1d6ad0a6f9114d8a_00001",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R56e06a5de747\\deploy\\Rf82fb20f040c54cef7e1\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=628_Prf=3587_DD=1886_PF=1.27_SR=2.56_ARF=0.536.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "f86b0dfadb8c4439ac1ed41f434010c56a36218459e2f10ca35d72037b69de09"
+  },
+  {
+   "group": "o3pool",
+   "catchup": "hunt-t3-o3pool-migration-b54",
+   "alias": "C1d6ad0a6f9114d8a_00005",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R56e06a5de747\\deploy\\Ra8445b6181e8af921e81\\WS30\\GOAT V1.49 WS30,M1_Trds=166_Prf=291_DD=110_PF=2.66_SR=4.52_ARF=0.844.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "10ca8ce2f76bdca7afb79671b40c28d5c72bb9ce949872f94eccf225a721dc22"
+  },
+  {
+   "group": "o3pool",
+   "catchup": "hunt-t3-o3pool-migration-b54",
+   "alias": "C1d6ad0a6f9114d8a_00069",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R0f79fd4c787e\\deploy\\R533668d4388495390a21\\WS30\\GOAT V1.49 WS30,M1_Trds=288_Prf=2278_DD=758_PF=2.18_SR=4.05_ARF=0.868.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "d7b5d2d7751536b5edba7ac81369a7e859431e68d373716618ed44f8e54169e3"
+  },
+  {
+   "group": "o3pool",
+   "catchup": "hunt-t3-o3pool-migration-b54",
+   "alias": "C1d6ad0a6f9114d8a_00072",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R0f79fd4c787e\\deploy\\R533668d4388495390a21\\WS30\\GOAT V1.49 WS30,M1_Trds=180_Prf=1088_DD=421_PF=2.72_SR=4.19_ARF=0.688.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "71322141ff6f574f2f28496146ec479bb1cc6542e661828cbf79aee5db1b909b"
+  },
+  {
+   "group": "o3pool",
+   "catchup": "hunt-t3-o3pool-migration-b54",
+   "alias": "C1d6ad0a6f9114d8a_00073",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R0f79fd4c787e\\deploy\\R533668d4388495390a21\\WS30\\GOAT V1.49 WS30,M1_Trds=205_Prf=1157_DD=477_PF=2.49_SR=3.66_ARF=0.662.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "d1be5d11097ec16aa8c1dfc5f8f345b95581b437f25dba88c35e57cb886bd778"
+  },
+  {
+   "group": "o3pool",
+   "catchup": "hunt-t3-o3pool-migration-b54",
+   "alias": "C1d6ad0a6f9114d8a_00075",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R0f79fd4c787e\\deploy\\R533668d4388495390a21\\WS30\\GOAT V1.49 WS30,M1_Trds=216_Prf=1298_DD=853_PF=1.65_SR=3.09_ARF=0.349.set",
+   "passed": true,
+   "problems": [],
+   "history_quality": "100% real ticks",
+   "report_sha256": "48079f3913e08c2b9eea83413ca60c5e350d5d6d51013093591528728d371eac"
+  }
+ ]
+}

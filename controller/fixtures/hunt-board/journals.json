@@ -1,0 +1,16 @@
+{
+ "t3": {
+  "expected": 83,
+  "matched": 83,
+  "gaps": 0,
+  "flagged": 0,
+  "proven": true
+ },
+ "banker": {
+  "expected": 33,
+  "matched": 0,
+  "gaps": 33,
+  "flagged": 0,
+  "proven": false
+ }
+}

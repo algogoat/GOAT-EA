@@ -128,6 +128,12 @@ def finish(controller,job_id,*,expected_generation=None):
                 raise ValueError('Report cleanup plan changed')
             result['report_bridge_retirement']=retire(plan['research_binding'],
                 manifest['native_run_relative'],receipt,evidence)
+        # The terminal's tester journal for this attempt, kept with its result while the tester is proven idle and
+        # before anything else can start an optimisation: MT5 clears older day logs then (studio_tester_journal,
+        # GOAT-EA#315; Claude-Mac goatai#2750 6791842328). Never blocks a finish: a journal that is gone is recorded
+        # as missing with the reason.
+        from studio_tester_journal import keep_batch
+        result['tester_journal']=keep_batch(controller.install,evidence,job)
         # Filesystem receipt precedes the database finalization; interrupted
         # completion can replay from the restored transaction without relaunch.
         result_path=evidence/'result.json';write_json(result_path,result)

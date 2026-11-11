@@ -1373,8 +1373,13 @@ class SeedRunner:
             if refused:result['reidentify_reason']=refused[0]      # why the open MT5 is not adopted as this launch
         return result
 
+    def _keep_journals(self,manifest,state):
+        """Members that ended since the last save: a runner that keeps the terminal's tester journal with its evidence
+        copies each one's block here (studio_catchup, GOAT-EA#315). Must never raise."""
+
     def _settle_slot(self,root,manifest,state,current):
         """Persist a settled state and release the terminal slot it held (closed or idle-settled MT5 only)."""
+        self._keep_journals(manifest,state)
         self._save(root,state)
         released=current is None or (state.get('idle_settled') or {}).get('process')==current
         if state['status'] in ('completed','stopped') and released and self.slot.exists():

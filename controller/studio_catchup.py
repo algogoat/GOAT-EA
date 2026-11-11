@@ -1343,6 +1343,17 @@ class CatchupRunner(SeedRunner):
         with target.open('xb') as stream:
             stream.write(raw)
 
+    def _keep_journals(self, manifest, state):
+        """Every member that ran and has ended keeps its own block of the terminal's tester journal with its evidence
+        (studio_tester_journal, GOAT-EA#315; Claude-Mac goatai#2750 6791842328): MT5 clears older day logs when a later
+        optimisation starts, so the copy is made in the pass that sees the member end, before the next member or
+        anything else launches. Once per member; a journal that is gone is recorded as missing, never invented."""
+        from studio_tester_journal import ENDED, keep_member
+        for spec, item in zip(manifest['members'], state['members']):
+            if item['status'] in ENDED and 'tester_journal' not in item and type(item.get('started_unix')) in (int, float):
+                item['tester_journal'] = keep_member(self.c.install, spec['evidence_dir'], item['started_unix'],
+                                                     item.get('finished_unix', self.clock()))
+
     def _collect(self, path, spec, manifest):
         """Verify the EA's re-test unit, move it into the evidence store and judge the new weeks."""
         from studio_catchup_verdict import evaluate

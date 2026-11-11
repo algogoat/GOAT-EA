@@ -112,3 +112,52 @@ V1.49 isolation builds store the GOAT user credential at
 B stays licensed and the reverse, account mismatch refused, a login reading 0 mid-write, migration
 proof cases including every non-`approved` status);
 `controller/test_studio_terminal_isolation.py` `CredentialPathTests`.
+
+## INV-EVID-01: a finished run keeps its own tester journal
+
+**Incident (GOAT-EA#315, 2026-11-10/11).** MT5 cleared the tester's older day logs
+(`Tester\logs\<yyyymmdd>.log`) when a later optimisation started. Banker's and T3's 11-10 logs
+were gone when hunt round 13a's close needed the journal blocks of a finished catch-up, so
+Banker's 33 catch-up blocks were held apart until their MT5 reports could stand in (Claude-Mac
+GOAT-EA#315 6791427047 item 3, goatai#2750 6791842328).
+
+**Statement.** When a catch-up member or a Prove batch ends, the controller copies that run's
+own lines of the terminal's tester journal into the run's evidence before it launches anything
+else or returns control, and records the copy (path, SHA-256, bytes, first and last line time)
+in the run's stored result. A journal that is gone is recorded as missing with the reason,
+never invented. The journal itself is only read. A round close counts a catch-up or batch only
+when `tester-journal-check` says every copy is in place and unchanged.
+
+**Enforcement.**
+- `controller/studio_tester_journal.py`: `keep` finds the run's block by the lines' own time
+  stamps and copies it byte for byte (a member: plain, bounded; a batch: gzip); `verify`,
+  `check_catchup` and `check_batch` re-hash every recorded copy and write nothing.
+- Catch-up: `CatchupRunner._keep_journals` (`controller/studio_catchup.py`), called from
+  `SeedRunner._settle_slot` (`controller/studio_seed.py`) before every settled save, so the copy
+  is made in the pass that sees a member end and before the next member's launch. The record is
+  the member's `tester_journal` in `catchups\<id>\state.json`.
+- Prove batch: `studio_finish.finish`, under the native gate after the tester is proven idle and
+  before `result.json` is written. The record is `tester_journal` in the result and in the job's
+  completion.
+- `demo_agent.py tester-journal-check --catchup-id <id> | --batch-id <id>`: exit 2 and
+  `ok:false` (`TESTER_JOURNAL_MISSING`) when a copy is missing, changed, or the run is not
+  finished.
+
+**Tests.** `controller/test_studio_tester_journal.py`: the block is copied byte for byte and
+recorded, the journal untouched; found by halving in a log many blocks long; a day log that is
+gone, or without a line of the run, is recorded missing and nothing is written; a run over
+midnight; a line MT5 is still writing; the bound; the real demo catch-up lane end to end (each
+member's block in its evidence folder, the check passes; no journal: recorded missing and the
+check refuses with exit 2; a copy altered or removed afterwards: the check refuses); the real
+batch finish (copied and recorded in `result.json`; no journal: the batch still finishes and the
+check refuses).
+
+**Not covered.**
+- A Prove batch's copy is made while MT5 is still open. Lines MT5 has not written to disk yet
+  are not in it; the record's `last_line_time` shows where the copy ends.
+- Seed hunts and hold-up tests keep no journal copy.
+- Batches settled without `finish` (retired before activation, self-repair) keep none: they
+  never ran a test.
+- The block search relies on a day log being in time order. A log that is not gives a `missing`
+  record, never a wrong block.
+- Runs that ended before this controller version have no record; the check reports them missing.

@@ -79,6 +79,11 @@ import math
 
 RULE = 'goat-oos-windows-v1'
 EVALUATION = 'goat-oos-window-rule-v1'
+# The rule versions this evaluator can judge under, oldest first (``judge_retest(..., rule_version=N)``), and the one it
+# judges under when none is named. A stored oos_rule that names no version was judged under version 1
+# (``record_rule_version``). ``oos-rule-recount`` (studio_oos_recount) re-judges stored catch-ups under each of these.
+RULE_VERSIONS = (1,)
+RULE_VERSION = 1
 SPEC_KEY = 'oos_windows'
 WEEKS_PER_MONTH = Fraction(13, 3)       # 52 weeks a year
 MIN_TRADES = 30                         # per OOS window (BOOS and FOOS)
@@ -463,6 +468,19 @@ def assert_foos_held_out(record, evidence_policy):
 # Evaluation: BOOS and FOOS, 30-trade floor, PF and DD bar
 # ---------------------------------------------------------------------------
 
+def _version(value=None):
+    """A rule version this evaluator can judge under (``RULE_VERSIONS``; None = ``RULE_VERSION``). Anything else is refused."""
+    value = RULE_VERSION if value is None else value
+    if type(value) is not int or value not in RULE_VERSIONS:
+        raise ValueError('The OOS window rule has versions %s, not %r' % (', '.join(map(str, RULE_VERSIONS)), value))
+    return value
+
+
+def record_rule_version(record):
+    """The rule version a stored ``oos_rule`` was judged under: its ``ruleVersion``, or 1 when it names none."""
+    return record.get('ruleVersion', 1)
+
+
 def _pf_test(window):
     """(passes PF >= 1.0, printable PF) or (None, None) when PF cannot be measured.
 
@@ -636,7 +654,7 @@ def not_applicable(reason):
                 plain='The OOS window rule does not apply: ' + reason + '.')
 
 
-def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=None):
+def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=None, rule_version=None):
     """Score one OOS catch-up re-test (the FOOS held-out replay) with the window rule.
 
     ``original``/``retest``: studio_evidence.read_export records; ``tester``: the original
@@ -650,11 +668,13 @@ def judge_retest(original, retest, *, tester, evidence_end=None, oos_formula=Non
     ranked), but FOOS is never judged before its full 1/4 O has been tested. `evidence_end` is the catch-up's
     resolved end (it may be any closed trading day, `auto_day`); the re-test is judged through the earlier of it
     and the re-test's own end, and the result stamps it as `evidenceEnd`. ``oos_formula``: the export's stamped
-    formula when known (``formula_of``); otherwise it is read from the dates.
+    formula when known (``formula_of``); otherwise it is read from the dates. ``rule_version``: the rule version to
+    judge under (``RULE_VERSIONS``; default ``RULE_VERSION``).
     """
     from pathlib import Path
     from studio_build_migration import refuse
     from studio_catchup_verdict import deal_window, equity_rows, equity_window
+    _version(rule_version)
     # Export records only: a build-migration record (or a verdict) handed in here is refused by type.
     refuse(original, 'The OOS-rule judge')
     refuse(retest, 'The OOS-rule judge')

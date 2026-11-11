@@ -3913,6 +3913,23 @@ def _export_qualification_command(args, *, now=None):
     return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))
 
 
+def _oos_rule_recount_command(args):
+    """oos-rule-recount: stored catch-ups re-judged under every OOS window rule version (studio_oos_recount).
+
+    Read-only. No DemoAgent is built, so no session, terminal lease, process inventory or broker is read, and nothing
+    is written anywhere. Each catch-up block passes the held-out guard like every other demo_agent reply: a locked
+    catch-up loses its verdicts and counts and adds nothing to the totals. Without a readable installation the locks
+    cannot be checked, so nothing is printed."""
+    from studio_heldout_guard import guard_output
+    from studio_oos_recount import recount
+    try:
+        install = load_installation(Path(args.installation).resolve(), verify_binary=False)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError('oos-rule-recount needs a readable --installation to apply the held-out guard: ' + str(error)[:200])
+    root = install['controller_state_root']
+    return recount(root, args.catchup_id, every=args.all, guard=lambda block: guard_output(install, block, root=root))
+
+
 ACCEPT_NEWS_HELP = ('Continue a news-on run (a SET with Mode_News 2-5) whose GOAT_News.csv changed since it started, or was '
                     'never recorded, as a new news lineage that is labelled and kept apart (studio_news_guard)')
 
@@ -4173,6 +4190,10 @@ def main(argv=None):
             catchup_drive.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     for name in ('catchup-status', 'catchup-cancel', 'catchup-report', 'catchup-reconcile'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
+    oos_recount = commands.add_parser('oos-rule-recount', help='Read-only: stored catch-ups judged again under every OOS window '
+                                                               'rule version, next to their stored verdict; writes nothing')
+    oos_recount.add_argument('--catchup-id', action='append', help='A stored catch-up to judge again; repeatable')
+    oos_recount.add_argument('--all', action='store_true', help='Every stored catch-up of this installation')
     commands.add_parser('holdup-validate', help='Non-executing hold-up test plan check').add_argument('--plan', type=Path, required=True)
     holdup_prep = commands.add_parser('holdup-prepare', help='Freeze one MT5 pass per frozen, hash-bound SET; no launch')
     holdup_prep.add_argument('--holdup-id', required=True)
@@ -4187,11 +4208,12 @@ def main(argv=None):
     for name in ('holdup-status', 'holdup-cancel', 'holdup-report', 'holdup-reconcile'):
         commands.add_parser(name).add_argument('--holdup-id', required=True)
     args = parser.parse_args(argv)
-    if args.command in ('gate-recommend', 'gate-stamp', 'export-qualification'):
+    if args.command in ('gate-recommend', 'gate-stamp', 'export-qualification', 'oos-rule-recount'):
         # Evidence-only commands: no terminal or session is read; only export-qualification --write
-        # appends its own new record files under the controller state root.
+        # appends its own new record files under the controller state root. oos-rule-recount writes nothing.
         try:
-            result = _gate_command(args) if args.command != 'export-qualification' else _export_qualification_command(args)
+            result = (_oos_rule_recount_command(args) if args.command == 'oos-rule-recount' else
+                      _gate_command(args) if args.command != 'export-qualification' else _export_qualification_command(args))
             print(json.dumps(dict(ok=True, result=result), sort_keys=True, default=str))
             return 0
         except Exception as exc:

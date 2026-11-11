@@ -1148,6 +1148,19 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   desktop sift matches it through `controller/fixtures/oos-holdout-gate-cases.json`.\r
   It sits next
   to the export qualification stamp and the catch-up verdict; neither changed.
+- Recount (read-only): `oos-rule-recount --catchup-id <id>` (repeatable) or `--all` reads stored
+  catch-ups and judges every member again, from its own stored evidence, under each OOS rule
+  version the controller knows (`rule_versions`), next to the verdict it stored. Per file
+  (`catchups[].members[]`): `catchup_id`, `alias`, `symbol`, the source SET (`original_set`,
+  `original_set_sha256`) and under `oos_rule` the `stored` status and one block per version
+  (`v1`, ...) with `status`, `reasons`, `in_sample_dd`, `in_sample_windows`, `boos_trades`,
+  `foos_trades` and the per-window numbers, plus `v1_matches_stored`. Per catch-up `counts`
+  and over all of them `totals`: pass counts under `stored` and each version, `gained` and
+  `lost` between the oldest and newest version, and how many re-judged files match their
+  stored verdict. It writes nothing (no report, receipt or cache), takes no terminal lease
+  and reads no process, session or broker, so it is safe while research runs. A member whose
+  stored files are missing or changed is listed `readable: false` with the reason and is
+  never judged; a catch-up under a held-out lock is redacted and left out of the totals.
 - Demo after export continues FOOS but does not scale with O: at least 4 weeks AND at
   least 30 trades, decision due by 6 weeks; under 30 trades at 6 weeks is "too slow to
   judge here" (never promote on thin data); M1 and other high-frequency sets are judged

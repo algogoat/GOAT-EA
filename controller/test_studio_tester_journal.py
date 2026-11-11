@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -226,16 +227,21 @@ class CatchupJournalTests(unittest.TestCase):
         self.fixture = test_demo_catchup_agent.DemoCatchupAgentTests()
         self.fixture.setUp(); self.addCleanup(self.fixture.doCleanups)
         self.agent, self.data, self.root = self.fixture.agent, self.fixture.data, self.fixture.root
-        self.blocks, self.write_journal = {}, True
+        self.blocks, self.write_journal, self.passes, self.split_at_midnight = {}, True, 0, False
         finish = self.fixture.finish_member
         def finish_member(index):
             # The member's MT5 wrote its journal while it ran (the last second of the fixture's clock, MT5 local time).
             if self.write_journal:
                 when = datetime.fromtimestamp(self.fixture.now - 0.9)
                 alias = self.fixture.manifest()['members'][index]['alias']
-                self.blocks[index] = [line(when, alias + ': testing of Experts\\GOAT-EA\\GOAT V1.49.ex5 started'),
-                                      line(when + timedelta(milliseconds=400), 'EURUSD,M1: 100% real ticks', source='Core 1'),
-                                      line(when + timedelta(milliseconds=800), alias + ': successfully finished')]
+                self.blocks[index] = ([line(when, alias + ': testing of Experts\\GOAT-EA\\GOAT V1.49.ex5 started')]
+                                      + [line(when + timedelta(milliseconds=100 + n), 'pass %04d returned result' % n, source='Core 1')
+                                         for n in range(self.passes)]
+                                      + [line(when + timedelta(milliseconds=400), 'EURUSD,M1: 100% real ticks', source='Core 1'),
+                                         line(when + timedelta(milliseconds=800), alias + ': successfully finished')])
+                if self.split_at_midnight and index == 0:
+                    # The member ran over midnight and the next day's log is gone: only the first day's line is on disk.
+                    self.blocks[index] = self.blocks[index][:1]
                 self.log = write_log(self.data, when, self.blocks[index])
             finish(index)
         self.fixture.finish_member = finish_member
@@ -267,11 +273,63 @@ class CatchupJournalTests(unittest.TestCase):
         self.assertEqual(sha256(log), source)
         check = self.agent.tester_journal_check(catchup_id='cu1')
         self.assertEqual((check['ok'], check['writes'], check['counts'], check['status']), (True, False, dict(ok=2), 'completed'))
-        self.assertEqual((check['complete'], check['covers']), (True, 'every_member'))     # each member's whole block
+        self.assertEqual((check['complete'], check['covers'], check['partial']), (True, 'every_member', []))     # each member's whole block
+        self.assertEqual([row['coverage'] for row in check['members']], [dict(whole=True, truncated=[], days_without_lines=[], plain=None)] * 2)
         self.assertEqual([(row['journal'], row['problems'], len(row['files'])) for row in check['members']], [('ok', [], 1)] * 2)
         # A status read after the end copies nothing again and changes no record.
         self.agent.catchup_status('cu1')
         self.assertEqual(read_seed_json(self.root / 'catchups/cu1/state.json')['members'], members)
+
+    def test_a_member_cut_at_the_bound_is_intact_but_the_catchup_is_not_complete(self):
+        """Codex on GOAT-EA#319: a copy cut at the bound verifies, and is still not the member's whole journal."""
+        self.passes = 40
+        with patch.object(journal, 'MAX_MEMBER_BYTES', 1200):
+            members = self.run_catchup()
+        for index, item in enumerate(members):
+            (copied,) = item['tester_journal']['files']
+            self.assertEqual(item['tester_journal']['status'], 'copied')
+            self.assertGreater(copied['truncated']['omitted_lines'], 0)
+            self.assertLess(copied['lines'], len(self.blocks[index]))
+            self.assertEqual(journal.verify(item['tester_journal']), ('ok', []))              # integrity: the copy is what was recorded
+        check = self.agent.tester_journal_check(catchup_id='cu1')
+        self.assertEqual((check['ok'], check['complete'], check['counts']), (True, False, dict(ok=2)))
+        self.assertEqual([row['journal'] for row in check['members']], ['ok', 'ok'])
+        for row, item in zip(check['members'], members):
+            cut = item['tester_journal']['files'][0]
+            self.assertEqual((row['coverage']['whole'], row['coverage']['days_without_lines']), (False, []))
+            self.assertEqual(row['coverage']['truncated'], [dict(day=cut['day'], **cut['truncated'])])
+            self.assertEqual(row['coverage']['plain'], 'the copy of %s was cut at the 1200-byte bound (%d lines left out of a %d-byte block)'
+                             % (cut['day'], cut['truncated']['omitted_lines'], cut['truncated']['block_bytes']))
+        self.assertEqual([entry['name'] for entry in check['partial']], [row['alias'] for row in check['members']])
+        self.assertIn('is in place and matches its recorded SHA-256, but 2 of 2 are not the member\'s whole journal: ', check['plain'])
+        self.assertNotEqual(check['plain'], 'Every tester journal copy of catch-up cu1 is in place and matches its recorded SHA-256.')
+
+    def test_a_member_over_midnight_whose_next_day_log_is_gone_is_intact_but_the_catchup_is_not_complete(self):
+        """Codex on GOAT-EA#319: the first day's copy exists, the following day's log is missing: copied, not complete."""
+        midnight = datetime.fromtimestamp(self.fixture.now).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        self.agent.catchup_prepare('cu1', self.fixture.plan)
+        self.fixture.now = midnight.timestamp() - 0.4               # the first member starts 0.4 s before local midnight
+        observation = self.data / 'MQL5/Files/GOATStudio/ui-observation.json'
+        os.utime(observation, (self.fixture.now, self.fixture.now))  # the EA's owner feedback is fresh on that clock
+        self.split_at_midnight = True
+        self.fixture.auto = True
+        self.assertEqual(self.agent.catchup_start('cu1', 60)['status'], 'completed')
+        members = read_seed_json(self.root / 'catchups/cu1/state.json')['members']
+        first, second = (item['tester_journal'] for item in members)
+        day, next_day = (midnight - timedelta(days=1)).strftime('%Y%m%d'), midnight.strftime('%Y%m%d')
+        self.assertEqual((first['status'], [item['day'] for item in first['files']]), ('copied', [day]))
+        self.assertEqual(first['days_without_lines'], [dict(day=next_day, reason='Tester\\logs\\%s.log does not exist' % next_day)])
+        self.assertEqual((second['status'], second['days_without_lines']), ('copied', []))        # ran wholly on the next day
+        check = self.agent.tester_journal_check(catchup_id='cu1')
+        self.assertEqual((check['ok'], check['complete'], check['counts']), (True, False, dict(ok=2)))
+        rows = check['members']
+        self.assertEqual((rows[0]['journal'], rows[0]['coverage']['whole'], rows[0]['coverage']['truncated']), ('ok', False, []))
+        self.assertEqual(rows[0]['coverage']['days_without_lines'], first['days_without_lines'])
+        self.assertEqual(rows[0]['coverage']['plain'], 'Tester\\logs\\%s.log does not exist' % next_day)
+        self.assertEqual((rows[1]['journal'], rows[1]['coverage']), ('ok', dict(whole=True, truncated=[], days_without_lines=[], plain=None)))
+        self.assertEqual(check['partial'], [dict(name=rows[0]['alias'], coverage=rows[0]['coverage'])])
+        self.assertIn('but 1 of 2 is not the member\'s whole journal: %s: Tester\\logs\\%s.log does not exist.' % (rows[0]['alias'], next_day),
+                      check['plain'])
 
     def test_a_catchup_whose_journal_was_gone_is_recorded_missing_and_the_check_refuses(self):
         self.write_journal = False
@@ -358,6 +416,7 @@ class BatchJournalTests(unittest.TestCase):
         check = journal.check_batch(fixture.c.root, job)
         self.assertEqual((check['ok'], check['journal'], check['member_count'], check['writes']), (True, 'ok', 2, False))
         self.assertEqual((check['complete'], check['covers']), (False, 'last_member_only'))
+        self.assertEqual((check['coverage']['whole'], check['coverage']['plain']), (False, 'it holds the batch\'s last member only'))
         self.assertIn('is in place and matches its recorded SHA-256, but it is not the batch\'s journal. This copy holds the last '
                       'member\'s lines only (from %s)' % record['files'][0]['first_line_time'], check['plain'])
         self.assertNotIn('Every tester journal copy', check['plain'])

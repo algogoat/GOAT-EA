@@ -1046,9 +1046,13 @@ only read. A day log that is gone, or holds no line of the run, is recorded as `
 the reason. `tester-journal-check` is read-only: per catch-up member (or for the batch) it says
 whether the copy is in place and still matches its recorded SHA-256, and exits 2 with
 `ok:false`, `code:"TESTER_JOURNAL_MISSING"` when one is missing or changed, or the run has not
-finished. `ok` means the recorded copies are intact; `complete` says whether they are the run's
-whole journal: true only for a catch-up whose every member's copy is intact, always false for a
-Prove batch (`covers:"last_member_only"`). A round close runs it for every catch-up it counts.
+finished. `ok` means the recorded copies are intact (integrity); `complete` says whether they
+are the run's whole journal (coverage): true only for a catch-up whose every member's copy is
+intact and whole, always false for a Prove batch (`covers:"last_member_only"`). A member's copy
+is not whole when its block ran past the 64 MiB bound (the first and last half are kept) or
+when a later day of its run had no log; each member row carries `coverage` (`whole`,
+`truncated`, `days_without_lines`, `plain`) and `partial` names the members that are not
+whole. A round close runs it for every catch-up it counts and requires `complete:true`.
 
 The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
 paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the

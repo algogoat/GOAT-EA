@@ -290,8 +290,8 @@ def keep_member(install, evidence_dir, since, until):
     """A catch-up member's journal block: inside its evidence folder, or beside it when the member left none."""
     folder = Path(evidence_dir)
     if folder.is_dir():
-        return keep(install.get('terminal_data_root'), since, until, folder)
-    return keep(install.get('terminal_data_root'), since, until, folder.parent, name=folder.name + '.' + MEMBER_FILE)
+        return keep(install.get('terminal_data_root'), since, until, folder, limit=MAX_MEMBER_BYTES)
+    return keep(install.get('terminal_data_root'), since, until, folder.parent, name=folder.name + '.' + MEMBER_FILE, limit=MAX_MEMBER_BYTES)
 
 
 def _last_member_words(record):
@@ -339,20 +339,45 @@ def verify(record, *, locate=None):
     return state, problems
 
 
+def coverage(record):
+    """What an intact copy covers of its run's journal, which is a separate question from whether the copy is intact:
+    ``whole`` only when no day of the run is without lines and no copy was cut at the bound. A member whose block ran
+    past MAX_MEMBER_BYTES keeps its first and last half (``truncated``), and a run over midnight whose later day log was
+    gone is still recorded ``copied`` on its first day (``days_without_lines``): both verify, neither is the whole
+    journal. A batch's copy holds its last member only and is never whole."""
+    files = (record or {}).get('files') or []
+    cut = [dict(day=item.get('day'), **item['truncated']) for item in files if item.get('truncated')]
+    without = list((record or {}).get('days_without_lines') or [])
+    last_member = (record or {}).get('covers') == LAST_MEMBER_ONLY
+    said = ['the copy of %s was cut at the %d-byte bound (%d lines left out of a %d-byte block)'
+            % (item['day'], item['bound_bytes'], item['omitted_lines'], item['block_bytes']) for item in cut]
+    said += [item['reason'] for item in without]
+    if last_member:
+        said.append('it holds the batch\'s last member only')
+    return dict(whole=bool(files) and not cut and not without and not last_member, truncated=cut, days_without_lines=without,
+                plain=None if not said else '; '.join(said))
+
+
 def _files(record):
     return [{key: item.get(key) for key in ('day', 'path', 'sha256', 'bytes', 'lines', 'first_line_time', 'last_line_time', 'truncated')}
             for item in (record or {}).get('files') or []]
 
 
 def _result(kind, run_id, status, finished, rows, counts):
-    """``ok``: every recorded copy is in place and unchanged. ``complete``: the copies are the run's whole journal,
-    which only a catch-up's can be; a batch's copy holds its last member only and is never complete."""
+    """``ok``: every recorded copy is in place and unchanged (integrity). ``complete``: the copies are the run's whole
+    journal (coverage), which only a catch-up's can be, and only when no member's copy was cut at the bound or lacks a
+    day of its run (``partial`` names those members); a batch's copy holds its last member only and is never complete."""
     ok = finished and not any(counts.get(state) for state in ('missing', 'changed', 'running'))
+    partial = [row for row in rows if row['journal'] == 'ok' and not row['coverage']['whole']]
     if ok and kind == 'batch' and not counts.get('ok'):
         plain = 'Batch %s never launched, so there is no tester journal to keep.' % run_id
     elif ok and kind == 'batch':
         plain = ('The tester journal copy of batch %s is in place and matches its recorded SHA-256, but it is not the batch\'s '
                  'journal. ' % run_id) + _last_member_words(dict(files=[item for row in rows for item in row['files']]))
+    elif ok and partial:
+        named = '; '.join('%s: %s' % (row['name'], row['coverage']['plain']) for row in partial)[:900]
+        plain = ('Every tester journal copy of %s %s is in place and matches its recorded SHA-256, but %d of %d %s not the '
+                 'member\'s whole journal: %s.' % (kind, run_id, len(partial), len(rows), 'is' if len(partial) == 1 else 'are', named))
     elif ok:
         plain = 'Every tester journal copy of %s %s is in place and matches its recorded SHA-256.' % (kind, run_id)
     elif not finished:
@@ -361,8 +386,9 @@ def _result(kind, run_id, status, finished, rows, counts):
         named = '; '.join('%s: %s' % (row['name'], row['problems'][0]) for row in rows if row['journal'] in ('missing', 'changed'))[:600]
         plain = ('%d of %d tester journal %s of %s %s missing or changed: %s.'
                  % (counts.get('missing', 0) + counts.get('changed', 0), len(rows), 'copies' if len(rows) != 1 else 'copy', kind, run_id, named))
-    return dict(schema=CHECK_SCHEMA, kind=kind, id=run_id, status=status, ok=ok, complete=ok and kind != 'batch',
-                covers=LAST_MEMBER_ONLY if kind == 'batch' else 'every_member', counts=counts, plain=plain, writes=False)
+    return dict(schema=CHECK_SCHEMA, kind=kind, id=run_id, status=status, ok=ok, complete=ok and kind != 'batch' and not partial,
+                covers=LAST_MEMBER_ONLY if kind == 'batch' else 'every_member', counts=counts,
+                partial=[dict(name=row['name'], coverage=row['coverage']) for row in partial], plain=plain, writes=False)
 
 
 def check_catchup(controller_root, catchup_id):
@@ -390,7 +416,7 @@ def check_catchup(controller_root, catchup_id):
             journal, problems = verify(item.get('tester_journal'), locate=locate)
         counts[journal] = counts.get(journal, 0) + 1
         rows.append(dict(name=spec['alias'], alias=spec['alias'], status=item['status'], journal=journal, problems=problems,
-                         files=_files(item.get('tester_journal'))))
+                         files=_files(item.get('tester_journal')), coverage=coverage(item.get('tester_journal'))))
     result = _result('catch-up', catchup_id, state['status'], state['status'] in FINISHED, rows, counts)
     return result | dict(members=rows)
 
@@ -407,8 +433,9 @@ def check_batch(controller_root, job):
         journal, problems = 'not_run', []            # never launched: there is no journal to keep
     else:
         journal, problems = verify(record)
-    rows = [dict(name=job['job_id'], journal=journal, problems=problems, files=_files(record))]
+    rows = [dict(name=job['job_id'], journal=journal, problems=problems, files=_files(record), coverage=coverage(record))]
     members = (job.get('configuration') or {}).get('batch_members') or [job.get('configuration')]
     result = _result('batch', job['job_id'], job.get('status'), finished, rows, {journal: 1})
     return result | dict(member_count=len(members), result_path=job.get('completion_path'), journal=journal, problems=problems,
-                         files=_files(record), days_without_lines=(record or {}).get('days_without_lines') or [])
+                         files=_files(record), coverage=coverage(record),
+                         days_without_lines=(record or {}).get('days_without_lines') or [])

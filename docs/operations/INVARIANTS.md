@@ -133,7 +133,9 @@ the terminal's tester journal into its evidence before it launches anything else
 control, and records the copy (path, SHA-256, bytes, first and last line time) in the member's
 stored result. A journal that is gone is recorded as missing with the reason, never invented.
 The journal itself is only read. A round close counts a catch-up only when
-`tester-journal-check` says every member's copy is in place and unchanged. A Prove batch's
+`tester-journal-check` says every member's copy is in place and unchanged (`ok`) and is the
+member's whole journal (`complete`): a copy cut at the bound, or one that lacks a day of its
+run, is intact and still not complete. A Prove batch's
 journal cannot be kept whole: the copy made at its finish holds its last member only, is
 recorded as `covers: last_member_only`, and is never called complete. A Prove member's proof
 stays its report, its `effective-inputs.set` and its capture (Claude-Mac goatai#2750
@@ -153,7 +155,9 @@ stays its report, its `effective-inputs.set` and its capture (Claude-Mac goatai#
   and the first line's time in `covers_plain`.
 - `demo_agent.py tester-journal-check --catchup-id <id> | --batch-id <id>`: exit 2 and
   `ok:false` (`TESTER_JOURNAL_MISSING`) when a copy is missing, changed, or the run is not
-  finished. `complete` is true only for a catch-up whose every copy is intact; for a batch it is
+  finished. `complete` is computed apart from integrity (`coverage`): true only for a catch-up
+  whose every copy is intact, not truncated and without a day of its run missing; each member
+  row states its coverage and `partial` names the members that are not whole. For a batch it is
   always false and the sentence says the copy is not the batch's journal.
 
 **Tests.** `controller/test_studio_tester_journal.py`: the block is copied byte for byte and
@@ -162,7 +166,9 @@ gone, or without a line of the run, is recorded missing and nothing is written; 
 midnight; a line MT5 is still writing; the bound; a batch launched the day before whose day
 log holds only its last member (copied, `covers: last_member_only`, the launch day listed as
 gone); the real demo catch-up lane end to end (each member's block in its evidence folder, the
-check passes and is complete; no journal: recorded missing and the check refuses with exit 2; a
+check passes and is complete; a member cut at the bound, and a member over midnight whose next
+day's log is gone: intact, `ok`, and not complete, with the coverage stated per member; no
+journal: recorded missing and the check refuses with exit 2; a
 copy altered or removed afterwards: the check refuses); the real batch finish (copied and
 recorded in `result.json`, the check intact but never complete; no journal: the batch still
 finishes and the check refuses).

@@ -1,0 +1,16 @@
+{
+ "schema": "hunt-board-input-v1",
+ "round": "fixture cut from round 13a first wave + O3-pool (2026-11-11)",
+ "cap": 3,
+ "machines": [
+  "t3",
+  "banker"
+ ],
+ "reading": "held source group (prereg), cap 3, export order",
+ "disclosure_reason": "ledger PositionJoin, inherited",
+ "disclosure_ruling": "GOAT-EA#315 comment 6791427047",
+ "prove_reason": "Fixed export input mismatch: Ledger_Mode",
+ "report_ruling": "goatai#2750 comment 6791842328",
+ "real_ticks": "100% real ticks",
+ "o3_ruling": "goatai#2750 comment 6791533611"
+}

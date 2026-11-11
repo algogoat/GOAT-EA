@@ -37,6 +37,9 @@ const REMOVED={
   '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))',
   '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL));',
   '&& (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL));',
+  // B54's identity (Claude-Mac goatai#2750 6781557904 item 1): its own build ID and marker replace B53's.
+  '#define   GOAT_BUILD_ID "V1.49-BETA17-53"',
+  '#define   GOAT_BUILD_MARKER "B53"',
  ],
  'GOATStudioSettingTypes.mqh':[
   '+"Random_Seed|Single_BE_ATR|Single_Trail_Start_ATR|Single_Trail_ATR|Single_Partial_ATR|Single_Partial_Fraction|Single_Partial_BE|"; // B51 (beta-1a, beta-1b, section 8.3): the B50-beta optimization axes (Random_Direction is an sinput, never one)', // A0: the list continues with the B54 axes
@@ -53,6 +56,9 @@ const NEW_DEFAULTS={BRK_Mode:['sinput','ENUM_MODE_BRK','BRK_Disabled'],BRK_TF_:[
 const NEW_ENUMS={ENUM_MODE_BRK:{BRK_Disabled:0,BRK_NBar:1,BRK_PriorDay:2},ENUM_MODE_ORB:{ORB_Disabled:0,ORB_Breakout:1},
  ENUM_ORB_CLOCK:{ORB_Clock_NewYork:0,ORB_Clock_London:1}};
 const GROUP='====SINGLE BREAKOUT ENTRIES (B54)====';
+// B54's identity lines (as test_b51_no_drift.cjs's IDENTITY_LINES): the one unmarked change, since the build ID names no
+// marker; each appears exactly once in the entrypoint, and B53's are gone (REMOVED above).
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-54"','#define   GOAT_BUILD_MARKER "B54"'];
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
@@ -119,10 +125,14 @@ for(const f of CHANGED){
  assert.ok(hunks.length>0,f+' differs from B53');
  for(const {added,removed} of hunks){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B53 line(s) is unmarked');
-  for(const n of added){const text=lines[n-1];assert.ok(/B54/.test(text)||inBlock[n-1],f+':'+n+' changed since B53 without a B54 marker: '+text.trim());}
+  for(const n of added){const text=lines[n-1];assert.ok(/B54/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)),f+':'+n+' changed since B53 without a B54 marker: '+text.trim());}
  }
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[])].sort(),f+': the B53 lines removed are exactly REMOVED');
 }
+{const main=read('GOAT V1.49.mq5').toString('utf8').split('\r\n');
+ for(const l of IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,1,'B54\'s identity line, once: '+l);
+ for(const l of REMOVED['GOAT V1.49.mq5'].filter(x=>x.startsWith('#define   GOAT_BUILD_'))) assert.equal(main.filter(x=>x.trim()===l).length,0,'B53\'s identity line is gone: '+l);
+ checks++;}
 for(const f of Object.keys(REMOVED)) assert.ok(CHANGED.includes(f),'REMOVED names only CHANGED files: '+f);
 checks++;
 

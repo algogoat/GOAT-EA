@@ -1,0 +1,22 @@
+{
+  "schema": "goat-ea-hotfix-build-v1",
+  "compile_started_at": "2026-11-10T23:42:51.8027614Z",
+  "compiler_sha256": "cf2750bde55d98a1f3b4e56bcdd4f59300d0cff5caa6760985f7ef2c2cc12229",
+  "compiler_mode": "/portable, IDLE, outside every terminal folder; B47 include root copied hash-equal (compile-ea.ps1 9891B694)",
+  "source_head": "the commit that adds this folder (its parent dbcbcf7a130901e7d7363bf0f12318f0a39cee9f is the compiled tree; only this folder, the pinned-build row and the tests bound to this identity differ)",
+  "source_sha256": "12fffe155eecb004534bd735208fe28921db0a4b995a9a0c28da07d8a681cc39",
+  "staged_source_sha256": "12fffe155eecb004534bd735208fe28921db0a4b995a9a0c28da07d8a681cc39",
+  "header_sha256": "728d7b3ba739941c5c77fd9de072eadfac930cbb09e553e3c864324e81a5fdd8",
+  "closure_files": 42,
+  "outcome": "COMPILE_OK",
+  "result_line": "Result: 0 errors, 0 warnings, 35384 ms elapsed, cpu='X64 Regular'",
+  "metaeditor_process_exit_code": 1,
+  "stage_cleaned": true,
+  "runtime_output_overwritten": false,
+  "output": {
+    "sha256": "5744034eeb1085f0fd6b3e40bf93e4395c8149f7527151e3e87489582e00cad5",
+    "bytes": 2701902
+  },
+  "reproducibility": "MetaEditor output is not byte-reproducible; this is the one binary to use. Its closure is B53's 42 files; five differ from B53 (the entrypoint, GOAT_Inputs_Definitions.mqh, GOAT_NYClock.mqh, GOATPortfolioChildAudit.mqh, GOATStudioSettingTypes.mqh), each line marked B54 or inside a marked block (scripts/test_b54_no_drift.cjs).",
+  "native_qualification": "NONE: not run in the tester or on a chart yet; docs/b54/FIRST_EX5_CHECKS.md lists the checks owed"
+}

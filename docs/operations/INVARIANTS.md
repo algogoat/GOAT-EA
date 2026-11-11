@@ -166,7 +166,9 @@ refusal of the wave 3 ladder, reproduced; a copy that loses the order is refused
 `prepare-batch` accepts, stages and queues `EMA_Mode=1||0||1||2||Y`; the seed lane and
 `prepare-batch` both accept it and both refuse `RSI_TF_=15||5||10||15||Y` before anything is
 staged; a member only the store refuses is refused before staging and keeps its batch ID; the
-five ladders the sorted copy allowed are refused through the draft path, and native ones pass.
+five ladders the sorted copy allowed are refused through the draft path, and native ones pass;
+the three store paths without prepare-batch's plan check (the single-job `prepare`, a raw
+`submit`, a bridge request) each refuse `RSI_Price=5||5||1||6||Y` and accept the wave 3 ladder.
 `controller/test_studio_enum_ladder_native.py` `CompactControllerPaths` now builds the store's
 copy as production does and prepares the native `RSI_TF_=1||0||1||1||Y` through it.
 `controller/test_studio_ea_init_rules.py` `SeedLaneTesterTests`: a tester-refused job fails at

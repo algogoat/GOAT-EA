@@ -214,5 +214,75 @@ class DraftPathTests(ProductionControllerCase):
         self.assertTrue(receipt)
 
 
+class OtherStorePathTests(ProductionControllerCase):
+    """Claude-Mac goatai#2750 6793727135: the single-job ``prepare``, a raw ``submit`` and a bridge request reach the
+    store without prepare-batch's plan check. Each validates against the store's own schema copy
+    (studio_command_store.submit: draft.replace_strategy, queue.enqueue), so with that copy in declaration order each
+    refuses a ladder that is not native and accepts a native one. On the name-sorted copy each did the opposite for
+    these two ladders."""
+    NOT_NATIVE = dict(RSI_Price='5||5||1||6||Y')      # ENUM_MODE_PRICE is declared 1, 6, 7, 5: 5, 6 are not consecutive items
+    REFUSAL = '^' + ENUM_LADDER_CODE + r': .*RSI_Price=5\|\|5\|\|1\|\|6\|\|Y walks 5, 6 by 1 over ENUM_MODE_PRICE \(declared in order 1, 6, 7, 5\)'
+
+    def request(self, request_id, **changes):
+        state = self.c.state()
+        return dict(schema_version=1, request_id=request_id, terminal_id=self.c.terminal, run_id=self.c.run,
+                    expected_revision=state['revision'], generation=state['generation'], command='draft.replace_strategy',
+                    payload=dict(schema_hash=self.c.store.input_schema_hash, values=defaults(**changes)))
+
+    def test_single_job_prepare_refuses_a_ladder_that_is_not_native_and_stages_the_wave_3_ladder(self):
+        config = self.root / 'settings.json'
+        config.write_text(json.dumps(dict(tester=self.fixture.tester, export=self.fixture.exports)))
+        with self.assertRaisesRegex(ValueError, self.REFUSAL):
+            self.c.prepare('job-price', self.source('price.set', **self.NOT_NATIVE), config)
+        self.assertEqual((self.c.state()['queue'], (self.c.root / 'packages' / 'job-price').exists()), ([], False))
+        prepared = self.c.prepare('job-ema', self.source('ema.set', EMA_Mode=WAVE3), config)
+        self.assertEqual(Path(prepared['package']), self.c.root / 'packages' / 'job-ema')
+        job = self.c.job('job-ema')
+        self.assertEqual((job['status'], job['configuration']['strategy']['axes']['EMA_Mode']), ('pending', 3))
+
+    def submit_command(self, request):
+        """The raw `submit` operation of the goat_studio command line, on this installation."""
+        import goat_studio
+        path = self.root / (request['request_id'] + '.json')
+        path.write_text(json.dumps(request))
+        self.c.store.close(); self.c.store = None
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = goat_studio.main(['--installation', str(self.fixture.path), 'submit', '--request', str(path)])
+        self.c.open()
+        return code, json.loads(output.getvalue())
+
+    def test_a_raw_submit_refuses_a_ladder_that_is_not_native_and_accepts_the_wave_3_ladder(self):
+        code, result = self.submit_command(self.request('raw-price', **self.NOT_NATIVE))
+        self.assertEqual(code, 2, result)
+        self.assertRegex(result['error'], self.REFUSAL)
+        self.assertIsNone(self.c.state()['strategy_draft'])
+        code, result = self.submit_command(self.request('raw-ema', EMA_Mode=WAVE3))
+        self.assertEqual((code, result['ok']), (0, True), result)
+        self.assertEqual(self.c.state()['strategy_draft']['axes'], dict(EMA_Mode=3))
+
+    def bridge(self, request):
+        folder = self.c.bridge.root / 'agent'
+        (folder / 'inbox').mkdir(parents=True, exist_ok=True)
+        (folder / 'inbox' / (request['request_id'] + '.json')).write_text(json.dumps(request), encoding='utf-8')
+        self.c.bridge.pump()
+        return json.loads((folder / 'outbox' / (request['request_id'] + '.json')).read_text(encoding='utf-8'))
+
+    def test_a_bridge_request_refuses_a_ladder_that_is_not_native_and_accepts_the_wave_3_ladder(self):
+        answer = self.bridge(self.request('bridge-price', **self.NOT_NATIVE))
+        self.assertEqual(answer['ok'], False)
+        self.assertRegex(answer['error'], self.REFUSAL)
+        self.assertIsNone(self.c.state()['strategy_draft'])
+        answer = self.bridge(self.request('bridge-ema', EMA_Mode=WAVE3))
+        self.assertEqual(answer['ok'], True, answer)
+        self.assertEqual(self.c.state()['strategy_draft']['axes'], dict(EMA_Mode=3))
+
+    def test_the_name_sorted_copy_judged_both_ladders_the_other_way(self):
+        old = name_sorted(SCHEMA)
+        validate_strategy(defaults(**self.NOT_NATIVE), old)                           # allowed: 1, 5, 6, 7 in name order
+        with self.assertRaisesRegex(ValueError, '^' + ENUM_LADDER_CODE):
+            validate_strategy(defaults(EMA_Mode=WAVE3), old)                          # refused: 5, 4, 0, 3, 1, 2 in name order
+
+
 if __name__ == '__main__':
     unittest.main()

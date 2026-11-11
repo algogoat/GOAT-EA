@@ -185,6 +185,108 @@ appended optimization axes (`Pinned seed inputs changed a template trading value
 Whether the EA's `OnTesterInit` range check accepts `EMA_Mode` 0..2 in a Prove batch is not
 shown by a run; it is the form the rule calls native.
 
+## INV-PROVE-01: a Prove member runs only the inputs its own SET states
+
+**Incident (GOAT-EA#315, hunt round 13a, found at the close on 2026-11-11).** In three Prove
+batches on B54, every member after the first one whose SET set `Ledger_Mode=1` exported with
+`Ledger_Mode=1`, although its own SET omitted it: 61 exports were proved on
+`Ledger_PositionJoin` unasked. The Prove report marked each of them `unverified`
+(`Fixed export input mismatch: Ledger_Mode`), but the batch result did not say so and
+`evidence-scan` never read it, so the exports were re-tested as they were.
+
+**Statement.**
+1. No Prove member runs a value the tester kept from the member before it. Until the EA names
+   every declared input in every member's config itself (the SET's own values, and every input
+   the SET omits at its compiled default; due with B55), a batch whose members do not all state
+   the same inputs is refused at `prepare-batch`.
+2. An export the Prove report marks `unverified` is never planned for a catch-up, or counted,
+   without a disclosed tag.
+
+**Enforcement.**
+- Part 2, controller. `studio_export_scan.unverified_summary` puts the count, the members and
+  the inputs involved into the batch result (`unverified_exports`, written by
+  `studio_finish.finish`). `studio_catchup.UnverifiedExports` reads the retained results;
+  `apply_unverified` marks such an export `ineligible` (`UNVERIFIED_EXPORT`) in `evidence_scan`
+  and in `CatchupRunner._build`, unless the plan's `disclosed_unverified` names its SET SHA-256
+  with the tag it is counted under. The tag is carried on the row, the member and its evidence
+  version or build-migration record (`original.unverified_disclosed`). What `unverified` means
+  is unchanged
+  (`studio_export_scan.scan_exports`, `studio_export_inputs.verify_export_inputs`).
+- Part 1, controller: enforced by refusal. `studio_batch.check_member_inputs`, called by
+  `prepare_batch` for new staging before anything is staged, refuses `BATCH_MIXED_INPUTS` when
+  an input is stated by some members' SETs and omitted by others, and lists each such input
+  with the members that state it. `EA_Desc` (set per member by the batch) and the appended
+  optimization axes the EA writes itself (`studio_optimization_inputs.self_named_inputs`) are
+  not compared. A batch whose members all state the same inputs is safe after any other batch,
+  because its first member starts from a complete config. The refusal does not apply on a
+  build listed in `studio_batch.BUILDS_NAMING_EVERY_INPUT` (none today). A batch staged before
+  the check and not started is judged by `check_staged_inputs` when `prepare-batch` reuses it
+  and where a first start begins, before any consent, journal, reservation or native effect
+  (`studio_batch_driver.run`, `studio_config_start.start`, `goat_studio.Controller.start`); a
+  batch with a launch intent, or no longer pending, is never judged again.
+- Part 1, EA: the fix itself goes into `GoatStudioExplicitOptimizationInputs`
+  (`GOATOptimizationInputs.mqh`), which must write every declared input a member's SET omits,
+  not only the appended optimization axes. `Inputs.GOAT` stays the frozen SET bytes. When a
+  build does this, its build ID is added to `BUILDS_NAMING_EVERY_INPUT`.
+- Why pinning the member inis the controller stages would not have reached the members that
+  leaked:
+  - The first member is complete. Its startup config is built from the paste inputs, which carry
+    every contract input (`studio_input_readback.explicit_paste_inputs`), plus the runtime pins
+    (`studio_startup_config.startup_config`), and the tester profile is written from those bytes
+    (`studio_config_start`, `studio_tester_profile`). Only member 0 feeds that payload
+    (`studio_native_request._validate_material`).
+  - Every later member is launched by the EA, not the controller. `ActivatePending`
+    (`Optimizer.mqh`) reads the member's `inputs\<alias>\Inputs.GOAT`, passes it through
+    `GoatStudioExplicitOptimizationInputs` (`GOATOptimizationInputs.mqh`), writes that as
+    `[TesterInputs]` into `inputs\<alias>\config.ini` and the active config, and relaunches MT5 on
+    it (`AddCommand`, `Tester.mqh`). The `<alias>.ini` the controller staged is overwritten.
+  - `Inputs.GOAT` is the member's frozen SET, byte for byte
+    (`prepare_native_campaign.prepare`), and `GoatStudioExplicitOptimizationInputs` adds only the
+    appended optimization axes a SET omits. So an omitted appended `sinput` or string is never
+    named: `Ledger_Mode`, `Engine_Mode`, `Clock_Mode`, `Server_Clock_Model`,
+    `Server_UTC_Offset`, `NY_Session`, the nine B49b inputs, `Random_Direction`,
+    `Single_Flat_Only`, `BRK_Mode`, `ORB_Mode` and `ORB_Clock`, and the inputs declared outside
+    the contract (`studio_tester_report.RUNTIME_INPUT_DEFAULTS`).
+  - The rule that a batch never mixes members that state one of those inputs with members that
+    omit it (Claude-Mac GOAT-EA#315 6791427047 item 4a) was applied by hand before
+    `check_member_inputs`.
+
+**Tests.** `controller/test_studio_unverified_exports.py`: the real scan marks an export that
+inherited `Ledger_Mode=1` `unverified` and passes one that matches its SET (omitted on both
+sides, and stated as 1 on both); the batch summary counts them and names the input; the real
+`finish` stores it in `result.json` and the job's completion; `evidence_scan` marks the
+unverified export `ineligible` with the reason and leaves the clean export of the same batch;
+a disclosed export stays eligible and carries its tag; a library copy is found by its SHA-256;
+only the export's own run is read, and an unreadable result refuses; the planner never plans an
+unverified export, plans the clean one, and plans a disclosed one with the tag on its member;
+a build migration of a disclosed export carries the tag in its `build-migration-retest.json`,
+and one of a clean export adds nothing.
+`controller/test_studio_batch_mixed_inputs.py`: `prepare-batch` refuses a member that sets
+`Ledger_Mode=1` before one that omits it (either order), names the input and both members and
+stages nothing; round 13a's real p1 composition
+(`controller/fixtures/round13a-t3-prove-p1-member-inputs.json`: the names each of the 28
+members of `hunt-t3-depth-prove-13a-p1` states) is refused naming the eight inputs and members
+17, 20 and 25, and the same plan without those three members is prepared; members that all
+omit or all state an input (same or different values), a single member, and an omitted
+appended optimization axis are prepared; a build listed in `BUILDS_NAMING_EVERY_INPUT` is not
+refused and any other build is; a mixed batch staged before the check is refused when it is
+prepared again and where a first start begins (driver, in-place start, the config start's
+call), with nothing reserved or launched, and a launched batch is never judged again; on the
+real contract every appended input the EA does not name
+is refused when mixed, and the exempt set equals what `GOATStudioSettingTypes.mqh` gives
+`GoatStudioExplicitOptimizationInputs`.
+`controller/test_studio_appended_inputs.py`
+`test_a_set_without_it_is_prepared_staged_reused_and_read_back` pins that the staged member ini
+does not name an omitted `Ledger_Mode`.
+
+**Not covered.** A mixed batch that launched before `check_member_inputs` existed is never
+judged again: it runs or ran as it was composed, and part 2 catches what it exported. The
+refusal compares the
+names a SET states, not what MT5 ran; what ran is part 2's report check. An `unverified`
+export with no readable SET (an incomplete SET/CSV pair) is counted in the batch summary but
+has no SHA-256 to match in a scan. The board counter that reads `unverified` lives outside the
+controller.
+
 ## INV-LINEAGE-01: a promoted SET and its fork are linked by SHA-256, never by name
 
 **Incident (hunt round 13a close, 2026-11-11).** 22 migrated October files traced to their seed

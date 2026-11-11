@@ -350,6 +350,9 @@ class Controller:
         generation=state['generation'] if expected_generation is None else expected_generation
         if state['generation']!=generation: raise ValueError('Controller generation changed before start')
         if job['status']!='pending': raise ValueError('Only pending job can start; reconcile existing attempt')
+        # Staged before prepare-batch refused mixed inputs: refused before any reservation or attempt (BATCH_MIXED_INPUTS).
+        from studio_batch import check_staged_inputs
+        check_staged_inputs(self,job)
         # Check runtime BEFORE recording an irreversible attempt.
         self.runtime(require_idle=True,expected_batch_ongoing=False)
         from studio_research_authority import before_native_dispatch

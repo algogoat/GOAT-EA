@@ -5125,7 +5125,7 @@ int OnInit()
    // chart's timeframe or the live chart is NOT_PORTED. A family's ranges (3.1, 4.1) apply while its mode is on. Lim (4.1,
    // 4.4) is 1020 (17:00 NY) under ORB_Clock_NewYork, 1260 (21:00 London) under ORB_Clock_London; each input is bounded before
    // a sum reads it (a 32-bit int wraps; Claude-Mac 6764975563). ORB_TF_ names its minutes (TF_M1=1 ... TF_H1=60).
-   if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single && !BRK_Start_Seq) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;} // B55 (spec 3.7): unless the break starts a sequence (BRK_Start_Seq; b55-init below)
    if(ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: ORB_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
    if(BRK_Mode!=BRK_Disabled && ORB_Mode!=ORB_Disabled)     {Alert("Initialization Failed: BRK_Mode and ORB_Mode cannot both be on (one breakout family per SET)."); return INIT_PARAMETERS_INCORRECT;} // ruling 15
    if(BRK_Mode==BRK_NBar && (BRK_Bars<2 || BRK_Bars>500))   {Alert("Initialization Failed: BRK_Bars must be between 2 and 500 with BRK_Mode=BRK_NBar."); return INIT_PARAMETERS_INCORRECT;}
@@ -5145,6 +5145,19 @@ int OnInit()
    if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_London && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_London needs a test start on or after 2007.03.11 under every server model (its UTC comes through the 2007 US DST rules)."); return INIT_PARAMETERS_INCORRECT;}
    if(ORB_Mode!=ORB_Disabled && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: ORB_Mode is tester-only in B54 (ruling 7); use ORB_Disabled on a live chart."); return INIT_FAILED;}
 // B54:end b54-init
+// B55:begin b55-init
+   // B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7; Claude-Mac goatai#2750 6789761790): BRK_Start_Seq lets breakout A start a
+   // grid sequence, so line 5128 above now guards only a SET that does not ask for one, with B54's alert and code. A rule
+   // that reads input values only is ported to the controller's EA_INIT_RULES; the live-chart rule is NOT_PORTED. ORB needs
+   // no rule here: the switch needs BRK_Mode on, and BRK_Mode with ORB_Mode is refused above (5130).
+   if(BRK_Start_Seq && BRK_Mode==BRK_Disabled)              {Alert("Initialization Failed: BRK_Start_Seq needs a breakout mode (BRK_Mode=BRK_NBar or BRK_PriorDay)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Start_Seq && Engine_Mode==Engine_Single)          {Alert("Initialization Failed: BRK_Start_Seq needs the grid engine (Engine_Mode=Engine_Grid)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Start_Seq && (Delay_Trade!=0 || Delay_Trade_Live!=0)) {Alert("Initialization Failed: BRK_Start_Seq needs Delay_Trade=0 and Delay_Trade_Live=0 (the break opens the sequence's first position)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Start_Seq && !MQLInfoInteger(MQL_TESTER))         {Alert("Initialization Failed: BRK_Start_Seq is tester-only in B55; use BRK_Start_Seq=false on a live chart."); return INIT_FAILED;}
+   // B55 (A0, spec 3.7): this tree has no sequence start path yet, so the switch is refused outright, in the tester and on a
+   // live chart. PR A's commit that adds the path removes this line (as b54-init's not-built lines went; scripts/test_b55_init.cjs).
+   if(BRK_Start_Seq)                                        {Alert("Initialization Failed: BRK_Start_Seq=true is not built in this build yet (it has no sequence start path)."); return INIT_FAILED;}
+// B55:end b55-init
 // B54:begin brk-init
    // B54 (ruling on GOAT-EA#303, condition 3): every BRK_Mode and ORB_Mode value now has its signal term, so no not-built
    // refusal is left (PR A removed BRK_NBar's and BRK_PriorDay's, PR B ORB_Breakout's; scripts/test_b54_init.cjs reads the terms).

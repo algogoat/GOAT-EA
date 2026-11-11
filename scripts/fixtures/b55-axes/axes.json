@@ -1,0 +1,163 @@
+{
+ "about": "B55 PR A0 synthetic axis SETs (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7). Not pool files. Each is a complete SET at the schema's defaults plus base and lines; base is a breakout sequence as section 7 lists it for the templates (the grid engine, the switch, both delays 0, no delayed lots, RSI off, an explicit ATR_TF_). probes: the SET's values (current), then each Y axis at its start and stop with the others at their values; ladder: every rung (controller only). A0 ships the switch refused, so a probe inside every rule ends at BRK_SEQ_NOT_BUILT; PR A's commit that adds the start path turns those into ok. Read by controller/test_b55_init.py and scripts/test_b55_init.cjs.",
+ "base": {
+  "Engine_Mode": "0",
+  "BRK_Start_Seq": "true",
+  "Delay_Trade": "0",
+  "Delay_Trade_Live": "0",
+  "Delay_Lots_Add": "false",
+  "RSI_Mode": "0",
+  "ATR_TF_": "60"
+ },
+ "alerts": {
+  "BRK_WITHOUT_SINGLE": "Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single).",
+  "BRK_SEQ_WITHOUT_BRK": "Initialization Failed: BRK_Start_Seq needs a breakout mode (BRK_Mode=BRK_NBar or BRK_PriorDay).",
+  "BRK_SEQ_WITH_SINGLE": "Initialization Failed: BRK_Start_Seq needs the grid engine (Engine_Mode=Engine_Grid).",
+  "BRK_SEQ_WITH_DELAY": "Initialization Failed: BRK_Start_Seq needs Delay_Trade=0 and Delay_Trade_Live=0 (the break opens the sequence's first position).",
+  "BRK_SEQ_NOT_BUILT": "Initialization Failed: BRK_Start_Seq=true is not built in this build yet (it has no sequence start path)."
+ },
+ "codes": {
+  "BRK_WITHOUT_SINGLE": "INIT_PARAMETERS_INCORRECT",
+  "BRK_SEQ_WITHOUT_BRK": "INIT_PARAMETERS_INCORRECT",
+  "BRK_SEQ_WITH_SINGLE": "INIT_PARAMETERS_INCORRECT",
+  "BRK_SEQ_WITH_DELAY": "INIT_PARAMETERS_INCORRECT",
+  "BRK_SEQ_NOT_BUILT": "INIT_FAILED"
+ },
+ "sets": [
+  {
+   "file": "seq-nbar-inside.set",
+   "about": "N-bar sequence, four BRK axes at Y inside their bounds: every probe passes every rule and ends at the not-built refusal (A0)",
+   "lines": {
+    "BRK_Mode": "1",
+    "BRK_TF_": "1||0||1||1||Y",
+    "BRK_Bars": "20||2||1||500||Y",
+    "BRK_Buffer_ATR": "0.0||0.0||0.5||5.0||Y",
+    "BRK_Once_Per_Level": "true||false||1||true||Y"
+   },
+   "probes": {
+    "current": "BRK_SEQ_NOT_BUILT",
+    "BRK_TF_@start": "BRK_SEQ_NOT_BUILT",
+    "BRK_TF_@stop": "BRK_SEQ_NOT_BUILT",
+    "BRK_Bars@start": "BRK_SEQ_NOT_BUILT",
+    "BRK_Bars@stop": "BRK_SEQ_NOT_BUILT",
+    "BRK_Buffer_ATR@start": "BRK_SEQ_NOT_BUILT",
+    "BRK_Buffer_ATR@stop": "BRK_SEQ_NOT_BUILT",
+    "BRK_Once_Per_Level@start": "BRK_SEQ_NOT_BUILT",
+    "BRK_Once_Per_Level@stop": "BRK_SEQ_NOT_BUILT"
+   },
+   "ladder": "BRK_SEQ_NOT_BUILT"
+  },
+  {
+   "file": "seq-pday-inside.set",
+   "about": "Prior-day sequence on an H1 trigger, the buffer, the latch and Reverse_Seq at Y: every probe ends at the not-built refusal (A0)",
+   "lines": {
+    "BRK_Mode": "2",
+    "BRK_TF_": "60",
+    "BRK_Buffer_ATR": "0.0||0.0||0.5||5.0||Y",
+    "BRK_Once_Per_Level": "true||false||1||true||Y",
+    "Reverse_Seq": "false||false||1||true||Y"
+   },
+   "probes": {
+    "current": "BRK_SEQ_NOT_BUILT",
+    "BRK_Buffer_ATR@start": "BRK_SEQ_NOT_BUILT",
+    "BRK_Buffer_ATR@stop": "BRK_SEQ_NOT_BUILT",
+    "BRK_Once_Per_Level@start": "BRK_SEQ_NOT_BUILT",
+    "BRK_Once_Per_Level@stop": "BRK_SEQ_NOT_BUILT",
+    "Reverse_Seq@start": "BRK_SEQ_NOT_BUILT",
+    "Reverse_Seq@stop": "BRK_SEQ_NOT_BUILT"
+   },
+   "ladder": "BRK_SEQ_NOT_BUILT"
+  },
+  {
+   "file": "seq-nbar-delay-trade.set",
+   "about": "N-bar sequence with Delay_Trade=1 (a virtual start): refused at every probe",
+   "lines": {
+    "BRK_Mode": "1",
+    "Delay_Trade": "1",
+    "BRK_Bars": "20||10||10||50||Y"
+   },
+   "probes": {
+    "current": "BRK_SEQ_WITH_DELAY",
+    "BRK_Bars@start": "BRK_SEQ_WITH_DELAY",
+    "BRK_Bars@stop": "BRK_SEQ_WITH_DELAY"
+   },
+   "ladder": "BRK_SEQ_WITH_DELAY"
+  },
+  {
+   "file": "seq-nbar-delay-live.set",
+   "about": "N-bar sequence, Delay_Trade_Live 0..1 at Y: 0 passes the delay rule (and ends at the not-built refusal, A0), 1 is refused, so the ladder is refused",
+   "lines": {
+    "BRK_Mode": "1",
+    "Delay_Trade_Live": "0||0||1||1||Y"
+   },
+   "probes": {
+    "current": "BRK_SEQ_NOT_BUILT",
+    "Delay_Trade_Live@start": "BRK_SEQ_NOT_BUILT",
+    "Delay_Trade_Live@stop": "BRK_SEQ_WITH_DELAY"
+   },
+   "ladder": "BRK_SEQ_WITH_DELAY"
+  },
+  {
+   "file": "seq-no-mode.set",
+   "about": "The switch without a breakout mode: refused at every probe (BRK_Bars is never read)",
+   "lines": {
+    "BRK_Mode": "0",
+    "BRK_Bars": "20||10||10||50||Y"
+   },
+   "probes": {
+    "current": "BRK_SEQ_WITHOUT_BRK",
+    "BRK_Bars@start": "BRK_SEQ_WITHOUT_BRK",
+    "BRK_Bars@stop": "BRK_SEQ_WITHOUT_BRK"
+   },
+   "ladder": "BRK_SEQ_WITHOUT_BRK"
+  },
+  {
+   "file": "seq-single.set",
+   "about": "The switch on a valid breakout single (Engine_Single, Single_SL_ATR 1.0): refused at every probe",
+   "lines": {
+    "Engine_Mode": "1",
+    "Single_SL_ATR": "1.0",
+    "Mode_Bias_Exit": "0",
+    "BRK_Mode": "1",
+    "BRK_Bars": "20||10||10||50||Y"
+   },
+   "probes": {
+    "current": "BRK_SEQ_WITH_SINGLE",
+    "BRK_Bars@start": "BRK_SEQ_WITH_SINGLE",
+    "BRK_Bars@stop": "BRK_SEQ_WITH_SINGLE"
+   },
+   "ladder": "BRK_SEQ_WITH_SINGLE"
+  },
+  {
+   "file": "grid-nbar-switch-off.set",
+   "about": "B54's refusal, kept: a breakout on the grid engine with the switch off is refused at every probe by line 5128, with B54's alert",
+   "lines": {
+    "BRK_Start_Seq": "false",
+    "BRK_Mode": "1",
+    "BRK_Bars": "20||10||10||50||Y"
+   },
+   "probes": {
+    "current": "BRK_WITHOUT_SINGLE",
+    "BRK_Bars@start": "BRK_WITHOUT_SINGLE",
+    "BRK_Bars@stop": "BRK_WITHOUT_SINGLE"
+   },
+   "ladder": "BRK_WITHOUT_SINGLE"
+  },
+  {
+   "file": "grid-switch-off-delays.set",
+   "about": "The switch off reads no delay: a grid sequence with no breakout and Delay_Trade 0..2 at Y passes at every probe",
+   "lines": {
+    "BRK_Start_Seq": "false",
+    "BRK_Mode": "0",
+    "Delay_Trade": "1||0||1||2||Y",
+    "Delay_Trade_Live": "1"
+   },
+   "probes": {
+    "current": "ok",
+    "Delay_Trade@start": "ok",
+    "Delay_Trade@stop": "ok"
+   },
+   "ladder": "ok"
+  }
+ ]
+}

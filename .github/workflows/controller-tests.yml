@@ -34,7 +34,7 @@ concurrency:
 #           test_b49b_f7, test_b49b_f5, test_b49b_f3,
 #           test_b49b_f3b, test_b49b_f6, test_b49b_f4, test_b49b_lag, test_b49b_f8,
 #           test_b49b_f1, test_b52_review, test_hunt_sets_init, test_b54_gate0, test_b54_init, test_b54_breakout, test_b54_orb,
-#           test_b54_parity,
+#           test_b54_parity, test_b55_init,
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
 #           test_profile_writer_goldens, test_child_magic_unique, test_ai_wire_retry, test_child_snapshot_stream,
 #           test_ai_gate_log, test_blind_export, test_trace_marks_downsample, test_license_init_retry,
@@ -100,6 +100,7 @@ jobs:
           # B51: test_b50_no_drift, test_b51_no_drift, test_b51_parity and test_b51_random read B50-alpha's (32df4eb).
           # B49b: test_b49b_no_drift reads B49a's (693cad0) and, on the merged line, B49b's own tree (claude-pc/b49b 808ff728) from history.
           # B54: test_b54_gate0 (.cjs and .py) reads B53's source and controller package (216e1622) from history.
+          # B55: test_b55_init.py and test_studio_ea_init_rules.py read B54's contracts/v149 (a8c6766) from history.
           fetch-depth: 0
 
       - name: Set up Windows x64 Python
@@ -234,6 +235,10 @@ jobs:
         run: node scripts/test_b54_orb.cjs
       - name: B54 flags-off parity with B53 (test_b51_parity's grid and single fixtures, FastSpeed both ways, every B54 input moved with the modes off; WriteSet golden; mutants)
         run: node scripts/test_b54_parity.cjs
+      # B55 A0's controller half (the same axis SETs and the spec's table through validate_strategy, and B54's own schema) is
+      # controller/test_b55_init.py, which the unittest step below discovers.
+      - name: B55 OnInit refusals (spec 3.7; the synthetic axis SETs at each probe as axes.json names, the spec's table on committed files, the switch refused as not built in the tester and live; mutants)
+        run: node scripts/test_b55_init.cjs
       - name: Deploy settingsMatch audit, CA41 exemptions
         run: node scripts/test_portfolio_child_audit.cjs
       - name: Child adoption binding and link freshness

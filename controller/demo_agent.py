@@ -3776,6 +3776,23 @@ class DemoAgent:
                          robustness_sha256=result['robustness_set']['sha256'])
             return result
 
+    def seed_promote_fork(self, batch_id, candidate, fork_set, fork_id=None, member=None):
+        """Record the SHA-256 of the strategy-library fork made from a promoted SET on its promotion (lineage by
+        SHA-256, never by name); local files only, same scope as seed-promote. The fork SET is only read."""
+        with self._seed_scope('seed-report', batch_id) as (controller, evidence):
+            from studio_seed_promote import record_fork
+            result = record_fork(controller, batch_id, candidate, fork_set, fork_id=fork_id, member=member,
+                                 runner=self._seed_runner(controller))
+            self._append('seed_promote_fork', result['status'], batch_id=batch_id, candidate_sha256=candidate,
+                         fork_set_sha256=result['fork_set_sha256'], relation=result['relation'])
+            return result
+
+    def promotion_lookup(self, *, set_path=None, set_sha256=None):
+        """Read-only: the seed promotion a SET belongs to, by SHA-256 (its own, a recorded fork's, or the same inputs
+        under another name). No terminal, broker or store access; nothing is written."""
+        from studio_seed_promote import lookup
+        return lookup(self.root, set_sha256=set_sha256, set_path=set_path)
+
     def _slot_kind(self, slot):
         """Which runner holds the shared terminal slot: the catch-up or hold-up test whose manifest the slot names, else seed."""
         batch_id = slot.get('batch_id')
@@ -4124,6 +4141,15 @@ def main(argv=None):
     seed_promote.add_argument('--name', required=True)
     seed_promote.add_argument('--neighborhood', type=int, default=1, help='Robustness ladder steps either side, 1..5 (default 1)')
     seed_promote.add_argument('--member')
+    promote_fork = commands.add_parser('seed-promote-fork', help='Record a strategy-library fork\'s SET SHA-256 on the promotion it was made from')
+    promote_fork.add_argument('--batch-id', required=True)
+    promote_fork.add_argument('--candidate', required=True)
+    promote_fork.add_argument('--fork-set', type=Path, required=True, help='The fork\'s SET file; read, never changed')
+    promote_fork.add_argument('--fork-id', help='The strategy-library fork id')
+    promote_fork.add_argument('--member')
+    promotion_lookup = commands.add_parser('promotion-lookup', help='Read-only: the seed promotion a SET belongs to, by SHA-256')
+    promotion_lookup.add_argument('--set', type=Path, help='The SET file (its inputs are matched too)')
+    promotion_lookup.add_argument('--set-sha256')
     gate = commands.add_parser('gate-recommend', help='Read-only: recommend qualification gates for a new run from our own export evidence')
     gate.add_argument('--target', choices=('forward', 'post', 'held_up'), default='forward',
                       help='held_up (catch-up verdicts) is the only actionable target; forward and post are diagnostics')
@@ -4276,6 +4302,8 @@ def main(argv=None):
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
         elif args.command == 'seed-reconcile': result = agent.seed_reconcile(args.batch_id)
         elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
+        elif args.command == 'seed-promote-fork': result = agent.seed_promote_fork(args.batch_id, args.candidate, args.fork_set, args.fork_id, args.member)
+        elif args.command == 'promotion-lookup': result = agent.promotion_lookup(set_path=args.set, set_sha256=args.set_sha256)
         elif args.command == 'evidence-end': result = agent.evidence_end(args.value, broker_clock=args.broker_clock)
         elif args.command == 'evidence-scan': result = agent.evidence_scan([str(p) for p in args.source], args.evidence_end,
             broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold)

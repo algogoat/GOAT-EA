@@ -1138,9 +1138,15 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   (`not_applicable` for non-formula exports). Catch-up weeks after the export\r
   Friday count toward FOOS.
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
-  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD;
-  BOOS is lenient (fails only on that DD bar or a loss worse than the in-sample p10 of rolling
-  SAMPLE windows of its own length). Records stamp `oosFormula`; 1/2 O batches keep theirs.
+  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × in-sample DD.
+  Rule version 2 (`ruleVersion: 2`; Claude-Mac, goatai#2750 6787022949): the in-sample DD is the
+  drawdown over SAMPLE and FWD together (`bar.in_sample: "SAMPLE+FWD"`). BOOS is lenient: it fails
+  on that DD bar, and on a loss worse than the in-sample p10 of rolling SAMPLE windows of its own
+  length only when SAMPLE holds at least 10 such windows (`in_sample_windows`; 4, 9, 17 and 35 at
+  O = 3, 6, 12 and 24 months). With fewer the loss leg is not applied (`loss_leg_applied: false`)
+  and a BOOS loss alone does not fail. A stored `oos_rule` without `ruleVersion` was judged under
+  version 1 (SAMPLE's DD alone, the loss leg at every window count) and is never rewritten.
+  Records stamp `oosFormula`; 1/2 O batches keep theirs.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
   `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:
   the EA's export trim partly selects on BOOS, so show "BOOS: partial" and lead with FOOS.

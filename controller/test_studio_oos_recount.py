@@ -28,6 +28,8 @@ from test_studio_heldout import declaration, write_registry
 # What each member's evidence is built to show (see FormulaCase.SCENARIOS), per rule version.
 EXPECTED = {
     'v1': dict(EURUSD='pass', GBPUSD='fail', USDJPY='fail', AUDUSD='fail', USDCAD='not_eligible_yet', NZDUSD='pass'),
+    # Rule version 2: GBPUSD's BOOS loss no longer fails at 4 windows; USDJPY's FOOS drawdown is within 1.5 x SAMPLE+FWD's.
+    'v2': dict(EURUSD='pass', GBPUSD='pass', USDJPY='pass', AUDUSD='fail', USDCAD='not_eligible_yet', NZDUSD='pass'),
 }
 
 
@@ -123,7 +125,9 @@ class FormulaCase(CatchupCase):
                          start=datetime.strptime(tester['FromDate'], '%Y.%m.%d').date(), requested_to=to_date,
                          windows=self.header(last))
 
-    def run_catchup(self, catchup_id='cu1', symbols=None):
+    def run_catchup(self, catchup_id='cu1', symbols=None, stored_version=None):
+        """Prepare, run and collect the catch-up. ``stored_version=1``: store it as a controller before rule version 2
+        did: judged under version 1 (the default of that time) and with no ``ruleVersion`` on any ``oos_rule``."""
         self.catchup_id = catchup_id
         wanted = [path for path in self.sets if symbols is None or path.parent.name in symbols]
         self.runner.prepare(catchup_id, dict(schema_version=1, evidence_end='auto', sets=[str(p) for p in wanted],
@@ -131,8 +135,18 @@ class FormulaCase(CatchupCase):
         self.auto, self.starts = True, []
         if self.process_state is None:
             self.process_state = dict(pid=10, executable='terminal64.exe', created_utc='monitor')
-        state = self.runner.start(catchup_id, 600)
+        with patch.object(w, 'RULE_VERSION', w.RULE_VERSION if stored_version is None else stored_version):
+            state = self.runner.start(catchup_id, 600)
         self.assertEqual(state['status'], 'completed', state)
+        if stored_version == 1:
+            folder = self.runner.path(catchup_id)
+            state = read_json(folder / 'state.json')
+            for item in state['members']:
+                result = read_json(item['result']['path'])
+                self.assertEqual(result['verdict']['oos_rule'].pop('ruleVersion'), 1)
+                Path(item['result']['path']).write_text(json.dumps(result), encoding='utf-8')
+                item['result']['sha256'] = hashlib.sha256(Path(item['result']['path']).read_bytes()).hexdigest()
+            (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
         return read_json(self.runner.path(catchup_id) / 'manifest.json')
 
     def stored(self, catchup_id='cu1'):
@@ -158,20 +172,58 @@ class FormulaCase(CatchupCase):
 
 
 class RecountTests(FormulaCase):
-    def test_the_stored_catch_up_holds_the_verdicts_the_fixture_was_built_for(self):
-        self.run_catchup()
+    def check_stored(self, version):
+        self.run_catchup(stored_version=version)
         stored = self.stored()
-        self.assertEqual({symbol: rule['status'] for symbol, rule in stored.items()}, EXPECTED[recount.label(w.RULE_VERSION)])
+        self.assertEqual({symbol: rule['status'] for symbol, rule in stored.items()}, EXPECTED[recount.label(version)])
         self.assertEqual({rule['schema'] for rule in stored.values()}, {w.EVALUATION})
+        self.assertEqual({rule.get('ruleVersion') for rule in stored.values()}, {None if version == 1 else version})
+        self.assertEqual({w.record_rule_version(rule) for rule in stored.values()}, {version})
         # The windows are the formula's and BOOS has 4 rolling SAMPLE windows of its own length (O = 13 weeks).
         boos = stored['GBPUSD']['windows']['boos']
         self.assertEqual((boos['trades'], boos['in_sample_windows']), (50, 4))
         self.assertAlmostEqual(boos['pl'], -60.0)
-        self.assertEqual((stored['USDJPY']['in_sample_dd'], stored['USDJPY']['windows']['foos']['dd']), (100.0, 180.0))
+        self.assertEqual((stored['USDJPY']['in_sample_dd'], stored['USDJPY']['windows']['foos']['dd']),
+                         ({1: 100.0, 2: 140.0}[version], 180.0))
         self.assertEqual(stored['USDCAD']['windows']['foos']['trades'], 20)
 
-    def test_every_version_is_judged_and_the_stored_version_reproduces_the_stored_verdict(self):
-        self.run_catchup()
+    def test_a_catch_up_stored_before_version_2_holds_the_version_1_verdicts(self):
+        self.check_stored(1)
+
+    def test_a_catch_up_stored_now_holds_the_version_2_verdicts(self):
+        self.check_stored(2)
+
+    def test_a_catch_up_stored_before_version_2_is_reproduced_under_version_1_and_counted_under_version_2(self):
+        self.check_recount(1)
+        block, = self.recount('cu1')['catchups']
+        rows, counts = self.rows_by_symbol(block), block['counts']
+        # The recount the rule change is decided on: stored = version 1; two files gain a pass, none loses one.
+        self.assertEqual(counts['pass'], dict(stored=2, v1=2, v2=4))
+        self.assertEqual((counts['v1_matches_stored'], counts['v2_matches_stored']), (6, 4))
+        self.assertEqual((counts['compared'], counts['gained'], counts['lost']), (['v1', 'v2'], 2, 0))
+        self.assertEqual({symbol: row['oos_rule']['change'] for symbol, row in rows.items()},
+                         dict(EURUSD='unchanged', GBPUSD='gained', USDJPY='gained', AUDUSD='unchanged', USDCAD='unchanged',
+                              NZDUSD='unchanged'))
+        loss, deep = rows['GBPUSD']['oos_rule'], rows['USDJPY']['oos_rule']
+        self.assertEqual((loss['v1']['in_sample_windows'], loss['v2']['in_sample_windows'], loss['v2']['loss_leg_applied']), (4, 4, False))
+        self.assertIn('in-sample 10th-percentile window', loss['v1']['reasons'][0])
+        self.assertIn('loss leg not applied (4 of 10 in-sample windows)', loss['v2']['reasons'][0])
+        self.assertEqual((deep['v1']['in_sample_dd'], deep['v1']['in_sample_base'], deep['v2']['in_sample_dd'], deep['v2']['in_sample_base']),
+                         (100.0, 'SAMPLE', 140.0, 'SAMPLE+FWD'))
+        self.assertEqual((deep['stored']['rule_version'], deep['stored']['in_sample_dd']), (1, 100.0))
+        # Real negatives stay negative: a FOOS drawdown above both bars, and a FOOS under 30 trades.
+        self.assertEqual((rows['AUDUSD']['oos_rule']['v2']['status'], rows['USDCAD']['oos_rule']['v2']['status']),
+                         ('fail', 'not_eligible_yet'))
+        self.assertEqual((rows['USDCAD']['oos_rule']['v2']['foos_trades'], rows['USDCAD']['oos_rule']['v2']['boos_trades']), (20, 50))
+
+    def test_a_catch_up_stored_under_version_2_is_reproduced_under_version_2(self):
+        self.check_recount(2)
+        counts = self.recount('cu1')['catchups'][0]['counts']
+        self.assertEqual(counts['pass'], dict(stored=4, v1=2, v2=4))
+        self.assertEqual((counts['v1_matches_stored'], counts['v2_matches_stored'], counts['gained'], counts['lost']), (4, 6, 2, 0))
+
+    def check_recount(self, stored_version):
+        self.run_catchup(stored_version=stored_version)
         stored = self.stored()
         reply = self.recount('cu1')
         self.assertEqual((reply['schema'], reply['read_only'], reply['writes'], reply['rule']),
@@ -207,11 +259,11 @@ class RecountTests(FormulaCase):
             self.assertEqual(again['foos_judged_through'], '2026-10-02')
         counts = block['counts']
         self.assertEqual((counts['members'], counts['judged'], counts['unreadable'], counts['stored_missing']), (6, 6, 0, 0))
-        self.assertEqual(counts['pass']['stored'], 2)
+        self.assertEqual(counts['pass']['stored'], sum(status == 'pass' for status in EXPECTED[recount.label(stored_version)].values()))
         for version in w.RULE_VERSIONS:
             name = recount.label(version)
             self.assertEqual(counts['pass'][name], sum(status == 'pass' for status in EXPECTED[name].values()))
-        self.assertEqual(counts[recount.label(w.RULE_VERSION) + '_matches_stored'], 6)
+        self.assertEqual(counts[recount.label(stored_version) + '_matches_stored'], 6)
         totals = reply['totals']
         self.assertEqual((totals['catchups'], totals['counted_catchups'], totals['locked_catchups'], totals['unreadable_catchups']),
                          (1, 1, [], []))
@@ -303,7 +355,9 @@ class RecountTests(FormulaCase):
             self.assertIsNone(rows[symbol]['oos_rule'], symbol)                                # no verdict of any kind
         counts = block['counts']
         self.assertEqual((counts['members'], counts['judged'], counts['unreadable']), (6, 2, 4))
-        self.assertEqual((counts['pass']['stored'], counts['pass'][recount.label(w.RULE_VERSION)]), (1, 1))   # EURUSD only
+        name = recount.label(w.RULE_VERSION)                                                   # the two readable members only
+        still = sum(EXPECTED[name][symbol] == 'pass' for symbol in ('EURUSD', 'GBPUSD'))
+        self.assertEqual((counts['pass']['stored'], counts['pass'][name]), (still, still))
 
     def test_a_catch_up_that_cannot_be_read_is_listed_and_an_unknown_one_is_refused(self):
         self.run_catchup()
@@ -352,7 +406,9 @@ class RecountTests(FormulaCase):
                          ('not_comparable', 'no_data', True))
         self.assertIn('not judged as the same test', unjudged[name]['reasons'][0])
         counts = self.recount('cu1')['catchups'][0]['counts']
-        self.assertEqual((counts['stored_missing'], counts['pass']['stored'], counts['pass'][name]), (1, 1, 2))
+        others = sum(EXPECTED[name][symbol] == 'pass' for symbol in ('USDJPY', 'AUDUSD', 'USDCAD', 'NZDUSD'))
+        # EURUSD's stored verdict is gone (it still passes when judged); GBPUSD is not judged; the other four are as stored.
+        self.assertEqual((counts['stored_missing'], counts['pass']['stored'], counts['pass'][name]), (1, others, others + 1))
 
     def test_a_held_out_lock_redacts_the_catch_up_and_keeps_it_out_of_the_totals(self):
         self.run_catchup()

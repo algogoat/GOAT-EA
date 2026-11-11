@@ -41,6 +41,7 @@ string GoatStudioSettingType(const string key)
    if(StringFind("|BRK_Buffer_ATR|ORB_Buffer_ATR|ORB_Min_Range_ATR|ORB_Max_Range_ATR|","|"+key+"|")>=0) return "double";
    if(key=="BRK_Once_Per_Level") return "bool";
    // B54:end b54-types
+   if(key=="BRK_Start_Seq") return "bool"; // B55 (A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md section 7): the sequence switch, an sinput (never an optimization axis)
    return "";
   }
 string GoatStudioOptimizationNames()
@@ -85,6 +86,7 @@ string GoatStudioAppendedDefault(const string key)
    if(key=="ORB_Start_Minute") return "570";  // 09:30, in minutes from midnight of the clock anchor
    if(key=="ORB_Range_Minutes") return "30";
    // B54:end b54-defaults
+   if(key=="BRK_Start_Seq") return "false"; // B55 (A0, spec section 3.1): the sequence switch; its default reproduces B54
    return "";
   }
 // B50:end b50-defaults

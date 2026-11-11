@@ -238,6 +238,43 @@ class SeedPromoteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, words):
                 record_fork(self.controller, 'batch', bad.get('candidate', candidate), edited, fork_id=bad.get('fork_id'), runner=self.runner)
 
+    def test_a_string_input_holding_double_bars_is_one_value_in_every_lineage_path(self):
+        """Codex P2 on GOAT-EA#321 (4538932068): validate_strategy allows a literal || in a string input, but the
+        canonical inputs were computed by splitting every value into a tuple, so a seed that had completed could not be
+        promoted (Malformed tuple). The promotion, the fork record and the lookup now read a string as one value."""
+        from strategy_registry import inspect_set
+        from studio_seed_promote import lookup, record_fork
+        self.controller.schema['inputs']['Session'] = dict(type='string', optimizable=False)
+        self.source.write_bytes('; Source header\r\nEA_Desc=Original\r\nPeriod=10||10||5||20||Y\r\nSize=1.5\r\nSession=News||EU\r\n'.encode('utf-16'))
+        candidates = self.run_seed()
+        candidate = candidates[0]['candidate_sha256']
+        receipt = promote(self.controller, 'batch', candidate, 'EURUSD Period Ten', runner=self.runner)
+        self.assertEqual(receipt['status'], 'written')
+        fixed, robustness = self.sets(receipt)
+        self.assertEqual((fixed['Session'], robustness['Session']), ('News||EU', 'News||EU'))
+        strings = frozenset(['EA_Desc', 'Session'])
+        for key in ('fixed_set', 'robustness_set'):
+            raw = Path(receipt[key]['path']).read_bytes()
+            info = inspect_set(raw, strings)
+            self.assertEqual(receipt[key]['canonical_sha256'], info['canonical_sha256'])
+            self.assertEqual(json.loads(info['canonical_json'])['Session'], ['News||EU'])
+            with self.assertRaisesRegex(ValueError, 'Malformed tuple: Session'):      # without the names, as before
+                inspect_set(raw)
+        # The fork record and the lookup read the same string the same way.
+        fork = self.fork_of(receipt['robustness_set']['path'], 'Harbor news')
+        record = record_fork(self.controller, 'batch', candidate, fork, fork_id='fork.news', runner=self.runner)
+        self.assertEqual((record['relation'], record['derived_from']), ('same_inputs', 'robustness_set'))
+        renamed = self.fork_of(receipt['fixed_set']['path'], 'Another name')
+        (match,) = lookup(self.controller.root, set_path=renamed, schema=self.controller.schema)['matches']
+        self.assertEqual((match['relation'], match['which']), ('same_inputs', 'fixed_set'))
+        other = self.fork_of(receipt['fixed_set']['path'], 'Another session', Session='News||US')
+        self.assertEqual(lookup(self.controller.root, set_path=other, schema=self.controller.schema)['matches'], [])
+        edited = record_fork(self.controller, 'batch', candidate, other, fork_id='fork.us', runner=self.runner)
+        self.assertEqual((edited['relation'], edited['changed_inputs']), ('edited', dict(count=1, inputs=['Session'])))
+        # A SET whose strings hold no || hashes the same with and without the names: existing receipts keep their keys.
+        plain = '; h\r\nEA_Desc=X\r\nPeriod=10||10||5||20||N\r\nSize=1.5\r\nSession=News\r\n'.encode('utf-16')
+        self.assertEqual(inspect_set(plain)['canonical_sha256'], inspect_set(plain, strings)['canonical_sha256'])
+
     def test_repeat_returns_receipt_and_conflicts_refuse(self):
         candidate = self.run_seed()[0]['candidate_sha256']
         first = promote(self.controller, 'batch', candidate, 'Keeper', runner=self.runner)

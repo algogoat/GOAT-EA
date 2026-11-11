@@ -3790,8 +3790,11 @@ class DemoAgent:
     def promotion_lookup(self, *, set_path=None, set_sha256=None):
         """Read-only: the seed promotion a SET belongs to, by SHA-256 (its own, a recorded fork's, or the same inputs
         under another name). No terminal, broker or store access; nothing is written."""
+        from studio_installation import contracts
         from studio_seed_promote import lookup
-        return lookup(self.root, set_sha256=set_sha256, set_path=set_path)
+        # The installed input schema names the string inputs: a string holding || is one value, never a tuple.
+        schema, _ = contracts(self.install['ea_version'])
+        return lookup(self.root, set_sha256=set_sha256, set_path=set_path, schema=schema)
 
     def _slot_kind(self, slot):
         """Which runner holds the shared terminal slot: the catch-up or hold-up test whose manifest the slot names, else seed."""

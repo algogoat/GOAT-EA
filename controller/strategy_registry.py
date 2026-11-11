@@ -15,7 +15,12 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def inspect_set(raw):
+def inspect_set(raw, string_inputs=()):
+    """Identity of one SET: its bytes' SHA-256 and the SHA-256 of its canonical inputs (EA_Desc excluded).
+
+    ``string_inputs``: the names of the schema's string inputs. A string input is one literal value and may hold
+    ``||`` (studio_strategy_settings.validate_strategy); it is never split into an optimization tuple. Without the
+    names every value is read as a number or a tuple, as before, and a string holding ``||`` is refused or split."""
     if raw.startswith(b'\xff\xfe'):
         text, encoding = raw.decode('utf-16'), 'utf-16-le-bom'
     else:
@@ -34,7 +39,7 @@ def inspect_set(raw):
     for key, value in sorted(values.items()):
         if key == 'EA_Desc':
             continue
-        parts = value.split('||')
+        parts = [value] if key in string_inputs else value.split('||')
         if len(parts) not in (1, 5):
             raise ValueError(f'Malformed tuple: {key}')
         normalized = []

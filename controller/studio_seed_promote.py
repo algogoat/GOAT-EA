@@ -84,6 +84,13 @@ def _create(path, raw):
         stream.write(raw); stream.flush(); os.fsync(stream.fileno())
 
 
+def _strings(schema):
+    """The names of the schema's string inputs. A string is one literal value even when it holds ``||``
+    (validate_strategy allows it), so the canonical inputs of a SET are computed with these names (inspect_set)."""
+    return frozenset(name for name, definition in ((schema or {}).get('inputs') or {}).items()
+                     if isinstance(definition, dict) and definition.get('type') == 'string')
+
+
 def _retained(out, request):
     """Receipt of a completed promotion folder. Anything else is left in place for a human."""
     try:
@@ -171,7 +178,7 @@ def promote(controller, batch_id, candidate_sha256, name, *, neighborhood=1, mem
         seed_metrics=candidate['metrics'], seed_qualifies=candidate['qualifies'], seed_window=seed_window, ladder=ladder,
         # Each written SET by its bytes and by its canonical inputs (EA_Desc excluded): the lineage keys (lookup).
         **{key: dict(path=str(out / file), sha256=hashlib.sha256(sets[file]).hexdigest(),
-                     canonical_sha256=inspect_set(sets[file])['canonical_sha256']) for key, file in FILES},
+                     canonical_sha256=inspect_set(sets[file], _strings(controller.schema))['canonical_sha256']) for key, file in FILES},
         scope=SCOPE, native_launch_qualified=False)
     payload = sets | {RECEIPT: (json.dumps(receipt, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')}
     # Short hidden sibling: never a longer path than the final folder, and unique per attempt.
@@ -203,11 +210,11 @@ def promote(controller, batch_id, candidate_sha256, name, *, neighborhood=1, mem
 # Lineage: the fork made from a promoted SET, and the promotion of any SET
 # ---------------------------------------------------------------------------
 
-def _canonical(entry, folder, file):
+def _canonical(entry, folder, file, strings):
     """The canonical input SHA-256 of one promoted SET: the receipt's own, or computed from the SET for an older receipt."""
     if isinstance(entry.get('canonical_sha256'), str):
         return entry['canonical_sha256']
-    return inspect_set((folder / file).read_bytes())['canonical_sha256']
+    return inspect_set((folder / file).read_bytes(), strings)['canonical_sha256']
 
 
 def _fork_records(folder):
@@ -254,7 +261,8 @@ def record_fork(controller, batch_id, candidate_sha256, fork_set, *, fork_id=Non
     folder = folders[0]
     receipt, receipt_sha256 = _promotion(folder)
     _, raw, _ = source_bytes(fork_set)
-    info = inspect_set(raw)
+    strings = _strings(controller.schema)
+    info = inspect_set(raw, strings)
     relation, derived_from, changed = 'edited', None, None
     for key, file in FILES:
         if info['sha256'] == receipt[key]['sha256']:
@@ -262,14 +270,14 @@ def record_fork(controller, batch_id, candidate_sha256, fork_set, *, fork_id=Non
             break
     else:
         for key, file in reversed(FILES):                       # a fork is made from the robustness SET first
-            if info['canonical_sha256'] == _canonical(receipt[key], folder, file):
+            if info['canonical_sha256'] == _canonical(receipt[key], folder, file, strings):
                 relation, derived_from = 'same_inputs', key
                 break
     if relation == 'edited':
         mine = json.loads(info['canonical_json'])
         nearest = None
         for key, file in FILES:
-            theirs = json.loads(inspect_set((folder / file).read_bytes())['canonical_json'])
+            theirs = json.loads(inspect_set((folder / file).read_bytes(), strings)['canonical_json'])
             names = sorted(name for name in set(mine) | set(theirs) if mine.get(name) != theirs.get(name))
             if nearest is None or len(names) < len(nearest[1]):
                 nearest = (key, names)
@@ -292,19 +300,21 @@ def record_fork(controller, batch_id, candidate_sha256, fork_set, *, fork_id=Non
     return record | dict(status='written', record_path=str(path))
 
 
-def lookup(controller_root, *, set_sha256=None, set_path=None):
+def lookup(controller_root, *, set_sha256=None, set_path=None, schema=None):
     """Read-only: the promotion(s) a SET belongs to, by SHA-256, never by name or symbol.
 
     Give the SET's SHA-256, or the SET file (then its canonical inputs are matched too). A match is ``promoted_set``
     (the SET is a promotion's fixed.set or robustness.set), ``recorded_fork`` (record_fork wrote its SHA-256 to that
     promotion) or ``same_inputs`` (the same inputs under another name; file only). Every seed batch's promotions
-    under this controller state are read; a promotion folder that cannot be read is listed, never skipped silently."""
+    under this controller state are read; a promotion folder that cannot be read is listed, never skipped silently.
+    ``schema``: the installed input schema, so that a string input holding ``||`` is read as one value (as promote and
+    record_fork read it); the agent verb passes it."""
     if (set_sha256 is None) == (set_path is None):
         raise ValueError('Give exactly one of the SET SHA-256 or the SET file')
-    canonical = None
+    canonical, strings = None, _strings(schema)
     if set_path is not None:
         _, raw, _ = source_bytes(set_path)
-        info = inspect_set(raw)
+        info = inspect_set(raw, strings)
         set_sha256, canonical = info['sha256'], info['canonical_sha256']
     if not isinstance(set_sha256, str) or not re.fullmatch('[0-9a-f]{64}', set_sha256):
         raise ValueError('The SET SHA-256 must be 64 lowercase hex characters')
@@ -322,7 +332,7 @@ def lookup(controller_root, *, set_sha256=None, set_path=None):
             for key, file in FILES:
                 if receipt[key]['sha256'] == set_sha256:
                     found.append(dict(relation='promoted_set', which=key, fork=None))
-                elif canonical is not None and _canonical(receipt[key], folder, file) == canonical:
+                elif canonical is not None and _canonical(receipt[key], folder, file, strings) == canonical:
                     found.append(dict(relation='same_inputs', which=key, fork=None))
             fork_path = folder / FORKS / (set_sha256 + '.json')
             if fork_path.is_file():

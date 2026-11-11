@@ -884,6 +884,18 @@ frame target, exact axis precision, duplicates, size limits) and writes nothing:
 no SET, startup INI or seed folder, and no terminal, process or broker access.
 Only the validation itself is appended to `actions.jsonl`.
 
+**A seed SET passes the same SET validators as a Prove member (GOAT-EA#317).**
+`seed-validate` and `seed-prepare` run what `prepare-batch` runs on each member's SET:
+the structure and axis checks, risk sizing, the pre-trade caps, the enum-ladder rule
+(`ENUM_LADDER_NOT_NATIVE`), the EA's OnInit rules (`EA_INIT_REFUSED`), the dependency audit,
+and the EA's tester-only OnInit rules with the job's own `FromDate` (`TESTER_INIT_REFUSED`,
+naming `seed job <n> (<SET path>)`). Both read each enum's order from the same contract, so
+a plan that seeds is not refused later for its SET's own values, and a plan that cannot be
+proved is refused before any seed runs. `seed-validate` needs the installation receipt and
+the plan's SET files only, so a prereg plan can be checked with it before it is sent to a
+machine. Not shared, by design: a Prove member needs a custom forward window and one export
+policy per batch, and a seed needs `ForwardMode=0` and axis values the seed XML keeps exactly.
+
 `seed-promote` (`--neighborhood` 1..5, default 1; add `--member <alias>` when
 the candidate appears in several members) writes `fixed.set` and
 `robustness.set` for one verified candidate under the same checks as
@@ -1157,9 +1169,17 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   (`not_applicable` for non-formula exports). Catch-up weeks after the export\r
   Friday count toward FOOS.
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
-  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD;
-  BOOS is lenient (fails only on that DD bar or a loss worse than the in-sample p10 of rolling
-  SAMPLE windows of its own length). Records stamp `oosFormula`; 1/2 O batches keep theirs.
+  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × in-sample DD.
+  Rule version 2 (`ruleVersion: 2`; Claude-Mac, goatai#2750 6787022949): the in-sample DD is the
+  drawdown over SAMPLE and FWD together (`bar.in_sample: "SAMPLE+FWD"`). BOOS is lenient: it fails
+  on that DD bar, and on a loss worse than the in-sample p10 of rolling SAMPLE windows of its own
+  length only for an O of 12 months or more (`o_weeks` ≥ 52, `bar.min_loss_leg_o_weeks`; Claude-Mac
+  6788392334). At O = 3 and 6 months the loss leg is not applied (`loss_leg_applied: false`) and a
+  BOOS loss alone does not fail. The leg is decided by O, never by the window count, which is
+  still printed (`in_sample_windows`; 4, 9, 17 and 35 at O = 3, 6, 12 and 24 months). A BOOS loss
+  with an unknown O is `not_measured`. A stored `oos_rule` without `ruleVersion` was judged under
+  version 1 (SAMPLE's DD alone, the loss leg at every O) and is never rewritten.
+  Records stamp `oosFormula`; 1/2 O batches keep theirs.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
   `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:
   the EA's export trim partly selects on BOOS, so show "BOOS: partial" and lead with FOOS.
@@ -1167,6 +1187,24 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   desktop sift matches it through `controller/fixtures/oos-holdout-gate-cases.json`.\r
   It sits next
   to the export qualification stamp and the catch-up verdict; neither changed.
+- Recount (read-only): `oos-rule-recount --catchup-id <id>` (repeatable) or `--all` reads stored
+  catch-ups and judges every member again, from its own stored evidence, under each OOS rule
+  version the controller knows (`rule_versions`), next to the verdict it stored. Per file
+  (`catchups[].members[]`): `catchup_id`, `alias`, `symbol`, the source SET (`original_set`,
+  `original_set_sha256`) and under `oos_rule` the `stored` status and one block per version
+  (`v1`, ...) with `status`, `reasons`, `in_sample_dd`, `in_sample_windows`, `boos_trades`,
+  `foos_trades` and the per-window numbers, plus `v1_matches_stored`. Per catch-up `counts`
+  and over all of them `totals`: pass counts under `stored` and each version, `gained` and
+  `lost` between the oldest and newest version, and how many re-judged files match their
+  stored verdict. `judged_with_stored` counts the judged files that carry a stored verdict and
+  `stored_missing` those that do not; each `<version>_matches_stored` is over the first group
+  only. `self_check` is the reproduction check: every judged file with a stored verdict, judged
+  again under the rule version it was stored with, matches it (`ok`; `checked`, `matches`,
+  `mismatches`, `by_stored_version`). A file with no stored verdict is left out of it
+  (`excluded_stored_missing`), and a check that compared nothing reads `ok: null`. It writes nothing (no report, receipt or cache), takes no terminal lease
+  and reads no process, session or broker, so it is safe while research runs. A member whose
+  stored files are missing or changed is listed `readable: false` with the reason and is
+  never judged; a catch-up under a held-out lock is redacted and left out of the totals.
 - Demo after export continues FOOS but does not scale with O: at least 4 weeks AND at
   least 30 trades, decision due by 6 weeks; under 30 trades at 6 weeks is "too slow to
   judge here" (never promote on thin data); M1 and other high-frequency sets are judged

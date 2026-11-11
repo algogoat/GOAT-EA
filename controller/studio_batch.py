@@ -258,6 +258,13 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
         require_demo(inspect_idle_demo(controller))
     if snapshot['owner'] != 'agent': raise ValueError('Current controller required: human must Give to Agent first')
     if package.exists(): raise ValueError('Unqueued preparation artifacts exist; preserve them and choose a new batch ID')
+    # The store validates the members again when the batch is queued, which is after everything is staged: a refusal
+    # there leaves a retained package and burns the batch ID (GOAT-EA#317: a ladder the plan check accepted was refused
+    # there on the store's key-sorted schema copy). The same store-side check runs here first, read-only, on the store's
+    # own schema and policy, so a member it refuses is refused before anything is staged.
+    from studio_queue import change_queue
+    change_queue('queue.enqueue_batch', dict(job_id=batch_id, members=raw_members), snapshot,
+                 controller.store.input_schema, controller.store.dependency_policy)
     # Stage every native artifact before queue publication. The original snapshot
     # revision and generation prevent a later ownership change from authorizing it.
     job = dict(job_id=batch_id, configuration=config, configuration_sha256=sha(config), source_revision=snapshot['revision'])

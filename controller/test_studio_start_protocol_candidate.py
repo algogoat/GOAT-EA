@@ -44,8 +44,21 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertEqual(b54['source_base'], '216e16225441cfc1bfe0546c1c70adaf327405cf', 'B54 is built on B53\'s commit')
         self.assertEqual(b54['consolidates'], ['B54.s', 'B54.0', 'B54.A', 'B54.B'])
         self.assertEqual(list(b54['consolidated_heads']), b54['consolidates'])
+        # B55 in progress (PR A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md): the tree is B54 plus marked B55 lines in the files
+        # scripts/test_b55_no_drift.cjs lists, and every other B54 source is byte-identical (proven there, against B54's
+        # commit). Those files carry B55's lines by design, so each is checked where it hashes to B54's identity: B54's own
+        # commit (a8c6766, checked out with CRLF as .gitattributes does). The build ID and marker stay B54's until a B55
+        # assembly binds the tree to its own identity.
+        b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
+        b55_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']'))
+        self.assertTrue({'GOAT_Inputs_Definitions.mqh'} <= b55_changed)
         for relative, expected in b54['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b55_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                blob = subprocess.run(['git', 'show', 'a8c6766:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+                blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B54 commit)')
         b53 = json.loads((RETAINED_B53 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(sorted(b54['sources']), sorted(b53['sources']), 'same compile closure as B53')
         b54_guard = (ROOT / 'scripts/test_b54_no_drift.cjs').read_text(encoding='utf-8')

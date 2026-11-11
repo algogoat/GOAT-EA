@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import unittest
 
-from studio_strategy_settings import (APPENDED_INPUTS, B49B_INPUTS, B50_INPUTS, B51_INPUTS, B54_INPUTS, appended_default,
+from studio_strategy_settings import (APPENDED_INPUTS, B49B_INPUTS, B50_INPUTS, B51_INPUTS, B54_INPUTS, B55_INPUTS, appended_default,
                                       complete_appended_inputs, read_values, validate_strategy)
 from studio_input_readback import explicit_paste_inputs, verify_input_readback
 from studio_export_inputs import verify_export_inputs
@@ -39,7 +39,7 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual(len(self.schema['inputs']), 114 + len(APPENDED_INPUTS))
         # B49b: its nine follow B50-alpha's and come before B51's (B49b's header: Claude-Mac 6433854745 ruling 6).
         self.assertEqual(B49B_INPUTS, ('Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC', 'Fix_Clock', 'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad'))
-        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS)   # B54 (A0): last
+        self.assertEqual(APPENDED_INPUTS, ('Ledger_Mode',) + B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS + B55_INPUTS)   # B55 (A0): last
         definition = self.schema['inputs']['Ledger_Mode']
         self.assertEqual((definition['type'], definition['declaration'], definition['default_expression']),
                          ('ENUM_LEDGER_MODE', 'sinput', 'Ledger_Legacy'))
@@ -97,7 +97,7 @@ class AppendedInputTests(unittest.TestCase):
                     'Single_Partial_ATR': ('double', 'input', '0.0'), 'Single_Partial_Fraction': ('double', 'input', '0.0'),
                     'Single_Partial_BE': ('bool', 'input', 'false')}
         self.assertEqual(B51_INPUTS, tuple(expected))
-        before_b54 = -len(B54_INPUTS)
+        before_b54 = -len(B54_INPUTS + B55_INPUTS)   # B55 (A0): its input follows B54's
         self.assertEqual(APPENDED_INPUTS[before_b54-len(B51_INPUTS):before_b54], B51_INPUTS)
         self.assertEqual(list(self.schema['inputs'])[before_b54-len(B51_INPUTS):before_b54], list(B51_INPUTS))
         for name, (kind, declaration, default) in expected.items():
@@ -129,10 +129,10 @@ class AppendedInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Fixed input value changed: Random_Direction'):
             verify_input_readback(dict(self.old), dict(observed, Random_Direction='true'), self.schema)
 
-    def test_the_b54_inputs_come_last_and_default_to_b53(self):
-        # B54 (PR A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md sections 3.1, 4.1 and 7): the breakout inputs, appended at the very end
-        # of the header after B51's; both modes default to Disabled, every default reproduces B53, and each is the default the
-        # tester report pins for an omitted input. Nothing reads them yet (gate 0: scripts/test_b54_gate0.cjs, test_b54_gate0.py).
+    def test_the_b54_inputs_come_before_b55s_and_default_to_b53(self):
+        # B54 (PR A0, docs/b54/BREAKOUT_ENTRIES_SPEC.md sections 3.1, 4.1 and 7): the breakout inputs, appended at the end of the
+        # header after B51's, where B55's now follows them; both modes default to Disabled, every default reproduces B53, and
+        # each is the default the tester report pins for an omitted input (gate 0: scripts/test_b54_gate0.cjs, test_b54_gate0.py).
         expected = {'BRK_Mode': ('ENUM_MODE_BRK', 'sinput', '0'), 'BRK_TF_': ('ENUM_MODE_TFs', 'input', '60'),
                     'BRK_Bars': ('int', 'input', '20'), 'BRK_Buffer_ATR': ('double', 'input', '0.0'),
                     'BRK_Once_Per_Level': ('bool', 'input', 'true'), 'ORB_Mode': ('ENUM_MODE_ORB', 'sinput', '0'),
@@ -141,8 +141,9 @@ class AppendedInputTests(unittest.TestCase):
                     'ORB_Entry_Minutes': ('int', 'input', '0'), 'ORB_Buffer_ATR': ('double', 'input', '0.0'),
                     'ORB_Min_Range_ATR': ('double', 'input', '0.0'), 'ORB_Max_Range_ATR': ('double', 'input', '0.0')}
         self.assertEqual(B54_INPUTS, tuple(expected))
-        self.assertEqual(APPENDED_INPUTS[-len(B54_INPUTS):], B54_INPUTS)
-        self.assertEqual(list(self.schema['inputs'])[-len(B54_INPUTS):], list(B54_INPUTS))
+        before_b55 = -len(B55_INPUTS)
+        self.assertEqual(APPENDED_INPUTS[before_b55-len(B54_INPUTS):before_b55], B54_INPUTS)
+        self.assertEqual(list(self.schema['inputs'])[before_b55-len(B54_INPUTS):before_b55], list(B54_INPUTS))
         for name, (kind, declaration, default) in expected.items():
             definition = self.schema['inputs'][name]
             self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
@@ -157,7 +158,7 @@ class AppendedInputTests(unittest.TestCase):
         self.assertEqual({name for name in expected if self.schema['inputs'][name]['optimizable']},
                          set(expected) - {'BRK_Mode', 'ORB_Mode', 'ORB_Clock'})
         # A B53 SET (none of them) validates and keeps its own values; a mode is never an axis; an undeclared mode is refused.
-        b53 = {k: v for k, v in self.full.items() if k not in B54_INPUTS}
+        b53 = {k: v for k, v in self.full.items() if k not in B54_INPUTS + B55_INPUTS}
         self.assertEqual(validate_strategy(dict(b53), self.schema)['values'], b53)
         with self.assertRaisesRegex(ValueError, 'BRK_Mode: Input not exposed for optimization'):
             validate_strategy(dict(self.old, BRK_Mode='0||0||1||2||Y'), self.schema)
@@ -172,6 +173,34 @@ class AppendedInputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Fixed input value changed: ' + name):
                 verify_input_readback(dict(self.old), dict(complete_appended_inputs(dict(self.old), self.schema), **{name: value}),
                                       self.schema)
+
+    def test_the_b55_input_comes_last_and_defaults_to_b54(self):
+        # B55 (PR A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md sections 3.1 and 7): the sequence switch, appended at the very end of
+        # the header after B54's, in its own group; its default (false) reproduces B54, and it is the default the tester
+        # report pins for an omitted input. An sinput, so never an axis (gate 0: scripts/test_b55_gate0.cjs, test_b55_gate0.py).
+        expected = {'BRK_Start_Seq': ('bool', 'sinput', 'false')}
+        self.assertEqual(B55_INPUTS, tuple(expected))
+        self.assertEqual(APPENDED_INPUTS[-len(B55_INPUTS):], B55_INPUTS)
+        self.assertEqual(list(self.schema['inputs'])[-len(B55_INPUTS):], list(B55_INPUTS))
+        for name, (kind, declaration, default) in expected.items():
+            definition = self.schema['inputs'][name]
+            self.assertEqual((definition['type'], definition['declaration'], appended_default(definition)),
+                             (kind, declaration, default), name)
+            self.assertEqual(tester_report._schema_default(definition, self.schema.get('defines')), default, name)
+            self.assertFalse(definition['optimizable'], name)
+        # A B54 SET (without it) validates and keeps its own values; the switch is never an axis.
+        b54 = {k: v for k, v in self.full.items() if k not in B55_INPUTS}
+        self.assertEqual(validate_strategy(dict(b54), self.schema)['values'], b54)
+        with self.assertRaisesRegex(ValueError, 'BRK_Start_Seq: Input not exposed for optimization'):
+            validate_strategy(dict(self.old, BRK_Start_Seq='false||false||0||true||Y'), self.schema)
+        # The readback wants the default for a SET that omits it, and catches a run the SET never asked for.
+        observed = complete_appended_inputs(dict(self.full), self.schema)
+        self.assertEqual({name: observed[name] for name in B55_INPUTS}, {name: d for name, (_, _, d) in expected.items()})
+        self.assertEqual(verify_input_readback(dict(self.old), complete_appended_inputs(dict(self.old), self.schema),
+                                               self.schema)['status'], 'INPUT_READBACK_MATCH')
+        with self.assertRaisesRegex(ValueError, 'Fixed input value changed: BRK_Start_Seq'):
+            verify_input_readback(dict(self.old), dict(complete_appended_inputs(dict(self.old), self.schema), BRK_Start_Seq='true'),
+                                  self.schema)
 
     def test_a_b49a_set_may_choose_the_single_engine_and_its_axes(self):
         # The fixture runs Smart Rescue, which the single engine refuses (Claude-Mac ruling 4): hard close instead.
@@ -231,11 +260,11 @@ class AppendedInputTests(unittest.TestCase):
         self.assertNotIn('Ledger_Mode', self.old)
         self.assertEqual(complete_appended_inputs(dict(self.old, Ledger_Mode='1'), self.schema)['Ledger_Mode'], '1')
         self.assertEqual(complete_appended_inputs(dict(self.old, Fix_MoneyVolume='1'), self.schema)['Fix_MoneyVolume'], '1')
-        # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no B50 input, fix flag, B51 or B54 input) adds
-        # only Ledger_Mode.
+        # A schema without the inputs (the V1.48 contract) adds nothing; B49a's (no B50 input, fix flag, B51, B54 or B55 input)
+        # adds only Ledger_Mode.
         v148 = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in APPENDED_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, v148), self.old)
-        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS})
+        b49a = dict(self.schema, inputs={k: v for k, v in self.schema['inputs'].items() if k not in B50_INPUTS + B49B_INPUTS + B51_INPUTS + B54_INPUTS + B55_INPUTS})
         self.assertEqual(complete_appended_inputs(self.old, b49a), dict(self.old, Ledger_Mode='0'))
 
     def test_the_paste_sets_the_default_instead_of_inheriting_the_last_run(self):

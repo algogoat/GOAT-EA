@@ -128,6 +128,12 @@ for(const [from,to,key] of [['BRK_Mode=0','BRK_Mode=1','BRK_Mode'],['BRK_TF_=60|
  ['ORB_Entry_Minutes=0','ORB_Entry_Minutes=120','ORB_Entry_Minutes'],['ORB_Buffer_ATR=0.00','ORB_Buffer_ATR=0.1','ORB_Buffer_ATR'],['ORB_Min_Range_ATR=0','ORB_Min_Range_ATR=0.5','ORB_Min_Range_ATR'],
  ['ORB_Max_Range_ATR=0.0','ORB_Max_Range_ATR=3.5','ORB_Max_Range_ATR']])
  compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults+b54Defaults.replace(from,to),false,key);
+// B55 (A0): the sequence switch, appended after B54's, likewise: MT5 reports it at its default (false) for a SET written
+// before it, which is accepted; on, for a SET that never asked for it, is refused (an sinput has no tuple).
+compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults+b54Defaults+'BRK_Start_Seq=false\n',true);
+compare(w,a+'\nBRK_Start_Seq=false\n',true);
+compare(w,a+'\nLedger_Mode=0'+b50Defaults+b49bDefaults+b51Defaults+b54Defaults+'BRK_Start_Seq=true\n',false,'BRK_Start_Seq');
+compare(w,a+'\nBRK_Start_Seq=true\n',false,'BRK_Start_Seq');
 compare(w,a.replace(/Risk=500\.0\r?\n/,''),false,'Risk');
 compare(w,a+'\nRisk=500\n',false,'Risk');
 compare(w,a.replace('Risk=500.0','Risk=5e2'),true);

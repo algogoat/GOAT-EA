@@ -17,10 +17,14 @@
 // validate_strategy and the init-rule mirror) are controller/test_b54_gate0.py.
 // What it does not prove: compile cleanliness (MetaEditor), MT5's own SET reader, or trades (the native Banker parity on all
 // 61, ruling 3, and test_b54_parity.cjs, spec 6.3, do).
+// B55 (PR A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md section 6.2): B54 is merged (a8c6766, GOAT-EA#306) and B55 appends its own
+// input after the 14, so "this tree" above is now B54's own commit (B54_TREE), read from history as B53 is, header mutants
+// included. scripts/test_b55_gate0.cjs is the gate from B54 to the working tree: the chain B53 -> B54 -> tree, end to end.
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict');
 const H=require('./b50_tick_harness.cjs');
 const B53='216e16225441cfc1bfe0546c1c70adaf327405cf';
+const B54_TREE='a8c6766243ff577bdcfc90495a6de33ce0797c88';   // B55 (A0): the candidate, B54's own commit
 const DIR=path.join(__dirname,'fixtures','b54-pool');
 // The spec's tables (3.1, 4.1): each new input at its declared default, as the harness holds it (enums by value).
 const NEW={BRK_Mode:0,BRK_TF_:60,BRK_Bars:20,BRK_Buffer_ATR:0,BRK_Once_Per_Level:true,ORB_Mode:0,ORB_Clock:0,ORB_TF_:5,
@@ -122,7 +126,7 @@ function gate(files54,names,stats){
 
 let passed=0;
 const stats={inits:0,ok:0,refused:0,writeSetLines:0};
-const TREE=H.loadSources();
+const TREE=H.loadSources(B54_TREE);
 {const problems=gate(TREE,POOL,stats);
  assert.deepEqual(problems,[],'gate 0 (items 1, 5, 6) on every pool SET');
  assert.ok(stats.ok>0,'the pool inits (the comparison is not vacuous)');passed++;}
@@ -150,7 +154,7 @@ assert.deepEqual(Object.keys(CHANGED),NAMES);
 // The gate is load-bearing: each header mutant fails it on the probe files (a SET from before B50, which omits Single_SL_ATR,
 // and a single, which carries B50-beta's inputs).
 const killed=[];
-{const header=H.readSource(undefined,H.HEADER);
+{const header=H.readSource(B54_TREE,H.HEADER);
  const swap=(text,from,to)=>{assert.equal(text.split(from).length,2,'the mutant site is unique: '+from);return text.replace(from,to);};
  const decl=name=>{const m=header.match(new RegExp('^[^\\n]*\\b'+name+'\\s+=[^\\n]*$','m'));assert.ok(m,name);return m[0];};
  const probes=[POOL.find(n=>!raw[n].subarray(2).toString('utf16le').includes('\nSingle_SL_ATR=')),manifest.files.find(r=>r.engine==='single').file];
@@ -162,11 +166,11 @@ const killed=[];
   ['a B54 default changed (BRK_Bars 20 -> 21)',swap(header,decl('BRK_Bars'),decl('BRK_Bars').replace('20;','21;'))],
  ];
  for(const [what,text] of mutants){
-  const problems=gate(H.loadSources(undefined,{[H.HEADER]:text}),probes);
+  const problems=gate(H.loadSources(B54_TREE,{[H.HEADER]:text}),probes);
   assert.ok(problems.length>0,'mutant caught: '+what);
   killed.push(what+' ('+problems.length+': '+problems[0].slice(0,90)+')');
  }
  passed++;}
 
-console.log(JSON.stringify({passed,test:'b54_gate0',baseline:B53,pool:POOL.length,inits:stats.inits,initOk:stats.ok,initRefused:stats.refused,
+console.log(JSON.stringify({passed,test:'b54_gate0',baseline:B53,candidate:B54_TREE,pool:POOL.length,inits:stats.inits,initOk:stats.ok,initRefused:stats.refused,
  writeSetLines:stats.writeSetLines,mutantsKilled:killed}));

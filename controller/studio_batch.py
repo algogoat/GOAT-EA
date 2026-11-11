@@ -258,6 +258,9 @@ def check_staged_inputs(controller, job):
     if 'launch_intent' in job or job.get('status') != 'pending':
         return
     members = (job.get('configuration') or {}).get('batch_members') or []
+    # Fewer than two members: no later member can inherit anything, and nothing of the controller is read.
+    if len(members) < 2:
+        return
     if any(not isinstance(member, dict) or not isinstance((member.get('strategy') or {}).get('values'), dict) for member in members):
         return
     # The installation names the build (BUILDS_NAMING_EVERY_INPUT); it is read only when the members are mixed.

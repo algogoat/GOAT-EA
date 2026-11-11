@@ -237,11 +237,12 @@ class RecountTests(FormulaCase):
         for version in w.RULE_VERSIONS:
             name = recount.label(version)
             self.assertEqual({symbol: row['oos_rule'][name]['status'] for symbol, row in rows.items()}, EXPECTED[name], name)
+        members = {spec['tester']['Symbol']: spec for spec in read_json(self.runner.path('cu1') / 'manifest.json')['members']}
         for symbol, row in rows.items():
             rule = row['oos_rule']
             self.assertTrue(row['readable'])
-            self.assertEqual((row['catchup_id'], row['alias'], row['period'], row['member_status']),
-                             ('cu1', row['alias'], 'M1', 'completed'))
+            self.assertEqual((row['catchup_id'], row['alias'], row['member_id'], row['period'], row['member_status']),
+                             ('cu1', members[symbol]['alias'], members[symbol]['member_id'], 'M1', 'completed'))
             # The source SET and its hash, and the re-test SET and its hash, as the catch-up recorded them.
             source = next(path for path in self.sets if path.parent.name == symbol)
             self.assertEqual((row['original_set'], row['original_set_sha256']), (str(source), hashlib.sha256(source.read_bytes()).hexdigest()))
@@ -285,7 +286,7 @@ class RecountTests(FormulaCase):
         self.assertFalse(self.rows_by_symbol(self.recount('cu1')['catchups'][0])['NZDUSD']['readable'])
         self.assertEqual(self.cli('oos-rule-recount', '--catchup-id', 'cu1')[0], 0)
         self.assertEqual(self.snapshot(), before)
-        # No file was even opened for writing by the recount module's own reads.
+        # catchup-report was never called: it would have written report.json.
         self.assertFalse((self.controller.root / 'catchups' / 'cu1' / 'report.json').exists())
 
     def test_it_never_reaches_a_terminal_a_lease_a_process_or_the_broker(self):

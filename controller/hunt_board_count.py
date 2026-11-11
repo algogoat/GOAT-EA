@@ -26,6 +26,10 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
   o3pool.json             {members: [...]}: migrated older files (candidate, group, duplicate hits, inputs, family)
   journals.json           per machine: tester-journal blocks expected / matched, gaps, flagged lines, proven
 
+A judged or migrated record may carry ``audit_notes``: a list of {note, evidence, sha256} (what an audit found about the
+file, the evidence file's name and its SHA-256). The counter does not judge them; it carries them onto the file's board
+row and lists them in the Markdown, so a ruled disclosure travels with the number.
+
 How a file is counted: a judged file with rule ``pass`` that passed the export bar is counted while its group has room
 (cap minus what the pool already holds in that group), in export order; later passes are reserves. A duplicate is never
 counted and never skipped in silence: one that has room stops the count (R6); one without room is a reserve like any other.
@@ -60,6 +64,7 @@ import argparse
 from collections import Counter
 import json
 from pathlib import Path
+import re
 import sys
 
 SCHEMA = 'hunt-board-input-v1'
@@ -93,6 +98,17 @@ def load(folder):
     if data['rules'].get('schema') != SCHEMA:
         raise ValueError('Board input folder is not ' + SCHEMA + ': ' + str(folder))
     return data
+
+
+def audit_notes(record, where):
+    """The record's audit notes, checked for shape only: a list of {note, evidence, sha256}."""
+    notes = record.get('audit_notes') or []
+    ok = isinstance(notes, list) and all(
+        isinstance(n, dict) and set(n) == {'note', 'evidence', 'sha256'} and all(isinstance(v, str) and v for v in n.values())
+        and re.fullmatch(r'[0-9a-f]{64}', n['sha256']) for n in notes)
+    if not ok:
+        raise ValueError('audit_notes of %s must be a list of {note, evidence, sha256 (64 hex)}' % where)
+    return notes
 
 
 def cap_states(rules, pool, judged):
@@ -280,11 +296,12 @@ def count(folder):
         files=[dict(machine=x['machine'], part=x['part'], index=x['index'], position=x['position'], alias=x['alias'], asset=x['asset'],
                     family=x['family'], template=x['template'], group=x['held_group'] or 'new:' + x['member'],
                     state=states[x['source'].lower()], kind=kind(x), disclosure=reason if kind(x) == 'disclosed' else None,
-                    duplicate=bool(x.get('duplicate') or x.get('duplicate_hits')),
+                    duplicate=bool(x.get('duplicate') or x.get('duplicate_hits')), audit_notes=audit_notes(x, x['source']),
                     proof=x.get('proof'), set_sha256=x['set_sha256'], source=x['source']) for x in passes],
         o3_files=[dict(catchup=r['catchup'], alias=r['alias'], asset=r['symbol'], group=r['group'],
                        state='counted' if r in migrated else 'reserve', template=r.get('template'), family=r.get('family') or 'unknown',
                        family_established=(r.get('family_established') or 'not established').split(':')[0],
+                       audit_notes=audit_notes(r, r['original_set']),
                        set_sha256=r['original_set_sha256'], source=r['original_set'])
                   for r in migrated + migrated_reserve])
 
@@ -323,6 +340,14 @@ def markdown(b):
     out += ['', '## Migrated files', '', '| Catch-up | Alias | Asset | Template | Family | Established | State |', '|---|---|---|---|---|---|---|']
     for f in b['o3_files']:
         out.append('| %s | %s | %s | %s | %s | %s | %s |' % (f['catchup'], f['alias'], f['asset'], f['template'], f['family'], f['family_established'], f['state']))
+    noted = {}
+    for f in b['files'] + b['o3_files']:
+        for n in f['audit_notes']:
+            noted.setdefault((n['note'], n['evidence'], n['sha256']), []).append('%s (%s)' % (f['alias'], f['state']))
+    if noted:
+        out += ['', '## Audit notes', '']
+        for (note, evidence, digest), files in noted.items():
+            out.append('- "%s": evidence `%s`, sha256 `%s`; %d files: %s' % (note, evidence, digest, len(files), ', '.join(files)))
     return '\n'.join(out) + '\n'
 
 

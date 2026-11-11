@@ -267,6 +267,27 @@ class HuntBoardCountTests(unittest.TestCase):
         self.assertEqual((b['counted']['total'], b['counted']['disclosed'], b['apart']['files']), (15, 2, 1))
         self.assertEqual(b['reserves'], dict(t3=2, banker=1))   # the apart file frees no slot: the reserve stays a reserve
 
+    def test_audit_notes_travel_with_the_file_onto_the_board(self):
+        note = dict(note='seed 2026-10-13 stepped TF ladder, frames show the two stated rungs', evidence='ENUM-LADDER-AUDIT.md', sha256='ab' * 32)
+        b = board.count(FIXTURE)   # none in the fixture: every row carries an empty list and the Markdown has no section
+        self.assertTrue(all(f['audit_notes'] == [] for f in b['files'] + b['o3_files']))
+        self.assertNotIn('## Audit notes', board.markdown(b))
+        folder = Folder(self)
+        folder.alter('o3pool.json', lambda data: [r.update(audit_notes=[note]) for r in data['members'] if r['alias'] in (MIGRATED_COUNTED, MIGRATED_RESERVE)])
+        folder.alter('judged.json', lambda rows: [r.update(audit_notes=[note]) for r in rows if r['alias'] == CLEAN_COUNTED])
+        b = board.count(folder.path)
+        self.assertEqual(b['counted']['total'], 16)   # a note never changes the count
+        carried = {f['alias']: f['audit_notes'] for f in b['files'] + b['o3_files'] if f['audit_notes']}
+        self.assertEqual(carried, {MIGRATED_COUNTED: [note], MIGRATED_RESERVE: [note], CLEAN_COUNTED: [note]})
+        text = board.markdown(b)
+        self.assertIn('- "seed 2026-10-13 stepped TF ladder, frames show the two stated rungs": evidence `ENUM-LADDER-AUDIT.md`, sha256 `%s`; 3 files: ' % ('ab' * 32), text)
+        self.assertIn('%s (reserve)' % MIGRATED_RESERVE, text)
+        for bad in ([dict(note, sha256='xyz')], [dict(note='x', evidence='y')], 'a string', [dict(note, extra='field')]):
+            folder = Folder(self)
+            folder.alter('o3pool.json', lambda data: [r.update(audit_notes=bad) for r in data['members'] if r['alias'] == MIGRATED_COUNTED])
+            with self.assertRaises(ValueError):
+                board.count(folder.path)
+
     def test_a_folder_without_a_record_file_is_an_error_not_a_board(self):
         folder = Folder(self)
         (folder.path / 'holdout.json').unlink()

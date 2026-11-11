@@ -112,3 +112,66 @@ V1.49 isolation builds store the GOAT user credential at
 B stays licensed and the reverse, account mismatch refused, a login reading 0 mid-write, migration
 proof cases including every non-`approved` status);
 `controller/test_studio_terminal_isolation.py` `CredentialPathTests`.
+
+## INV-PROVE-01: a Prove member runs only the inputs its own SET states
+
+**Incident (GOAT-EA#315, hunt round 13a, found at the close on 2026-11-11).** In three Prove
+batches on B54, every member after the first one whose SET set `Ledger_Mode=1` exported with
+`Ledger_Mode=1`, although its own SET omitted it: 61 exports were proved on
+`Ledger_PositionJoin` unasked. The Prove report marked each of them `unverified`
+(`Fixed export input mismatch: Ledger_Mode`), but the batch result did not say so and
+`evidence-scan` never read it, so the exports were re-tested as they were.
+
+**Statement.**
+1. Every Prove member's startup inputs name every input the build declares: the SET's own
+   values, and every input the SET omits at its compiled default. No member runs a value the
+   tester kept from the member before it.
+2. An export the Prove report marks `unverified` is never planned for a catch-up, or counted,
+   without a disclosed tag.
+
+**Enforcement.**
+- Part 2, controller. `studio_export_scan.unverified_summary` puts the count, the members and
+  the inputs involved into the batch result (`unverified_exports`, written by
+  `studio_finish.finish`). `studio_catchup.UnverifiedExports` reads the retained results;
+  `apply_unverified` marks such an export `ineligible` (`UNVERIFIED_EXPORT`) in `evidence_scan`
+  and in `CatchupRunner._build`, unless the plan's `disclosed_unverified` names its SET SHA-256
+  with the tag it is counted under. The tag is carried on the row, the member and its evidence
+  version (`original.unverified_disclosed`). What `unverified` means is unchanged
+  (`studio_export_scan.scan_exports`, `studio_export_inputs.verify_export_inputs`).
+- Part 1 is **not enforced for members after the first**, and cannot be by pinning the member
+  inis the controller stages:
+  - The first member is complete. Its startup config is built from the paste inputs, which carry
+    every contract input (`studio_input_readback.explicit_paste_inputs`), plus the runtime pins
+    (`studio_startup_config.startup_config`), and the tester profile is written from those bytes
+    (`studio_config_start`, `studio_tester_profile`). Only member 0 feeds that payload
+    (`studio_native_request._validate_material`).
+  - Every later member is launched by the EA, not the controller. `ActivatePending`
+    (`Optimizer.mqh`) reads the member's `inputs\<alias>\Inputs.GOAT`, passes it through
+    `GoatStudioExplicitOptimizationInputs` (`GOATOptimizationInputs.mqh`), writes that as
+    `[TesterInputs]` into `inputs\<alias>\config.ini` and the active config, and relaunches MT5 on
+    it (`AddCommand`, `Tester.mqh`). The `<alias>.ini` the controller staged is overwritten.
+  - `Inputs.GOAT` is the member's frozen SET, byte for byte
+    (`prepare_native_campaign.prepare`), and `GoatStudioExplicitOptimizationInputs` adds only the
+    appended optimization axes a SET omits. So an omitted appended `sinput` or string is never
+    named: `Ledger_Mode`, `Engine_Mode`, `Clock_Mode`, `Server_Clock_Model`,
+    `Server_UTC_Offset`, `NY_Session`, the nine B49b inputs, `Random_Direction`,
+    `Single_Flat_Only`, `BRK_Mode`, `ORB_Mode` and `ORB_Clock`, and the inputs declared outside
+    the contract (`studio_tester_report.RUNTIME_INPUT_DEFAULTS`).
+  - Until part 1 is enforced, a batch never mixes members that state one of those inputs with
+    members that omit it (Claude-Mac GOAT-EA#315 6791427047 item 4a).
+
+**Tests.** `controller/test_studio_unverified_exports.py`: the real scan marks an export that
+inherited `Ledger_Mode=1` `unverified` and passes one that matches its SET (omitted on both
+sides, and stated as 1 on both); the batch summary counts them and names the input; the real
+`finish` stores it in `result.json` and the job's completion; `evidence_scan` marks the
+unverified export `ineligible` with the reason and leaves the clean export of the same batch;
+a disclosed export stays eligible and carries its tag; a library copy is found by its SHA-256;
+only the export's own run is read, and an unreadable result refuses; the planner never plans an
+unverified export, plans the clean one, and plans a disclosed one with the tag on its member.
+`controller/test_studio_appended_inputs.py`
+`test_a_set_without_it_is_prepared_staged_reused_and_read_back` pins that the staged member ini
+does not name an omitted `Ledger_Mode`.
+
+**Not covered.** Part 1, as above. An `unverified` export with no readable SET (an incomplete
+SET/CSV pair) is counted in the batch summary but has no SHA-256 to match in a scan. The board
+counter that reads `unverified` lives outside the controller.

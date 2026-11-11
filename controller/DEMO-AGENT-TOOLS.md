@@ -1025,6 +1025,19 @@ tools need no broker; the rest use the seed lane's checks, start record
 & $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
 ```
 
+**Unverified exports (GOAT-EA#315).** A Prove batch's report marks an export `unverified` when its
+fixed inputs differ from its member's own SET (`Fixed export input mismatch: <input>`; an input the
+SET omits counts at its default) or when it could not be checked. The batch result
+(`attempts\<attempt>\result.json`, `batch-status` → `result_path`) says it once for the batch in
+`unverified_exports`: `count`, `member_count`, `inputs` (input → exports), `reasons`, `files` and one
+`plain` sentence. `evidence-scan` and `catchup-prepare` read those results: such an export is
+`ineligible` (`code:"UNVERIFIED_EXPORT"`, `unverified_batch_id`, `unverified_reason`) and is never
+re-tested as it is. To re-test one anyway, the plan names it and the tag it is counted under:
+`"disclosed_unverified":{"<export SET sha256>":"ledger PositionJoin, inherited"}`. Its row then keeps
+its status and carries `unverified_disclosed`, and the member and its evidence version carry
+`original.unverified_disclosed` (`batch_id`, `reason`, `tag`). A batch result that cannot be read
+refuses the scan.
+
 The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
 paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the
 selected MT5 and relaunches it once per member like a seed run; tell the owner

@@ -884,6 +884,18 @@ frame target, exact axis precision, duplicates, size limits) and writes nothing:
 no SET, startup INI or seed folder, and no terminal, process or broker access.
 Only the validation itself is appended to `actions.jsonl`.
 
+**A seed SET passes the same SET validators as a Prove member (GOAT-EA#317).**
+`seed-validate` and `seed-prepare` run what `prepare-batch` runs on each member's SET:
+the structure and axis checks, risk sizing, the pre-trade caps, the enum-ladder rule
+(`ENUM_LADDER_NOT_NATIVE`), the EA's OnInit rules (`EA_INIT_REFUSED`), the dependency audit,
+and the EA's tester-only OnInit rules with the job's own `FromDate` (`TESTER_INIT_REFUSED`,
+naming `seed job <n> (<SET path>)`). Both read each enum's order from the same contract, so
+a plan that seeds is not refused later for its SET's own values, and a plan that cannot be
+proved is refused before any seed runs. `seed-validate` needs the installation receipt and
+the plan's SET files only, so a prereg plan can be checked with it before it is sent to a
+machine. Not shared, by design: a Prove member needs a custom forward window and one export
+policy per batch, and a seed needs `ForwardMode=0` and axis values the seed XML keeps exactly.
+
 `seed-promote` (`--neighborhood` 1..5, default 1; add `--member <alias>` when
 the candidate appears in several members) writes `fixed.set` and
 `robustness.set` for one verified candidate under the same checks as

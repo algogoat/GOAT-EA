@@ -151,6 +151,13 @@ answer on the same SET.
 - The contract is loaded in file order (`studio_installation.contracts`, `read_json`); the seed
   lane (`studio_seed._freeze`) and `prepare-batch`'s plan check (`studio_batch.read_plan`) read
   that object.
+- One set of SET validators. Both lanes call `validate_raw(..., require_optimization=True)`
+  (structure and axes, `check_risk_sizing`, `check_pretrade_caps`, `check_enum_ladders`,
+  `check_ea_init`, `check_risk_chosen`, the dependency audit) and `check_tester_init` with the
+  run's own `FromDate` (`studio_batch.prepare_batch`; `studio_seed._freeze`, for
+  `seed-validate` and `seed-prepare`). Not shared, because they cannot apply to the other
+  lane: the batch shape (`studio_queue.validate_batch_members`: custom forward, one export
+  policy and forward boundary) and the seed's exact axis precision and `ForwardMode=0`.
 
 **Tests.** `controller/test_studio_store_schema_order.py`, on the real v149 contract and a
 controller opened as production opens it: the store holds every enum in the contract's order
@@ -162,9 +169,16 @@ staged; a member only the store refuses is refused before staging and keeps its 
 five ladders the sorted copy allowed are refused through the draft path, and native ones pass.
 `controller/test_studio_enum_ladder_native.py` `CompactControllerPaths` now builds the store's
 copy as production does and prepares the native `RSI_TF_=1||0||1||1||Y` through it.
+`controller/test_studio_ea_init_rules.py` `SeedLaneTesterTests`: a tester-refused job fails at
+`seed-validate` and `seed-prepare` naming the job, and nothing is prepared; allowed jobs
+validate; the rule that reads the test start uses the seed job's own `FromDate`.
 
 **Not covered.** A schema that is already key-sorted when it is handed to the store cannot be
 told from the contract there; `contracts()` is the only loader. Other test fixtures still
 assign the schema object straight onto the store (`test_goat_studio.PortableControllerTests`).
+A seed batch prepared before `check_tester_init` joined the seed lane is not checked again
+when it starts or resumes. On the v149 contract the seed lane refuses a SET that omits the
+appended optimization axes (`Pinned seed inputs changed a template trading value`,
+`studio_seed._freeze`), which `prepare-batch` accepts: the lanes still differ there.
 Whether the EA's `OnTesterInit` range check accepts `EMA_Mode` 0..2 in a Prove batch is not
 shown by a run; it is the form the rule calls native.

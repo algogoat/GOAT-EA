@@ -633,7 +633,7 @@ EA_INIT_RULES = (
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
 # chart and still refused in every tester pass, so validate-set (live and tester SETs alike) does not apply these;
-# batch prepare (studio_batch.prepare_batch) does, before anything is staged.
+# batch prepare (studio_batch.prepare_batch) and the seed lane (studio_seed._freeze) do, before anything is staged.
 TESTER_INIT_RULES = (
     _rule('TESTER_CONTROL_TOWER_BIAS', [4446], 'Live Control Tower bias is unavailable in tester',
           ['Mode_Bias', 'Bias_Protocol'],
@@ -915,8 +915,9 @@ def check_ea_init(values, schema):
 
 
 def check_tester_init(values, schema, *, where='', from_date=None):
-    """Batch prepare only (P-beta38-prepare-tester-ai-bias): refuse a SET whose OnInit refuses it in the strategy
-    tester (tester, optimization and forward passes) although it is valid on a live chart. Same reachable-value
+    """Batch prepare (P-beta38-prepare-tester-ai-bias) and the seed lane (studio_seed._freeze, GOAT-EA#317: one set of
+    SET validators for a seed plan and the Prove batch built from it): refuse a SET whose OnInit refuses it in the
+    strategy tester (tester, optimization and forward passes) although it is valid on a live chart. Same reachable-value
     evaluation as check_ea_init; validate-set and live paths do not call this. A rule that also reads the test start
     (from_date_before) applies when `from_date` (the tester FromDate, YYYY.MM.DD) is before its day."""
     if from_date is not None and not re.fullmatch(r'\d{4}\.\d{2}\.\d{2}', str(from_date)):

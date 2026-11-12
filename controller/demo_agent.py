@@ -2081,6 +2081,16 @@ class DemoAgent:
                 from studio_batch_driver import status, refused_before_dispatch
                 previous = status(controller, batch_id)
                 retry = not resume and refused_before_dispatch(read_json(journal), controller.job(batch_id))
+                if resume:
+                    # resume-batch observes a retained attempt and never starts one. A start refused before anything
+                    # reached MT5 has none, so no worker is launched to fail in its log: the refusal names the one
+                    # command that starts the batch again (GOAT-EA#323).
+                    from studio_batch_driver import refused_start_hint
+                    retained = read_json(journal)
+                    hint = (refused_start_hint(self.root, controller.job(batch_id), retained, self.session)
+                            if retained.get('status') == 'start_uncertain' and retained.get('attempt_id') is None else None)
+                    if hint is not None:
+                        raise ValueError('resume-batch has no attempt to resume for batch ' + batch_id + '. ' + hint)
                 if not retry and (previous.get('stopped') is True or not resume):
                     return dict(status='existing_driver', driver=previous)
                 if retry:
@@ -2282,7 +2292,10 @@ class DemoAgent:
             alive = self._worker_alive(record, quick=True)
         except ValueError as exc:
             alive = 'unknown: ' + str(exc)
-        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive))
+        from studio_research_status import worker_status_now
+        shown = worker_status_now(record.get('status'), alive)
+        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive),
+                    **({'status': shown, 'recorded_status': record.get('status')} if shown != record.get('status') else {}))
 
     @contextmanager
     def _batch_read_scope(self, operation_name, batch_id):
@@ -2945,7 +2958,9 @@ class DemoAgent:
             return self._seed_unpause(batch_id, kind, accept_news_change=accept_news_change)
         record = load(self.root, batch_id)
         if record is None:
-            raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+            from studio_batch_pause import no_pause_refusal
+            raise no_pause_refusal(self.root, batch_id, lambda: next(
+                item for item in self._jobs_readonly() if item['job_id'] == batch_id), self.session)
         from studio_batch_close import refuse_closed
         refuse_closed(self.root, batch_id)          # closed (batch-pause-close): never resumes, nothing is released
         # A reserved successor that never ran (retired unactivated / never started, or
@@ -2969,8 +2984,12 @@ class DemoAgent:
                 self._append('batch_resume', 'news_change_accepted', batch_id=batch_id, successor_batch_id=new_id, news_file=news)
             if job is not None and job['status'] == 'pending' and not journal.is_file():
                 driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
+            # The successor's start was refused before anything reached MT5 (GOAT-EA#323): this call starts nothing
+            # (one command does, and it is named here), so a repeat is never a silent "resumed, driver null".
+            from studio_batch_driver import refused_start_hint
+            hint = None if driver is not None else refused_start_hint(self.root, job, session=self.session)
             return dict(state='resumed', source_batch_id=batch_id, batch_id=new_id, reused=True, driver=driver,
-                        lineage=lineage(self.root, new_id))
+                        lineage=lineage(self.root, new_id), **({'next_action': hint} if hint else {}))
         if record['state'] != 'paused':
             raise refusal(record)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
@@ -3721,6 +3740,21 @@ class DemoAgent:
     def catchup_report(self, catchup_id):
         return self._lane_report('catchup', catchup_id)
 
+    def tester_journal_check(self, *, catchup_id=None, batch_id=None):
+        """Read-only (GOAT-EA#315): is every tester journal copy of a finished catch-up or Prove batch in place and
+        unchanged (studio_tester_journal)? ``ok`` is false when one is missing or changed. No terminal effect; the
+        retained state is read as it is and nothing is written."""
+        from studio_tester_journal import check_batch, check_catchup
+        if (catchup_id is None) == (batch_id is None):
+            raise ValueError('tester-journal-check needs exactly one of --catchup-id or --batch-id')
+        if catchup_id is not None:
+            return check_catchup(self.root, catchup_id)
+        from studio_research_status import queue_jobs
+        job = next((item for item in queue_jobs(self.root, self.session) if item['job_id'] == batch_id), None)
+        if job is None:
+            raise ValueError('No batch %s in this terminal\'s queue' % batch_id)
+        return check_batch(self.root, job)
+
     # ------------------------------------------------------------------ Hold-up test (Prove)
     #
     # One frozen, hash-bound SET, one MT5 pass on a chosen window, read from MT5's own report
@@ -3775,6 +3809,26 @@ class DemoAgent:
             self._append('seed_promote', result['status'], batch_id=batch_id, candidate_sha256=candidate,
                          robustness_sha256=result['robustness_set']['sha256'])
             return result
+
+    def seed_promote_fork(self, batch_id, candidate, fork_set, fork_id=None, member=None):
+        """Record the SHA-256 of the strategy-library fork made from a promoted SET on its promotion (lineage by
+        SHA-256, never by name); local files only, same scope as seed-promote. The fork SET is only read."""
+        with self._seed_scope('seed-report', batch_id) as (controller, evidence):
+            from studio_seed_promote import record_fork
+            result = record_fork(controller, batch_id, candidate, fork_set, fork_id=fork_id, member=member,
+                                 runner=self._seed_runner(controller))
+            self._append('seed_promote_fork', result['status'], batch_id=batch_id, candidate_sha256=candidate,
+                         fork_set_sha256=result['fork_set_sha256'], relation=result['relation'])
+            return result
+
+    def promotion_lookup(self, *, set_path=None, set_sha256=None):
+        """Read-only: the seed promotion a SET belongs to, by SHA-256 (its own, a recorded fork's, or the same inputs
+        under another name). No terminal, broker or store access; nothing is written."""
+        from studio_installation import contracts
+        from studio_seed_promote import lookup
+        # The installed input schema names the string inputs: a string holding || is one value, never a tuple.
+        schema, _ = contracts(self.install['ea_version'])
+        return lookup(self.root, set_sha256=set_sha256, set_path=set_path, schema=schema)
 
     def _slot_kind(self, slot):
         """Which runner holds the shared terminal slot: the catch-up or hold-up test whose manifest the slot names, else seed."""
@@ -3911,6 +3965,23 @@ def _export_qualification_command(args, *, now=None):
         counts[key] = sum(run['counts'][key] for run in runs)
     result = dict(schema='goat-export-qualification-scan-v1', generated_at=stamp_time, counts=counts, runs=runs, written=written)
     return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))
+
+
+def _oos_rule_recount_command(args):
+    """oos-rule-recount: stored catch-ups re-judged under every OOS window rule version (studio_oos_recount).
+
+    Read-only. No DemoAgent is built, so no session, terminal lease, process inventory or broker is read, and nothing
+    is written anywhere. Each catch-up block passes the held-out guard like every other demo_agent reply: a locked
+    catch-up loses its verdicts and counts and adds nothing to the totals. Without a readable installation the locks
+    cannot be checked, so nothing is printed."""
+    from studio_heldout_guard import guard_output
+    from studio_oos_recount import recount
+    try:
+        install = load_installation(Path(args.installation).resolve(), verify_binary=False)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError('oos-rule-recount needs a readable --installation to apply the held-out guard: ' + str(error)[:200])
+    root = install['controller_state_root']
+    return recount(root, args.catchup_id, every=args.all, guard=lambda block: guard_output(install, block, root=root))
 
 
 ACCEPT_NEWS_HELP = ('Continue a news-on run (a SET with Mode_News 2-5) whose GOAT_News.csv changed since it started, or was '
@@ -4124,6 +4195,15 @@ def main(argv=None):
     seed_promote.add_argument('--name', required=True)
     seed_promote.add_argument('--neighborhood', type=int, default=1, help='Robustness ladder steps either side, 1..5 (default 1)')
     seed_promote.add_argument('--member')
+    promote_fork = commands.add_parser('seed-promote-fork', help='Record a strategy-library fork\'s SET SHA-256 on the promotion it was made from')
+    promote_fork.add_argument('--batch-id', required=True)
+    promote_fork.add_argument('--candidate', required=True)
+    promote_fork.add_argument('--fork-set', type=Path, required=True, help='The fork\'s SET file; read, never changed')
+    promote_fork.add_argument('--fork-id', help='The strategy-library fork id')
+    promote_fork.add_argument('--member')
+    promotion_lookup = commands.add_parser('promotion-lookup', help='Read-only: the seed promotion a SET belongs to, by SHA-256')
+    promotion_lookup.add_argument('--set', type=Path, help='The SET file (its inputs are matched too)')
+    promotion_lookup.add_argument('--set-sha256')
     gate = commands.add_parser('gate-recommend', help='Read-only: recommend qualification gates for a new run from our own export evidence')
     gate.add_argument('--target', choices=('forward', 'post', 'held_up'), default='forward',
                       help='held_up (catch-up verdicts) is the only actionable target; forward and post are diagnostics')
@@ -4173,6 +4253,14 @@ def main(argv=None):
             catchup_drive.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     for name in ('catchup-status', 'catchup-cancel', 'catchup-report', 'catchup-reconcile'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
+    oos_recount = commands.add_parser('oos-rule-recount', help='Read-only: stored catch-ups judged again under every OOS window '
+                                                               'rule version, next to their stored verdict; writes nothing')
+    oos_recount.add_argument('--catchup-id', action='append', help='A stored catch-up to judge again; repeatable')
+    oos_recount.add_argument('--all', action='store_true', help='Every stored catch-up of this installation')
+    journal_check = commands.add_parser('tester-journal-check', help='Read-only: is every tester journal copy of a finished '
+                                                                     'catch-up or Prove batch in place and unchanged (exit 2 when not)')
+    journal_check.add_argument('--catchup-id')
+    journal_check.add_argument('--batch-id')
     commands.add_parser('holdup-validate', help='Non-executing hold-up test plan check').add_argument('--plan', type=Path, required=True)
     holdup_prep = commands.add_parser('holdup-prepare', help='Freeze one MT5 pass per frozen, hash-bound SET; no launch')
     holdup_prep.add_argument('--holdup-id', required=True)
@@ -4187,11 +4275,12 @@ def main(argv=None):
     for name in ('holdup-status', 'holdup-cancel', 'holdup-report', 'holdup-reconcile'):
         commands.add_parser(name).add_argument('--holdup-id', required=True)
     args = parser.parse_args(argv)
-    if args.command in ('gate-recommend', 'gate-stamp', 'export-qualification'):
+    if args.command in ('gate-recommend', 'gate-stamp', 'export-qualification', 'oos-rule-recount'):
         # Evidence-only commands: no terminal or session is read; only export-qualification --write
-        # appends its own new record files under the controller state root.
+        # appends its own new record files under the controller state root. oos-rule-recount writes nothing.
         try:
-            result = _gate_command(args) if args.command != 'export-qualification' else _export_qualification_command(args)
+            result = (_oos_rule_recount_command(args) if args.command == 'oos-rule-recount' else
+                      _gate_command(args) if args.command != 'export-qualification' else _export_qualification_command(args))
             print(json.dumps(dict(ok=True, result=result), sort_keys=True, default=str))
             return 0
         except Exception as exc:
@@ -4276,6 +4365,8 @@ def main(argv=None):
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
         elif args.command == 'seed-reconcile': result = agent.seed_reconcile(args.batch_id)
         elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
+        elif args.command == 'seed-promote-fork': result = agent.seed_promote_fork(args.batch_id, args.candidate, args.fork_set, args.fork_id, args.member)
+        elif args.command == 'promotion-lookup': result = agent.promotion_lookup(set_path=args.set, set_sha256=args.set_sha256)
         elif args.command == 'evidence-end': result = agent.evidence_end(args.value, broker_clock=args.broker_clock)
         elif args.command == 'evidence-scan': result = agent.evidence_scan([str(p) for p in args.source], args.evidence_end,
             broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold)
@@ -4288,6 +4379,7 @@ def main(argv=None):
         elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
         elif args.command == 'catchup-reconcile': result = agent.catchup_reconcile(args.catchup_id)
         elif args.command == 'catchup-report': result = agent.catchup_report(args.catchup_id)
+        elif args.command == 'tester-journal-check': result = agent.tester_journal_check(catchup_id=args.catchup_id, batch_id=args.batch_id)
         elif args.command == 'holdup-validate': result = agent.holdup_validate(args.plan)
         elif args.command == 'holdup-prepare': result = agent.holdup_prepare(args.holdup_id, args.plan)
         elif args.command == 'holdup-start': result = agent.holdup_start(args.holdup_id, args.max_seconds, detach=_lane_detached(args))
@@ -4299,6 +4391,11 @@ def main(argv=None):
         elif args.command == 'holdup-report': result = agent.holdup_report(args.holdup_id)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
+                             sort_keys=True, default=str), file=sys.stderr)
+            return 2
+        if args.command == 'tester-journal-check' and not result.get('ok'):
+            # A missing or changed copy is the answer the round close must not pass: the same shape as stop_unconfirmed.
+            print(json.dumps(dict(ok=False, code='TESTER_JOURNAL_MISSING', result=result),
                              sort_keys=True, default=str), file=sys.stderr)
             return 2
         # Held-out lock (goatai#2221 §4.3): a reply is unchanged unless a lock binds part of it.

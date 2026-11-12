@@ -74,6 +74,10 @@ def finish(controller,job_id,*,expected_generation=None):
     # scoreboard they are results for their window, not failures (studio_research_status).
     result['research_outcomes']=research_outcomes
     if research_error is not None:result['research_outcomes_error']=research_error
+    # Exports the report left unverified (they ran other fixed inputs than their member's SET), counted and named once
+    # for the batch (GOAT-EA#315): evidence-scan and catchup-prepare read them from this result (studio_catchup).
+    from studio_export_scan import unverified_summary
+    result['unverified_exports']=unverified_summary(reports)
     # Every member that ran, in the exact shape a closed batch records (studio_batch_close.member_identities), so a
     # research-side trial reader sees finished and closed batches alike (goatai#2350). Additive; never blocks a finish.
     try:
@@ -124,6 +128,12 @@ def finish(controller,job_id,*,expected_generation=None):
                 raise ValueError('Report cleanup plan changed')
             result['report_bridge_retirement']=retire(plan['research_binding'],
                 manifest['native_run_relative'],receipt,evidence)
+        # The terminal's tester journal for this attempt, kept with its result while the tester is proven idle and
+        # before anything else can start an optimisation: MT5 clears older day logs then (studio_tester_journal,
+        # GOAT-EA#315; Claude-Mac goatai#2750 6791842328). Never blocks a finish: a journal that is gone is recorded
+        # as missing with the reason.
+        from studio_tester_journal import keep_batch
+        result['tester_journal']=keep_batch(controller.install,evidence,job)
         # Filesystem receipt precedes the database finalization; interrupted
         # completion can replay from the restored transaction without relaunch.
         result_path=evidence/'result.json';write_json(result_path,result)

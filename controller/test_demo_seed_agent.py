@@ -258,6 +258,19 @@ class DemoSeedAgentTests(unittest.TestCase):
         logged = [a for a in self.actions() if a['operation'] == 'seed_promote']
         self.assertEqual([a['phase'] for a in logged], ['written', 'retained'])
         self.assertTrue(all(a['robustness_sha256'] == promoted['robustness_set']['sha256'] for a in logged))
+        # Lineage by SHA-256 (Claude-Mac goatai#2750 6793727135): the fork made from the robustness SET is recorded on
+        # the promotion, and any SET is looked up to its promotion read-only.
+        robustness = Path(promoted['robustness_set']['path'])
+        fork = self.root.parent / 'fork.set'
+        fork.write_bytes(robustness.read_bytes().decode('utf-16').replace('EA_Desc=Demo Discovery One', 'EA_Desc=My fork').encode('utf-16'))
+        recorded = self.agent.seed_promote_fork('batch', candidate, fork, fork_id='fork-1', member=alias)
+        self.assertEqual((recorded['status'], recorded['relation'], recorded['derived_from']), ('written', 'same_inputs', 'robustness_set'))
+        found = self.agent.promotion_lookup(set_sha256=recorded['fork_set_sha256'])
+        self.assertEqual([(m['relation'], m['batch_id'], m['candidate_sha256'], m['alias']) for m in found['matches']],
+                         [('recorded_fork', 'batch', candidate, alias)])
+        self.assertEqual(self.agent.promotion_lookup(set_path=robustness)['matches'][0]['relation'], 'promoted_set')
+        logged = [a for a in self.actions() if a['operation'] == 'seed_promote_fork']
+        self.assertEqual([(a['phase'], a['fork_set_sha256'], a['relation']) for a in logged], [('written', recorded['fork_set_sha256'], 'same_inputs')])
 
     def test_failed_members_stop_the_hunt_and_seed_resume_continues_it_under_a_fresh_broker_check(self):
         # goatai#1885 (T2 seedhunt-t2-4-b41): members without output fail alone; after the breaker stops the hunt,

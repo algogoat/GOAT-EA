@@ -227,6 +227,11 @@ class SeedRunner:
             if not isinstance(job['set_path'],str) or not Path(job['set_path']).is_absolute():raise ValueError('Seed source SET path must be absolute')
             source,raw,text=source_bytes(job['set_path']);valid=validate_raw(raw,self.c.schema,self.c.policy,require_optimization=True)
             original_values=read_values(raw)
+            # The EA's tester-only OnInit refusals (TESTER_INIT_REFUSED), with this job's own FromDate, as prepare-batch
+            # applies them to a Prove member (studio_batch.prepare_batch): a seed is an optimization in the tester, so
+            # every frame of a refused SET would end at OnInit. Before anything is frozen or written (GOAT-EA#317).
+            from studio_ea_init_rules import check_tester_init
+            check_tester_init(original_values,self.c.schema,where='seed job %d (%s): '%(index+1,source),from_date=tester['FromDate'])
             for name in valid['active_axes']:
                 definition=self.c.schema['inputs'][name];parts=original_values[name].split('||')
                 for position in (1,2,3):
@@ -1368,8 +1373,13 @@ class SeedRunner:
             if refused:result['reidentify_reason']=refused[0]      # why the open MT5 is not adopted as this launch
         return result
 
+    def _keep_journals(self,manifest,state):
+        """Members that ended since the last save: a runner that keeps the terminal's tester journal with its evidence
+        copies each one's block here (studio_catchup, GOAT-EA#315). Must never raise."""
+
     def _settle_slot(self,root,manifest,state,current):
         """Persist a settled state and release the terminal slot it held (closed or idle-settled MT5 only)."""
+        self._keep_journals(manifest,state)
         self._save(root,state)
         released=current is None or (state.get('idle_settled') or {}).get('process')==current
         if state['status'] in ('completed','stopped') and released and self.slot.exists():

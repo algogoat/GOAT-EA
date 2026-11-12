@@ -1,0 +1,57 @@
+{
+ "schema": "round13a-disclosed-exports-v1",
+ "reason": "ledger PositionJoin, inherited",
+ "ruling": "GOAT-EA#315 comment 6791427047",
+ "exports": [
+  {
+   "set_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=212_Prf=1718_DD=726_PF=1.69_SR=3.69_ARF=0.718.set",
+   "set_sha256": "5856c6fc1e393cc121f3c5b8fa7cfeef8c37f99f568b14808ce4a53ff757e236",
+   "machine": "banker",
+   "batch": "hunt-banker-depth-prove-13a-p1",
+   "member_index": 10,
+   "prove_report": "Fixed export input mismatch: Ledger_Mode",
+   "reason": "ledger PositionJoin, inherited",
+   "ruling": "GOAT-EA#315 comment 6791427047"
+  },
+  {
+   "set_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=223_Prf=1270_DD=809_PF=1.45_SR=2.64_ARF=0.488.set",
+   "set_sha256": "b6809385be56c2853714e996e387e418d224ea8ab8423d4e6376dee893f5d951",
+   "machine": "banker",
+   "batch": "hunt-banker-depth-prove-13a-p1",
+   "member_index": 10,
+   "prove_report": "Fixed export input mismatch: Ledger_Mode",
+   "reason": "ledger PositionJoin, inherited",
+   "ruling": "GOAT-EA#315 comment 6791427047"
+  },
+  {
+   "set_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=223_Prf=1719_DD=755_PF=1.67_SR=3.72_ARF=0.704.set",
+   "set_sha256": "40c3e289d57eb7ca53033b424dcab189b8f521391e09c3876dbdbbc290c12359",
+   "machine": "banker",
+   "batch": "hunt-banker-depth-prove-13a-p1",
+   "member_index": 10,
+   "prove_report": "Fixed export input mismatch: Ledger_Mode",
+   "reason": "ledger PositionJoin, inherited",
+   "ruling": "GOAT-EA#315 comment 6791427047"
+  },
+  {
+   "set_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=244_Prf=1759_DD=759_PF=1.65_SR=3.80_ARF=0.731.set",
+   "set_sha256": "7bd8011ceaaa28a8ee96b5eb9089c4138b9f7b6f350d37e9af202867100b6c71",
+   "machine": "banker",
+   "batch": "hunt-banker-depth-prove-13a-p1",
+   "member_index": 10,
+   "prove_report": "Fixed export input mismatch: Ledger_Mode",
+   "reason": "ledger PositionJoin, inherited",
+   "ruling": "GOAT-EA#315 comment 6791427047"
+  },
+  {
+   "set_path": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rcc6969deafa4926d3085\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=193_Prf=452_DD=138_PF=2.61_SR=3.55_ARF=0.901.set",
+   "set_sha256": "f4c5a51780999bc70da2ad291e8e5130a385db8080702ea10a017b8008a7b18d",
+   "machine": "t3",
+   "batch": "hunt-t3-depth-prove-13a-p2",
+   "member_index": 20,
+   "prove_report": "Fixed export input mismatch: Ledger_Mode",
+   "reason": "ledger PositionJoin, inherited",
+   "ruling": "GOAT-EA#315 comment 6791427047"
+  }
+ ]
+}

@@ -887,6 +887,12 @@ def headline(activity):
     return name[0].upper() + name[1:] + ' ' + str(status) + ';' + counts + '.'
 
 
+def worker_status_now(recorded, alive):
+    """A worker record still 'supervising' whose process is provably gone reads 'exited' (GOAT-EA#323: a driver that
+    died or was refused never wrote its end). Any other record, or an unknown liveness, reads as recorded."""
+    return 'exited' if recorded == 'supervising' and alive is False else recorded
+
+
 def lane_driver_block(lane_driver, kind, batch_id, status=None):
     """``driver`` of a seed hunt, catch-up or hold-up test (support 64f1c5ae): is a start/resume call driving it now,
     from ``lane_driver(kind, batch_id)`` (the runner's driver_summary). Never raises; a failed check reads unknown."""
@@ -976,8 +982,14 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
         if stall is not None:
             activity.update(status='stalled', stall=stall)
         activity['ea_refusal'] = stall.get('ea_refusal') if stall is not None else refusal_fn() if idle else None
+        # A start refused before anything reached MT5 (journal start_uncertain, no attempt, job still unstarted): the
+        # batch is not waiting on anything but its start, and one command repeats it (GOAT-EA#323). Null otherwise.
+        from studio_batch_driver import refused_start_hint
+        activity['next_action'] = refused_start_hint(root, current, journal, session)
     activity['_now'] = now
     activity['headline'] = activity['stall']['plain'] if activity.get('status') == 'stalled' else headline(activity)
+    if activity.get('next_action'):
+        activity['headline'] = activity['next_action']
     if activity.get('status') != 'stalled' and isinstance(activity.get('ea_refusal'), dict):
         activity['headline'] = str(activity['headline']).rstrip() + ' ' + activity['ea_refusal']['plain']
     activity.pop('_now', None)
@@ -990,7 +1002,7 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                 alive = bool(worker_alive(worker))
             except (ValueError, OSError):
                 alive = None
-        driver = dict(alive=alive, worker_status=worker.get('status') if isinstance(worker, dict) else None,
+        driver = dict(alive=alive, worker_status=worker_status_now(worker.get('status'), alive) if isinstance(worker, dict) else None,
                       journal_status=journal.get('status') if isinstance(journal, dict) else None,
                       stopped=journal.get('stopped') if isinstance(journal, dict) else None,
                       cancel_issued=journal.get('cancel_issued') if isinstance(journal, dict) else None,
@@ -1003,6 +1015,9 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
         if unsupervised:
             driver['message'] = 'No GOAT driver is supervising this running batch (no disk guard or finish).'
             driver['fix'] = 'Pause it (batch-pause) to stop it safely and keep its results, or resume-batch to supervise it again.'
+        elif activity.get('next_action'):
+            driver['message'] = 'The driver ended at a start refused before anything reached MT5; no driver is needed until the batch is started again.'
+            driver['fix'] = activity['next_action']
     elif lane_driver is not None and activity.get('kind') in ('seed', 'catchup', 'holdup') and activity.get('batch_id'):
         driver = lane_driver_block(lane_driver, activity['kind'], activity['batch_id'], activity.get('status'))
     minimum = journal.get('min_free_bytes') if isinstance(journal, dict) and type(journal.get('min_free_bytes')) is int else MIN_FREE_BYTES

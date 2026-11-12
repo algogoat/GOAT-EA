@@ -1,5 +1,7 @@
 """ENUM_LADDER_NOT_NATIVE (beta.38 P0): an optimized enum ladder the GOAT EA refuses at OnTesterInit is refused by
-validate-set, prepare-batch and seed-prepare alike, before any batch or seed is frozen.
+validate-set, prepare-batch and seed-validate/seed-prepare alike (both seed lanes share one SeedRunner), before any
+batch or seed is frozen. The store's copy of the schema is built here as production builds it (held_contract), so
+its queue check judges each enum in the contract's declaration order (GOAT-EA#317; test_studio_store_schema_order).
 
 Evidence: GOAT V1.49.mq5:3949-3950 refused `RSI_TF_=15||5||10||15||Y` on 10-13 ("Native optimization flag/value/range
 differs: RSI_TF_"); batch R87303ec90d13 ran full optimizations on 10-12 with `Active_Time_Weekday=4||3||1||4||Y`."""
@@ -115,6 +117,10 @@ class CompactControllerPaths(unittest.TestCase):
         self.c = self.fixture.bound(); self.fixture.grant(self.c)
         self.c.schema['inputs']['RSI_TF_'] = dict(type='ENUM_MODE_TFs', optimizable=True,
                                                   enum_choices=dict(zip(['TF_Current', 'TF_M1', 'TF_M5', 'TF_M15', 'TF_H1', 'TF_H4'], TFS)))
+        # The store's own copy, made as StudioStore.__init__ makes it: the fixture's shared object would hide a copy
+        # that loses the enum's declaration order (GOAT-EA#317).
+        from studio_command_store import held_contract
+        self.c.store.input_schema = held_contract(self.c.schema, 'input schema')
         self.c.store.input_schema_hash = sha(self.c.schema)
 
     def tearDown(self): self.fixture.tearDown()
@@ -136,6 +142,17 @@ class CompactControllerPaths(unittest.TestCase):
         plan.write_text(json.dumps(dict(schema_version=1, export=self.fixture.exports, members=[
             dict(set_path=str(self.source('good.set', '15||5||10||15||N')), tester=self.fixture.tester)])))
         self.assertEqual(prepare_batch(self.c, 'enum-good', plan)['member_count'], 1)
+
+    def test_prepare_batch_accepts_the_native_tf_ladder_through_the_stores_own_copy(self):
+        # TF_Current, TF_M1 (0, 1) are consecutive as declared. In name order they are not (0, 60, 240, 1, 15, 5), which
+        # is how the store held them before GOAT-EA#317: its queue check refused this member after it was staged.
+        from studio_batch import prepare_batch
+        self.assertEqual(list(self.c.store.input_schema['inputs']['RSI_TF_']['enum_choices'].values()), TFS)
+        plan = self.fixture.root / 'plan.json'
+        plan.write_text(json.dumps(dict(schema_version=1, export=self.fixture.exports, members=[
+            dict(set_path=str(self.source('native.set', '1||0||1||1||Y')), tester=self.fixture.tester)])))
+        self.assertEqual(prepare_batch(self.c, 'enum-native', plan)['member_count'], 1)
+        self.assertEqual([job['job_id'] for job in self.c.state()['queue']], ['enum-native'])
 
     def seed_prepare(self, batch_id, tf):
         """The public `seed-prepare` CLI route (as test_seed_cli drives it), on this controller's schema."""

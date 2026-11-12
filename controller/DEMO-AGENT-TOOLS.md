@@ -36,6 +36,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm --keep-list '<file>' copies a finished batch's evidence off C: (sources stay); then --complete --confirm removes them after re-verifying; evidence-restore / evidence-repoint
 ```
 
+- **`prepare-batch` refuses a batch whose members do not all state the same inputs** (`BATCH_MIXED_INPUTS`, GOAT-EA#315). Only a batch's first member starts from a config the controller writes, which names every declared input; the EA launches every later member from that member's own SET, and MT5 runs an input the SET leaves out at the value the member before it used (round 13a: 61 exports ran `Ledger_Mode=1` unasked). The refusal comes before anything is staged and lists each mixed input with the members that state it and the members that omit it, numbered from 0 as `batch-status` lists them (`mixed_inputs`: `input`, `stated_by`, `omitted_by`). Split the plan: the members that state those inputs as their own batch, the others as theirs; the order of the batches does not matter. Not compared: `EA_Desc`, and the appended optimization axes, which the EA writes at their defaults for a member that omits them. An input every member states, at whatever values, is fine, and so is a one-member batch. A successor made of a batch's remaining members (`studio_batch.resume_batch`) and a loaded saved batch (`load_batch`) are prepared through the same check. A batch staged before the check and not started is refused the same way (`staged_before_check:true`) when it is prepared again and when `run-batch` or a start begins, before anything is reserved or launched; a batch that has launched is never judged again. The refusal ends for a build whose EA names every declared input itself (`studio_batch.BUILDS_NAMING_EVERY_INPUT`, none today).
 - `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. On a store created from beta.38 on (`auto_vacuum=INCREMENTAL`) each `--apply` then gives the freed pages back at once (`db_reclaim`, at most 30 s); on an older store `studio.sqlite` keeps its size until `studio-db-compact`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
 - **`studio.sqlite` free space** (`studio_db_maintenance.py`, beta.38). Banker's store reached 11.4 GB with 98.8% free pages: before 3e00695 every queue receipt embedded the whole queue (818 MB; 64 receipts held 9.96 GB), and `compact-receipts` freed them in place, but SQLite keeps freed pages until a VACUUM.
   - Every queue-row write (reconcile at each member boundary, finish, launch intent, queue commands, settle/retire/repair) goes through `write_queue`: delete, then insert, in one savepoint. An `UPDATE` of the large row allocated the new copy before freeing the old one, so a freshly compacted store grew by one whole queue copy at the next member boundary (Banker 2026-10-14: 136 MB -> 272 MB at round 3 member 1); now the new copy reuses the freed pages.
@@ -117,7 +118,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
   - Once the task reports, its driver is the one running: it is not a duplicate. A task that starts only after the 60 s wait (Python slow to start under load) still drives: its bootstrap is accepted for the same nonce, and the driver re-checks that nonce under the terminal lock.
   - If Windows proves the task never ran, `launch_never_started: true`. The proof needs: no started receipt; the task is gone, or exists and is not running or queued; it has not run since the envelope; and its last result is `SCHED_S_TASK_HAS_NOT_RUN` (267011). Then the same `run-batch` (or `resume-batch`) is allowed again.
   - That retry first removes the old task under the terminal lock and confirms it is gone. If the removal can't be confirmed, it refuses. The retry then logs `detached_driver`/`launch_never_started` with the task info, keeps the envelope, and reserves a fresh nonce, so a late bootstrap of the old envelope is refused.
-  - This is the same rule as a driver journal's `start_uncertain` with no `attempt_id` (refused before anything reached MT5, so the same command runs again). Both mean "retry only what provably never ran".
+  - This is the same rule as a driver journal's `start_uncertain` with no `attempt_id` (refused before anything reached MT5, so the same command runs again). Both mean "retry only what provably never ran". For a batch in that journal state (a successor included): start it again with `run-batch --batch-id <id> --max-seconds <budget>`, or settle it as cancelled with `retire-unactivated --batch-id <id>` (kind `retired_start_refused`; then `batch-resume` on its parent prepares a new successor). `research-status` names both in `activity.next_action` (null otherwise), and `batch-resume`, `resume-batch` and `batch-pause` name them in their refusals; `resume-batch` launches no worker for it. `driver.worker_status` and the `worker.status` of `batch-driver-status` read `exited` (with `recorded_status`) when the record says `supervising` but its process is gone (GOAT-EA#323).
 - **A stalled Windows process query.** The process inventory behind every check (`Get-CimInstance Win32_Process`) is retried through a stall.
   - A check that gates a launch or a close gets 4 attempts of 20 s, with 2, 5 and 10 s pauses. Each pause varies by up to 25% either way, so two GOAT drivers caught by the same stall don't retry in lockstep.
   - Status reads (`status`, `batch-driver-status`, `seed-status` and the catch-up and hold-up status commands, including their broker readback) and probes bound each inventory to 25 s.
@@ -884,12 +885,43 @@ frame target, exact axis precision, duplicates, size limits) and writes nothing:
 no SET, startup INI or seed folder, and no terminal, process or broker access.
 Only the validation itself is appended to `actions.jsonl`.
 
+**A seed SET passes the same SET validators as a Prove member (GOAT-EA#317).**
+`seed-validate` and `seed-prepare` run what `prepare-batch` runs on each member's SET:
+the structure and axis checks, risk sizing, the pre-trade caps, the enum-ladder rule
+(`ENUM_LADDER_NOT_NATIVE`), the EA's OnInit rules (`EA_INIT_REFUSED`), the dependency audit,
+and the EA's tester-only OnInit rules with the job's own `FromDate` (`TESTER_INIT_REFUSED`,
+naming `seed job <n> (<SET path>)`). Both read each enum's order from the same contract, so
+a plan that seeds is not refused later for its SET's own values, and a plan that cannot be
+proved is refused before any seed runs. `seed-validate` needs the installation receipt and
+the plan's SET files only, so a prereg plan can be checked with it before it is sent to a
+machine. Not shared, by design: a Prove member needs a custom forward window and one export
+policy per batch, and a seed needs `ForwardMode=0` and axis values the seed XML keeps exactly.
+
 `seed-promote` (`--neighborhood` 1..5, default 1; add `--member <alias>` when
 the candidate appears in several members) writes `fixed.set` and
 `robustness.set` for one verified candidate under the same checks as
 `seed-report`, with no terminal effect, and appends `written`, or `retained`
 when a repeat returns the existing receipt. The robustness SET is a local
 stability check around the candidate; only the forward window is out-of-sample.
+
+**Lineage by SHA-256.** `promotion.json` names each SET it writes by `sha256` and by
+`canonical_sha256` (every input but `EA_Desc`, so a renamed copy still matches). When a
+strategy-library fork is made from a promoted SET (`Desktop 'strategy.forkTemplate'`), record
+it on the promotion so the link never rests on a name or a symbol:
+
+```powershell
+& $py $tool --installation $install seed-promote-fork --batch-id 'seed-weekend-01' --candidate '<candidate_sha256>' --fork-set '<the fork''s .set>' --fork-id '<fork id>'
+& $py $tool --installation $install promotion-lookup --set '<any .set>'        # or --set-sha256 <64 hex>
+```
+
+`seed-promote-fork` reads the fork SET (never changes it) and writes
+`promoted\<alias>\<candidate>\forks\<fork set sha256>.json`, create-only, beside the unchanged
+`promotion.json`: the fork's SHA-256, its id, and how it stands to the promoted SETs (`exact`,
+`same_inputs`, or `edited` with the inputs it changed). `promotion-lookup` is read-only and
+needs no terminal: it reads every promotion under the controller state and answers
+`promoted_set` (the SET is a promotion's own), `recorded_fork` (its SHA-256 was recorded) or
+`same_inputs` (the same inputs under another name; `--set` only), each with the seed batch,
+member, candidate and receipt SHA-256.
 
 `seed-prepare` and `seed-start` need the same fresh checks as batches: the
 terminal lock, a broker-reported demo account on the exact paired login and
@@ -1023,7 +1055,49 @@ tools need no broker; the rest use the seed lane's checks, start record
 & $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 3600
 & $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 3600
 & $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
+& $py $tool --installation $install tester-journal-check --catchup-id 'catchup-20261002'   # or --batch-id <Prove batch>
 ```
+
+**Unverified exports (GOAT-EA#315).** A Prove batch's report marks an export `unverified` when its
+fixed inputs differ from its member's own SET (`Fixed export input mismatch: <input>`; an input the
+SET omits counts at its default) or when it could not be checked. The batch result
+(`attempts\<attempt>\result.json`, `batch-status` → `result_path`) says it once for the batch in
+`unverified_exports`: `count`, `member_count`, `inputs` (input → exports), `reasons`, `files` and one
+`plain` sentence. `evidence-scan` and `catchup-prepare` read those results: such an export is
+`ineligible` (`code:"UNVERIFIED_EXPORT"`, `unverified_batch_id`, `unverified_reason`) and is never
+re-tested as it is. To re-test one anyway, the plan names it and the tag it is counted under:
+`"disclosed_unverified":{"<export SET sha256>":"ledger PositionJoin, inherited"}`. Its row then keeps
+its status and carries `unverified_disclosed`, and the member and its evidence version carry
+`original.unverified_disclosed` (`batch_id`, `reason`, `tag`). A batch result that cannot be read
+refuses the scan.
+
+**Tester journal copies (GOAT-EA#315).** MT5 rewrites the tester's day log
+(`Tester\logs\<yyyymmdd>.log`) at every optimisation start, today's file included, and removes
+the older ones, so the next optimisation on a terminal destroys the journal of whatever ran
+before it. A catch-up member is a single test, not an optimisation, and the day log survives a
+whole catch-up; the controller keeps each member's block because the next optimisation start
+would destroy it. In the pass that sees a catch-up member end, its own block of lines (its
+MT5 start to its MT5 exit) is copied into its evidence folder as
+`tester-journal.<yyyymmdd>.log` (beside the folder, as `<member>.tester-journal.<yyyymmdd>.log`,
+when the member left none) and recorded on the member in `catchups\<id>\state.json`
+(`tester_journal`: path, SHA-256, bytes, lines, first and last line time). When a Prove batch
+finishes, what is left of its block of each day log is copied, gzip, to
+`attempts\<attempt>\tester-journal\<yyyymmdd>.log.gz` and recorded in `result.json`
+(`tester_journal`). **That copy holds the batch's last member only**, because each member's
+optimisation start rewrote the log: the record says `covers:"last_member_only"` with the first
+line's time in `covers_plain`, and it is never the batch's journal. A Prove member's proof stays
+its report, its `effective-inputs.set` and its capture. Only the run's own lines are copied, never a whole day log; the journal is
+only read. A day log that is gone, or holds no line of the run, is recorded as `missing` with
+the reason. `tester-journal-check` is read-only: per catch-up member (or for the batch) it says
+whether the copy is in place and still matches its recorded SHA-256, and exits 2 with
+`ok:false`, `code:"TESTER_JOURNAL_MISSING"` when one is missing or changed, or the run has not
+finished. `ok` means the recorded copies are intact (integrity); `complete` says whether they
+are the run's whole journal (coverage): true only for a catch-up whose every member's copy is
+intact and whole, always false for a Prove batch (`covers:"last_member_only"`). A member's copy
+is not whole when its block ran past the 64 MiB bound (the first and last half are kept) or
+when a later day of its run had no log; each member row carries `coverage` (`whole`,
+`truncated`, `days_without_lines`, `plain`) and `partial` names the members that are not
+whole. A round close runs it for every catch-up it counts and requires `complete:true`.
 
 The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
 paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the
@@ -1138,9 +1212,17 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   (`not_applicable` for non-formula exports). Catch-up weeks after the export\r
   Friday count toward FOOS.
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
-  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD;
-  BOOS is lenient (fails only on that DD bar or a loss worse than the in-sample p10 of rolling
-  SAMPLE windows of its own length). Records stamp `oosFormula`; 1/2 O batches keep theirs.
+  shorten a window or change O to reach it), then FOOS needs PF ≥ 1.0 and DD ≤ 1.5 × in-sample DD.
+  Rule version 2 (`ruleVersion: 2`; Claude-Mac, goatai#2750 6787022949): the in-sample DD is the
+  drawdown over SAMPLE and FWD together (`bar.in_sample: "SAMPLE+FWD"`). BOOS is lenient: it fails
+  on that DD bar, and on a loss worse than the in-sample p10 of rolling SAMPLE windows of its own
+  length only for an O of 12 months or more (`o_weeks` ≥ 52, `bar.min_loss_leg_o_weeks`; Claude-Mac
+  6788392334). At O = 3 and 6 months the loss leg is not applied (`loss_leg_applied: false`) and a
+  BOOS loss alone does not fail. The leg is decided by O, never by the window count, which is
+  still printed (`in_sample_windows`; 4, 9, 17 and 35 at O = 3, 6, 12 and 24 months). A BOOS loss
+  with an unknown O is `not_measured`. A stored `oos_rule` without `ruleVersion` was judged under
+  version 1 (SAMPLE's DD alone, the loss leg at every O) and is never rewritten.
+  Records stamp `oosFormula`; 1/2 O batches keep theirs.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
   `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:
   the EA's export trim partly selects on BOOS, so show "BOOS: partial" and lead with FOOS.
@@ -1148,6 +1230,24 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   desktop sift matches it through `controller/fixtures/oos-holdout-gate-cases.json`.\r
   It sits next
   to the export qualification stamp and the catch-up verdict; neither changed.
+- Recount (read-only): `oos-rule-recount --catchup-id <id>` (repeatable) or `--all` reads stored
+  catch-ups and judges every member again, from its own stored evidence, under each OOS rule
+  version the controller knows (`rule_versions`), next to the verdict it stored. Per file
+  (`catchups[].members[]`): `catchup_id`, `alias`, `symbol`, the source SET (`original_set`,
+  `original_set_sha256`) and under `oos_rule` the `stored` status and one block per version
+  (`v1`, ...) with `status`, `reasons`, `in_sample_dd`, `in_sample_windows`, `boos_trades`,
+  `foos_trades` and the per-window numbers, plus `v1_matches_stored`. Per catch-up `counts`
+  and over all of them `totals`: pass counts under `stored` and each version, `gained` and
+  `lost` between the oldest and newest version, and how many re-judged files match their
+  stored verdict. `judged_with_stored` counts the judged files that carry a stored verdict and
+  `stored_missing` those that do not; each `<version>_matches_stored` is over the first group
+  only. `self_check` is the reproduction check: every judged file with a stored verdict, judged
+  again under the rule version it was stored with, matches it (`ok`; `checked`, `matches`,
+  `mismatches`, `by_stored_version`). A file with no stored verdict is left out of it
+  (`excluded_stored_missing`), and a check that compared nothing reads `ok: null`. It writes nothing (no report, receipt or cache), takes no terminal lease
+  and reads no process, session or broker, so it is safe while research runs. A member whose
+  stored files are missing or changed is listed `readable: false` with the reason and is
+  never judged; a catch-up under a held-out lock is redacted and left out of the totals.
 - Demo after export continues FOOS but does not scale with O: at least 4 weeks AND at
   least 30 trades, decision due by 6 weeks; under 30 trades at 6 weeks is "too slow to
   judge here" (never promote on thin data); M1 and other high-frequency sets are judged

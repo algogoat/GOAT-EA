@@ -10,6 +10,49 @@ from studio_export_qualification import file_name_tokens, public_thresholds, qua
 # goat-export-qualification-v1 status -> the file status consumers already read (append-only).
 STATUS_OF = dict(passed='native_threshold_candidate', below_threshold='below_native_thresholds',
                  unknown='native_threshold_unknown')
+INPUT_MISMATCH = 'Fixed export input mismatch: '   # studio_export_inputs.verify_export_inputs, followed by the input's name
+MAX_UNVERIFIED_FILES = 100
+
+
+def unverified_summary(reports):
+    """The exports a finished batch's report left ``unverified``, said once for the whole batch (GOAT-EA#315).
+
+    In hunt round 13a every member after the first ``Ledger_Mode=1`` member exported with ``Ledger_Mode=1`` although its
+    own SET omitted it. Each export was marked ``unverified`` (``Fixed export input mismatch: Ledger_Mode``) deep in its
+    member's report, and the batch result said nothing. This is the batch-level sentence: how many, of which members,
+    and the inputs involved. ``reports`` is observe_reports' value (one member, or ``members``); None before any report."""
+    if not isinstance(reports, dict):
+        return None
+    members = reports['members'] if isinstance(reports.get('members'), list) else [reports]
+    files, inputs, reasons, indices = [], {}, {}, set()
+    for member in members:
+        exports = member.get('exports') if isinstance(member, dict) else None
+        for item in (exports.get('files') or []) if isinstance(exports, dict) else []:
+            if not isinstance(item, dict) or item.get('status') != 'unverified':
+                continue
+            reason = item.get('reason') or 'No reason recorded'
+            reasons[reason] = reasons.get(reason, 0) + 1
+            if reason.startswith(INPUT_MISMATCH):
+                name = reason[len(INPUT_MISMATCH):]
+                inputs[name] = inputs.get(name, 0) + 1
+            indices.add(member.get('index'))
+            exported = next((a for a in item.get('artifacts') or [] if str(a.get('path', '')).lower().endswith('.set')), {})
+            files.append(dict(index=member.get('index'), run_alias=member.get('run_alias'), symbol=member.get('symbol'),
+                              name=item.get('name'), reason=reason, set_path=exported.get('path'), set_sha256=exported.get('sha256')))
+    ranked = sorted(reasons.items(), key=lambda entry: (-entry[1], entry[0]))
+    if not files:
+        plain = 'No export of this batch is unverified.'
+    else:
+        said = ['%s differs from the member\'s own SET in %d (an input the SET omits counts at its default)' % (name, count)
+                for name, count in sorted(inputs.items(), key=lambda entry: (-entry[1], entry[0]))]
+        said += ['%s (%d)' % (reason, count) for reason, count in ranked if not reason.startswith(INPUT_MISMATCH)]
+        plain = ('%d export%s of %d member%s %s unverified: %s. An unverified export is not what its member asked for; do not count '
+                 'it or re-test it without saying so.'
+                 % (len(files), '' if len(files) == 1 else 's', len(indices), '' if len(indices) == 1 else 's',
+                    'is' if len(files) == 1 else 'are', '; '.join(said)))
+    return dict(count=len(files), member_count=len(indices), inputs=dict(sorted(inputs.items())),
+                reasons=[dict(reason=reason, count=count) for reason, count in ranked],
+                files=files[:MAX_UNVERIFIED_FILES], files_omitted=max(0, len(files) - MAX_UNVERIFIED_FILES), plain=plain)
 
 
 def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
@@ -78,6 +121,7 @@ def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
     result['native_threshold_candidate_count'] = sum(f['status']=='native_threshold_candidate' for f in result['files'])
     result['below_native_threshold_count'] = sum(f['status']=='below_native_thresholds' for f in result['files'])
     result['native_threshold_unknown_count'] = sum(f['status']=='native_threshold_unknown' for f in result['files'])
+    result['unverified_count'] = sum(f['status']=='unverified' for f in result['files'])
     result['thresholds'] = public_thresholds(thresholds)
     result['limits'] = 'Filename metrics mirror native selection, not independently verified performance. CSV content, replay coverage and export completion remain unverified.'
     return result

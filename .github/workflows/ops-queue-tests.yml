@@ -1,0 +1,43 @@
+name: Ops queue tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-queue-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# docs/operations/queue holds the Claude-PC Ops machine-queue scripts. Their hold reader decides whether a research
+# batch may start; on 2026-11-12 it read one page of the inbox and missed a hold (goatai#2750 6831947464). The test
+# needs no network, terminal or credential: gh is a stand-in .cmd that prints fixture comments.
+
+jobs:
+  hold-reader:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Hold reader (every page, lift on a later page, refusals)
+        shell: cmd
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\hold-reader.test.ps1
+
+      - name: Every queue script parses
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem docs\operations\queue -Filter *.ps1) {
+            $e = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$e)
+            if ($e.Count) { $bad++; Write-Host "PARSE ERRORS $($f.Name) - $($e[0].Message)" } else { Write-Host "ok $($f.Name)" }
+          }
+          exit $bad

@@ -1,0 +1,381 @@
+{
+ "members": [
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00004",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=124_Prf=244_DD=94_PF=2.79_SR=3.68_ARF=0.882.set",
+   "judged": true,
+   "original_set_sha256": "41a76849f2f727827b8a5087b697d7351160e6c095c01803f1f1e3d719e2ee75",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": null,
+   "retest_ledger_mode": null,
+   "original_run_effective_ledger_mode": null,
+   "retest_run_effective_ledger_mode": null,
+   "original_values_sha256": "bb248ae5fe4688fbc5cb8cf5c5fab41e044f8b7bed9b130f5a2b759592f376ae",
+   "retest_values_sha256": "bb248ae5fe4688fbc5cb8cf5c5fab41e044f8b7bed9b130f5a2b759592f376ae"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00005",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=129_Prf=239_DD=128_PF=2.16_SR=3.04_ARF=0.688.set",
+   "judged": true,
+   "original_set_sha256": "c2de7c293fc7628821c2f540f363109808dc275a5a665904c593a5b40ecbde8c",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": null,
+   "retest_ledger_mode": null,
+   "original_run_effective_ledger_mode": null,
+   "retest_run_effective_ledger_mode": null,
+   "original_values_sha256": "42a4b6687396db2eab25b536127794017d8b18e4449b0f197f65a6e55e84afb6",
+   "retest_values_sha256": "42a4b6687396db2eab25b536127794017d8b18e4449b0f197f65a6e55e84afb6"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00006",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=141_Prf=299_DD=123_PF=2.18_SR=3.12_ARF=0.753.set",
+   "judged": true,
+   "original_set_sha256": "1887a5aca7be91549c3d57ba51f275bf23b3541141ba73df9ef727c6167271c1",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": null,
+   "retest_ledger_mode": null,
+   "original_run_effective_ledger_mode": null,
+   "retest_run_effective_ledger_mode": null,
+   "original_values_sha256": "4fe79758217193867807b15d97a80568edc1a5127b292f3ebd44991752d502e6",
+   "retest_values_sha256": "4fe79758217193867807b15d97a80568edc1a5127b292f3ebd44991752d502e6"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00007",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R7588c0331e15\\deploy\\R26064d4f571a084c7c21\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=181_Prf=491_DD=216_PF=1.99_SR=2.71_ARF=0.669.set",
+   "judged": true,
+   "original_set_sha256": "243d730eff2dc52d118f7ae8609507b99b826d4cbad181893fddcde35a632d65",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": null,
+   "retest_ledger_mode": null,
+   "original_run_effective_ledger_mode": null,
+   "retest_run_effective_ledger_mode": null,
+   "original_values_sha256": "606c25927962c2b3ddaa35f4a34b023dd6e0b84edc65a80265517c4ebd5fbbef",
+   "retest_values_sha256": "606c25927962c2b3ddaa35f4a34b023dd6e0b84edc65a80265517c4ebd5fbbef"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00069",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rcc6969deafa4926d3085\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=193_Prf=452_DD=138_PF=2.61_SR=3.55_ARF=0.901.set",
+   "judged": true,
+   "original_set_sha256": "f4c5a51780999bc70da2ad291e8e5130a385db8080702ea10a017b8008a7b18d",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "0a84e353af9f24aa54aaf7b2e872ad77ed0b8a2e5d7a3ee5de1ffc103030e2fb",
+   "retest_values_sha256": "0a84e353af9f24aa54aaf7b2e872ad77ed0b8a2e5d7a3ee5de1ffc103030e2fb"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00080",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=273_Prf=522_DD=146_PF=3.21_SR=5.98_ARF=1.183.set",
+   "judged": true,
+   "original_set_sha256": "e7a13ef8a99af03cae40b74a96e7fdc29a847734600cefec9cc26f59466c810e",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "1d522d7f520e5ccbf8e60a8c2f661f0a270492e184cbfe469bcf5f338de24701",
+   "retest_values_sha256": "1d522d7f520e5ccbf8e60a8c2f661f0a270492e184cbfe469bcf5f338de24701"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00081",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=287_Prf=440_DD=144_PF=2.69_SR=5.35_ARF=1.008.set",
+   "judged": true,
+   "original_set_sha256": "301f04201ed78961151c0499afd0d7d5a2a903d54df3c2abb82aa846c51912a9",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "938126df00dd3c0303bd87095a52306a61080b9c2304f64b38b72c7cf3a89389",
+   "retest_values_sha256": "938126df00dd3c0303bd87095a52306a61080b9c2304f64b38b72c7cf3a89389"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00082",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=321_Prf=645_DD=207_PF=3.28_SR=5.71_ARF=1.121.set",
+   "judged": true,
+   "original_set_sha256": "9f2f5b651a06c178a8e2ada698a406f73e833e46e2d831b5800f4b24f30a7924",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "27daa05d202b666a2d41d4ef6da79cfd5b0e548f97e8c55e5098769e718dc682",
+   "retest_values_sha256": "27daa05d202b666a2d41d4ef6da79cfd5b0e548f97e8c55e5098769e718dc682"
+  },
+  {
+   "catchup": "hunt-t3-depth-foos-13a",
+   "alias": "Cc7f257b6799f4936_00083",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R61d143f049f2\\deploy\\Rfe5d3091b00d497940ff\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=346_Prf=439_DD=132_PF=2.25_SR=5.24_ARF=1.066.set",
+   "judged": true,
+   "original_set_sha256": "d4851c7422bf3a6eb1212ca601eb576d71535fec288e9c85f7903faec935c18f",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "c671ddebc57abddc5e4c69062457552f02243f01254b186cbdb42a2cc5353199",
+   "retest_values_sha256": "c671ddebc57abddc5e4c69062457552f02243f01254b186cbdb42a2cc5353199"
+  },
+  {
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00004",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=212_Prf=1718_DD=726_PF=1.69_SR=3.69_ARF=0.718.set",
+   "judged": true,
+   "original_set_sha256": "5856c6fc1e393cc121f3c5b8fa7cfeef8c37f99f568b14808ce4a53ff757e236",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "d1b36b1df27af5d035897cd15cb8a55d87583944350d643d4ded353c9f04cb80",
+   "retest_values_sha256": "d1b36b1df27af5d035897cd15cb8a55d87583944350d643d4ded353c9f04cb80"
+  },
+  {
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00005",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=223_Prf=1270_DD=809_PF=1.45_SR=2.64_ARF=0.488.set",
+   "judged": true,
+   "original_set_sha256": "b6809385be56c2853714e996e387e418d224ea8ab8423d4e6376dee893f5d951",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "bebe889d405e691b4f1ab0265ee445551baf3d5268b7da35f20156993b0ff4ee",
+   "retest_values_sha256": "bebe889d405e691b4f1ab0265ee445551baf3d5268b7da35f20156993b0ff4ee"
+  },
+  {
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00006",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=223_Prf=1719_DD=755_PF=1.67_SR=3.72_ARF=0.704.set",
+   "judged": true,
+   "original_set_sha256": "40c3e289d57eb7ca53033b424dcab189b8f521391e09c3876dbdbbc290c12359",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "ac82b81537f19c09cc8885e1b0021e20e0de4eb9119be741a816de660c9c7812",
+   "retest_values_sha256": "ac82b81537f19c09cc8885e1b0021e20e0de4eb9119be741a816de660c9c7812"
+  },
+  {
+   "catchup": "hunt-banker-depth-foos-13a",
+   "alias": "C4bf9008d5a8d4835_00007",
+   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Ra206da200e6e\\deploy\\R0b69b33277a5c49cd0a8\\WS30\\GOAT V1.49 WS30,M1_Trds=244_Prf=1759_DD=759_PF=1.65_SR=3.80_ARF=0.731.set",
+   "judged": true,
+   "original_set_sha256": "7bd8011ceaaa28a8ee96b5eb9089c4138b9f7b6f350d37e9af202867100b6c71",
+   "same_inputs": true,
+   "reasons": [],
+   "retest_vs_original": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "retest_effective_vs_original_effective": {
+    "only_first": [],
+    "only_second": [],
+    "different": {},
+    "spelled_differently_same_value": []
+   },
+   "appended_differ": [],
+   "inherited_in_retest": [],
+   "original_ledger_mode": "1",
+   "retest_ledger_mode": "1",
+   "original_run_effective_ledger_mode": "1",
+   "retest_run_effective_ledger_mode": "1",
+   "original_values_sha256": "1ee4927c7b75efe22f261360633757a028ca10092c91e235a2e86d672e8f077a",
+   "retest_values_sha256": "1ee4927c7b75efe22f261360633757a028ca10092c91e235a2e86d672e8f077a"
+  }
+ ]
+}

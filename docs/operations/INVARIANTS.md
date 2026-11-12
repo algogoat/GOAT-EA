@@ -112,3 +112,291 @@ V1.49 isolation builds store the GOAT user credential at
 B stays licensed and the reverse, account mismatch refused, a login reading 0 mid-write, migration
 proof cases including every non-`approved` status);
 `controller/test_studio_terminal_isolation.py` `CredentialPathTests`.
+
+## INV-CONTRACT-01: order-bearing contract data is never read from a key-sorted copy
+
+**Incident (GOAT-EA#317, hunt round 13a wave 3, 2026-11-11).** Seed SETs used the EMA trend
+term as an axis, `EMA_Mode=1||0||1||2||Y`. `ENUM_MODE_TRADE` is declared 0, 1, 2, 3, 4, 5
+(`GOAT_Inputs_Definitions.mqh`), so 0..2 by 1 is a native ladder. The seed lane accepted it and
+MT5 walked 0, 1, 2. `prepare-batch` accepted it in its own plan check and then refused it at
+the store's queue check, after the batch was staged: `ENUM_LADDER_NOT_NATIVE ... declared in
+order 5, 4, 0, 3, 1, 2`, leaving a retained package and a burnt batch ID. The store held
+`json.loads(packed(schema))`, and `packed` sorts keys, so every enum's choices were in name
+order. 34 optimizable enums had another order in that copy: native ladders were refused on 29
+of them, and a ladder that is not native was allowed on five (`Trailing_Sample_Period` and the
+four `*_Price` inputs) wherever only the store's copy was read (the draft check).
+
+**Statement.** An enum's declaration order is the order of its `enum_choices` in the input
+contract, and every check that depends on it (`check_enum_ladders`) reads a schema in that
+order. The store's copy of a contract is in the order it was given, and a copy whose order
+differs is refused, not judged by. A contract's hash is the hash of its canonical packed form
+and does not depend on order, so no store, seal or receipt identity changes with it. The seed
+lane and `prepare-batch` run one set of SET validators on one order, so they give the same
+answer on the same SET.
+
+**Enforcement.**
+- `studio_command_store.held_contract`: `StudioStore` holds the input schema and the dependency
+  policy as detached copies in the given order and compares each copy with what it was given,
+  key order included (`CONTRACT_ORDER_LOST`). `input_schema_hash` is `sha` of the copy, the
+  value it always was. The dependency policy has no order in its keys (its rules are a list);
+  it is held the same way so there is one rule.
+- The store's copy feeds `validate_strategy` for `draft.replace_strategy`, `change_queue`
+  (`queue.enqueue`, `queue.revise`, `queue.enqueue_batch`), the launch-intent member check
+  (`studio_launch_intent`) and the report check at reconcile (`studio_reconcile`).
+- `studio_batch.prepare_batch` runs the store-side queue check (`studio_queue.change_queue`, on
+  the store's own schema and policy) before anything is staged, so a member the store refuses is
+  refused before a package exists and the batch ID stays usable. After staging, `store.submit`
+  can still refuse for state only: a stale revision or generation, another owner, the research
+  authority scope, a batch ID taken meanwhile.
+- The contract is loaded in file order (`studio_installation.contracts`, `read_json`); the seed
+  lane (`studio_seed._freeze`) and `prepare-batch`'s plan check (`studio_batch.read_plan`) read
+  that object.
+- One set of SET validators. Both lanes call `validate_raw(..., require_optimization=True)`
+  (structure and axes, `check_risk_sizing`, `check_pretrade_caps`, `check_enum_ladders`,
+  `check_ea_init`, `check_risk_chosen`, the dependency audit) and `check_tester_init` with the
+  run's own `FromDate` (`studio_batch.prepare_batch`; `studio_seed._freeze`, for
+  `seed-validate` and `seed-prepare`). Not shared, because they cannot apply to the other
+  lane: the batch shape (`studio_queue.validate_batch_members`: custom forward, one export
+  policy and forward boundary) and the seed's exact axis precision and `ForwardMode=0`.
+
+**Tests.** `controller/test_studio_store_schema_order.py`, on the real v149 contract and a
+controller opened as production opens it: the store holds every enum in the contract's order
+and `EMA_Mode` as 0..5; the schema hash is the value the sorted copy gave; the sorted copy's
+refusal of the wave 3 ladder, reproduced; a copy that loses the order is refused;
+`prepare-batch` accepts, stages and queues `EMA_Mode=1||0||1||2||Y`; the seed lane and
+`prepare-batch` both accept it and both refuse `RSI_TF_=15||5||10||15||Y` before anything is
+staged; a member only the store refuses is refused before staging and keeps its batch ID; the
+five ladders the sorted copy allowed are refused through the draft path, and native ones pass;
+the three store paths without prepare-batch's plan check (the single-job `prepare`, a raw
+`submit`, a bridge request) each refuse `RSI_Price=5||5||1||6||Y` and accept the wave 3 ladder.
+`controller/test_studio_enum_ladder_native.py` `CompactControllerPaths` now builds the store's
+copy as production does and prepares the native `RSI_TF_=1||0||1||1||Y` through it.
+`controller/test_studio_ea_init_rules.py` `SeedLaneTesterTests`: a tester-refused job fails at
+`seed-validate` and `seed-prepare` naming the job, and nothing is prepared; allowed jobs
+validate; the rule that reads the test start uses the seed job's own `FromDate`.
+
+**Not covered.** A schema that is already key-sorted when it is handed to the store cannot be
+told from the contract there; `contracts()` is the only loader. Other test fixtures still
+assign the schema object straight onto the store (`test_goat_studio.PortableControllerTests`).
+A seed batch prepared before `check_tester_init` joined the seed lane is not checked again
+when it starts or resumes. On the v149 contract the seed lane refuses a SET that omits the
+appended optimization axes (`Pinned seed inputs changed a template trading value`,
+`studio_seed._freeze`), which `prepare-batch` accepts: the lanes still differ there.
+Whether the EA's `OnTesterInit` range check accepts `EMA_Mode` 0..2 in a Prove batch is not
+shown by a run; it is the form the rule calls native.
+
+## INV-PROVE-01: a Prove member runs only the inputs its own SET states
+
+**Incident (GOAT-EA#315, hunt round 13a, found at the close on 2026-11-11).** In three Prove
+batches on B54, every member after the first one whose SET set `Ledger_Mode=1` exported with
+`Ledger_Mode=1`, although its own SET omitted it: 61 exports were proved on
+`Ledger_PositionJoin` unasked. The Prove report marked each of them `unverified`
+(`Fixed export input mismatch: Ledger_Mode`), but the batch result did not say so and
+`evidence-scan` never read it, so the exports were re-tested as they were.
+
+**Statement.**
+1. No Prove member runs a value the tester kept from the member before it. Until the EA names
+   every declared input in every member's config itself (the SET's own values, and every input
+   the SET omits at its compiled default; due with B55), a batch whose members do not all state
+   the same inputs is refused at `prepare-batch`.
+2. An export the Prove report marks `unverified` is never planned for a catch-up, or counted,
+   without a disclosed tag.
+
+**Enforcement.**
+- Part 2, controller. `studio_export_scan.unverified_summary` puts the count, the members and
+  the inputs involved into the batch result (`unverified_exports`, written by
+  `studio_finish.finish`). `studio_catchup.UnverifiedExports` reads the retained results;
+  `apply_unverified` marks such an export `ineligible` (`UNVERIFIED_EXPORT`) in `evidence_scan`
+  and in `CatchupRunner._build`, unless the plan's `disclosed_unverified` names its SET SHA-256
+  with the tag it is counted under. The tag is carried on the row, the member and its evidence
+  version or build-migration record (`original.unverified_disclosed`). What `unverified` means
+  is unchanged
+  (`studio_export_scan.scan_exports`, `studio_export_inputs.verify_export_inputs`).
+- Part 1, controller: enforced by refusal. `studio_batch.check_member_inputs`, called by
+  `prepare_batch` for new staging before anything is staged, refuses `BATCH_MIXED_INPUTS` when
+  an input is stated by some members' SETs and omitted by others, and lists each such input
+  with the members that state it. `EA_Desc` (set per member by the batch) and the appended
+  optimization axes the EA writes itself (`studio_optimization_inputs.self_named_inputs`) are
+  not compared. A batch whose members all state the same inputs is safe after any other batch,
+  because its first member starts from a complete config. The refusal does not apply on a
+  build listed in `studio_batch.BUILDS_NAMING_EVERY_INPUT` (none today). A batch staged before
+  the check and not started is judged by `check_staged_inputs` when `prepare-batch` reuses it
+  and where a first start begins, before any consent, journal, reservation or native effect
+  (`studio_batch_driver.run`, `studio_config_start.start`, `goat_studio.Controller.start`); a
+  batch with a launch intent, or no longer pending, is never judged again.
+- Part 1, EA: the fix itself goes into `GoatStudioExplicitOptimizationInputs`
+  (`GOATOptimizationInputs.mqh`), which must write every declared input a member's SET omits,
+  not only the appended optimization axes. `Inputs.GOAT` stays the frozen SET bytes. When a
+  build does this, its build ID is added to `BUILDS_NAMING_EVERY_INPUT`.
+- Why pinning the member inis the controller stages would not have reached the members that
+  leaked:
+  - The first member is complete. Its startup config is built from the paste inputs, which carry
+    every contract input (`studio_input_readback.explicit_paste_inputs`), plus the runtime pins
+    (`studio_startup_config.startup_config`), and the tester profile is written from those bytes
+    (`studio_config_start`, `studio_tester_profile`). Only member 0 feeds that payload
+    (`studio_native_request._validate_material`).
+  - Every later member is launched by the EA, not the controller. `ActivatePending`
+    (`Optimizer.mqh`) reads the member's `inputs\<alias>\Inputs.GOAT`, passes it through
+    `GoatStudioExplicitOptimizationInputs` (`GOATOptimizationInputs.mqh`), writes that as
+    `[TesterInputs]` into `inputs\<alias>\config.ini` and the active config, and relaunches MT5 on
+    it (`AddCommand`, `Tester.mqh`). The `<alias>.ini` the controller staged is overwritten.
+  - `Inputs.GOAT` is the member's frozen SET, byte for byte
+    (`prepare_native_campaign.prepare`), and `GoatStudioExplicitOptimizationInputs` adds only the
+    appended optimization axes a SET omits. So an omitted appended `sinput` or string is never
+    named: `Ledger_Mode`, `Engine_Mode`, `Clock_Mode`, `Server_Clock_Model`,
+    `Server_UTC_Offset`, `NY_Session`, the nine B49b inputs, `Random_Direction`,
+    `Single_Flat_Only`, `BRK_Mode`, `ORB_Mode` and `ORB_Clock`, and the inputs declared outside
+    the contract (`studio_tester_report.RUNTIME_INPUT_DEFAULTS`).
+  - The rule that a batch never mixes members that state one of those inputs with members that
+    omit it (Claude-Mac GOAT-EA#315 6791427047 item 4a) was applied by hand before
+    `check_member_inputs`.
+
+**Tests.** `controller/test_studio_unverified_exports.py`: the real scan marks an export that
+inherited `Ledger_Mode=1` `unverified` and passes one that matches its SET (omitted on both
+sides, and stated as 1 on both); the batch summary counts them and names the input; the real
+`finish` stores it in `result.json` and the job's completion; `evidence_scan` marks the
+unverified export `ineligible` with the reason and leaves the clean export of the same batch;
+a disclosed export stays eligible and carries its tag; a library copy is found by its SHA-256;
+only the export's own run is read, and an unreadable result refuses; the planner never plans an
+unverified export, plans the clean one, and plans a disclosed one with the tag on its member;
+a build migration of a disclosed export carries the tag in its `build-migration-retest.json`,
+and one of a clean export adds nothing.
+`controller/test_studio_batch_mixed_inputs.py`: `prepare-batch` refuses a member that sets
+`Ledger_Mode=1` before one that omits it (either order), names the input and both members and
+stages nothing; round 13a's real p1 composition
+(`controller/fixtures/round13a-t3-prove-p1-member-inputs.json`: the names each of the 28
+members of `hunt-t3-depth-prove-13a-p1` states) is refused naming the eight inputs and members
+17, 20 and 25, and the same plan without those three members is prepared; members that all
+omit or all state an input (same or different values), a single member, and an omitted
+appended optimization axis are prepared; a build listed in `BUILDS_NAMING_EVERY_INPUT` is not
+refused and any other build is; a mixed batch staged before the check is refused when it is
+prepared again and where a first start begins (driver, in-place start, the config start's
+call), with nothing reserved or launched, and a launched batch is never judged again; on the
+real contract every appended input the EA does not name
+is refused when mixed, and the exempt set equals what `GOATStudioSettingTypes.mqh` gives
+`GoatStudioExplicitOptimizationInputs`.
+`controller/test_studio_appended_inputs.py`
+`test_a_set_without_it_is_prepared_staged_reused_and_read_back` pins that the staged member ini
+does not name an omitted `Ledger_Mode`.
+
+**Not covered.** A mixed batch that launched before `check_member_inputs` existed is never
+judged again: it runs or ran as it was composed, and part 2 catches what it exported. The
+refusal compares the
+names a SET states, not what MT5 ran; what ran is part 2's report check. An `unverified`
+export with no readable SET (an incomplete SET/CSV pair) is counted in the batch summary but
+has no SHA-256 to match in a scan. The board counter that reads `unverified` lives outside the
+controller.
+
+## INV-EVID-01: a finished run keeps its own tester journal
+
+**Incident (GOAT-EA#315, 2026-11-10/11).** MT5 cleared the tester's older day logs
+(`Tester\logs\<yyyymmdd>.log`) when a later optimisation started. Banker's and T3's 11-10 logs
+were gone when hunt round 13a's close needed the journal blocks of a finished catch-up, so
+Banker's 33 catch-up blocks were held apart until their MT5 reports could stand in (Claude-Mac
+GOAT-EA#315 6791427047 item 3, goatai#2750 6791842328).
+
+**What MT5 does (read on T3 by Ops, 2026-11-11).** MT5 rewrites the tester's day log at every
+optimisation start, today's file included, and removes the older ones: during a running Prove
+batch the day log held only the lines since the current member's optimisation started, and a
+234 MB log of the day before vanished when a batch started. A catch-up member is a single test,
+not an optimisation: the day log survived all 83 members of a catch-up. So the copy exists
+because the next optimisation start on that terminal destroys the log.
+
+**Statement.** When a catch-up member ends, the controller copies that member's own lines of
+the terminal's tester journal into its evidence before it launches anything else or returns
+control, and records the copy (path, SHA-256, bytes, first and last line time) in the member's
+stored result. A journal that is gone is recorded as missing with the reason, never invented.
+The journal itself is only read. A round close counts a catch-up only when
+`tester-journal-check` says every member's copy is in place and unchanged (`ok`) and is the
+member's whole journal (`complete`): a copy cut at the bound, or one that lacks a day of its
+run, is intact and still not complete. A Prove batch's
+journal cannot be kept whole: the copy made at its finish holds its last member only, is
+recorded as `covers: last_member_only`, and is never called complete. A Prove member's proof
+stays its report, its `effective-inputs.set` and its capture (Claude-Mac goatai#2750
+6792752258).
+
+**Enforcement.**
+- `controller/studio_tester_journal.py`: `keep` finds the run's block by the lines' own time
+  stamps and copies it byte for byte (a member: plain, bounded; a batch: gzip); `verify`,
+  `check_catchup` and `check_batch` re-hash every recorded copy and write nothing.
+- Catch-up: `CatchupRunner._keep_journals` (`controller/studio_catchup.py`), called from
+  `SeedRunner._settle_slot` (`controller/studio_seed.py`) before every settled save, so the copy
+  is made in the pass that sees a member end and before the next member's launch. The record is
+  the member's `tester_journal` in `catchups\<id>\state.json`.
+- Prove batch: `studio_finish.finish`, under the native gate after the tester is proven idle and
+  before `result.json` is written, copies what is left (`keep_batch`). The record is
+  `tester_journal` in the result and in the job's completion, with `covers: last_member_only`
+  and the first line's time in `covers_plain`.
+- `demo_agent.py tester-journal-check --catchup-id <id> | --batch-id <id>`: exit 2 and
+  `ok:false` (`TESTER_JOURNAL_MISSING`) when a copy is missing, changed, or the run is not
+  finished. `complete` is computed apart from integrity (`coverage`): true only for a catch-up
+  whose every copy is intact, not truncated and without a day of its run missing; each member
+  row states its coverage and `partial` names the members that are not whole. For a batch it is
+  always false and the sentence says the copy is not the batch's journal.
+
+**Tests.** `controller/test_studio_tester_journal.py`: the block is copied byte for byte and
+recorded, the journal untouched; found by halving in a log many blocks long; a day log that is
+gone, or without a line of the run, is recorded missing and nothing is written; a run over
+midnight; a line MT5 is still writing; the bound; a batch launched the day before whose day
+log holds only its last member (copied, `covers: last_member_only`, the launch day listed as
+gone); the real demo catch-up lane end to end (each member's block in its evidence folder, the
+check passes and is complete; a member cut at the bound, and a member over midnight whose next
+day's log is gone: intact, `ok`, and not complete, with the coverage stated per member; no
+journal: recorded missing and the check refuses with exit 2; a
+copy altered or removed afterwards: the check refuses); the real batch finish (copied and
+recorded in `result.json`, the check intact but never complete; no journal: the batch still
+finishes and the check refuses).
+
+**Not covered.**
+- Every Prove member but the last has no journal copy. Copying each member's block would have
+  to happen between the terminal's exit and its relaunch at a member boundary. The EA drives
+  that (`GoatBatchRequestDeferredRestart`, `TerminalClose` in `Tester.mqh`; the relaunch command
+  in `AddCommand` waits for the exit and 500 ms); the batch driver only polls
+  (`studio_batch_driver.run`, every `poll_seconds`, 30 s by default), so it cannot be made from
+  the controller without a watcher. The place that is closed-and-not-yet-relaunched is the EA's
+  relaunch command.
+- A Prove batch's copy is made while MT5 is still open. Lines MT5 has not written to disk yet
+  are not in it; the record's `last_line_time` shows where the copy ends.
+- Seed hunts and hold-up tests keep no journal copy.
+- Batches settled without `finish` (retired before activation, self-repair) keep none: they
+  never ran a test.
+- The block search relies on a day log being in time order. One real T3 day log (17,414 lines,
+  read by Ops on 2026-11-11) had no line earlier than the running maximum. A log that is not in
+  order gives a `missing` record, never a wrong block.
+- Runs that ended before this controller version have no record; the check reports them missing.
+
+## INV-LINEAGE-01: a promoted SET and its fork are linked by SHA-256, never by name
+
+**Incident (hunt round 13a close, 2026-11-11).** 22 migrated October files traced to their seed
+job only by design, symbol and a fork name containing "seed 1013": none of the seed batch's
+promotion receipts carried a fork's SHA-256 (Claude-Mac goatai#2750 6793727135).
+
+**Statement.** A promotion receipt names every SET it writes by SHA-256 and by the SHA-256 of
+its canonical inputs. The strategy-library fork made from a promoted SET is recorded on that
+promotion by its own SET SHA-256 when it is made, and any SET can be looked up to its
+promotion from its bytes alone.
+
+**Enforcement.**
+- `controller/studio_seed_promote.py`: `promote` writes `sha256` and `canonical_sha256` for
+  `fixed_set` and `robustness_set` into `promotion.json`. `record_fork` (`seed-promote-fork`)
+  reads the fork SET and writes `promoted\<alias>\<candidate>\forks\<fork set sha256>.json`,
+  create-only, with the fork id, the relation (`exact`, `same_inputs`, or `edited` with the
+  changed inputs) and the receipt's SHA-256; `promotion.json` is never rewritten. `lookup`
+  (`promotion-lookup`) is read-only and matches a SET as `promoted_set`, `recorded_fork` or
+  `same_inputs`.
+- The fork itself is created by the desktop (`strategy.forkTemplate`); the controller has no
+  register command. The desktop half is to call `seed-promote-fork` with the fork's SET and id
+  right after it creates a fork from a promoted SET, or to store the promotion's
+  `candidate_sha256` and receipt SHA-256 in the fork's own record.
+
+**Tests.** `controller/test_studio_seed_promote.py`: the receipt names each SET by both
+hashes; a fork is recorded on its promotion and found again by its SHA-256 alone (before the
+record, the same SHA-256 finds nothing); lookup matches a promoted SET and a renamed copy by
+its inputs, and nothing for other inputs; an edited fork is recorded as edited with the inputs
+it changed; an older receipt and an unreadable one. `controller/test_demo_seed_agent.py`: both
+verbs through the demo lane.
+
+**Not covered.** A fork nobody records is found only while its inputs are unchanged
+(`same_inputs`, with the SET file). Forks made before this exist only in the desktop's library;
+their records can be added with `seed-promote-fork` from the fork SETs. `goat_studio.py` has no
+copy of the two verbs.

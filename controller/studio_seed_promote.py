@@ -6,7 +6,17 @@ SeedRunner before anything is read, so changed evidence refuses. Every file is
 written to a hidden temporary sibling folder that is published with one rename,
 so a failed write leaves nothing behind and can be retried. Output is
 create-only; repeating the same promotion returns the retained receipt.
+
+Lineage by SHA-256 (Claude-Mac goatai#2750 6793727135: "every promotion receipt carries the fork's SET SHA-256
+from now on, so lineage never again rests on name and symbol"). 22 migrated October files traced to their seed
+job only by design, symbol and a fork name. The receipt names each SET it writes by SHA-256 and by the SHA-256 of
+its canonical inputs (``canonical_sha256``: every input but EA_Desc, so a renamed copy still matches). The
+strategy-library fork made from a promoted SET is created by the desktop (``strategy.forkTemplate``), not here:
+``record_fork`` appends that fork's SET SHA-256 to the promotion (``forks\\<fork sha256>.json``, create-only,
+beside the unchanged ``promotion.json``), and ``lookup`` finds the promotion of any SET, read-only: a promoted
+SET itself, a recorded fork, or a SET with the same inputs under another name.
 """
+from datetime import datetime, timezone
 import hashlib
 import json
 from fractions import Fraction
@@ -20,14 +30,21 @@ from campaign_ledger import sha
 from studio_installation import read_json
 from studio_seed import SeedRunner
 from studio_seed_results import read_seed_json, MAX_RESULT_BYTES
+from strategy_registry import inspect_set
 from studio_strategy_settings import read_values, numeric
-from studio_template_tools import validate_raw
+from studio_template_tools import source_bytes, validate_raw
 
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9 _.#-]{0,62}')
 MAX_NEIGHBORHOOD = 5
 # Fixed file names: no user text reaches a file name, so Windows reserved names cannot occur.
 FILES = (('fixed_set', 'fixed.set'), ('robustness_set', 'robustness.set'))
 RECEIPT = 'promotion.json'
+FORKS = 'forks'
+FORK_SCHEMA = 'goat-promotion-fork-v1'
+LOOKUP_SCHEMA = 'goat-promotion-lookup-v1'
+FORK_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}')
+MAX_PROMOTIONS = 20000
+MAX_CHANGED_INPUTS = 50
 SCOPE = ('Seed result is in-sample only. robustness_set is a local stability check around the candidate; '
          'only the forward window is out-of-sample. Its batch re-optimizes the neighborhood and picks the best '
          'neighbor on the back window, so judge it on the forward window. Run it with prepare-batch on dates after '
@@ -65,6 +82,13 @@ def _create(path, raw):
     """Exclusive, durable create: never overwrites, and the bytes reach disk before the folder is published."""
     with path.open('xb') as stream:
         stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+
+
+def _strings(schema):
+    """The names of the schema's string inputs. A string is one literal value even when it holds ``||``
+    (validate_strategy allows it), so the canonical inputs of a SET are computed with these names (inspect_set)."""
+    return frozenset(name for name, definition in ((schema or {}).get('inputs') or {}).items()
+                     if isinstance(definition, dict) and definition.get('type') == 'string')
 
 
 def _retained(out, request):
@@ -152,7 +176,9 @@ def promote(controller, batch_id, candidate_sha256, name, *, neighborhood=1, mem
         schema_version=1, member_id=spec['member_id'], alias=spec['alias'], source_path=spec['source_path'],
         source_sha256=spec['source_sha256'], frozen_set_sha256=spec['set_sha256'], pass_number=candidate['pass_number'],
         seed_metrics=candidate['metrics'], seed_qualifies=candidate['qualifies'], seed_window=seed_window, ladder=ladder,
-        **{key: dict(path=str(out / file), sha256=hashlib.sha256(sets[file]).hexdigest()) for key, file in FILES},
+        # Each written SET by its bytes and by its canonical inputs (EA_Desc excluded): the lineage keys (lookup).
+        **{key: dict(path=str(out / file), sha256=hashlib.sha256(sets[file]).hexdigest(),
+                     canonical_sha256=inspect_set(sets[file], _strings(controller.schema))['canonical_sha256']) for key, file in FILES},
         scope=SCOPE, native_launch_qualified=False)
     payload = sets | {RECEIPT: (json.dumps(receipt, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')}
     # Short hidden sibling: never a longer path than the final folder, and unique per attempt.
@@ -179,3 +205,161 @@ def promote(controller, batch_id, candidate_sha256, name, *, neighborhood=1, mem
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return receipt | dict(status='written', receipt_path=str(out / RECEIPT))
+
+# ---------------------------------------------------------------------------
+# Lineage: the fork made from a promoted SET, and the promotion of any SET
+# ---------------------------------------------------------------------------
+
+def _canonical(entry, folder, file, strings):
+    """The canonical input SHA-256 of one promoted SET: the receipt's own, or computed from the SET for an older receipt."""
+    if isinstance(entry.get('canonical_sha256'), str):
+        return entry['canonical_sha256']
+    return inspect_set((folder / file).read_bytes(), strings)['canonical_sha256']
+
+
+def _fork_records(folder):
+    records = []
+    for path in sorted((folder / FORKS).glob('*.json')) if (folder / FORKS).is_dir() else []:
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get('schema') == FORK_SCHEMA and record.get('fork_set_sha256') == path.stem:
+            records.append(record)
+    return records
+
+
+def _promotion(folder):
+    """(receipt, receipt SHA-256) of one completed promotion folder, its SETs verified against the receipt."""
+    raw = (folder / RECEIPT).read_bytes()
+    receipt = read_json(folder / RECEIPT)
+    request = {key: receipt.get(key) for key in ('batch_id', 'candidate_sha256', 'name', 'neighborhood')} if isinstance(receipt, dict) else {}
+    return _retained(folder, request), hashlib.sha256(raw).hexdigest()
+
+
+def record_fork(controller, batch_id, candidate_sha256, fork_set, *, fork_id=None, member=None, runner=None):
+    """Append the SHA-256 of a strategy-library fork's SET to the promotion it was made from. Local files only.
+
+    The fork SET is read as it is and never changed. ``relation`` says how it stands to the promotion's own SETs:
+    ``exact`` (the same bytes as fixed.set or robustness.set), ``same_inputs`` (the same inputs under another EA_Desc
+    or comments) or ``edited`` (other inputs: ``changed_inputs`` names them against the nearer promoted SET).
+    Create-only: recording the same fork again returns the retained record; nothing is ever overwritten."""
+    if not isinstance(candidate_sha256, str) or not re.fullmatch('[0-9a-f]{64}', candidate_sha256):
+        raise ValueError('Candidate must be the 64-character candidate_sha256 of the promotion')
+    if fork_id is not None and (not isinstance(fork_id, str) or not FORK_ID.fullmatch(fork_id)):
+        raise ValueError('fork_id must be the strategy-library fork id (letters, digits, . _ -)')
+    runner = runner or SeedRunner(controller, process=object())
+    root, manifest, _ = runner._read(batch_id)
+    folders = [root / 'promoted' / spec['alias'] / candidate_sha256 for spec in manifest['members']
+               if (member is None or member in (spec['alias'], spec['member_id']))
+               and (root / 'promoted' / spec['alias'] / candidate_sha256 / RECEIPT).is_file()]
+    if not folders:
+        raise ValueError('No promotion of this candidate in this seed batch' + ('' if member is None else ' for that member'))
+    if len(folders) > 1:
+        raise ValueError('Candidate was promoted from %d seed members; pass member with one of: %s'
+                         % (len(folders), ', '.join(folder.parent.name for folder in folders)))
+    folder = folders[0]
+    receipt, receipt_sha256 = _promotion(folder)
+    _, raw, _ = source_bytes(fork_set)
+    strings = _strings(controller.schema)
+    info = inspect_set(raw, strings)
+    relation, derived_from, changed = 'edited', None, None
+    for key, file in FILES:
+        if info['sha256'] == receipt[key]['sha256']:
+            relation, derived_from = 'exact', key
+            break
+    else:
+        for key, file in reversed(FILES):                       # a fork is made from the robustness SET first
+            if info['canonical_sha256'] == _canonical(receipt[key], folder, file, strings):
+                relation, derived_from = 'same_inputs', key
+                break
+    if relation == 'edited':
+        mine = json.loads(info['canonical_json'])
+        nearest = None
+        for key, file in FILES:
+            theirs = json.loads(inspect_set((folder / file).read_bytes(), strings)['canonical_json'])
+            names = sorted(name for name in set(mine) | set(theirs) if mine.get(name) != theirs.get(name))
+            if nearest is None or len(names) < len(nearest[1]):
+                nearest = (key, names)
+        derived_from, changed = nearest[0], dict(count=len(nearest[1]), inputs=nearest[1][:MAX_CHANGED_INPUTS])
+    record = dict(schema=FORK_SCHEMA, fork_set_sha256=info['sha256'], fork_canonical_sha256=info['canonical_sha256'], fork_id=fork_id,
+                  fork_ea_desc=info['ea_desc'], relation=relation, derived_from=derived_from, changed_inputs=changed,
+                  promotion=dict(batch_id=batch_id, alias=receipt['alias'], member_id=receipt['member_id'],
+                                 candidate_sha256=candidate_sha256, name=receipt['name'], receipt_sha256=receipt_sha256),
+                  recorded_utc=datetime.now(timezone.utc).isoformat(timespec='seconds'))
+    path = folder / FORKS / (info['sha256'] + '.json')
+    if path.exists():
+        retained = read_json(path)
+        if not isinstance(retained, dict) or retained.get('schema') != FORK_SCHEMA or retained.get('fork_set_sha256') != info['sha256']:
+            raise ValueError('Retained fork record at %s is not a %s record; inspect it' % (path, FORK_SCHEMA))
+        if retained.get('fork_id') != fork_id:
+            raise ValueError('This fork SET is already recorded for this promotion under fork id %r' % retained.get('fork_id'))
+        return retained | dict(status='retained', record_path=str(path))
+    path.parent.mkdir(exist_ok=True)
+    _create(path, (json.dumps(record, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8'))
+    return record | dict(status='written', record_path=str(path))
+
+
+def lookup(controller_root, *, set_sha256=None, set_path=None, schema=None):
+    """Read-only: the promotion(s) a SET belongs to, by SHA-256, never by name or symbol.
+
+    Give the SET's SHA-256, or the SET file (then its canonical inputs are matched too). A match is ``promoted_set``
+    (the SET is a promotion's fixed.set or robustness.set), ``recorded_fork`` (record_fork wrote its SHA-256 to that
+    promotion) or ``same_inputs`` (the same inputs under another name; file only). Every seed batch's promotions
+    under this controller state are read; a promotion folder that cannot be read is listed, never skipped silently.
+    ``schema``: the installed input schema, so that a string input holding ``||`` is read as one value (as promote and
+    record_fork read it); the agent verb passes it."""
+    if (set_sha256 is None) == (set_path is None):
+        raise ValueError('Give exactly one of the SET SHA-256 or the SET file')
+    canonical, strings = None, _strings(schema)
+    if set_path is not None:
+        _, raw, _ = source_bytes(set_path)
+        info = inspect_set(raw, strings)
+        set_sha256, canonical = info['sha256'], info['canonical_sha256']
+    if not isinstance(set_sha256, str) or not re.fullmatch('[0-9a-f]{64}', set_sha256):
+        raise ValueError('The SET SHA-256 must be 64 lowercase hex characters')
+    matches, unreadable, read = [], [], 0
+    seeds = Path(controller_root) / 'seeds'
+    for receipt_path in sorted(seeds.glob('*/promoted/*/*/' + RECEIPT)) if seeds.is_dir() else []:
+        if read >= MAX_PROMOTIONS:
+            raise ValueError('More than %d promotions under this controller state; look the SET up per seed batch' % MAX_PROMOTIONS)
+        folder = receipt_path.parent
+        try:
+            receipt = read_json(receipt_path)
+            if not isinstance(receipt, dict) or any(not isinstance((receipt.get(key) or {}).get('sha256'), str) for key, _ in FILES):
+                raise ValueError('not a promotion receipt')
+            found = []
+            for key, file in FILES:
+                if receipt[key]['sha256'] == set_sha256:
+                    found.append(dict(relation='promoted_set', which=key, fork=None))
+                elif canonical is not None and _canonical(receipt[key], folder, file, strings) == canonical:
+                    found.append(dict(relation='same_inputs', which=key, fork=None))
+            fork_path = folder / FORKS / (set_sha256 + '.json')
+            if fork_path.is_file():
+                fork = read_json(fork_path)
+                found.insert(0, dict(relation='recorded_fork', which=fork.get('derived_from'), fork=fork))
+            receipt_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            unreadable.append(dict(receipt_path=str(receipt_path), reason=str(error)[:200] or type(error).__name__))
+            continue
+        read += 1
+        for item in found:
+            matches.append(item | dict(batch_id=receipt.get('batch_id'), alias=receipt.get('alias'), member_id=receipt.get('member_id'),
+                                       candidate_sha256=receipt.get('candidate_sha256'), name=receipt.get('name'),
+                                       seed_window=receipt.get('seed_window'), source_sha256=receipt.get('source_sha256'),
+                                       frozen_set_sha256=receipt.get('frozen_set_sha256'),
+                                       promoted_set_sha256=receipt[item['which']]['sha256'] if item['which'] else None,
+                                       receipt_path=str(receipt_path), receipt_sha256=receipt_sha256))
+    if matches:
+        first = matches[0]
+        plain = ('This SET belongs to the promotion of candidate %s in seed batch %s (member %s): %s.'
+                 % (str(first['candidate_sha256'])[:12], first['batch_id'], first['alias'],
+                    dict(promoted_set='it is the promotion\'s own ' + str(first['which']).replace('_', ' '),
+                         recorded_fork='its SHA-256 was recorded as a fork of it',
+                         same_inputs='it has the same inputs as its ' + str(first['which']).replace('_', ' ')
+                                     + ' under another name')[first['relation']])
+                 + ('' if len(matches) == 1 else ' %d more matches are listed.' % (len(matches) - 1)))
+    else:
+        plain = 'No promotion under this controller state names this SET by SHA-256%s.' % ('' if canonical is None else ' or has its inputs')
+    return dict(schema=LOOKUP_SCHEMA, set_sha256=set_sha256, canonical_sha256=canonical, matches=matches, promotions_read=read,
+                unreadable=unreadable, plain=plain, writes=False)

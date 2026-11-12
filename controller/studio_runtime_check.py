@@ -1,6 +1,46 @@
 """Validate fresh Studio runtime feedback; this is not launch authorization."""
 from datetime import datetime, timezone
 from pathlib import PureWindowsPath
+import time
+
+STALE = 'Runtime feedback is stale or future-dated'
+# A batch start's first runtime read may land in the EA's reporting gap (GOAT-EA#323, T2 2026-11-12: a successor's
+# driver started 50 s after its parent's pause settled, read a sample older than 20 s and refused 0.5 s into the
+# start; the monitor ticked normally minutes before and after). The bound below is unchanged. A start whose first
+# read is stale reads again, every START_FRESH_POLL_SECONDS for up to START_FRESH_WAIT_SECONDS, before it refuses.
+START_FRESH_WAIT_SECONDS = 60
+START_FRESH_POLL_SECONDS = 1
+
+
+def await_fresh(read, *, between=None, note=None, seconds=None, poll=None):
+    """``read()`` (a full runtime check), repeated while its only refusal is a stale sample.
+
+    For the first read of a batch start only, before anything is reserved, recorded or sent to MT5. Every repeat is
+    the whole check again on a newly read sample: the freshness bound is never widened, and any other refusal (wrong
+    account, Algo Trading on, tester busy, unbound monitor) is raised at once. ``between()`` runs before each repeat
+    (the start's own ownership/STOP/deadline checkpoint). A sample still stale at the deadline raises the same error.
+    ``note(dict)`` receives how long the start waited when it waited at all.
+    """
+    seconds = START_FRESH_WAIT_SECONDS if seconds is None else seconds
+    poll = START_FRESH_POLL_SECONDS if poll is None else poll
+    started = time.monotonic(); polls = 0
+    def report(fresh):
+        if polls and note is not None:
+            note(dict(polls=polls, waited_seconds=round(time.monotonic() - started, 1), fresh=fresh))
+    while True:
+        try:
+            value = read()
+        except ValueError as error:
+            if str(error) != STALE or time.monotonic() - started >= seconds:
+                report(False)
+                raise
+        else:
+            report(True)
+            return value
+        polls += 1
+        time.sleep(poll)
+        if between is not None:
+            between()
 
 
 def check_runtime(observation, *, now, modified, data_path, installation_path,
@@ -8,7 +48,7 @@ def check_runtime(observation, *, now, modified, data_path, installation_path,
                   expected_batch_ongoing=False):
     stamp=datetime.strptime(observation['observed_terminal_utc'],'%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
     if not 0 <= now-modified <= max_age or not -2 <= now-stamp <= max_age:
-        raise ValueError('Runtime feedback is stale or future-dated')
+        raise ValueError(STALE)
     if observation.get('schema_version')!=1 or observation.get('bound') is not True:
         raise ValueError('Bound Studio runtime feedback required')
     runtime=observation.get('runtime')

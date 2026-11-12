@@ -189,6 +189,9 @@ STEP_SEEDS = {
     'test_cid_guard_mutations': (
         'scripts/test_cid_guard_mutations.cjs', 'scripts/test_cid_guard.cjs', 'GOAT V1.49.mq5',
         'GOAT_Inputs_Definitions.mqh'),
+    'test_hunt_board_count_mutations': (
+        'scripts/test_hunt_board_count_mutations.py', 'controller/test_hunt_board_count.py',
+        'controller/hunt_board_count.py'),
 }
 
 TEXT_SUFFIXES = {'.py', '.cjs', '.js', '.mjs', '.mq5', '.mqh', '.json', '.csv', '.md', '.txt', '.set', '.ini',

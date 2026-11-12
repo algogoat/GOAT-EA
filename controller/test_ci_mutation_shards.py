@@ -53,9 +53,10 @@ EXPECTED = frozenset({
     'test_profile_staged_adoption_mutations',
     'test_profile_staged_deploy_mutations',
     'test_cid_guard_mutations',
+    'test_hunt_board_count_mutations',
 })
-# Steps added after the 4-shard split (B47: the CID guard), not in the 3-shard layout below.
-ADDED_SINCE_THREE_SHARDS = frozenset({'test_cid_guard_mutations'})
+# Steps added after the 4-shard split (B47: the CID guard; GOAT-EA#316: the hunt board counter), not in the 3-shard layout below.
+ADDED_SINCE_THREE_SHARDS = frozenset({'test_cid_guard_mutations', 'test_hunt_board_count_mutations'})
 
 # The 3-shard layout this replaced (base da9e953), kept for comparison.
 THREE_SHARD_LAYOUT = {
@@ -143,6 +144,7 @@ class ShardTableTests(unittest.TestCase):
         self.assertEqual(re.findall(r'\n    timeout-minutes: (\d+)\n', self.text), ['60'])
         self.assertEqual(coverage_problems(THREE_SHARD_LAYOUT, EXPECTED - ADDED_SINCE_THREE_SHARDS), [])
         self.assertIn('test_cid_guard_mutations', self.shards[1], 'the ~3 s CID guard step sits on shard 1')
+        self.assertIn('test_hunt_board_count_mutations', self.shards[1], 'the hunt board counter step (seconds) sits on shard 1')
 
     def test_slow_steps_log_a_per_mutant_time_budget(self):
         # Every step whose measured median is 5 min or more times each mutant (scripts/mutation_budget.py).

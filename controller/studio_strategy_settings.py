@@ -219,9 +219,14 @@ def native_enum_ladders(items):
 def check_enum_ladders(values, schema):
     """Refuse every active (Y) enum ladder the GOAT EA refuses at OnTesterInit, naming each one and its fix.
 
-    Runs from validate_strategy, so validate-set, prepare-batch, seed-prepare/seed-start, build-set, the queue
-    and drafts all agree. The EA's seed path skips its own check (GOAT V1.49.mq5:3941-3942), so this is the
-    only gate that keeps a seed plan and the prove batch built from it on the same rule. It applies to every
+    Runs from validate_strategy, so validate-set, prepare-batch (its plan check and the store's queue check),
+    seed-validate and seed-prepare (one SeedRunner for the goat_studio and the demo-agent lane: studio_seed._freeze ->
+    validate_raw), build-set, the queue and drafts all agree. The EA's seed path skips its own check
+    (GOAT V1.49.mq5:3941-3942), so this is the only gate that keeps a seed plan and the prove batch built from it on
+    the same rule. An enum's declaration order is the order of its ``enum_choices`` in the schema, so every caller
+    must pass the schema in contract order: a key-sorted copy judges another enum (GOAT-EA#317: the store's copy held
+    ENUM_MODE_TRADE as 5, 4, 0, 3, 1, 2 and refused EMA_Mode=1||0||1||2||Y, which is native; it now keeps the
+    contract's order, studio_command_store.held_contract). It applies to every
     supported contract (V1.48 too): the ladder change is MT5's, not the EA's; V1.49 only detects it, and an older EA
     would silently run a search space other than the one the SET, the axis count and the init-rule check describe."""
     problems = []

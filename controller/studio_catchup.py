@@ -89,7 +89,10 @@ PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_r
                  'equivalence_certificates', 'canary_certificate',
                  # goatai#2350: re-test an older build's SETs on the installed target build (studio_build_migration),
                  # and an absolute local folder for the evidence instead of <controller state>\evidence.
-                 'build_migration', 'output_root'}
+                 'build_migration', 'output_root',
+                 # GOAT-EA#315: {SET SHA-256: tag} for exports their Prove batch left unverified that are re-tested
+                 # anyway, each under the tag it is counted with (UnverifiedExports).
+                 'disclosed_unverified'}
 EVIDENCE_ROOTS = 'evidence-roots.json'
 EVIDENCE_ROOTS_SCHEMA = 'goat-catchup-evidence-roots-v1'
 MAX_EVIDENCE_ROOTS = 50
@@ -524,7 +527,121 @@ def resolve_target(value='auto', *, broker_clock=None, now=None):
     return evidence_end.resolve(value, now, clock=broker_clock or evidence_end.DEFAULT_CLOCK, allow_day=True)
 
 
-def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, controller_root=None, include_below_threshold=False):
+UNVERIFIED_EXPORT = 'UNVERIFIED_EXPORT'
+MAX_TAG_CHARS = 200
+
+
+class UnverifiedExports:
+    """Exports a Prove batch's own report left ``unverified`` (studio_export_scan: the export's fixed inputs differ from
+    its member's SET, or it could not be checked), found by SET SHA-256 in the retained batch results
+    (``attempts\\<attempt>\\result.json``, studio_finish).
+
+    GOAT-EA#315: in hunt round 13a every member after the first ``Ledger_Mode=1`` member exported with ``Ledger_Mode=1``
+    although its own SET omitted it. The report said so on each export (``Fixed export input mismatch: Ledger_Mode``) and
+    nothing read it. evidence-scan and catchup-prepare read it here: such an export is ineligible unless the plan
+    discloses it (``disclosed_unverified``), and what ``unverified`` means is studio_export_scan's, unchanged.
+
+    An export inside its run folder is looked up in that run's attempts only (each attempt's small activation.json
+    names its run folder); a library copy has no run, so every retained result is read once. A result that cannot be
+    read refuses, as an unreadable exclusion marker does: it is never one unverified export fewer."""
+
+    def __init__(self, controller_root):
+        self.root = Path(controller_root) if controller_root else None
+        self._attempts, self._results, self._runs, self._all = None, {}, {}, None
+
+    def _attempt_runs(self):
+        """{attempt folder with a result: its native run folder name, or None when its activation.json does not say}."""
+        if self._attempts is None:
+            self._attempts = {}
+            folder = self.root / 'attempts'
+            for path in sorted(folder.iterdir()) if folder.is_dir() else []:
+                if not (path / 'result.json').is_file():
+                    continue
+                try:
+                    run = PureWindowsPath(str(read_json_bounded(path / 'activation.json', 1024 * 1024)['run'])).name or None
+                except (OSError, ValueError, KeyError, TypeError):
+                    run = None
+                self._attempts[path] = run
+        return self._attempts
+
+    def _result(self, path):
+        if path not in self._results:
+            try:
+                result = read_json_bounded(path / 'result.json', MAX_MANIFEST_BYTES)
+            except (OSError, ValueError) as error:
+                raise ValueError('The batch result %s cannot be read (%s), so its unverified exports are unknown; nothing is classified'
+                                 % (path / 'result.json', error)) from None
+            found = {}
+            reports = result.get('reports') if isinstance(result, dict) else None
+            members = [] if not isinstance(reports, dict) else reports['members'] if isinstance(reports.get('members'), list) else [reports]
+            for member in members:
+                exports = member.get('exports') if isinstance(member, dict) else None
+                for item in (exports.get('files') or []) if isinstance(exports, dict) else []:
+                    if not isinstance(item, dict) or item.get('status') != 'unverified':
+                        continue
+                    for artifact in item.get('artifacts') or []:
+                        if str(artifact.get('path', '')).lower().endswith('.set') and isinstance(artifact.get('sha256'), str):
+                            found[artifact['sha256']] = dict(batch_id=result.get('job_id'), reason=item.get('reason') or 'No reason recorded',
+                                                             result_path=str(path / 'result.json'))
+            self._results[path] = found
+        return self._results[path]
+
+    def find(self, run_id, set_sha256):
+        """The unverified record of one export (its run folder name or None, its SET SHA-256), or None."""
+        if self.root is None or not isinstance(set_sha256, str):
+            return None
+        if not run_id:
+            if self._all is None:
+                self._all = {}
+                for path in self._attempt_runs():
+                    self._all.update(self._result(path))
+            return self._all.get(set_sha256)
+        key = str(run_id).lower()
+        if key not in self._runs:
+            self._runs[key] = {}
+            for path, run in self._attempt_runs().items():
+                if run is None or run.lower() == key:
+                    self._runs[key].update(self._result(path))
+        return self._runs[key].get(set_sha256)
+
+
+def disclosed_unverified(value):
+    """A plan's ``disclosed_unverified``: {SET SHA-256: the tag that export is counted under}. Validated; {} when absent."""
+    if value is None:
+        return {}
+    if (not isinstance(value, dict) or len(value) > MAX_MEMBERS
+            or any(not isinstance(key, str) or not re.fullmatch('[0-9a-f]{64}', key) or not isinstance(tag, str)
+                   or not 1 <= len(tag.strip()) <= MAX_TAG_CHARS or any(c in tag for c in '\r\n\x00') for key, tag in value.items())):
+        raise ValueError('disclosed_unverified maps the SHA-256 of an exported SET its Prove batch left unverified to the tag it '
+                         'is counted under (1..%d characters on one line)' % MAX_TAG_CHARS)
+    return value
+
+
+def apply_unverified(rows, unverified, disclosed=None):
+    """Mark evidence rows whose export its Prove batch left unverified: ``ineligible`` with ``unverified`` set.
+
+    A row the plan discloses (``disclosed``: {SET SHA-256: tag}) keeps its status and carries the tag
+    (``unverified_disclosed``), so the export is re-tested or counted only with that said. Other rows are unchanged."""
+    result = []
+    for row in rows:
+        record = unverified.find(row.get('run_id'), row.get('set_sha256'))
+        if record is None:
+            result.append(row)
+            continue
+        fields = dict(unverified=True, unverified_batch_id=record['batch_id'], unverified_reason=record['reason'],
+                      unverified_result_path=record['result_path'])
+        tag = (disclosed or {}).get(row.get('set_sha256'))
+        if tag is not None:
+            result.append(dict(row, unverified_disclosed=tag, **fields))
+            continue
+        reason = ('Unverified by its Prove batch %s (%s): it is not what its member asked for, and is re-tested only when the '
+                  'plan discloses it' % (record['batch_id'], record['reason']))
+        result.append(dict(row, status='ineligible', reasons=list(row.get('reasons') or []) + [reason], code=UNVERIFIED_EXPORT, **fields))
+    return result
+
+
+def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, controller_root=None, include_below_threshold=False,
+                  disclosed=None):
     """Read-only inventory: every kept export under ``sources`` against one target end."""
     target = resolve_target(value, broker_clock=broker_clock, now=now)
     exports, unreadable = scan(sources)
@@ -535,6 +652,9 @@ def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, control
         # (studio_batch_close); an unreadable exclusion marker refuses the scan rather than let them through.
         from studio_batch_close import apply_exclusions, exclusions
         rows = apply_exclusions(rows, exclusions(controller_root))
+        # An export its Prove batch left unverified reads ineligible with ``unverified`` set (GOAT-EA#315), unless
+        # ``disclosed`` (a plan's disclosed_unverified) names it.
+        rows = apply_unverified(rows, UnverifiedExports(controller_root), disclosed_unverified(disclosed))
     return dict(schema_version=1, target=target, summary=summarize(rows, target['iso'], resolved=target), exports=rows, unreadable=unreadable,
                 rules=dict(evidence_end=target['rule'], thresholds_applied_to_eligibility=not include_below_threshold,
                            thresholds='each export carries its own threshold, basis and margins'),
@@ -797,7 +917,8 @@ class CatchupRunner(SeedRunner):
         if not isinstance(plan, dict) or not PLAN_KEYS <= set(plan) or set(plan) - PLAN_KEYS - PLAN_OPTIONAL or plan['schema_version'] != 1:
             raise ValueError('Catch-up plan requires schema_version:1, evidence_end, sets and job_timeout_seconds '
                              '(optional: broker_clock, assume, include_below_threshold, verdict_rules, strategy_refs, heldout_reveal, '
-                             'equivalence_certificates, canary_certificate, build_migration, output_root)')
+                             'equivalence_certificates, canary_certificate, build_migration, output_root, disclosed_unverified)')
+        disclosed_unverified(plan.get('disclosed_unverified'))
         certificates = plan.get('equivalence_certificates', [])
         if not isinstance(certificates, list) or len(certificates) > MAX_CERTIFICATES or len(set(map(str, certificates))) != len(certificates) \
                 or any(not isinstance(d, str) or not re.fullmatch('[0-9a-f]{64}', d) for d in certificates):
@@ -862,6 +983,8 @@ class CatchupRunner(SeedRunner):
         # An export of a batch closed with exclude (studio_batch_close) is never re-tested.
         from studio_batch_close import apply_exclusions, exclusions
         markers = exclusions(self.c.root)
+        # An export its Prove batch left unverified is re-tested only when the plan discloses it (GOAT-EA#315).
+        unverified, disclosed = UnverifiedExports(self.c.root), disclosed_unverified(plan.get('disclosed_unverified'))
         for path in plan['sets']:
             entry = self.migration['originals'][migration.key(path)] if self.migration else None
             try:
@@ -875,6 +998,7 @@ class CatchupRunner(SeedRunner):
                 raise ValueError('build_migration: SET %s changed while planning; nothing was planned' % path)
             row = classify(export, target['iso'], include_below_threshold=plan.get('include_below_threshold', False), known_versions=known)
             row = apply_exclusions([row], markers)[0]
+            row = apply_unverified([row], unverified, disclosed)[0]
             if row['status'] == 'behind':
                 reasons, bridge = self._member_problems(export, account, certificates=certificates, migration_entry=entry)
                 facts, window, assumed, missing = _tester_conditions(export, assume)
@@ -889,6 +1013,10 @@ class CatchupRunner(SeedRunner):
                     ref = self._strategy_refs.get(str(Path(path)).lower())
                     if ref is not None:
                         member['strategy_ref'] = ref
+                    if row.get('unverified_disclosed') is not None:
+                        # Carried into the member and its evidence version (``original``): never counted without the tag.
+                        member['original']['unverified_disclosed'] = dict(batch_id=row['unverified_batch_id'],
+                                                                          reason=row['unverified_reason'], tag=row['unverified_disclosed'])
                     members.append(member)
                     payloads.extend(files)
                     row = row | dict(alias=member['alias'])
@@ -1343,6 +1471,17 @@ class CatchupRunner(SeedRunner):
         with target.open('xb') as stream:
             stream.write(raw)
 
+    def _keep_journals(self, manifest, state):
+        """Every member that ran and has ended keeps its own block of the terminal's tester journal with its evidence
+        (studio_tester_journal, GOAT-EA#315; Claude-Mac goatai#2750 6791842328): MT5 clears older day logs when a later
+        optimisation starts, so the copy is made in the pass that sees the member end, before the next member or
+        anything else launches. Once per member; a journal that is gone is recorded as missing, never invented."""
+        from studio_tester_journal import ENDED, keep_member
+        for spec, item in zip(manifest['members'], state['members']):
+            if item['status'] in ENDED and 'tester_journal' not in item and type(item.get('started_unix')) in (int, float):
+                item['tester_journal'] = keep_member(self.c.install, spec['evidence_dir'], item['started_unix'],
+                                                     item.get('finished_unix', self.clock()))
+
     def _collect(self, path, spec, manifest):
         """Verify the EA's re-test unit, move it into the evidence store and judge the new weeks."""
         from studio_catchup_verdict import evaluate
@@ -1553,6 +1692,10 @@ class CatchupRunner(SeedRunner):
                       ea_desc_metadata=spec['optimization_window']['source'],
                       plain='A new evidence record on %s (%s), never a catch-up verdict on the original export. %s%s'
                             % (bm['target_build'], bm['provenance'], drift['plain'], ' ' + short['plain'] if short else ''))
+        if spec['original'].get('unverified_disclosed') is not None:
+            # The original export was left unverified by its Prove batch and re-tested under a disclosed tag
+            # (apply_unverified): the standalone record says so too, as an evidence version's ``original`` does.
+            record['original']['unverified_disclosed'] = spec['original']['unverified_disclosed']
         record_path = Path(spec['evidence_dir']) / migration.RECORD_FILE
         temporary = record_path.with_name(record_path.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
         with temporary.open('x', encoding='utf-8', newline='\n') as stream:
@@ -1578,15 +1721,16 @@ class CatchupRunner(SeedRunner):
         Formula batches only (their exports stop at the optimization end, so the new weeks are the FOOS hold-out);
         other exports read not_applicable. A re-test that is not the same test as the original is never judged.
         Every result stamps ``evidenceEnd``: the catch-up's resolved end (any closed trading day), or the earlier
-        re-test end it was judged through.
+        re-test end it was judged through. Every result also names the rule version it was judged under
+        (``ruleVersion``: the current ``RULE_VERSION``); a stored result that names none was judged under version 1.
         """
-        from studio_oos_windows import BOOS_CONTAMINATED_BY, EVALUATION, judge_retest
+        from studio_oos_windows import BOOS_CONTAMINATED_BY, EVALUATION, RULE_VERSION, judge_retest
         # OOS-rule judging of a catch-up reads verdicts only: a build-migration member is never judged as one.
         migration.refuse(verdict, 'The OOS-rule catch-up judge')
         migration.refuse(spec.get('build_migration') or {}, 'The OOS-rule catch-up judge')
         if verdict.get('verdict') in ('not_comparable', 'unjudged'):
             reason = 'the re-test was not judged as the same test as the original (%s)' % verdict.get('verdict')
-            result = dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
+            result = dict(schema=EVALUATION, ruleVersion=RULE_VERSION, status='no_data', reasons=[reason], used_for_ranking=False,
                         boosContaminatedBy=BOOS_CONTAMINATED_BY,
                         plain='No hold-out data under the OOS window rule: ' + reason + '.')
         else:
@@ -1594,7 +1738,7 @@ class CatchupRunner(SeedRunner):
                 result = judge_retest(original, retest, tester=spec['original'].get('tester'), evidence_end=evidence_end)
             except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
                 reason = 'could not apply the OOS window rule: ' + str(exc)[:240]
-                result = dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
+                result = dict(schema=EVALUATION, ruleVersion=RULE_VERSION, status='no_data', reasons=[reason], used_for_ranking=False,
                             boosContaminatedBy=BOOS_CONTAMINATED_BY,
                             plain='No hold-out data: ' + reason + '.')
         result.setdefault('evidenceEnd', evidence_end)

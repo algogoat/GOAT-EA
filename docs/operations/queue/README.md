@@ -35,6 +35,11 @@ that matched the rule; none fed it a full day's inbox.
 unchanged. `ops-post.ps1` and `ops-safe-push.ps1` read one page starting at a named comment's time, so they miss only
 when more than 100 comments follow that comment; they are not changed here.
 
+## Known limit
+
+A hold posted at or before a queue's `-InboxAfter` is not seen by that queue. So a queue must never be started with an
+`-InboxAfter` later than a hold that is still in force. After a hold is lifted, restart with an id after the lift.
+
 ## Run the test
 
 ```

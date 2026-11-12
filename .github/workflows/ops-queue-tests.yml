@@ -32,5 +32,12 @@ jobs:
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\hold-reader.test.ps1
 
       - name: Every queue script parses
-        shell: cmd
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$bad = 0; foreach ($f in Get-ChildItem docs\operations\queue -Filter *.ps1) { $e = $null; $null = [Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$e); if ($e.Count) { $bad++; Write-Host ('PARSE ERRORS ' + $f.Name + ': ' + $e[0].Message) } else { Write-Host ('ok ' + $f.Name) } }; exit $bad"
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem docs\operations\queue -Filter *.ps1) {
+            $e = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$e)
+            if ($e.Count) { $bad++; Write-Host "PARSE ERRORS $($f.Name) - $($e[0].Message)" } else { Write-Host "ok $($f.Name)" }
+          }
+          exit $bad

@@ -34,9 +34,9 @@ DIR = ROOT / 'scripts' / 'fixtures' / 'b55-axes'
 TABLE = json.loads((DIR / 'axes.json').read_text(encoding='utf-8'))
 SCHEMA = contracts('1.49')[0]
 B54_SOURCE = 'a8c6766243ff577bdcfc90495a6de33ce0797c88'   # B54 (V1.49-BETA17-54), the merge of GOAT-EA#306
-B55_LINES = range(5197, 5210)   # GOAT V1.49.mq5's b55-init block
+B55_LINES = range(5248, 5261)   # GOAT V1.49.mq5's b55-init block
 B55_RULES = ('BRK_SEQ_WITHOUT_BRK', 'BRK_SEQ_WITH_SINGLE', 'BRK_SEQ_WITH_DELAY', 'BRK_SEQ_NOT_BUILT')
-NARROWED = 'BRK_WITHOUT_SINGLE'   # line 5177, in the b54-init block: narrowed by the switch, B54's alert and code
+NARROWED = 'BRK_WITHOUT_SINGLE'   # line 5228, in the b54-init block: narrowed by the switch, B54's alert and code
 B54_SINGLE = ROOT / 'scripts' / 'fixtures' / 'b54-axes' / 'brk-nbar-ends.set'
 POOL_SEQUENCE = ROOT / 'scripts' / 'fixtures' / 'b54-pool' / '01-EURCAD-sequence.set'
 
@@ -84,12 +84,12 @@ class B55AxisSetTests(unittest.TestCase):
         b55 = [rule for rule in EA_INIT_RULES if rule['lines'][0] in B55_LINES]
         self.assertEqual(tuple(rule['id'] for rule in b55), B55_RULES)
         narrowed = next(rule for rule in EA_INIT_RULES if rule['id'] == NARROWED)
-        self.assertEqual(narrowed['lines'], (5177,))
+        self.assertEqual(narrowed['lines'], (5228,))
         self.assertEqual(TABLE['alerts'], {rule['id']: rule['alert'] for rule in [narrowed] + b55})
         for rule in [narrowed] + b55:
             line = source[rule['lines'][0]-1]
             self.assertIn('return ' + TABLE['codes'][rule['id']] + ';', line, rule['id'])
-        self.assertIn('&& !BRK_Start_Seq)', source[5177-1], 'line 5177 is narrowed by the switch')
+        self.assertIn('&& !BRK_Start_Seq)', source[5228-1], 'line 5228 is narrowed by the switch')
 
     def test_the_files_are_the_tables_sets_rendered(self):
         self.assertEqual(sorted(path.name for path in DIR.glob('*.set')), sorted(entry['file'] for entry in TABLE['sets']))

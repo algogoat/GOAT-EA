@@ -139,7 +139,7 @@ class PortedRuleTests(RuleCase):
                                                         Single_Flat_Only='true', Gate_Recheck='1')),
     }
 
-    # B54 (spec 4.6, GOAT V1.49.mq5:5171-5196): the breakout entries on a valid single. Every mode value has its signal term
+    # B54 (spec 4.6, GOAT V1.49.mq5:5222-5247): the breakout entries on a valid single. Every mode value has its signal term
     # (entry A since PR A, entry B since PR B), so no *_NOT_BUILT rule is left and a "good" SET with a family on passes.
     S = dict(Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0')
     NBAR, PDAY, ORB = dict(S, BRK_Mode='1'), dict(S, BRK_Mode='2'), dict(S, ORB_Mode='1')
@@ -160,7 +160,7 @@ class PortedRuleTests(RuleCase):
                                    dict(ORB, ORB_Min_Range_ATR='2.0', ORB_Max_Range_ATR='2.0')),
     }
 
-    # B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7, GOAT V1.49.mq5:5197-5209): breakout A as a grid sequence's first order.
+    # B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7, GOAT V1.49.mq5:5248-5260): breakout A as a grid sequence's first order.
     # SEQ is a valid breakout sequence (the grid engine, a breakout mode, the switch, both delays 0). A0 ships the switch
     # refused (BRK_SEQ_NOT_BUILT, the block's last line), so a "good" SET with the switch on passes every rule but that one
     # (passes_or_unbuilt): it is refused only by BRK_SEQ_NOT_BUILT, and so by no earlier rule. PR A removes that rule.
@@ -257,7 +257,7 @@ class PortedRuleTests(RuleCase):
         # single passes as before.
         grid = dict(BRK_Mode='1', Engine_Mode='0')
         message = self.refused('BRK_WITHOUT_SINGLE', **grid)
-        self.assertIn('(GOAT V1.49.mq5:5177) fails for BRK_Mode=1 (BRK_NBar), Engine_Mode=0 (Engine_Grid), BRK_Start_Seq=false. EA alert: '
+        self.assertIn('(GOAT V1.49.mq5:5228) fails for BRK_Mode=1 (BRK_NBar), Engine_Mode=0 (Engine_Grid), BRK_Start_Seq=false. EA alert: '
                       '"Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."', message)
         self.assertEqual(self.passes_or_unbuilt(**dict(grid, BRK_Start_Seq='true', Delay_Trade='0', Delay_Trade_Live='0')), 'BRK_SEQ_NOT_BUILT')
         self.passes(**self.NBAR)
@@ -279,7 +279,7 @@ class PortedRuleTests(RuleCase):
         self.assertEqual({rule['id'] for rule in applicable_rules(b54)}, {rule['id'] for rule in EA_INIT_RULES} - set(self.B55_CASES))
         self.schema = b54
         message = self.refused('BRK_WITHOUT_SINGLE', **grid)
-        self.assertIn('(GOAT V1.49.mq5:5177) fails for BRK_Mode=1 (BRK_NBar), Engine_Mode=0 (Engine_Grid). EA alert: '
+        self.assertIn('(GOAT V1.49.mq5:5228) fails for BRK_Mode=1 (BRK_NBar), Engine_Mode=0 (Engine_Grid). EA alert: '
                       '"Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."', message)
         self.refused('BRK_WITHOUT_SINGLE', **dict(grid, BRK_Mode='2', Delay_Trade='0', Delay_Trade_Live='0'))
         self.passes(**self.NBAR)
@@ -301,7 +301,7 @@ class PortedRuleTests(RuleCase):
             applicable_rules(damaged)
 
     def test_the_ny_session_mirrors_the_eas_parse(self):
-        # GOAT V1.49.mq5:5104-5115: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
+        # GOAT V1.49.mq5:5155-5166: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
         for good in ('09:30-16:00', '9:30-16:00', '00:00-23:59', '22:00-06:30', '23:59-00:00'):
             with self.subTest(good=good):
                 self.passes(NY_Session=good)
@@ -346,7 +346,7 @@ class PortedRuleTests(RuleCase):
     def test_smart_rescue_with_fixed_lots_is_refused_with_the_ea_alert(self):
         message = self.refused('SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE', Mode_Bias_Exit='1', Mode_Lots='0', Risk='500.0')
         self.assertEqual(message, EA_INIT_CODE + ': the EA refuses this SET at initialization. Rule '
-                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:4996) fails for '
+                         'SMART_RESCUE_NEEDS_RISK_PER_SEQUENCE (GOAT V1.49.mq5:5047) fails for '
                          'Mode_Bias_Exit=1 (BiasExit_SmartRescue), Mode_Lots=0 (FixedLots). EA alert: '
                          '"Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0."')
         self.passes(Mode_Bias_Exit='1', Mode_Lots='2', Risk='500.0')
@@ -370,7 +370,7 @@ class PortedRuleTests(RuleCase):
         self.assertIn('if(Engine_Mode!=Engine_Single && Mode_Lots == RiskperSeq && Max_Seq_Trades<=1)', ea[0])
 
     def test_rrr_derivations_feed_the_lp_tp_rule_as_in_the_ea(self):
-        # SL/LP mode derives LP = SL*RRR = 0.5, which line 5042 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
+        # SL/LP mode derives LP = SL*RRR = 0.5, which line 5093 zeroes; TP_Pips_ = TP_Pips*original LP = 0.
         self.refused('LP_AND_TP_BOTH_DISABLED', Mode_RRR='2', RRR='0.05', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         self.passes(Mode_RRR='2', RRR='2.0', SL_Pips='10.0', Lock_Profit_Size='0.0', TP_Pips='2.0')
         # SL/TP mode derives TP = SL*RRR when TP is zero.
@@ -430,7 +430,7 @@ class OptimizationRangeTests(RuleCase):
 
     def test_too_many_combinations_is_refused_with_a_clear_message(self):
         message = self.refused_unchecked(Grid_Size='10.0||1.0||1.0||' + str(MAX_COMBINATIONS + 1) + '.0||Y')
-        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:5039) cannot be checked: the optimization ranges of Grid_Size '
+        self.assertIn('GRID_SIZE_TOO_SMALL (GOAT V1.49.mq5:5090) cannot be checked: the optimization ranges of Grid_Size '
                       'give more than 10,000 combinations', message)
         message = self.refused_unchecked(Lock_Profit_Size='10.0||1.0||1.0||200.0||Y', TP_Pips='2.0||1.0||1.0||100.0||Y')
         self.assertIn('LP_AND_TP_BOTH_DISABLED', message)
@@ -473,7 +473,7 @@ class DataDownloadTests(RuleCase):
         for value, label in (('1', 'Download_News'), ('2', 'Download_Bias'), ('3', 'Download_NewsBias')):
             with self.subTest(label=label):
                 message = self.refused('DATA_DOWNLOAD_MODE_REMOVES_EA', Mode_Download=value)
-                self.assertIn('(GOAT V1.49.mq5:4594,4611) fails for Mode_Download=%s (%s)' % (value, label), message)
+                self.assertIn('(GOAT V1.49.mq5:4645,4662) fails for Mode_Download=%s (%s)' % (value, label), message)
                 self.assertIn('EA alert: "News History download is not allowed in this mode / Bias History download is '
                               'not allowed in this mode"', message)
                 self.assertIn('use Download_Disabled', message)
@@ -484,13 +484,13 @@ AI_ON = dict(Mode_Bias='2', Bias_Protocol='2')           # the header defaults: 
 
 
 class TesterInitRuleTests(RuleCase):
-    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:4495, refused in the tester only."""
+    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:4546, refused in the tester only."""
     def refused_in_tester(self, **changes):
         with self.assertRaises(ValueError) as caught:
             check_tester_init(self.values(**changes), self.schema)
         message = str(caught.exception)
         self.assertTrue(message.startswith(TESTER_INIT_CODE + ': '), message)
-        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:4495)', message)
+        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:4546)', message)
         self.assertIn('EA alert: "Live Control Tower bias is unavailable in tester, optimization, and forward contexts. '
                       'Select BiasProtocol_LegacyRecorded or disable AI bias."', message)
         return message
@@ -513,7 +513,7 @@ class TesterInitRuleTests(RuleCase):
             with self.subTest(model=model):
                 with self.assertRaises(ValueError) as caught:
                     check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema, from_date='2007.03.10')
-                self.assertIn('Rule NY_CLOCK_TEST_BEFORE_2007 (GOAT V1.49.mq5:5102)', str(caught.exception))
+                self.assertIn('Rule NY_CLOCK_TEST_BEFORE_2007 (GOAT V1.49.mq5:5153)', str(caught.exception))
                 check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema, from_date='2007.03.11')
                 check_tester_init(self.values(Server_Clock_Model=model, **ny), self.schema)   # no FromDate: not checked
         check_tester_init(self.values(Server_Clock_Model='0', **ny), self.schema, from_date='2005.01.03')   # NYClose
@@ -531,14 +531,14 @@ class TesterInitRuleTests(RuleCase):
             with self.subTest(anchor='NY', model=model):
                 with self.assertRaises(ValueError) as caught:
                     check_tester_init(self.values(Server_Clock_Model=model, **orb), self.schema, from_date='2007.03.10')
-                self.assertIn('Rule ORB_NY_TEST_BEFORE_2007 (GOAT V1.49.mq5:5193)', str(caught.exception))
+                self.assertIn('Rule ORB_NY_TEST_BEFORE_2007 (GOAT V1.49.mq5:5244)', str(caught.exception))
                 check_tester_init(self.values(Server_Clock_Model=model, **orb), self.schema, from_date='2007.03.11')
         check_tester_init(self.values(Server_Clock_Model='0', **orb), self.schema, from_date='2005.01.03')   # NYClose
         for model in ('0', '1', '2'):
             with self.subTest(anchor='London', model=model):
                 with self.assertRaises(ValueError) as caught:
                     check_tester_init(self.values(Server_Clock_Model=model, ORB_Clock='1', **orb), self.schema, from_date='2007.03.10')
-                self.assertIn('Rule ORB_LONDON_TEST_BEFORE_2007 (GOAT V1.49.mq5:5194)', str(caught.exception))
+                self.assertIn('Rule ORB_LONDON_TEST_BEFORE_2007 (GOAT V1.49.mq5:5245)', str(caught.exception))
                 check_tester_init(self.values(Server_Clock_Model=model, ORB_Clock='1', **orb), self.schema, from_date='2007.03.11')
                 check_tester_init(self.values(Server_Clock_Model=model, ORB_Clock='1', **orb), self.schema)   # no FromDate
         check_tester_init(self.values(Mode_Bias='1', Server_Clock_Model='1', ORB_Clock='1'), self.schema, from_date='2005.01.03')   # ORB off
@@ -772,14 +772,14 @@ class InventoryTests(unittest.TestCase):
         # INIT_FAILED lines went with their terms: BRK_NBar's and BRK_PriorDay's in PR A, ORB_Breakout's in PR B.
         # B55 (spec 3.7, A0) adds 5: 3 INIT_PARAMETERS_INCORRECT (the switch without a breakout mode, with the single engine,
         # with a delay; ported) and 2 INIT_FAILED (the switch on a live chart, not ported; the switch itself while the tree
-        # has no sequence start path, ported, which PR A removes). Line 5177 is narrowed in place and adds nothing.
+        # has no sequence start path, ported, which PR A removes). Line 5228 is narrowed in place and adds nothing.
         self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (112, 8, 116))
         self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 71)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
                           sum(len(e['lines']) for e in NOT_PORTED)), (61, 4, 51))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
-        self.assertEqual(sorted(self.removals - set(self.returns)), [4483, 4594, 4611, 4886])
+        self.assertEqual(sorted(self.removals - set(self.returns)), [4534, 4645, 4662, 4937])
 
     def test_each_listed_line_still_carries_its_condition_text(self):
         for kind, name, lines, anchor in self.entries():

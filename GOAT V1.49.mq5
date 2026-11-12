@@ -3689,6 +3689,57 @@ bool GoatDashCloseAckUnchanged(const long command_id,const int ack_status,const 
    return false;
   }
 // B55:end dash-ack-once
+// B55:begin dash-policy-touch
+// GOAT-EA#328 follow-up: MT5 deletes a GlobalVariable that nothing accesses for 4 weeks. The every-second acknowledgement
+// that dash-ack-once removed also re-set this chart's three policy variables, which kept them alive by accident. Without
+// it a chart that runs 4+ weeks with no dashboard command and no restart could lose them, and the next OnInit would
+// restore "allow both, not paused" in place of a Buy Only or paused rule. Once per UTC hour (TimeGMT, as the CID touch)
+// the timer re-sets each policy variable OnInit restores from to the value it holds: this chart's paused, trade mask and
+// exposure mode, and the portfolio's DashboardPolicyPaused and DashboardExposurePolicyMode. A variable that does not
+// exist is never created (OnInit's defaults stay the defaults), no value changes, and nothing is flushed: the touch
+// keeps the variables alive in the terminal's store, which the terminal writes at its own exits and at every flush any
+// chart asks for. A failed write is logged once and retried no sooner than GOAT_DASH_POLICY_TOUCH_RETRY_MS.
+// Live only, no input: the bus's own three guards (never in a batch, on the dashboard chart or in an optimization).
+#define GOAT_DASH_POLICY_TOUCH_RETRY_MS 60000
+datetime g_goat_dash_policy_touched_hour=0;
+uint     g_goat_dash_policy_touch_failed_ms=0;
+bool     g_goat_dash_policy_touch_failed=false;
+bool GoatDashPolicyTouchOne(const string dpt_name)
+  {
+   double dpt_value=0.0;
+   if(!GlobalVariableCheck(dpt_name))          return true; // missing: never created here
+   if(!GlobalVariableGet(dpt_name,dpt_value))  return true; // gone between the check and the read: nothing to keep
+   return(GlobalVariableSet(dpt_name,dpt_value)!=0);        // the value it holds, unchanged
+  }
+void GoatDashPolicyHourlyTouch(void)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   datetime dpt_gmt=TimeGMT();
+   datetime dpt_hour=dpt_gmt-dpt_gmt%3600;
+   if(dpt_hour<=0 || dpt_hour==g_goat_dash_policy_touched_hour) return;
+   uint dpt_now=GetTickCount();
+   if(g_goat_dash_policy_touch_failed && dpt_now-g_goat_dash_policy_touch_failed_ms<GOAT_DASH_POLICY_TOUCH_RETRY_MS) return;
+
+   bool dpt_ok=GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED));
+   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK)))    dpt_ok=false;
+   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE))) dpt_ok=false;
+   if(!GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardPolicyPaused")))                        dpt_ok=false;
+   if(!GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardExposurePolicyMode")))                  dpt_ok=false;
+   if(!dpt_ok)
+   {
+      if(!g_goat_dash_policy_touch_failed)
+         Print("GOAT policy touch: a write failed for "+Symbol()+" (error "+IntegerToString(GetLastError())+"); retrying");
+      g_goat_dash_policy_touch_failed=true;
+      g_goat_dash_policy_touch_failed_ms=dpt_now;
+      return;
+   }
+   g_goat_dash_policy_touch_failed=false;
+   g_goat_dash_policy_touched_hour=dpt_hour;
+  }
+// B55:end dash-policy-touch
 void DashboardBusAckCommand(const long command_id,const int ack_status)
   {
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
@@ -7352,6 +7403,7 @@ void GoatTimerBody(void)
    if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
      {
       DashboardBusProcessCommands();
+      GoatDashPolicyHourlyTouch(); // B55 (GOAT-EA#328): once an hour the policy variables OnInit restores from are re-set to their own values, unflushed, so none ages out of the terminal's store
       if(MAGIC1!=0) GoatDirectionGuardPublish(Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
       if(MAGIC1!=0 && GlobalVariableCheck("Dashboard_ChartID"))
       {

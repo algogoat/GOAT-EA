@@ -167,7 +167,11 @@ def request(root, job, journal, *, now, requested_by='agent', immediate=False):
             _save(root, existing)
         return existing, False
     if job.get('status') not in ACTIVE:
-        raise PauseRefused('Batch ' + job_id + ' is ' + str(job.get('status')) + ', not running, so there is nothing to pause.')
+        # A start refused before anything reached MT5 (GOAT-EA#323): the answer names the one command it needs.
+        from studio_batch_driver import refused_start_hint
+        hint = refused_start_hint(root, job, journal)
+        raise PauseRefused('Batch ' + job_id + ' is ' + str(job.get('status')) + ', not running, so there is nothing to pause.'
+                           + ('' if hint is None else ' ' + hint))
     attempt = (job.get('launch_intent') or {}).get('attempt_id')
     if (not isinstance(journal, dict) or journal.get('attempt_id') != attempt or not isinstance(attempt, str)
             or not re.fullmatch(r'[a-f0-9]{64}', attempt)):
@@ -562,11 +566,26 @@ def refusal(record):
     return PauseRefused('Batch ' + job_id + ' is ' + str(record['state']) + '.')
 
 
+def no_pause_refusal(root, job_id, job_fn, session=None):
+    """The refusal for resuming a batch with no pause record. A batch whose own start was refused before anything
+    reached MT5 (typically the successor a resume just created, GOAT-EA#323) is never told to pause first: nothing
+    runs, and the answer names the command that starts it again. ``job_fn()`` returns the queue job, or raises."""
+    hint = None
+    try:
+        from studio_batch_driver import refused_start_hint
+        hint = refused_start_hint(root, job_fn(), session=session)
+    except (ValueError, KeyError, OSError, TypeError):
+        pass
+    if hint is not None:
+        return PauseRefused('No pause is recorded for batch ' + job_id + ', and it needs none. ' + hint)
+    return PauseRefused('No pause is recorded for batch ' + job_id + '; pause it first.')
+
+
 def verify_resumable(controller, job_id, token=None):
     """The exact paused record, re-bound to its retained finish result."""
     record = load(controller.root, job_id)
     if record is None:
-        raise PauseRefused('No pause is recorded for batch ' + job_id + '; pause it first.')
+        raise no_pause_refusal(controller.root, job_id, lambda: controller.job(job_id), getattr(controller, 'session', None))
     if record['state'] not in ('paused', 'resumed'):
         raise refusal(record)
     job = controller.job(job_id)

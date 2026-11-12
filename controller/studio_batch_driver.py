@@ -250,7 +250,7 @@ def _summary(path, record):
         host_liveness_required=True, independent_hard_stop=False) | (
         dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {}) | {
         key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'batch_process', 'profile_last_select',
-                                     'end_state', 'refusal_code') if key in record}
+                                     'end_state', 'refusal_code', 'start_runtime_wait') if key in record}
 
 
 PAUSE_OVERRUN_SECONDS = 240

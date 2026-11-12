@@ -246,20 +246,26 @@ def _retire_refused_start(c, job_id, clock, reason):
             return dict(status='cancelled', kind=REFUSED_KIND, batch_id=job_id, attempt_id=None, result_path=None,
                         executed_members=0, native_cancellation_claimed=False, reused=True,
                         driver_journal=dict(journal=str(path), updated=False, reason='already settled'))
-        if record.get('binding', {}).get('job_id') != job_id or not refused_before_dispatch(record, job):
+        # An earlier run of this settlement that died after the queue cancel and before the journal write (or a
+        # pending cancel by another tool): the journal alone still reads refused, and the job is already cancelled
+        # with no launch intent and no completion. Only the journal is left to write.
+        interrupted = (job['status'] == 'cancelled' and 'launch_intent' not in job and not job.get('completion')
+                       and refused_before_dispatch(record, dict(status='pending')))
+        if record.get('binding', {}).get('job_id') != job_id or not (interrupted or refused_before_dispatch(record, job)):
             return None
         state = c.state()
         if state['owner'] != 'agent':
             _refuse('A human has taken control of this terminal; nothing was retired.')
-        if job['status'] == 'reserved':
-            c.submit('queue.release_reservation', dict(job_id=job_id, reservation_id=job['reservation']['reservation_id']),
-                     command_id(job_id, '-release-reservation', retry_index(root, job_id)),
-                     expected_generation=state['generation'])
-        c.cancel(job_id, expected_generation=c.state()['generation'])
-        settled = c.job(job_id)
-        if settled['status'] != 'cancelled' or 'launch_intent' in settled:
-            _refuse('Batch ' + job_id + ' is ' + str(settled['status']) + ' after its cancel; nothing was retired, '
-                    'run batch-status and report it.')
+        if not interrupted:
+            if job['status'] == 'reserved':
+                c.submit('queue.release_reservation', dict(job_id=job_id, reservation_id=job['reservation']['reservation_id']),
+                         command_id(job_id, '-release-reservation', retry_index(root, job_id)),
+                         expected_generation=state['generation'])
+            c.cancel(job_id, expected_generation=c.state()['generation'])
+            settled = c.job(job_id)
+            if settled['status'] != 'cancelled' or 'launch_intent' in settled:
+                _refuse('Batch ' + job_id + ' is ' + str(settled['status']) + ' after its cancel; nothing was retired, '
+                        'run batch-status and report it.')
         now = clock()
         archive = safe_path(root / 'batch-driver-refusals'); archive.mkdir(exist_ok=True)
         before = safe_path(archive / (job_id + '.before-retire-refused-' + str(retry_index(root, job_id) + 1) + '.json'))
@@ -269,7 +275,7 @@ def _retire_refused_start(c, job_id, clock, reason):
         record['last_wall'] = max(record.get('last_wall', now), now)
         write_json(path, record)
     return dict(status='cancelled', kind=REFUSED_KIND, batch_id=job_id, attempt_id=None, result_path=None,
-                executed_members=0, native_cancellation_claimed=False, native_effects_sent=False, reused=False,
+                executed_members=0, native_cancellation_claimed=False, native_effects_sent=False, reused=interrupted,
                 refused_error=record.get('last_error'),
                 driver_journal=dict(journal=str(path), updated=True, previous=str(before)),
                 next_action=('Nothing ran and the batch is cancelled. Its members continue under a new batch ID: '

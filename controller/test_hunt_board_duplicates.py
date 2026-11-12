@@ -26,7 +26,8 @@ def pearson(x, y):
 def add_pool(folder, *names, **change):
     """Puts real files on the board as pool files, in the order given (the board order), each with its curve record."""
     rows = [dict(REAL[name], **change) for name in names]
-    folder.alter('pool.json', lambda pool: pool.extend(dict(source=r['source'], asset=r['asset'], family=r['family'], group=r['group']) for r in rows))
+    folder.alter('pool.json', lambda pool: pool.extend(
+        dict(source=r['source'], asset=r['asset'], family=r['family'], group=r['group'], set_sha256=r['set_sha256']) for r in rows))
     folder.alter(board.CURVES, lambda data: data['curves'].extend(dict({k: r[k] for k in CURVE_KEYS}, symbol=r['asset']) for r in rows))
     return rows
 
@@ -171,6 +172,79 @@ class DuplicateInEffectTests(unittest.TestCase):
         refusal = self.refused(folder)
         self.assertEqual((refusal.rule, refusal.path.lower()), ('R8', source.lower()))
         self.assertIn('other SET bytes', refusal.why)
+
+    def test_r8_refuses_a_return_that_is_not_a_finite_number(self):
+        # Codex, GOAT-EA#322 4544411804: a NaN return made every correlation NaN, NaN < 0.999 is false, and the first
+        # fixture curve "duplicated" two unrelated files (16 -> 14). Real negative first: the untouched fixture counts 16.
+        self.assertEqual(board.count(FIXTURE)['counted']['total'], 16)
+        for bad in (float('nan'), float('inf'), float('-inf')):
+            folder = Folder(self)
+            folder.alter(board.CURVES, lambda data: data['curves'][0]['returns'].__setitem__(0, bad))
+            self.assertIn(('NaN' if bad != bad else 'Infinity'), (folder.path / board.CURVES).read_text(encoding='utf-8'))
+            refusal = self.refused(folder)
+            self.assertEqual((refusal.rule, refusal.path), ('R8', str(folder.path / board.CURVES)))
+        for bad in ('1.5', None, True):   # not numbers at all
+            folder = Folder(self)
+            folder.alter(board.CURVES, lambda data: data['curves'][0]['returns'].__setitem__(0, bad))
+            self.assertEqual(self.refused(folder).rule, 'R8')
+
+    def test_a_correlation_that_is_not_finite_refuses_and_never_merges(self):
+        # finite returns whose squares overflow: the correlation is inf / inf. It must stop the count, not merge files.
+        folder = Folder(self)
+        rows = add_pool(folder, 'ndx_pool', 'ndx_first_wave')
+        big = [1e200 if i % 2 else -1e200 for i in range(len(rows[0]['returns']))]
+        folder.alter(board.CURVES, lambda data: [c.update(returns=big if c['source'] == rows[0]['source'] else [-v for v in big])
+                                                 for c in data['curves'] if c['source'] in (rows[0]['source'], rows[1]['source'])])
+        refusal = self.refused(folder)
+        self.assertEqual((refusal.rule, refusal.path), ('R8', rows[1]['source']))
+        self.assertIn('not a finite number', refusal.why)
+        with self.assertRaises(ValueError):
+            board.one_curve(dict(curve_sha256='a', first=0, returns=big), dict(curve_sha256='b', first=0, returns=big))
+
+    def test_a_curve_that_never_moves_has_no_correlation_and_is_one_file_only_when_identical(self):
+        flat = [0.0] * 60
+        # two flat curves with other CSV bytes on one symbol: no correlation exists, they stay two files
+        folder = Folder(self)
+        add_pool(folder, 'ndx_pool', returns=flat)
+        add_pool(folder, 'ndx_first_wave', returns=flat)
+        b = board.count(folder.path)
+        self.assertEqual((b['counted']['total'], b['duplicates_in_effect']), (18, []))
+        # a flat curve against a moving one: the same
+        folder = Folder(self)
+        add_pool(folder, 'ndx_pool')
+        add_pool(folder, 'ndx_first_wave', returns=flat)
+        self.assertEqual(board.count(folder.path)['duplicates_in_effect'], [])
+        # the same CSV bytes: one file, flat or not
+        folder = Folder(self)
+        add_pool(folder, 'ndx_pool', returns=flat)
+        add_pool(folder, 'ndx_first_wave', returns=flat, curve_sha256=REAL['ndx_pool']['curve_sha256'])
+        d = board.count(folder.path)['duplicates_in_effect']
+        self.assertEqual([(x['set_sha256'], x['common_days']) for x in d], [(REAL['ndx_first_wave']['set_sha256'], None)])
+        self.assertIn('identical re-test equity curve', d[0]['evidence'])
+
+    def test_r8_holds_a_pool_curve_record_against_the_pool_files_own_set_hash(self):
+        # Codex, GOAT-EA#322 4544411812: a pool file had no hash to compare, so a record for other SET bytes at the same
+        # path passed. Real negative: the fixture's pool rows carry their SET hash and it equals the curve record's.
+        pool = json.loads((FIXTURE / 'pool.json').read_text(encoding='utf-8'))
+        curves = {c['source'].lower(): c for c in json.loads((FIXTURE / board.CURVES).read_text(encoding='utf-8'))['curves']}
+        self.assertTrue(all(curves[p['source'].lower()]['set_sha256'] == p['set_sha256'] for p in pool))
+        source = pool[0]['source']
+        folder = Folder(self)   # his repro: the first pool file's curve record is for other bytes
+        folder.alter(board.CURVES, lambda data: [c.update(set_sha256='0' * 64) for c in data['curves'] if c['source'] == source])
+        refusal = self.refused(folder)
+        self.assertEqual((refusal.rule, refusal.path), ('R8', source))
+        self.assertIn('other SET bytes', refusal.why)
+        folder = Folder(self)   # the other way round: the pool row is for other bytes
+        folder.alter('pool.json', lambda rows: rows[0].update(set_sha256='0' * 64))
+        refusal = self.refused(folder)
+        self.assertEqual((refusal.rule, refusal.path), ('R8', source))
+        for change in (lambda rows: rows[0].pop('set_sha256'), lambda rows: rows[0].update(set_sha256=None),
+                       lambda rows: rows[0].update(set_sha256='xyz'), lambda rows: rows[0].update(set_sha256='A' * 64)):
+            folder = Folder(self)   # a pool row with no hash of its own, or not a hash
+            folder.alter('pool.json', change)
+            refusal = self.refused(folder)
+            self.assertEqual((refusal.rule, refusal.path), ('R8', source))
+            self.assertIn('pool.json carries no set_sha256', refusal.why)
 
     def test_a_reserve_needs_no_curve_record_and_a_short_common_span_is_not_read(self):
         b = board.count(FIXTURE)

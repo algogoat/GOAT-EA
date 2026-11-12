@@ -9,7 +9,8 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
 
   rules.json              cap, machines (their order is the export order across machines), disclosure_reason,
                           disclosure_ruling, prove_reason, report_ruling, real_ticks, reading, o3_ruling
-  pool.json               the files already on the board: source, asset, family, group
+  pool.json               the files already on the board: source, asset, family, group, set_sha256 (the SHA-256 of
+                          the file's SET bytes, recorded from the file itself, not copied from curves.json)
   judged.json             every file the round's catch-up judged: machine, part, index, position (the product's export
                           order), catchup, alias, source, asset, family, template, member, held_group (the held group a
                           second file belongs to, else null), rule (pass / fail / not_eligible_yet), export_bar,
@@ -58,15 +59,18 @@ It REFUSES (exit 3; the rule, the file and the reason on stdout and stderr) when
   R7  a judged file has no Prove export record, or its ``prove_status`` differs from that record's status (clean
       and disclosed are read from the status the tags were checked against, so the two copies must agree).
 
-  R8  curves.json is missing or unreadable, or a file on the board (pool, counted or migrated) has no curve record,
-      or its record is for another symbol or other SET bytes.
+  R8  curves.json is missing or unreadable (a return that is not a finite number makes it unreadable), or a file on
+      the board (pool, counted or migrated) has no curve record, or its record is for another symbol or other SET
+      bytes, or a pool file carries no set_sha256 of its own to hold its record against, or the correlation of two
+      curves on one symbol is not a finite number.
 
 Duplicates in effect (Claude-Mac, goatai#2750 comment 6807210838): two files on one symbol whose re-test equity curves
 are byte-identical, or whose daily returns correlate at 0.999 or more over the full common re-test span, are one file,
 whatever their SET bytes say. The earlier one in board order (pool, then the round in export order, then migrated)
 stays; the later one is listed as ``duplicate_in_effect`` with the file it repeats and the evidence, and is not counted.
 It keeps its place in the cap order: no reserve moves up into its slot in the same count. Curves on different symbols
-are never merged by this rule. There is no opt-out: a board without curve records is refused.
+are never merged by this rule. There is no opt-out: a board without curve records is refused. A curve that never
+moves over the common span has no correlation: it is one file with another only when the two curves are byte-identical.
 
 Only a file that would be counted can refuse under R4, R5 and R6: a reserve with a bad record does not stop the count.
 R7 covers every judged file. A counted file without proof is not counted: its state is ``apart`` and every breakdown
@@ -78,6 +82,7 @@ import argparse
 from collections import Counter
 from datetime import date
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -141,7 +146,7 @@ def load_curves(folder):
         for c in data['curves']:
             ok = (isinstance(c['source'], str) and isinstance(c['symbol'], str) and re.fullmatch(r'[0-9a-f]{64}', c['set_sha256'])
                   and re.fullmatch(r'[0-9a-f]{64}', c['curve_sha256']) and isinstance(c['returns'], list) and c['returns']
-                  and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in c['returns']))
+                  and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in c['returns']))
             if not ok or c['source'].lower() in curves:
                 raise ValueError('bad or repeated curve record')
             curves[c['source'].lower()] = dict(c, first=date.fromisoformat(c['first_day']).toordinal())
@@ -151,7 +156,10 @@ def load_curves(folder):
 
 
 def one_curve(a, b):
-    """Why two curve records are one curve (text, correlation, common days), else None."""
+    """Why two curve records are one curve (text, correlation, common days), else None.
+
+    A curve that does not move over the common span has no correlation: None. A correlation that is not a finite
+    number is never an answer: ValueError (count() refuses on it, R8)."""
     if a['curve_sha256'] == b['curve_sha256']:
         return 'identical re-test equity curve (sha256 %s)' % a['curve_sha256'], 1.0, None
     start = max(a['first'], b['first'])
@@ -160,10 +168,15 @@ def one_curve(a, b):
         return None
     xs, ys = a['returns'][start - a['first']:end - a['first']], b['returns'][start - b['first']:end - b['first']]
     mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-    sx, sy = sum((x - mx) ** 2 for x in xs), sum((y - my) ** 2 for y in ys)
-    if sx <= 0 or sy <= 0:
-        return None
-    c = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy) ** 0.5
+    try:
+        sx, sy = sum((x - mx) ** 2 for x in xs), sum((y - my) ** 2 for y in ys)
+        if sx <= 0 or sy <= 0:
+            return None
+        c = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx ** 0.5 * sy ** 0.5)
+    except OverflowError:   # returns too large to square: no number comes out
+        c = float('nan')
+    if not math.isfinite(c):
+        raise ValueError('the correlation of the two curves is not a finite number')
     if c < DUPLICATE_CORRELATION:
         return None
     return 're-test daily returns correlate %.6f over the %d common days' % (c, end - start), c, end - start
@@ -333,7 +346,10 @@ def count(folder):
     # R8 and duplicates in effect: board order = pool, the round's proven files in export order, migrated
     curves = load_curves(folder)
     rank = {machine: number for number, machine in enumerate(rules['machines'])}
-    board_order = ([('pool', p['source'], p['asset'], None) for p in pool]
+    for p in pool:   # a pool file brings its own SET hash, or its curve record cannot be held against it (Codex, GOAT-EA#322 4544411812)
+        if not (isinstance(p.get('set_sha256'), str) and re.fullmatch(r'[0-9a-f]{64}', p['set_sha256'])):
+            raise Refused('R8', p['source'], 'on the board (pool), but pool.json carries no set_sha256 (64 hex) for it')
+    board_order = ([('pool', p['source'], p['asset'], p['set_sha256']) for p in pool]
                    + [('round', x['source'], x['asset'], x['set_sha256'])
                       for x in sorted(proven, key=lambda x: (x['part'], rank[x['machine']], x['index'], x['position']))]
                    + [('migrated', r['original_set'], r['symbol'], r['original_set_sha256']) for r in migrated])
@@ -344,10 +360,13 @@ def count(folder):
             raise Refused('R8', source, 'on the board (%s), but it has no curve record in %s' % (where, folder / CURVES))
         if curve['symbol'] != symbol:
             raise Refused('R8', source, 'its curve record is for %s, the file is on %s' % (curve['symbol'], symbol))
-        if set_sha256 and curve['set_sha256'] != set_sha256:
+        if curve['set_sha256'] != set_sha256:
             raise Refused('R8', source, 'its curve record is for other SET bytes')
         for earlier in kept.get(symbol, []):
-            same = one_curve(earlier, curve)
+            try:
+                same = one_curve(earlier, curve)
+            except ValueError as exc:   # never a duplicate on a number that is not one (Codex, GOAT-EA#322 4544411804)
+                raise Refused('R8', source, 'its curve cannot be compared with %s: %s' % (earlier['source'], exc))
             if same:
                 in_effect[source.lower()] = dict(
                     source=source, set_sha256=curve['set_sha256'], asset=symbol, where=where, state='duplicate_in_effect',

@@ -249,6 +249,10 @@ class RefusedSuccessorDriverTests(unittest.TestCase):
         self.assertEqual((result['status'], self.c.starts), ('completed', 1))
         self.assertEqual(json.loads(self.journal.read_text())['start_runtime_wait'],
                          dict(polls=3, waited_seconds=3.0, fresh=True))
+        from studio_batch_driver import status
+        self.assertEqual(status(self.c, 'batch')['start_runtime_wait'], dict(polls=3, waited_seconds=3.0, fresh=True),
+                         'batch-driver-status shows it')
+        self.assertEqual(result['start_runtime_wait']['waited_seconds'], 3.0)
         self.assertFalse((self.c.root / 'batch-driver-refusals').exists(), 'no refused journal: the race never strands it')
 
     def test_permanently_stale_start_still_fails_the_same_way_after_the_wait_with_nothing_dispatched(self):
@@ -577,6 +581,163 @@ class RetireRefusedStartTests(unittest.TestCase):
                     self.retire()
                 self.assertEqual(self.c.job('g6-r1')['status'], 'pending')
                 self.assertEqual(json.loads(self.journal.read_text()), refused_journal('g6-r1', **overrides))
+
+
+class HostDeath(BaseException):
+    pass
+
+
+class DemoScopedRetireTests(unittest.TestCase):
+    """DemoAgent.retire_unactivated on a real store INSIDE the broker-scoped demo authority (Codex P2 on GOAT-EA#324:
+    the scope admitted queue.cancel / queue.release_reservation for run-batch only, so the settlement was refused on
+    the very lane T2 uses). Only the broker readback is replaced; the operation and scope are the ones _studio enters."""
+
+    def setUp(self):
+        import hashlib
+        import test_studio_retire_unactivated as retire_fixtures
+        from campaign_ledger import sha
+        from demo_agent import DemoAgent
+        from studio_research_authority import demo_agent_scope, operation
+        self.f = retire_fixtures.RetireUnactivatedTests(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
+        c = self.c = self.f.c
+        self.journal = c.root / 'batch-drivers' / 'g6-r1.json'
+        self.journal.parent.mkdir(exist_ok=True)
+        self.digest = hashlib.sha256((c.root / 'packages' / 'g6-r1' / 'manifest.json').read_bytes()).hexdigest()
+        self.sha, self.scope, self.operation = sha, demo_agent_scope, operation
+        self.scopes = []
+        agent = self.agent = DemoAgent.__new__(DemoAgent)
+        agent.root, agent.local, agent.session = c.root, c.local, c.session
+        agent._exclusive = lambda **kwargs: nullcontext()
+        agent._append = lambda *args, **kwargs: None
+        @contextmanager
+        def studio(operation_name, *, idle, owner_required=True, job_id=None, **kwargs):
+            self.scopes.append((operation_name, job_id))
+            with operation(operation_name), demo_agent_scope(root=c.root, installation_sha256=sha(c.install),
+                                                             account=c.session['account'], job_id=job_id):
+                yield c, dict(demo=True, algo_trading=False)
+        agent._studio = studio
+
+    def demo_lane(self):
+        self.c.session.update(authority_kind='demo_direct', demo_only=True)
+        write_json(self.c.root / 'session.json', self.c.session)
+        write_json(self.c.root / 'installation.json', self.c.install)
+
+    def job(self):
+        with self.operation('state'):
+            return self.c.job('g6-r1')
+
+    def reserve(self):
+        job = self.c.job('g6-r1')
+        self.c.submit('queue.reserve', dict(job_id='g6-r1', configuration_sha256=job['configuration_sha256'],
+                                            package_sha256=self.digest), 'g6-r1-reserve')
+        self.assertEqual(self.c.job('g6-r1')['status'], 'reserved')
+
+    def settled(self, result, reused=False):
+        self.assertEqual((result['status'], result['kind'], result['reused']), ('cancelled', 'retired_start_refused', reused))
+        job = self.job()
+        self.assertEqual(job['status'], 'cancelled')
+        self.assertNotIn('launch_intent', job)
+        saved = json.loads(self.journal.read_text())
+        self.assertEqual((saved['status'], saved['stopped'], saved['retired'], saved['last_error']),
+                         ('cancelled', True, 'retired_start_refused', STALE))
+        self.assertEqual(self.scopes[-1], ('retire-unactivated', 'g6-r1'))
+
+    def test_the_demo_tool_settles_a_pending_refused_start_inside_its_scope(self):
+        self.demo_lane()
+        write_json(self.journal, refused_journal('g6-r1'))
+        self.settled(self.agent.retire_unactivated('g6-r1'))
+        self.settled(self.agent.retire_unactivated('g6-r1'), reused=True)
+
+    def test_the_demo_tool_settles_a_reserved_never_permitted_refused_start_inside_its_scope(self):
+        self.reserve()
+        self.demo_lane()
+        write_json(self.journal, refused_journal('g6-r1'))
+        self.assertTrue(refused_before_dispatch(json.loads(self.journal.read_text()), self.job()))
+        self.settled(self.agent.retire_unactivated('g6-r1'))
+
+    def test_the_retire_scope_admits_only_its_own_job_and_only_cancel_and_release(self):
+        from studio_research_authority import command
+        from campaign_ledger import packed
+        c = self.c
+        binding, state = packed(dict(terminal_id=c.terminal, run_id=c.run)), c.state()
+        self.demo_lane()
+        def ask(name, request_id, job_id='g6-r1', op='retire-unactivated', scope_job='g6-r1'):
+            with self.operation(op), self.scope(root=c.root, installation_sha256=self.sha(c.install),
+                                                account=c.session['account'], job_id=scope_job):
+                return command(c.store.db, binding, state, dict(command=name, request_id=request_id,
+                                                                payload=dict(job_id=job_id)), actor='agent')
+        self.assertIsNone(ask('queue.cancel', 'g6-r1-cancel'))
+        self.assertIsNone(ask('queue.release_reservation', 'g6-r1-release-reservation'))
+        self.assertIsNone(ask('queue.release_reservation', 'g6-r1-release-reservation-r2'))
+        refused = 'Demo agent scope permits only this tool job and exact Studio command'
+        for arguments in (dict(name='queue.reserve', request_id='g6-r1-reserve'),               # never a start
+                          dict(name='queue.enqueue_batch', request_id='g6-r1-batch'),
+                          dict(name='control.grant_agent', request_id='g6-r1-cancel'),
+                          dict(name='queue.cancel', request_id='other-cancel', job_id='other'),  # another job
+                          dict(name='queue.cancel', request_id='g6-r1-cancel', job_id='other'),
+                          dict(name='queue.cancel', request_id='arbitrary'),
+                          dict(name='queue.cancel', request_id='other-cancel'),                   # this job, another ID
+                          dict(name='queue.release_reservation', request_id='g6-r1-cancel'),
+                          dict(name='queue.cancel', request_id='g6-r1-cancel', scope_job='other'),
+                          dict(name='queue.cancel', request_id='g6-r1-cancel', op='batch-status'),  # another operation
+                          dict(name='queue.release_reservation', request_id='g6-r1-release-reservation', op='research-status')):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, refused):
+                ask(**arguments)
+        # Through the tool: the scope it enters for one job never settles another.
+        write_json(self.journal, refused_journal('g6-r1'))
+        @contextmanager
+        def foreign(operation_name, *, idle, owner_required=True, job_id=None, **kwargs):
+            with self.operation(operation_name), self.scope(root=c.root, installation_sha256=self.sha(c.install),
+                                                            account=c.session['account'], job_id='another-job'):
+                yield c, dict(demo=True, algo_trading=False)
+        self.agent._studio = foreign
+        with self.assertRaisesRegex(ValueError, refused):
+            self.agent.retire_unactivated('g6-r1')
+        self.assertEqual(self.job()['status'], 'pending')
+        self.assertEqual(json.loads(self.journal.read_text()), refused_journal('g6-r1'))
+
+    def test_killed_between_the_queue_cancel_and_the_journal_write_the_same_command_settles_it(self):
+        import studio_retire_unactivated as module
+        self.demo_lane()
+        write_json(self.journal, refused_journal('g6-r1'))
+        def die(*args, **kwargs):
+            raise HostDeath()
+        with patch.object(module, 'write_json', side_effect=die), self.assertRaises(HostDeath):
+            self.agent.retire_unactivated('g6-r1')
+        self.assertEqual(self.job()['status'], 'cancelled', 'the queue cancel landed')
+        self.assertEqual(json.loads(self.journal.read_text()), refused_journal('g6-r1'), 'the journal write did not')
+        self.assertFalse((self.c.root / 'batch-driver-refusals').exists() and any((self.c.root / 'batch-driver-refusals').iterdir()))
+        self.settled(self.agent.retire_unactivated('g6-r1'), reused=True)
+        archived = list((self.c.root / 'batch-driver-refusals').glob('g6-r1.before-retire-refused-*.json'))
+        self.assertEqual([json.loads(item.read_text()) for item in archived], [refused_journal('g6-r1')])
+        self.settled(self.agent.retire_unactivated('g6-r1'), reused=True)
+
+    def test_a_cancelled_job_with_a_launch_intent_or_a_journal_attempt_is_still_refused(self):
+        from campaign_ledger import packed
+        c = self.c
+        # (a) the journal bound an attempt; the job was cancelled while pending.
+        c.cancel('g6-r1')
+        self.demo_lane()
+        for overrides in (dict(attempt_id=ATTEMPT), dict(cancel_issued=True), dict(status='observing')):
+            with self.subTest(overrides=overrides):
+                write_json(self.journal, refused_journal('g6-r1', **overrides))
+                with self.assertRaisesRegex(ValueError, 'is cancelled with no unactivated start to retire'):
+                    self.agent.retire_unactivated('g6-r1')
+                self.assertEqual(json.loads(self.journal.read_text()), refused_journal('g6-r1', **overrides))
+        # (b) the journal reads refused, but the cancelled job carries a launch intent.
+        with self.operation('state'):
+            state = c.state()
+        row = next(item for item in state['queue'] if item['job_id'] == 'g6-r1')
+        self.assertEqual(row['status'], 'cancelled')
+        row['launch_intent'] = dict(attempt_id=ATTEMPT, package=str(c.root / 'packages' / 'g6-r1'), package_sha256=self.digest)
+        binding = packed(dict(terminal_id=c.terminal, run_id=c.run))
+        with self.operation('state'), c.store.transaction():
+            c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?', (packed(state['queue']), binding))
+            c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?', (binding,))
+        write_json(self.journal, refused_journal('g6-r1'))
+        with self.assertRaisesRegex(ValueError, 'is cancelled with no unactivated start to retire'):
+            self.agent.retire_unactivated('g6-r1')
+        self.assertEqual(json.loads(self.journal.read_text()), refused_journal('g6-r1'))
 
 
 if __name__ == '__main__':

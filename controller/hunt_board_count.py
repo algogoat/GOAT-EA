@@ -9,7 +9,8 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
 
   rules.json              cap, machines (their order is the export order across machines), disclosure_reason,
                           disclosure_ruling, prove_reason, report_ruling, real_ticks, reading, o3_ruling
-  pool.json               the files already on the board: source, asset, family, group
+  pool.json               the files already on the board: source, asset, family, group, set_sha256 (the SHA-256 of
+                          the file's SET bytes, recorded from the file itself, not copied from curves.json)
   judged.json             every file the round's catch-up judged: machine, part, index, position (the product's export
                           order), catchup, alias, source, asset, family, template, member, held_group (the held group a
                           second file belongs to, else null), rule (pass / fail / not_eligible_yet), export_bar,
@@ -25,6 +26,10 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
                           its start-config pin
   o3pool.json             {members: [...]}: migrated older files (candidate, group, duplicate hits, inputs, family)
   journals.json           per machine: tester-journal blocks expected / matched, gaps, flagged lines, proven
+  curves.json             schema ``hunt-board-curves-v1``; {curves: [...]}: per file on the board (pool, counted,
+                          migrated) its source, set_sha256, symbol, curve_sha256 (the SHA-256 of its hold-out re-test
+                          equity CSV), first_day and returns (the net change of that curve per broker-server
+                          calendar day from first_day on)
 
 A judged or migrated record may carry ``audit_notes``: a list of {note, evidence, sha256} (what an audit found about the
 file, the evidence file's name and its SHA-256). The counter does not judge them; it carries them onto the file's board
@@ -54,6 +59,19 @@ It REFUSES (exit 3; the rule, the file and the reason on stdout and stderr) when
   R7  a judged file has no Prove export record, or its ``prove_status`` differs from that record's status (clean
       and disclosed are read from the status the tags were checked against, so the two copies must agree).
 
+  R8  curves.json is missing or unreadable (a return that is not a finite number makes it unreadable), or a file on
+      the board (pool, counted or migrated) has no curve record, or its record is for another symbol or other SET
+      bytes, or a pool file carries no set_sha256 of its own to hold its record against, or the correlation of two
+      curves on one symbol is not a finite number.
+
+Duplicates in effect (Claude-Mac, goatai#2750 comment 6807210838): two files on one symbol whose re-test equity curves
+are byte-identical, or whose daily returns correlate at 0.999 or more over the full common re-test span, are one file,
+whatever their SET bytes say. The earlier one in board order (pool, then the round in export order, then migrated)
+stays; the later one is listed as ``duplicate_in_effect`` with the file it repeats and the evidence, and is not counted.
+It keeps its place in the cap order: no reserve moves up into its slot in the same count. Curves on different symbols
+are never merged by this rule. There is no opt-out: a board without curve records is refused. A curve that never
+moves over the common span has no correlation: it is one file with another only when the two curves are byte-identical.
+
 Only a file that would be counted can refuse under R4, R5 and R6: a reserve with a bad record does not stop the count.
 R7 covers every judged file. A counted file without proof is not counted: its state is ``apart`` and every breakdown
 (by machine, clean / disclosed, groups, assets, families) is built from the proven files only.
@@ -62,7 +80,9 @@ Nothing here judges a strategy: the verdicts, the duplicate check and the input 
 """
 import argparse
 from collections import Counter
+from datetime import date
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -71,11 +91,15 @@ SCHEMA = 'hunt-board-input-v1'
 FILES = ('rules.json', 'pool.json', 'judged.json', 'prove-exports.json', 'holdout.json', 'reports.json', 'o3pool.json',
          'journals.json')
 DISCLOSED = 'disclosed-exports.json'
+CURVES = 'curves.json'
+CURVES_SCHEMA = 'hunt-board-curves-v1'
+DUPLICATE_CORRELATION = 0.999   # daily re-test returns at or above this, on one symbol, are one file
+MIN_COMMON_DAYS = 20            # a correlation over a shorter common span is not read
 EMPTY_DIFF = {'only_first': ['?'], 'only_second': [], 'different': {}}
 
 
 class Refused(Exception):
-    """One refusal: the rule (R1..R6), the file it is about and the reason."""
+    """One refusal: the rule (R1..R8), the file it is about and the reason."""
 
     def __init__(self, rule, path, why):
         super().__init__('%s: %s: %s' % (rule, path, why))
@@ -109,6 +133,53 @@ def audit_notes(record, where):
     if not ok:
         raise ValueError('audit_notes of %s must be a list of {note, evidence, sha256 (64 hex)}' % where)
     return notes
+
+
+def load_curves(folder):
+    """{source (lower case): curve record}; R8 when the record file is missing, unreadable or malformed."""
+    path = Path(folder) / CURVES
+    try:
+        data = read_json(path)
+        if data.get('schema') != CURVES_SCHEMA:
+            raise ValueError('not ' + CURVES_SCHEMA)
+        curves = {}
+        for c in data['curves']:
+            ok = (isinstance(c['source'], str) and isinstance(c['symbol'], str) and re.fullmatch(r'[0-9a-f]{64}', c['set_sha256'])
+                  and re.fullmatch(r'[0-9a-f]{64}', c['curve_sha256']) and isinstance(c['returns'], list) and c['returns']
+                  and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in c['returns']))
+            if not ok or c['source'].lower() in curves:
+                raise ValueError('bad or repeated curve record')
+            curves[c['source'].lower()] = dict(c, first=date.fromisoformat(c['first_day']).toordinal())
+    except Exception as exc:
+        raise Refused('R8', path, 'curve record file missing or unreadable (%s)' % type(exc).__name__)
+    return curves
+
+
+def one_curve(a, b):
+    """Why two curve records are one curve (text, correlation, common days), else None.
+
+    A curve that does not move over the common span has no correlation: None. A correlation that is not a finite
+    number is never an answer: ValueError (count() refuses on it, R8)."""
+    if a['curve_sha256'] == b['curve_sha256']:
+        return 'identical re-test equity curve (sha256 %s)' % a['curve_sha256'], 1.0, None
+    start = max(a['first'], b['first'])
+    end = min(a['first'] + len(a['returns']), b['first'] + len(b['returns']))
+    if end - start < MIN_COMMON_DAYS:
+        return None
+    xs, ys = a['returns'][start - a['first']:end - a['first']], b['returns'][start - b['first']:end - b['first']]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    try:
+        sx, sy = sum((x - mx) ** 2 for x in xs), sum((y - my) ** 2 for y in ys)
+        if sx <= 0 or sy <= 0:
+            return None
+        c = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx ** 0.5 * sy ** 0.5)
+    except OverflowError:   # returns too large to square: no number comes out
+        c = float('nan')
+    if not math.isfinite(c):
+        raise ValueError('the correlation of the two curves is not a finite number')
+    if c < DUPLICATE_CORRELATION:
+        return None
+    return 're-test daily returns correlate %.6f over the %d common days' % (c, end - start), c, end - start
 
 
 def cap_states(rules, pool, judged):
@@ -272,11 +343,51 @@ def count(folder):
     apart = [x for x in counted if not x['proof']]
     for x in apart:   # no proof, no count: the file leaves every counted breakdown (Codex, GOAT-EA#316 review 4536282628)
         states[x['source'].lower()] = 'apart'
+    # R8 and duplicates in effect: board order = pool, the round's proven files in export order, migrated
+    curves = load_curves(folder)
+    rank = {machine: number for number, machine in enumerate(rules['machines'])}
+    for p in pool:   # a pool file brings its own SET hash, or its curve record cannot be held against it (Codex, GOAT-EA#322 4544411812)
+        if not (isinstance(p.get('set_sha256'), str) and re.fullmatch(r'[0-9a-f]{64}', p['set_sha256'])):
+            raise Refused('R8', p['source'], 'on the board (pool), but pool.json carries no set_sha256 (64 hex) for it')
+    board_order = ([('pool', p['source'], p['asset'], p['set_sha256']) for p in pool]
+                   + [('round', x['source'], x['asset'], x['set_sha256'])
+                      for x in sorted(proven, key=lambda x: (x['part'], rank[x['machine']], x['index'], x['position']))]
+                   + [('migrated', r['original_set'], r['symbol'], r['original_set_sha256']) for r in migrated])
+    kept, in_effect = {}, {}
+    for where, source, symbol, set_sha256 in board_order:
+        curve = curves.get(source.lower())
+        if curve is None:
+            raise Refused('R8', source, 'on the board (%s), but it has no curve record in %s' % (where, folder / CURVES))
+        if curve['symbol'] != symbol:
+            raise Refused('R8', source, 'its curve record is for %s, the file is on %s' % (curve['symbol'], symbol))
+        if curve['set_sha256'] != set_sha256:
+            raise Refused('R8', source, 'its curve record is for other SET bytes')
+        for earlier in kept.get(symbol, []):
+            try:
+                same = one_curve(earlier, curve)
+            except ValueError as exc:   # never a duplicate on a number that is not one (Codex, GOAT-EA#322 4544411804)
+                raise Refused('R8', source, 'its curve cannot be compared with %s: %s' % (earlier['source'], exc))
+            if same:
+                in_effect[source.lower()] = dict(
+                    source=source, set_sha256=curve['set_sha256'], asset=symbol, where=where, state='duplicate_in_effect',
+                    duplicate_of=earlier['source'], duplicate_of_set_sha256=earlier['set_sha256'], evidence=same[0],
+                    correlation=round(same[1], 6), common_days=same[2], curve_sha256=curve['curve_sha256'],
+                    duplicate_of_curve_sha256=earlier['curve_sha256'])
+                break
+        else:
+            kept.setdefault(symbol, []).append(curve)
+    for x in proven:
+        if x['source'].lower() in in_effect:
+            states[x['source'].lower()] = 'duplicate_in_effect'
+    pool_before, migrated_all = pool, migrated
+    pool = [p for p in pool if p['source'].lower() not in in_effect]
+    proven = [x for x in proven if x['source'].lower() not in in_effect]
+    migrated = [r for r in migrated if r['original_set'].lower() not in in_effect]
     machines = rules['machines']
     kind = lambda x: 'disclosed' if x['prove_status'] == 'unverified' else 'clean'
     return dict(
         schema='hunt-board-v1', input=str(folder), round=rules.get('round'), reading=rules.get('reading'), rulings=ruling,
-        pool=dict(files=len(pool), groups=len({p['group'] for p in pool}), assets=len({p['asset'] for p in pool})),
+        pool=dict(files=len(pool_before), groups=len({p['group'] for p in pool_before}), assets=len({p['asset'] for p in pool_before})),
         judged=len(judged), passes=len(passes), journals=journals,
         counted=metrics(pool, proven, migrated), round_only=metrics(pool, proven),
         o3pool=dict(counted=len(migrated), reserve=[r['alias'] for r in migrated_reserve], groups=len({r['group'] for r in migrated}),
@@ -293,17 +404,20 @@ def count(folder):
         clean_counted_with_ledger_stated_in_their_own_source=sum(
             1 for x in proven if kind(x) == 'clean' and proof[x['source'].lower()].get('original_ledger_mode') == '1'),
         unverified_exports=len(unverified), tagged=len(tags), duplicates=sum(1 for x in judged if x.get('duplicate')),
+        curves=dict(records=len(curves), checked=len(board_order), correlation=DUPLICATE_CORRELATION, min_common_days=MIN_COMMON_DAYS),
+        duplicates_in_effect=list(in_effect.values()),
         files=[dict(machine=x['machine'], part=x['part'], index=x['index'], position=x['position'], alias=x['alias'], asset=x['asset'],
                     family=x['family'], template=x['template'], group=x['held_group'] or 'new:' + x['member'],
                     state=states[x['source'].lower()], kind=kind(x), disclosure=reason if kind(x) == 'disclosed' else None,
                     duplicate=bool(x.get('duplicate') or x.get('duplicate_hits')), audit_notes=audit_notes(x, x['source']),
                     proof=x.get('proof'), set_sha256=x['set_sha256'], source=x['source']) for x in passes],
         o3_files=[dict(catchup=r['catchup'], alias=r['alias'], asset=r['symbol'], group=r['group'],
-                       state='counted' if r in migrated else 'reserve', template=r.get('template'), family=r.get('family') or 'unknown',
+                       state=('duplicate_in_effect' if r['original_set'].lower() in in_effect else 'counted') if r in migrated_all else 'reserve',
+                       template=r.get('template'), family=r.get('family') or 'unknown',
                        family_established=(r.get('family_established') or 'not established').split(':')[0],
                        audit_notes=audit_notes(r, r['original_set']),
                        set_sha256=r['original_set_sha256'], source=r['original_set'])
-                  for r in migrated + migrated_reserve])
+                  for r in migrated_all + migrated_reserve])
 
 
 def markdown(b):
@@ -330,7 +444,9 @@ def markdown(b):
            + '; migrated reserve: %s.' % (', '.join(b['o3pool']['reserve']) or 'none'),
            '- Proof of the catch-up tests: ' + '; '.join('%s: %s' % (m, ', '.join(v) or 'no counted file') for m, v in b['proof_by_machine'].items())
            + '. MT5-report records: %d of %d identical.' % (b['report_crosscheck']['passed'], b['report_crosscheck']['runs']),
-           '- Unverified exports in the Prove reports: %d, tags: %d.' % (b['unverified_exports'], b['tagged']), '',
+           '- Unverified exports in the Prove reports: %d, tags: %d.' % (b['unverified_exports'], b['tagged']),
+           '- Duplicates in effect (one symbol; identical re-test equity curve, or daily returns correlating %s or more): %d of %d files checked. '
+           'Each is one file with the earlier one and is not counted.' % (b['curves']['correlation'], len(b['duplicates_in_effect']), b['curves']['checked']), '',
            '## Every pass (export order)', '', '| Machine | Part | Member | Export | Catch-up alias | Asset | Template | Group | State | Kind | Proof |',
            '|---|---|---:|---:|---|---|---|---|---|---|---|']
     for f in b['files']:
@@ -340,6 +456,10 @@ def markdown(b):
     out += ['', '## Migrated files', '', '| Catch-up | Alias | Asset | Template | Family | Established | State |', '|---|---|---|---|---|---|---|']
     for f in b['o3_files']:
         out.append('| %s | %s | %s | %s | %s | %s | %s |' % (f['catchup'], f['alias'], f['asset'], f['template'], f['family'], f['family_established'], f['state']))
+    if b['duplicates_in_effect']:
+        out += ['', '## Duplicates in effect', '', '| Asset | Where | Not counted (SET sha256) | Is one file with (SET sha256) | Evidence |', '|---|---|---|---|---|']
+        for d in b['duplicates_in_effect']:
+            out.append('| %s | %s | `%s` | `%s` | %s |' % (d['asset'], d['where'], d['set_sha256'], d['duplicate_of_set_sha256'], d['evidence']))
     noted = {}
     for f in b['files'] + b['o3_files']:
         for n in f['audit_notes']:

@@ -3,36 +3,42 @@
   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R9695cbd048cf\\deploy\\Ra128d8877c0ec5e29c2e\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=288_Prf=427_DD=197_PF=2.65_SR=5.07_ARF=0.511.set",
   "asset": "EURUSD",
   "family": "RangeReversion",
-  "group": "Ra128d8877c0ec5e29c2e"
+  "group": "Ra128d8877c0ec5e29c2e",
+  "set_sha256": "cd16549583b022566b57c92f42e985eab2fce8daaebd647813f498ee4e9d48e3"
  },
  {
   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R9695cbd048cf\\deploy\\Ra128d8877c0ec5e29c2e\\EURUSD\\GOAT V1.49 EURUSD,M1_Trds=340_Prf=551_DD=199_PF=2.67_SR=5.20_ARF=1.017.set",
   "asset": "EURUSD",
   "family": "RangeReversion",
-  "group": "Ra128d8877c0ec5e29c2e"
+  "group": "Ra128d8877c0ec5e29c2e",
+  "set_sha256": "8089c78f3106d15f77a298a87b33aa6ef737f3c55cbb8b3907ce24fb34c22860"
  },
  {
   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\R19bf7fd4e807\\deploy\\R48b97122d7d7028944f7\\WS30\\GOAT V1.49 WS30,M1_Trds=217_Prf=1561_DD=662_PF=1.61_SR=3.37_ARF=0.687.set",
   "asset": "WS30",
   "family": "RangeReversion",
-  "group": "R48b97122d7d7028944f7"
+  "group": "R48b97122d7d7028944f7",
+  "set_sha256": "4b3a9e4ac3849b94ed4f14dcb342053077485d8b634b79de5b0f8f65dc8239db"
  },
  {
   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb2393eee2860\\deploy\\R82bfad4262fc4d3fecf5\\EURGBP\\GOAT V1.49 EURGBP,M1_Trds=181_Prf=515_DD=211_PF=2.09_SR=2.89_ARF=0.690.set",
   "asset": "EURGBP",
   "family": "TrendPullback",
-  "group": "R82bfad4262fc4d3fecf5"
+  "group": "R82bfad4262fc4d3fecf5",
+  "set_sha256": "58280bab7ab3930c88232ebeff4b50e4fdccde4958a9f737fd501f1355843072"
  },
  {
   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R02e95e62a759f147485b\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=324_Prf=1099_DD=441_PF=2.57_SR=3.17_ARF=0.789.set",
   "asset": "EURCAD",
   "family": "RangeReversion",
-  "group": "R02e95e62a759f147485b"
+  "group": "R02e95e62a759f147485b",
+  "set_sha256": "d472b85a6f6e07a308f9a0b2708516ecc7b654f936fad918832ddd62a4a36d37"
  },
  {
   "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Rb44e78832f89\\deploy\\R02e95e62a759f147485b\\EURCAD\\GOAT V1.49 EURCAD,M1_Trds=409_Prf=1331_DD=486_PF=2.47_SR=3.15_ARF=0.991.set",
   "asset": "EURCAD",
   "family": "RangeReversion",
-  "group": "R02e95e62a759f147485b"
+  "group": "R02e95e62a759f147485b",
+  "set_sha256": "969b72fa67fad27ed4ad5f20fbfd222e0fb3fb00e33eafa36303e59d27f6d30f"
  }
 ]

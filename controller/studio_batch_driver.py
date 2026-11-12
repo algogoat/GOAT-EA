@@ -45,6 +45,46 @@ def refused_before_dispatch(record, job):
                  or (job.get('status') == 'reserved' and reservation.get('launch_permitted') is False)))
 
 
+def restart_command(job_id, session=None):
+    """The one supported command for a batch whose start was refused before anything reached MT5: the same start
+    again, under the same batch ID (run() archives the refused journal, never deletes it). Lane wording only."""
+    kind = session.get('authority_kind') if isinstance(session, dict) else None
+    if kind == 'demo_direct':
+        return 'run-batch --batch-id ' + job_id + ' --max-seconds <budget>'
+    return ('run-batch --job-id ' + job_id + ' --max-seconds <budget>'
+            + (' --mt5-restart-consent (after the user agrees GOAT closes and reopens their MT5)'
+               if kind == 'native_human_control' else ''))
+
+
+def refused_start_hint(root, job, journal=None, session=None):
+    """One sentence naming restart_command when ``job`` is in the refused-before-dispatch state, else None.
+
+    Read-only and never raises (GOAT-EA#323): status and every refusal that meets this state call it, so a batch
+    that needs only its start repeated is never answered with "pause it first" or "nothing to retire" alone.
+    ``journal`` and ``session`` default to the retained files under ``root``.
+    """
+    try:
+        if not isinstance(job, dict) or not isinstance(job.get('job_id'), str):
+            return None
+        root = Path(root)
+        if journal is None:
+            path = root / 'batch-drivers' / (job['job_id'] + '.json')
+            journal = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
+        if not refused_before_dispatch(journal, job):
+            return None
+        if session is None:
+            path = root / 'session.json'
+            session = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
+        return ('The start of batch ' + job['job_id'] + ' was refused before anything reached MT5 ('
+                + str(journal.get('last_error'))[:160] + '), so nothing ran and nothing needs pausing or '
+                'resuming. Fix the cause it names if it is still there, then start it again: '
+                + restart_command(job['job_id'], session) + '. Or settle it as cancelled (nothing ran): retire-unactivated '
+                + ('--batch-id ' if isinstance(session, dict) and session.get('authority_kind') == 'demo_direct' else '--job-id ')
+                + job['job_id'] + ', after which batch-resume on the batch it continued prepares a new successor.')
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
 REFUSALS = 'batch-driver-refusals'
 
 
@@ -58,6 +98,13 @@ def retry_index(root, job_id):
 def command_id(job_id, suffix, index):
     """Queue command ID for a start attempt. Receipts replay by ID, so each retry needs a fresh one."""
     return job_id + suffix + ('' if index == 0 else f'-r{index}')
+
+
+def _job_or_none(controller, job_id):
+    try:
+        return controller.job(job_id)
+    except (ValueError, KeyError):
+        return None
 
 
 def _retire_refused_journal(controller, job_id, path, clock):
@@ -82,6 +129,13 @@ def _retire_refused_journal(controller, job_id, path, clock):
     if target.exists():
         raise ValueError('Refused-start archive already exists; retained journal left in place')
     os.replace(path, target)
+def _note_runtime_wait(controller, record):
+    """How long this start waited for a fresh runtime sample (studio_runtime_check.await_fresh), when it waited."""
+    waited = getattr(controller, 'start_runtime_wait', None)
+    if isinstance(waited, dict):
+        record['start_runtime_wait'] = dict(waited)
+
+
 def _retire_if_unactivated(controller, job_id, record, path, clock):
     """A start refused before MT5 was touched settles itself, so it never needs a human.
 
@@ -196,7 +250,7 @@ def _summary(path, record):
         host_liveness_required=True, independent_hard_stop=False) | (
         dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {}) | {
         key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'batch_process', 'profile_last_select',
-                                     'end_state', 'refusal_code') if key in record}
+                                     'end_state', 'refusal_code', 'start_runtime_wait') if key in record}
 
 
 PAUSE_OVERRUN_SECONDS = 240
@@ -513,6 +567,11 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     or (record['cancel_issued'] and (type(record.get('cancel_deadline_wall')) not in (int, float)
                         or not math.isfinite(record['cancel_deadline_wall'])))):
                 raise ValueError('Invalid retained batch driver journal')
+            hint = refused_start_hint(root, _job_or_none(controller, job_id), record, getattr(controller, 'session', None))
+            if hint is not None:
+                # Nothing was dispatched, so there is no attempt to observe: resume never starts one. The journal is
+                # left exactly as the refused start wrote it and the answer names the one command (GOAT-EA#323).
+                return _summary(path, record) | dict(next_action=hint)
             if _binding(controller, job_id) != record['binding']:
                 raise ValueError('Batch/session/ownership changed; resume refused')
             if record['stopped']:
@@ -641,6 +700,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     raise ValueError('Start returned without an exact native attempt')
                 record['attempt_id'] = intent['attempt_id']
                 record['status'] = 'observing'
+                _note_runtime_wait(controller, record)
                 _save(path, record, clock)
                 # A successful start on a compacted store: the original kept by studio-db-compact is no longer
                 # needed (studio_db_maintenance). Never raises.
@@ -648,6 +708,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 retire_pre_vacuum(controller.root)
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
+                _note_runtime_wait(controller, record)
                 if getattr(error, 'code', None):
                     # A structured refusal from the start (e.g. PROFILE_LAST_NOT_MONITOR) keeps its machine code.
                     record['refusal_code'] = error.code

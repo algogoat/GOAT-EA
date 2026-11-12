@@ -249,6 +249,14 @@ def command(db, binding, state, request, actor):
                    and re.fullmatch(re.escape(job_id + {'queue.reserve':'-reserve', 'queue.cancel':'-cancel',
                                                         'queue.release_reservation':'-release-reservation'}[command_name])
                                     + r'(-r[1-9][0-9]{0,3})?', request['request_id']) is not None
+                   and request['payload'].get('job_id') == job_id) or (
+                   # retire-unactivated settles a start refused before anything was reserved or sent
+                   # (studio_retire_unactivated._retire_refused_start, GOAT-EA#323/#324): the queue's own cancel of
+                   # its exact never-started job, and the release of its never-permitted reservation. Never a reserve.
+                   op == 'retire-unactivated' and command_name in ('queue.cancel', 'queue.release_reservation')
+                   and re.fullmatch(re.escape(job_id + {'queue.cancel':'-cancel',
+                                                        'queue.release_reservation':'-release-reservation'}[command_name])
+                                    + r'(-r[1-9][0-9]{0,3})?', request['request_id']) is not None
                    and request['payload'].get('job_id') == job_id)
         if not allowed:
             raise ValueError('Demo agent scope permits only this tool job and exact Studio command')

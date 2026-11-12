@@ -364,3 +364,39 @@ finishes and the check refuses).
   read by Ops on 2026-11-11) had no line earlier than the running maximum. A log that is not in
   order gives a `missing` record, never a wrong block.
 - Runs that ended before this controller version have no record; the check reports them missing.
+
+## INV-LINEAGE-01: a promoted SET and its fork are linked by SHA-256, never by name
+
+**Incident (hunt round 13a close, 2026-11-11).** 22 migrated October files traced to their seed
+job only by design, symbol and a fork name containing "seed 1013": none of the seed batch's
+promotion receipts carried a fork's SHA-256 (Claude-Mac goatai#2750 6793727135).
+
+**Statement.** A promotion receipt names every SET it writes by SHA-256 and by the SHA-256 of
+its canonical inputs. The strategy-library fork made from a promoted SET is recorded on that
+promotion by its own SET SHA-256 when it is made, and any SET can be looked up to its
+promotion from its bytes alone.
+
+**Enforcement.**
+- `controller/studio_seed_promote.py`: `promote` writes `sha256` and `canonical_sha256` for
+  `fixed_set` and `robustness_set` into `promotion.json`. `record_fork` (`seed-promote-fork`)
+  reads the fork SET and writes `promoted\<alias>\<candidate>\forks\<fork set sha256>.json`,
+  create-only, with the fork id, the relation (`exact`, `same_inputs`, or `edited` with the
+  changed inputs) and the receipt's SHA-256; `promotion.json` is never rewritten. `lookup`
+  (`promotion-lookup`) is read-only and matches a SET as `promoted_set`, `recorded_fork` or
+  `same_inputs`.
+- The fork itself is created by the desktop (`strategy.forkTemplate`); the controller has no
+  register command. The desktop half is to call `seed-promote-fork` with the fork's SET and id
+  right after it creates a fork from a promoted SET, or to store the promotion's
+  `candidate_sha256` and receipt SHA-256 in the fork's own record.
+
+**Tests.** `controller/test_studio_seed_promote.py`: the receipt names each SET by both
+hashes; a fork is recorded on its promotion and found again by its SHA-256 alone (before the
+record, the same SHA-256 finds nothing); lookup matches a promoted SET and a renamed copy by
+its inputs, and nothing for other inputs; an edited fork is recorded as edited with the inputs
+it changed; an older receipt and an unreadable one. `controller/test_demo_seed_agent.py`: both
+verbs through the demo lane.
+
+**Not covered.** A fork nobody records is found only while its inputs are unchanged
+(`same_inputs`, with the SET file). Forks made before this exist only in the desktop's library;
+their records can be added with `seed-promote-fork` from the fork SETs. `goat_studio.py` has no
+copy of the two verbs.

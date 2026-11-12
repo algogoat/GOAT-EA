@@ -904,6 +904,25 @@ the candidate appears in several members) writes `fixed.set` and
 when a repeat returns the existing receipt. The robustness SET is a local
 stability check around the candidate; only the forward window is out-of-sample.
 
+**Lineage by SHA-256.** `promotion.json` names each SET it writes by `sha256` and by
+`canonical_sha256` (every input but `EA_Desc`, so a renamed copy still matches). When a
+strategy-library fork is made from a promoted SET (`Desktop 'strategy.forkTemplate'`), record
+it on the promotion so the link never rests on a name or a symbol:
+
+```powershell
+& $py $tool --installation $install seed-promote-fork --batch-id 'seed-weekend-01' --candidate '<candidate_sha256>' --fork-set '<the fork''s .set>' --fork-id '<fork id>'
+& $py $tool --installation $install promotion-lookup --set '<any .set>'        # or --set-sha256 <64 hex>
+```
+
+`seed-promote-fork` reads the fork SET (never changes it) and writes
+`promoted\<alias>\<candidate>\forks\<fork set sha256>.json`, create-only, beside the unchanged
+`promotion.json`: the fork's SHA-256, its id, and how it stands to the promoted SETs (`exact`,
+`same_inputs`, or `edited` with the inputs it changed). `promotion-lookup` is read-only and
+needs no terminal: it reads every promotion under the controller state and answers
+`promoted_set` (the SET is a promotion's own), `recorded_fork` (its SHA-256 was recorded) or
+`same_inputs` (the same inputs under another name; `--set` only), each with the seed batch,
+member, candidate and receipt SHA-256.
+
 `seed-prepare` and `seed-start` need the same fresh checks as batches: the
 terminal lock, a broker-reported demo account on the exact paired login and
 server, Algo Trading off, an idle tester, no open positions or orders on a

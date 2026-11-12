@@ -211,6 +211,72 @@ def _settle_journal(c, job_id, attempt, result_path, now):
         return dict(journal=str(path), updated=True, previous=str(before))
 
 
+REFUSED_KIND = 'retired_start_refused'
+
+
+def _retire_refused_start(c, job_id, clock, reason):
+    """Settle a start refused before it reserved or recorded anything (GOAT-EA#323), or return None.
+
+    The state: the driver journal is start_uncertain with the start issued, no attempt, no cancel, not stopped, and
+    the queue still holds the job unstarted with no launch intent (studio_batch_driver.refused_before_dispatch, the
+    same test that lets the start run again). There is no attempt, reservation or native file to prove absent, so
+    the settlement is the queue's own cancel of a never-started job (released first when it is reserved but was
+    never permitted) and the journal marked stopped. Under the driver gate, so a live driver of this batch excludes
+    it. A job with a launch intent, a bound attempt, an issued cancel or any started status is never taken here: it
+    goes on to the full never-activated proof below, which refuses whatever may have reached MT5. Idempotent.
+    """
+    from studio_batch_driver import command_id, refused_before_dispatch, retry_index
+    from studio_native_gate import exclusive_gate
+    root = safe_path(c.root)
+    path = safe_path(root / 'batch-drivers' / (job_id + '.json'))
+    if not path.is_file():
+        return None
+    def candidate(record, job):
+        # A cheap first look only (it decides whether the driver gate is taken); the state itself is judged below.
+        return isinstance(record, dict) and record.get('attempt_id') is None and 'launch_intent' not in job
+    if not candidate(read_json(path), c.job(job_id)):
+        return None          # every other state: the full never-activated proof decides, the gate untouched
+    gate = safe_path(root / 'batch-driver-gate'); gate.mkdir(exist_ok=True)
+    with exclusive_gate(gate):
+        record, job = read_json(path), c.job(job_id)
+        if not candidate(record, job):
+            return None
+        if (record.get('retired') == REFUSED_KIND and record.get('stopped') is True and job['status'] == 'cancelled'
+                and 'launch_intent' not in job and record.get('binding', {}).get('job_id') == job_id):
+            return dict(status='cancelled', kind=REFUSED_KIND, batch_id=job_id, attempt_id=None, result_path=None,
+                        executed_members=0, native_cancellation_claimed=False, reused=True,
+                        driver_journal=dict(journal=str(path), updated=False, reason='already settled'))
+        if record.get('binding', {}).get('job_id') != job_id or not refused_before_dispatch(record, job):
+            return None
+        state = c.state()
+        if state['owner'] != 'agent':
+            _refuse('A human has taken control of this terminal; nothing was retired.')
+        if job['status'] == 'reserved':
+            c.submit('queue.release_reservation', dict(job_id=job_id, reservation_id=job['reservation']['reservation_id']),
+                     command_id(job_id, '-release-reservation', retry_index(root, job_id)),
+                     expected_generation=state['generation'])
+        c.cancel(job_id, expected_generation=c.state()['generation'])
+        settled = c.job(job_id)
+        if settled['status'] != 'cancelled' or 'launch_intent' in settled:
+            _refuse('Batch ' + job_id + ' is ' + str(settled['status']) + ' after its cancel; nothing was retired, '
+                    'run batch-status and report it.')
+        now = clock()
+        archive = safe_path(root / 'batch-driver-refusals'); archive.mkdir(exist_ok=True)
+        before = safe_path(archive / (job_id + '.before-retire-refused-' + str(retry_index(root, job_id) + 1) + '.json'))
+        if not before.exists():
+            write_json(before, record)
+        record.update(stopped=True, status='cancelled', retired=REFUSED_KIND, retired_wall=now, retired_reason=reason)
+        record['last_wall'] = max(record.get('last_wall', now), now)
+        write_json(path, record)
+    return dict(status='cancelled', kind=REFUSED_KIND, batch_id=job_id, attempt_id=None, result_path=None,
+                executed_members=0, native_cancellation_claimed=False, native_effects_sent=False, reused=False,
+                refused_error=record.get('last_error'),
+                driver_journal=dict(journal=str(path), updated=True, previous=str(before)),
+                next_action=('Nothing ran and the batch is cancelled. Its members continue under a new batch ID: '
+                             'batch-resume (or batch-continue) on the batch it continued prepares the next successor, '
+                             'or prepare-batch with the original plan.'))
+
+
 def retire(c, job_id, *, clock=None, reason='operator', settle_journal=True):
     """Settle a never-activated start to cancelled with a journal. Idempotent.
 
@@ -223,6 +289,10 @@ def retire(c, job_id, *, clock=None, reason='operator', settle_journal=True):
     clock = clock or time.time
     if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
         raise ValueError('Invalid batch ID')
+    # The driver's own call (settle_journal False) holds the driver gate and never has this state to settle.
+    refused = _retire_refused_start(c, job_id, clock, reason) if settle_journal else None
+    if refused is not None:
+        return refused
     job, _ = proof(c, job_id)
     done = retained(c, job)
     if done is not None:

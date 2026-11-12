@@ -2122,6 +2122,16 @@ class DemoAgent:
                 from studio_batch_driver import status, refused_before_dispatch
                 previous = status(controller, batch_id)
                 retry = not resume and refused_before_dispatch(read_json(journal), controller.job(batch_id))
+                if resume:
+                    # resume-batch observes a retained attempt and never starts one. A start refused before anything
+                    # reached MT5 has none, so no worker is launched to fail in its log: the refusal names the one
+                    # command that starts the batch again (GOAT-EA#323).
+                    from studio_batch_driver import refused_start_hint
+                    retained = read_json(journal)
+                    hint = (refused_start_hint(self.root, controller.job(batch_id), retained, self.session)
+                            if retained.get('status') == 'start_uncertain' and retained.get('attempt_id') is None else None)
+                    if hint is not None:
+                        raise ValueError('resume-batch has no attempt to resume for batch ' + batch_id + '. ' + hint)
                 if not retry and (previous.get('stopped') is True or not resume):
                     return dict(status='existing_driver', driver=previous)
                 if retry:
@@ -2323,7 +2333,10 @@ class DemoAgent:
             alive = self._worker_alive(record, quick=True)
         except ValueError as exc:
             alive = 'unknown: ' + str(exc)
-        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive))
+        from studio_research_status import worker_status_now
+        shown = worker_status_now(record.get('status'), alive)
+        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive),
+                    **({'status': shown, 'recorded_status': record.get('status')} if shown != record.get('status') else {}))
 
     @contextmanager
     def _batch_read_scope(self, operation_name, batch_id):
@@ -2986,7 +2999,9 @@ class DemoAgent:
             return self._seed_unpause(batch_id, kind, accept_news_change=accept_news_change)
         record = load(self.root, batch_id)
         if record is None:
-            raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+            from studio_batch_pause import no_pause_refusal
+            raise no_pause_refusal(self.root, batch_id, lambda: next(
+                item for item in self._jobs_readonly() if item['job_id'] == batch_id), self.session)
         # Read-only, before any release, STOP clear or successor ID is written.
         refuse_v148_cancel_latch(self.root, batch_id,
                                  job=next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None))
@@ -3013,8 +3028,12 @@ class DemoAgent:
                 self._append('batch_resume', 'news_change_accepted', batch_id=batch_id, successor_batch_id=new_id, news_file=news)
             if job is not None and job['status'] == 'pending' and not journal.is_file():
                 driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
+            # The successor's start was refused before anything reached MT5 (GOAT-EA#323): this call starts nothing
+            # (one command does, and it is named here), so a repeat is never a silent "resumed, driver null".
+            from studio_batch_driver import refused_start_hint
+            hint = None if driver is not None else refused_start_hint(self.root, job, session=self.session)
             return dict(state='resumed', source_batch_id=batch_id, batch_id=new_id, reused=True, driver=driver,
-                        lineage=lineage(self.root, new_id))
+                        lineage=lineage(self.root, new_id), **({'next_action': hint} if hint else {}))
         if record['state'] != 'paused':
             raise refusal(record)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())

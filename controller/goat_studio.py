@@ -351,8 +351,15 @@ class Controller:
         generation=state['generation'] if expected_generation is None else expected_generation
         if state['generation']!=generation: raise ValueError('Controller generation changed before start')
         if job['status']!='pending': raise ValueError('Only pending job can start; reconcile existing attempt')
-        # Check runtime BEFORE recording an irreversible attempt.
-        self.runtime(require_idle=True,expected_batch_ongoing=False)
+        # Check runtime BEFORE recording an irreversible attempt. A stale first sample is read again for a bounded
+        # time (studio_runtime_check.await_fresh, GOAT-EA#323); the generation is re-proved before each repeat.
+        from studio_runtime_check import await_fresh
+        def still_owned():
+            current=self.state()
+            if current['owner']!='agent' or current['generation']!=generation:
+                raise ValueError('Controller generation changed before start')
+        await_fresh(lambda:self.runtime(require_idle=True,expected_batch_ongoing=False),between=still_owned,
+                    note=lambda waited:setattr(self,'start_runtime_wait',waited))
         from studio_research_authority import before_native_dispatch
         before_native_dispatch(self,job)
         baseline=inspect_processes(binding)

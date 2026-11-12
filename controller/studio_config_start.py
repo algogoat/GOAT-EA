@@ -128,8 +128,18 @@ def restart_recovery(job):
     intent=job.get('restart_intent') or {}
     reached=intent.get('phase')
     if reached in (None,'prepared'):
+        # Two different states (GOAT-EA#323). No launch intent: nothing was reserved or recorded, so the same start
+        # runs again under the same batch ID. A launch intent at phase prepared: retire-unactivated settles it (the
+        # driver tries that itself) and the members continue under a new batch ID.
+        if 'launch_intent' in job:
+            action=('Follow the row for the error text. retire-unactivated settles this start (it recorded an attempt but '
+                    'never touched MT5); then batch-continue prepares its members under a new batch ID.')
+        else:
+            action=('Follow the row for the error text, then start this batch again under the same batch ID with run-batch '
+                    '(same ID, a --max-seconds budget), or settle it as cancelled with retire-unactivated. Nothing was reserved, '
+                    'so there is nothing to pause or resume.')
         return dict(phase=reached,mt5='not_touched',plain='GOAT stopped before it changed anything in MT5. MT5 was not closed.',
-                    next_safe_action='Follow the row for the error text (retire-unactivated settles a start refused before MT5 was touched).')
+                    next_safe_action=action)
     if reached=='controls_installed':
         return dict(phase=reached,mt5='open_may_be_armed',
                     plain='MT5 was not closed. GOAT may already have told the EA a batch is starting, so the EA can show a batch as running.',
@@ -216,7 +226,13 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     # Read-only, before any reservation or close: the saved ProfileLast this start will switch to GOAT Research.
     _profile_last_precheck(c)
     args=c.native_args()
-    c.runtime(require_idle=True,expected_batch_ongoing=False)
+    # The start's first runtime read, before anything is reserved, armed or closed: a stale sample is read again for a
+    # bounded time (studio_runtime_check.await_fresh, GOAT-EA#323), the checkpoint re-proved before each repeat. Every
+    # later read in this start (ownership during arming, the armed sample) still refuses a stale sample at once.
+    from studio_runtime_check import await_fresh
+    await_fresh(lambda:c.runtime(require_idle=True,expected_batch_ongoing=False),
+                between=lambda:checkpoint(c,job_id,generation),
+                note=lambda waited:setattr(c,'start_runtime_wait',waited))
     before_native_dispatch(c,job)
     # Fast precheck before any reservation; the guarding baseline is taken below,
     # after the O(members) controller work, so a large batch never outlives it.

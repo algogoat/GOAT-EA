@@ -3643,12 +3643,59 @@ void DashboardBusRebuildClosedStats(void)
    // B49a:end f2-dashboard
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B55:begin dash-ack-once
+// GOAT-EA#328: one final acknowledgement per dashboard command id. The one-second timer re-reads this chart's stored
+// command id (it stays in the terminal's store for good), and every pass acknowledged it again: APPLIED for the applied
+// id, EXPIRED for any stored command after a restart (the applied id starts at 0, the command is past its 30 s), REJECTED
+// for an unknown type. Each acknowledgement ends in GlobalVariablesFlush, a rewrite of the terminal's whole store: one
+// per chart per second, for ever (33 rewrites a second on a 36-chart terminal).
+// - g_goat_dash_final_ack_id is the last command id this chart gave a FINAL acknowledgement. DashboardBusProcessCommands
+//   returns on it, so a command is acknowledged (and flushed) once. Final = the command needs nothing more from this
+//   chart: APPLIED (every path sets it only with the work done; a close only once flat), EXPIRED and REJECTED (nothing
+//   will ever be done). FAILED is not final: it is only written by a close that left positions open, which B49b's
+//   F3 DASH-04 retries every 5 s until flat (APPLIED) or until the command expires (EXPIRED).
+// - OnInit seeds it from the chart's own stored acknowledgement when that is final, so a restart neither acknowledges
+//   nor applies a second time a command this chart already finished. The policy a command set (paused, trade mask,
+//   exposure mode) is restored in OnInit from its own variables, never by applying the command again.
+// - A retrying close writes (and flushes) its FAILED acknowledgement only when the status or a count changed since the
+//   one it wrote last; the retry itself, its 5 s spacing and its end at the command's expiry are B49b's, unchanged.
+// Live only, no input: the dashboard bus never runs in a batch, on the dashboard chart or in an optimization.
+long     g_goat_dash_final_ack_id=0;
+long     g_goat_dash_close_ack_id=0;
+int      g_goat_dash_close_ack_status=0,g_goat_dash_close_ack_closed=0,g_goat_dash_close_ack_errors=0,g_goat_dash_close_ack_remaining=0;
+bool GoatDashAckIsFinal(const int ack_status)
+  {
+   return(ack_status==GOAT_DASH_ACK_APPLIED || ack_status==GOAT_DASH_ACK_REJECTED || ack_status==GOAT_DASH_ACK_EXPIRED);
+  }
+void GoatDashSeedFinalAck(void)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   string ack_id_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ID);
+   string ack_status_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_STATUS);
+   if(!GlobalVariableCheck(ack_id_key) || !GlobalVariableCheck(ack_status_key)) return;
+
+   long ack_id=(long)GlobalVariableGet(ack_id_key);
+   if(ack_id>0 && GoatDashAckIsFinal((int)GlobalVariableGet(ack_status_key))) g_goat_dash_final_ack_id=ack_id;
+  }
+bool GoatDashCloseAckUnchanged(const long command_id,const int ack_status,const int closed_positions,const int close_errors,const int remaining)
+  {
+   if(!GoatDashAckIsFinal(ack_status) && command_id==g_goat_dash_close_ack_id && ack_status==g_goat_dash_close_ack_status &&
+      closed_positions==g_goat_dash_close_ack_closed && close_errors==g_goat_dash_close_ack_errors && remaining==g_goat_dash_close_ack_remaining) return true;
+   g_goat_dash_close_ack_id=command_id;           g_goat_dash_close_ack_status=ack_status;
+   g_goat_dash_close_ack_closed=closed_positions; g_goat_dash_close_ack_errors=close_errors; g_goat_dash_close_ack_remaining=remaining;
+   return false;
+  }
+// B55:end dash-ack-once
 void DashboardBusAckCommand(const long command_id,const int ack_status)
   {
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
    if(MAGIC1<=0)                                                         return;
 
+   if(GoatDashAckIsFinal(ack_status)) g_goat_dash_final_ack_id=command_id; // B55 (GOAT-EA#328): final, so never processed again
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ID),(double)command_id);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_STATUS),(double)ack_status);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_TIME),(double)TimeCurrent());
@@ -3715,6 +3762,7 @@ void DashboardBusAckCloseCommand(const long command_id,const int ack_status,cons
    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
    if(MAGIC1<=0)                                                         return;
 
+   if(GoatDashCloseAckUnchanged(command_id,ack_status,closed_positions,close_errors,remaining)) return; // B55 (GOAT-EA#328): a retry with nothing new neither rewrites nor flushes
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_CLOSED),(double)closed_positions);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ERRORS),(double)close_errors);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_REMAINING),(double)remaining);
@@ -3854,6 +3902,7 @@ void DashboardBusProcessCommands(void)
 
    long command_id=(long)GlobalVariableGet(cmd_id_key);
    if(command_id<=0) return;
+   if(command_id==g_goat_dash_final_ack_id) return; // B55 (GOAT-EA#328): finally acknowledged (applied, expired or rejected): nothing more, no second flush
 
    int command_type=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_TYPE));
    int command_value=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_VALUE));
@@ -5223,6 +5272,7 @@ int OnInit()
         DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(exposure_mode_key));
      else if(GlobalVariableCheck(GoatPortfolioGVName("DashboardExposurePolicyMode")))
         DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(GoatPortfolioGVName("DashboardExposurePolicyMode")));
+     GoatDashSeedFinalAck(); // B55 (GOAT-EA#328): a stored command this chart already finished is neither acknowledged nor applied again (the policy above is restored from its own variables)
 
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)

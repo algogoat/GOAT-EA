@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DIR = ROOT / 'scripts' / 'fixtures' / 'b54-axes'
 TABLE = json.loads((DIR / 'axes.json').read_text(encoding='utf-8'))
 SCHEMA = contracts('1.49')[0]
-B54_LINES = range(5122, 5148)   # GOAT V1.49.mq5's b54-init block
+B54_LINES = range(5171, 5197)   # GOAT V1.49.mq5's b54-init block
 AXES = ('BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_TF_', 'ORB_Start_Minute', 'ORB_Range_Minutes',
         'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR')
 

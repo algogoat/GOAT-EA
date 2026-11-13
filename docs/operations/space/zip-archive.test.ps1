@@ -112,6 +112,16 @@ if ($global:lock20) { $global:lock20.Dispose() }
 Check 'a failed zip leaves no zip or manifest; the source stays' ($r.code -eq 3 -and $r.out -match 'ZIP FAILED' -and -not (Test-Path (Join-Path $dest 'Rc20000000000.zip')) -and -not (Test-Path (Join-Path $dest 'Rc20000000000.zip.manifest.csv')) -and @(Get-ChildItem $s20 -Recurse -File).Count -eq 3) $r.out
 $r = Run @{ Source = $s20; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
 Check 'the retry after a failed zip archives normally' ($r.code -eq 0 -and -not (Test-Path $s20)) $r.out
+# 21-22 (Claude-Mac 6850291527): a read-only source file is archived and removed through its handle like any other; and an
+#     unexpected failure during the removal writes the partial row and exits 3, never a bare throw.
+$s21 = Fixture 'Rc21000000000'; foreach ($ro in (Join-Path $s21 'equity.csv'), (Join-Path $s21 'deploy\blob.bin')) { Set-ItemProperty -LiteralPath $ro -Name IsReadOnly -Value $true }
+$r = Run @{ Source = $s21; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'read-only source files are removed through the handle' ($r.code -eq 0 -and -not (Test-Path $s21)) $r.out
+$s22 = Fixture 'Rc22000000000'; $global:n22 = 0
+$boom = { param($p) $global:n22++; if ($global:n22 -eq 2) { throw 'simulated failure while removing' } }
+$r = Run @{ Source = $s22; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; DuringRemove = $boom }
+$p22 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s22 })
+Check 'a failure during the removal writes the partial row and exits 3' ($r.code -eq 3 -and $r.out -match 'REMOVAL FAILED' -and $p22.Count -eq 1 -and $p22[0].status -eq 'partial' -and [int]$p22[0].files_removed -eq 1 -and @(Get-ChildItem $s22 -Recurse -File).Count -eq 2) "$($r.out) | $($p22 | ConvertTo-Json -Compress)"
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

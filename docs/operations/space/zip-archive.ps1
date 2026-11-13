@@ -30,13 +30,22 @@ Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 # Codex on #332 (P1, 4562087122): a verified file is deleted through the very handle it was hashed through, never by path, so
 # a rename-and-replace at that path can never redirect the delete. SetFileInformationByHandle(FileDispositionInfo) marks the
 # handle's own file; it goes when the handle closes.
-if (-not ('ZipArchiveNative' -as [type])) {
+if (-not ('ZipArchiveNative2' -as [type])) {
   Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
-public static class ZipArchiveNative {
+public static class ZipArchiveNative2 {
   [StructLayout(LayoutKind.Sequential)] struct FileDispositionInfo { [MarshalAs(UnmanagedType.U1)] public bool DeleteFile; }
+  [StructLayout(LayoutKind.Sequential)] struct FileDispositionInfoEx { public uint Flags; }
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle h, int infoClass, ref FileDispositionInfo info, int size);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle h, int infoClass, ref FileDispositionInfoEx info, int size);
+  // Claude-Mac on #332 (6850291527): a read-only file refused the plain disposition. FileDispositionInfoEx (class 21) with
+  // DELETE (0x1) | IGNORE_READONLY_ATTRIBUTE (0x10) deletes it through the same handle without changing its attribute by path.
+  // Windows before 10 1809 has no class 21 (ERROR_INVALID_PARAMETER): the plain disposition is used there.
   public static void DeleteByHandle(SafeFileHandle h) {
+    FileDispositionInfoEx x = new FileDispositionInfoEx(); x.Flags = 0x1 | 0x10;
+    if (SetFileInformationByHandle(h, 21, ref x, Marshal.SizeOf(typeof(FileDispositionInfoEx)))) return;
+    int err = Marshal.GetLastWin32Error();
+    if (err != 87 && err != 1 && err != 50) throw new System.ComponentModel.Win32Exception(err);
     FileDispositionInfo i = new FileDispositionInfo(); i.DeleteFile = true;
     if (!SetFileInformationByHandle(h, 4, ref i, Marshal.SizeOf(typeof(FileDispositionInfo)))) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
   }
@@ -131,16 +140,22 @@ if ($RemoveSource) {
   $rights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Delete
   foreach ($r in $rows) {
     $p = Join-Path $src ($r.rel.Replace('/', '\'))
-    $fs = New-Object IO.FileStream($p, [IO.FileMode]::Open, $rights, [IO.FileShare]::None, 65536, [IO.FileOptions]::None)
+    # Claude-Mac on #332 (6850291527): ANY failure here (the open, the hash, the delete) stops the removal with the
+    # partial row written, never as a bare throw past the index.
+    $fail = $null; $changedNow = $false
     try {
-      $h = Sha $fs
-      if ($DuringRemove) { & $DuringRemove $p }
-      if ($h -ne $r.sha256) {
-        if ($removed) { Write-IndexRow 'partial' $removed }
-        Say ("SOURCE CHANGED during the removal: {0}; it stays; {1} of {2} files were removed (the zip and its manifest hold them and are kept{3})" -f $r.rel, $removed, @($rows).Count, $(if ($removed) { "; index row 'partial' in $idx" } else { '' })); exit 3
-      }
-      [ZipArchiveNative]::DeleteByHandle($fs.SafeFileHandle); $removed++
-    } finally { $fs.Dispose() }
+      $fs = New-Object IO.FileStream($p, [IO.FileMode]::Open, $rights, [IO.FileShare]::None, 65536, [IO.FileOptions]::None)
+      try {
+        $h = Sha $fs
+        if ($DuringRemove) { & $DuringRemove $p }
+        if ($h -ne $r.sha256) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }
+      } finally { $fs.Dispose() }
+    } catch { $fail = $_.Exception.Message }
+    if ($changedNow -or $fail) {
+      if ($removed) { Write-IndexRow 'partial' $removed }
+      $why = if ($changedNow) { 'SOURCE CHANGED during the removal' } else { "REMOVAL FAILED ($fail)" }
+      Say ("{0}: {1}; it stays; {2} of {3} files were removed (the zip and its manifest hold them and are kept{4})" -f $why, $r.rel, $removed, @($rows).Count, $(if ($removed) { "; index row 'partial' in $idx" } else { '' })); exit 3
+    }
   }
   # 5c. Only empty folders go: a file that appeared after 5a keeps its folder (Remove-Item without -Recurse refuses a non-empty one).
   $left = @(Get-ChildItem -LiteralPath $src -Recurse -File -Force)

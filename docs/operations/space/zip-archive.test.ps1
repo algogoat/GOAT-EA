@@ -122,6 +122,28 @@ $boom = { param($p) $global:n22++; if ($global:n22 -eq 2) { throw 'simulated fai
 $r = Run @{ Source = $s22; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; DuringRemove = $boom }
 $p22 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s22 })
 Check 'a failure during the removal writes the partial row and exits 3' ($r.code -eq 3 -and $r.out -match 'REMOVAL FAILED' -and $p22.Count -eq 1 -and $p22[0].status -eq 'partial' -and [int]$p22[0].files_removed -eq 1 -and @(Get-ChildItem $s22 -Recurse -File).Count -eq 2) "$($r.out) | $($p22 | ConvertTo-Json -Compress)"
+# 23 (Codex P1 4562193968): another run archives a folder of the same name into the same destination between this run's
+#     create-only check and its reservation: this run refuses (exit 2), its source stays, and the other run's verified zip
+#     and manifest are untouched.
+$otherDir = Join-Path $Work 'other'; $null = New-Item -ItemType Directory $otherDir
+$sA = Join-Path $otherDir 'Rrace00000000'; $null = Copy-Item -Recurse (Fixture 'Rracetemplate0') $sA
+$sB = Fixture 'Rrace00000000'
+$global:raceA = $null
+$race = { param($sp) $global:raceA = Run @{ Source = $sA; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty } }
+$r = Run @{ Source = $sB; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; AfterCheck = $race }
+$winnerZipPath = Join-Path $dest 'Rrace00000000.zip'; $winnerOk = $false
+if (Test-Path $winnerZipPath) { $openedArchive = [IO.Compression.ZipFile]::OpenRead($winnerZipPath); try { $winnerOk = (@($openedArchive.Entries | Where-Object { -not $_.FullName.EndsWith('/') }).Count -eq 3) } finally { $openedArchive.Dispose() } }
+Check 'a run that loses the race refuses and leaves the winner''s zip and manifest' ($global:raceA.code -eq 0 -and $r.code -eq 2 -and $r.out -match 'created by another run' -and $winnerOk -and (Test-Path "$winnerZipPath.manifest.csv") -and @(Get-ChildItem $sB -Recurse -File).Count -eq 3) "A=$($global:raceA.code) B=$($r.code) $($r.out)"
+# 25 (Codex P1 4562193968, ownership): a zip of the same name (no manifest) appears after the check: this run reserves its
+#     manifest, cannot move its zip into place, and removes only its own temporary zip and manifest; the other zip stays.
+$s25 = Fixture 'Rc25000000000'; $foreign = Join-Path $dest 'Rc25000000000.zip'
+$plant = { param($sp) [IO.File]::WriteAllText($foreign, 'not ours') }
+$r = Run @{ Source = $s25; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; AfterCheck = $plant }
+Check 'a zip that is not this run''s is never removed by its cleanup' ($r.code -eq 3 -and $r.out -match 'ZIP FAILED' -and (Test-Path $foreign) -and [IO.File]::ReadAllText($foreign) -eq 'not ours' -and -not (Test-Path "$foreign.manifest.csv") -and @(Get-ChildItem $dest -Filter 'Rc25000000000.zip.*.partial').Count -eq 0 -and @(Get-ChildItem $s25 -Recurse -File).Count -eq 3) $r.out
+# 24 (Codex P2 4562193985): a hidden subfolder is archived and removed like any other; the run ends with its index row.
+$s24 = Fixture 'Rc24000000000'; $hid = New-Item -ItemType Directory (Join-Path $s24 'deploy\.cache'); [IO.File]::WriteAllText((Join-Path $hid.FullName 'state.json'), '{}'); $hid.Attributes = $hid.Attributes -bor [IO.FileAttributes]::Hidden
+$r = Run @{ Source = $s24; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'a hidden subfolder is removed and the run completes' ($r.code -eq 0 -and -not (Test-Path $s24) -and $r.out -match 'indexed in') $r.out
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

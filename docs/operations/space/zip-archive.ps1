@@ -24,7 +24,8 @@ param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Dest
       [scriptblock]$AfterZip = $null,       # TEST HOOK ONLY (corrupt or truncate the zip, or change a source file); a production run never passes it
       [scriptblock]$BeforeRemove = $null,   # TEST HOOK ONLY (change or add a source file between 5a and 5b); a production run never passes it
       [scriptblock]$BeforeZip = $null,      # TEST HOOK ONLY (make the zip's creation fail after the manifest is written)
-      [scriptblock]$DuringRemove = $null)   # TEST HOOK ONLY (try to rename or replace a file while 5b holds it)
+      [scriptblock]$DuringRemove = $null,   # TEST HOOK ONLY (try to rename or replace a file while 5b holds it)
+      [scriptblock]$AfterCheck = $null)     # TEST HOOK ONLY (another run takes the same zip and manifest names after the create-only check)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 # Codex on #332 (P1, 4562087122): a verified file is deleted through the very handle it was hashed through, never by path, so
@@ -90,15 +91,28 @@ $rows = foreach ($f in $files) { $fs = $f.OpenRead(); try { $h = Sha $fs } final
 $bytes = ($rows | Measure-Object bytes -Sum).Sum
 if ($DryRun) { Say ("DRY RUN: {0} files, {1:N1} MB from {2} would go to {3}" -f @($rows).Count, ($bytes / 1MB), $src, $zip); exit 0 }
 [void][IO.Directory]::CreateDirectory($dst)
-# Codex on #332 (P2, 4562087134): a manifest or zip that fails half-way (disk full, an unreadable source file) is removed by
-# this run (it created both: create-only above), so a retry is not refused and no partial file keeps disk space.
+# Codex on #332 (P1 4562193968): two runs with the same destination and folder name could both pass the check above, and the
+# second one's cleanup could delete the first one's verified zip. The manifest is now created with CreateNew, atomically: the
+# run that creates it owns the pair, and any other run refuses there (exit 2) without touching it. The zip is built under a
+# unique temporary name and moved into place (the move refuses an existing zip).
+# Codex on #332 (P2 4562087134): a manifest or zip that fails half-way (disk full, an unreadable source file) is removed by
+# this run, but only what this run itself created, so a retry is not refused and no partial file keeps disk space.
+$ownMan = $false; $ownZip = $false; $tmp = Join-Path $dst ("$leaf.zip." + [Guid]::NewGuid().ToString('N') + '.partial')
+if ($AfterCheck) { & $AfterCheck $src }
 try {
-  $rows | Export-Csv -LiteralPath $man -NoTypeInformation -Encoding UTF8
+  $mfs = $null; try { $mfs = New-Object IO.FileStream($man, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None) } catch { $mfs = $null }
+  if (-not $mfs) { Refuse "$man was created by another run after the create-only check; nothing of it was touched" }
+  $ownMan = $true
+  $sw = New-Object IO.StreamWriter($mfs, (New-Object Text.UTF8Encoding($true)))
+  try { foreach ($line in ($rows | ConvertTo-Csv -NoTypeInformation)) { $sw.WriteLine($line) } } finally { $sw.Dispose() }
   if ($BeforeZip) { & $BeforeZip $src }
-  [IO.Compression.ZipFile]::CreateFromDirectory($src, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+  [IO.Compression.ZipFile]::CreateFromDirectory($src, $tmp, [IO.Compression.CompressionLevel]::Optimal, $false)
+  [IO.File]::Move($tmp, $zip); $ownZip = $true
 } catch {
-  Remove-Item -LiteralPath $zip, $man -Force -ErrorAction SilentlyContinue
-  Say ("ZIP FAILED: {0}; this run's zip and manifest were removed, the source is untouched" -f $_.Exception.Message); exit 3
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+  if ($ownZip) { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue }
+  if ($ownMan) { Remove-Item -LiteralPath $man -Force -ErrorAction SilentlyContinue }
+  Say ("ZIP FAILED: {0}; only what this run created was removed, the source is untouched" -f $_.Exception.Message); exit 3
 }
 if ($AfterZip) { & $AfterZip $zip }
 $want = @{}; foreach ($r in $rows) { $want[$r.rel] = $r.sha256 }
@@ -160,7 +174,9 @@ if ($RemoveSource) {
   # 5c. Only empty folders go: a file that appeared after 5a keeps its folder (Remove-Item without -Recurse refuses a non-empty one).
   $left = @(Get-ChildItem -LiteralPath $src -Recurse -File -Force)
   if ($left.Count) { Write-IndexRow 'partial' $removed; Say ("{0} file(s) appeared in the source after the check ({1}); they stay; the {2} archived files were removed; index row 'partial'" -f $left.Count, (($left | Select-Object -First 3 | ForEach-Object { $_.FullName.Substring($src.Length + 1) }) -join '; '), $removed); exit 3 }
-  Get-ChildItem -LiteralPath $src -Recurse -Directory | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+  # Codex on #332 (P2 4562193985): -Force includes hidden and system folders, so the bottom-up removal empties the tree and
+  # the root's non-recursive removal never meets a folder it would prompt for.
+  Get-ChildItem -LiteralPath $src -Recurse -Directory -Force | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
   Remove-Item -LiteralPath $src -Force
   Write-IndexRow 'complete' $removed
   Say "source removed after every file matched; indexed in $idx"

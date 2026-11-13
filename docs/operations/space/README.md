@@ -33,11 +33,11 @@ powershell -NoProfile -File docs\operations\space\zip-archive.ps1 -Source <folde
 powershell -NoProfile -File docs\operations\space\zip-archive.test.ps1
 ```
 
-The 28 tests cover the round trip, a corrupted member, a short write, a missing entry, E:/F:, the needs-live list,
+The 31 tests cover the round trip, a corrupted member, a short write, a missing entry, E:/F:, the needs-live list,
 create-only, a junction inside the source, an empty source, a dry run, `-RemoveSource` without `-NeedsLive`, a junction as
 the source root, as the destination root and above the source, a source changed after the zip, changed during the removal
 (with its `partial` index row), grown by a file after the check and grown by a file after the manifest, a rename-and-replace
-attempted while a file is held, a zip that fails after its manifest (and the retry), the `complete` index row, read-only source files (deleted through the handle with `FileDispositionInfoEx` ignoring the read-only attribute) and an unexpected failure during the removal (a `partial` row and exit 3, never a bare throw). Each rule
+attempted while a file is held, a zip that fails after its manifest (and the retry), the `complete` index row, read-only source files (deleted through the handle with `FileDispositionInfoEx` ignoring the read-only attribute) an unexpected failure during the removal (a `partial` row and exit 3, never a bare throw), a run that loses a race for the same zip name (it refuses; the winner's zip and manifest stay), a zip of the same name that is not this run's (its cleanup never removes it) and a hidden subfolder (removed, the run completes). Each rule
 removed in turn fails exactly its own cases (the verification: the three corruption cases; the link chain: the three
 junction cases; the needs-live requirement, the re-hash, the hash at removal, the appeared-file check, no sharing, delete by
 handle, the failed-zip cleanup and the partial row: theirs).

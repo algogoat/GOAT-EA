@@ -14,7 +14,11 @@ function Fixture([string]$name) {
   $b = New-Object byte[] 3000; $rng.NextBytes($b); [IO.File]::WriteAllBytes((Join-Path $d 'deploy\blob.bin'), $b)
   return $d
 }
-function Run([hashtable]$a) { $ErrorActionPreference = 'Continue'; $o = & $tool @a 2>&1 | ForEach-Object { "$_" }; @{ code = $LASTEXITCODE; out = ($o -join ' ') } }
+function Run([hashtable]$a) {   # a tool that throws (not an exit code) counts as code 99, so the remaining cases still run
+  $ErrorActionPreference = 'Continue'; $global:LASTEXITCODE = 0
+  try { $o = & $tool @a 2>&1 | ForEach-Object { "$_" }; $c = $LASTEXITCODE } catch { $o = @("THREW: $($_.Exception.Message)"); $c = 99 }
+  @{ code = $c; out = ($o -join ' ') }
+}
 $dest = Join-Path $Work 'archive'
 # 1. Happy path with -RemoveSource: verified, source gone, zip and manifest present, index row written, every file round-trips.
 $s1 = Fixture 'R111111111111'; $before = @{}; foreach ($f in Get-ChildItem $s1 -Recurse -File) { $before[$f.FullName.Substring($s1.Length + 1)] = (Get-FileHash $f.FullName).Hash }
@@ -72,6 +76,25 @@ $pj = Join-Path $Work 'parentjunc'; $null = New-Item -ItemType Junction -Path $p
 $r = Run @{ Source = (Join-Path $pj 'Rinner0000000'); DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
 Check 'a junction above the source refuses; the real files stay' ($r.code -eq 2 -and $r.out -match 'junction or symlink' -and @(Get-ChildItem (Join-Path $parentReal 'Rinner0000000') -Recurse -File).Count -eq 3) $r.out
 foreach ($x in $j, $dj, $pj) { cmd /c "rmdir `"$x`"" }
+# 15-17 (Codex on #332, P1): a source written after the zip is never deleted.
+# 15. A source file changed between the zip and the removal (the zip itself verifies): nothing removed, the new bytes stay,
+#     the zip is deleted.
+$s15 = Fixture 'Rc15000000000'; $edit = { param($zp) [IO.File]::AppendAllText((Join-Path $s15 'equity.csv'), "`r`nlate row") }
+$r = Run @{ Source = $s15; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; AfterZip = $edit }
+Check 'a source changed after the zip: nothing removed, the new bytes stay, the zip is deleted' ($r.code -eq 3 -and $r.out -match 'SOURCE CHANGED after the zip' -and @(Get-ChildItem $s15 -Recurse -File).Count -eq 3 -and ([IO.File]::ReadAllText((Join-Path $s15 'equity.csv'))).EndsWith('late row') -and -not (Test-Path (Join-Path $dest 'Rc15000000000.zip'))) $r.out
+# 16. A source file changed after that check, during the removal: that file stays with its new bytes; the zip (which holds
+#     what was removed) is kept.
+$s16 = Fixture 'Rc16000000000'; $late = { param($sp) [IO.File]::AppendAllText((Join-Path $sp 'deploy\blob.bin'), 'x') }
+$r = Run @{ Source = $s16; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; BeforeRemove = $late }
+Check 'a source changed during the removal: it stays with its new bytes; the zip is kept' ($r.code -eq 3 -and $r.out -match 'SOURCE CHANGED during the removal' -and (Test-Path (Join-Path $s16 'deploy\blob.bin')) -and (Get-Item (Join-Path $s16 'deploy\blob.bin')).Length -eq 3001 -and (Test-Path (Join-Path $dest 'Rc16000000000.zip'))) $r.out
+# 17. A file that appears in the source after the check stays, with its folder.
+$s17 = Fixture 'Rc17000000000'; $add = { param($sp) [IO.File]::WriteAllText((Join-Path $sp 'deploy\new.csv'), 'new') }
+$r = Run @{ Source = $s17; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; BeforeRemove = $add }
+Check 'a file that appears after the check stays' ($r.code -eq 3 -and $r.out -match 'appeared in the source' -and (Test-Path (Join-Path $s17 'deploy\new.csv')) -and @(Get-ChildItem $s17 -Recurse -File).Count -eq 1) $r.out
+# 18. A file added before the check (after the manifest) is also caught by it: nothing removed.
+$s18 = Fixture 'Rc18000000000'; $add2 = { param($zp) [IO.File]::WriteAllText((Join-Path $s18 'extra.csv'), 'extra') }
+$r = Run @{ Source = $s18; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; AfterZip = $add2 }
+Check 'a file added after the manifest: nothing removed' ($r.code -eq 3 -and $r.out -match 'new extra.csv' -and @(Get-ChildItem $s18 -Recurse -File).Count -eq 4) $r.out
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 "RESULT: $(if ($fail) { "$fail FAILED" } else { 'all passed' })"
 exit $fail

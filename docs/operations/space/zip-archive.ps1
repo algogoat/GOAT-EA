@@ -7,12 +7,20 @@
 #   3. zip to <DestRoot>\<leaf>.zip, the manifest beside it as <leaf>.zip.manifest.csv
 #   4. open the zip and hash every entry; the entry set must equal the manifest and every hash must match; on any mismatch
 #      the bad zip is deleted, the source is left untouched, exit 3
-#   5. only with -RemoveSource: remove each source file after its own entry matched (all did, or step 4 stopped), then the
-#      empty folders; one line is appended to <DestRoot>\ARCHIVE-INDEX.csv
-# Exit 0 = archived (or planned with -DryRun), 2 = refused before any write, 3 = verification failed (source untouched).
+#   5. only with -RemoveSource (Codex on #332: a source written after the zip must never be deleted):
+#      a. every source file is hashed again; any file that changed, went missing or appeared since the manifest deletes
+#         the zip, removes nothing, exit 3;
+#      b. each file is then removed through a handle that shuts out every other reader and writer (FileShare.Delete
+#         only), hashed through that handle, and deleted only when it still equals its manifest row; a file that changed
+#         in between stays, the removal stops there (the zip, which holds every file removed so far, is kept), exit 3;
+#      c. the empty folders go, and one line is appended to <DestRoot>\ARCHIVE-INDEX.csv. A file that appeared after a
+#         stays with its folders, exit 3.
+# Exit 0 = archived (or planned with -DryRun), 2 = refused before any write, 3 = verification failed or the source changed
+# (nothing of the changed source is removed).
 param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$DestRoot, [string]$NeedsLive = '',
       [switch]$RemoveSource, [switch]$DryRun,
-      [scriptblock]$AfterZip = $null)   # TEST HOOK ONLY (corrupt or truncate the zip); a production run never passes it
+      [scriptblock]$AfterZip = $null,       # TEST HOOK ONLY (corrupt or truncate the zip, or change a source file); a production run never passes it
+      [scriptblock]$BeforeRemove = $null)   # TEST HOOK ONLY (change or add a source file between 5a and 5b); a production run never passes it
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 function Say($m) { '{0:yyyy-MM-ddTHH:mm:ss}Z ZIP-ARCHIVE: {1}' -f [DateTime]::UtcNow, $m }
@@ -70,7 +78,33 @@ if ($bad.Count) { Remove-Item -LiteralPath $zip, $man -Force -ErrorAction Silent
 $zb = (Get-Item -LiteralPath $zip).Length; $mh = (Get-FileHash -LiteralPath $man -Algorithm SHA256).Hash.ToLower()
 Say ("verified: {0} files, {1:N1} MB -> {2:N1} MB ({3:P0}); manifest {4}" -f @($rows).Count, ($bytes / 1MB), ($zb / 1MB), ($zb / [Math]::Max(1, $bytes)), $mh)
 if ($RemoveSource) {
-  foreach ($f in $files) { Remove-Item -LiteralPath $f.FullName -Force }   # every entry matched above
+  # 5a. The source as it is now must still be exactly the manifest (Codex on #332: the zip proves only the bytes read then).
+  $now = @{}; $st2 = New-Object Collections.Stack; $st2.Push((New-Object IO.DirectoryInfo $src))
+  while ($st2.Count) { $d = $st2.Pop(); foreach ($s in $d.EnumerateDirectories()) { $st2.Push($s) }; foreach ($f in $d.EnumerateFiles()) { $now[$f.FullName.Substring($src.Length + 1).Replace('\', '/')] = $f } }
+  $changed = New-Object Collections.ArrayList
+  foreach ($r in $rows) {
+    if (-not $now.ContainsKey($r.rel)) { [void]$changed.Add("missing $($r.rel)"); continue }
+    $fs = $now[$r.rel].OpenRead(); try { $h = Sha $fs } finally { $fs.Dispose() }
+    if ($h -ne $r.sha256) { [void]$changed.Add("changed $($r.rel)") }
+  }
+  foreach ($k in $now.Keys) { if (-not $want.ContainsKey($k)) { [void]$changed.Add("new $k") } }
+  if ($changed.Count) { Remove-Item -LiteralPath $zip, $man -Force -ErrorAction SilentlyContinue; Say ("SOURCE CHANGED after the zip ({0}): {1}; the zip was deleted, nothing was removed" -f $changed.Count, (($changed | Select-Object -First 3) -join '; ')); exit 3 }
+  if ($BeforeRemove) { & $BeforeRemove $src }
+  # 5b. Each file: no other process may read or write it while it is checked (FileShare.Delete only); it is deleted only
+  # when it still hashes to its manifest row, and the delete completes when this handle closes.
+  $removed = 0
+  foreach ($r in $rows) {
+    $p = Join-Path $src ($r.rel.Replace('/', '\'))
+    $fs = [IO.File]::Open($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Delete)
+    try {
+      $h = Sha $fs
+      if ($h -ne $r.sha256) { Say ("SOURCE CHANGED during the removal: {0}; it stays; {1} of {2} files were removed (the zip and its manifest hold them and are kept)" -f $r.rel, $removed, @($rows).Count); exit 3 }
+      [IO.File]::Delete($p); $removed++
+    } finally { $fs.Dispose() }
+  }
+  # 5c. Only empty folders go: a file that appeared after 5a keeps its folder (Remove-Item without -Recurse refuses a non-empty one).
+  $left = @(Get-ChildItem -LiteralPath $src -Recurse -File -Force)
+  if ($left.Count) { Say ("{0} file(s) appeared in the source after the check ({1}); they stay; the {2} archived files were removed" -f $left.Count, (($left | Select-Object -First 3 | ForEach-Object { $_.FullName.Substring($src.Length + 1) }) -join '; '), $removed); exit 3 }
   Get-ChildItem -LiteralPath $src -Recurse -Directory | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
   Remove-Item -LiteralPath $src -Force
   $idx = Join-Path $dst 'ARCHIVE-INDEX.csv'; $line = [pscustomobject]@{ archived_utc = [DateTime]::UtcNow.ToString('o'); source = $src; zip = $zip; files = @($rows).Count; bytes = $bytes; zip_bytes = $zb; manifest_sha256 = $mh }

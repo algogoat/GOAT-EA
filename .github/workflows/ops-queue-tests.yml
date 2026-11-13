@@ -31,6 +31,13 @@ jobs:
           TMP: ${{ runner.temp }}
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\hold-reader.test.ps1
 
+      - name: Zip archive by the per-file method (round trip, corruption, short write, E:/F:, needs-live)
+        shell: cmd
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\space\zip-archive.test.ps1
+
       - name: Every queue script parses
         shell: powershell
         run: |

@@ -161,6 +161,18 @@ $big = [IO.File]::Create((Join-Path $s28 'big.bin')); try { $big.SetLength(2.2GB
 $r = Run @{ Source = $s28; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
 Check 'a source over 2 GiB is archived and removed' ($r.code -eq 0 -and $r.out -match 'verified: 2 files' -and -not (Test-Path $s28)) $r.out
 Remove-Item -LiteralPath (Join-Path $dest 'Rbig000000000.zip') -Force -ErrorAction SilentlyContinue
+# 29 (Claude-Mac 6852429131: a fixture over 2 GiB and one over 4 GiB stay in the suite): a single 4.3 GB file needs zip64;
+#     it is archived, read back with its full length, and removed.
+$s29 = Join-Path $Work 'Rhuge00000000'; $null = New-Item -ItemType Directory $s29
+$huge = [IO.File]::Create((Join-Path $s29 'huge.bin')); try { $huge.SetLength(4.3GB) } finally { $huge.Dispose() }
+$r = Run @{ Source = $s29; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+$len29 = 0; $z29 = Join-Path $dest 'Rhuge00000000.zip'
+if (Test-Path $z29) { $za29 = [IO.Compression.ZipFile]::OpenRead($z29); try { $len29 = ($za29.Entries | Where-Object { $_.FullName -eq 'huge.bin' }).Length } finally { $za29.Dispose() } }
+Check 'a single file over 4 GiB (zip64) is archived with its full length and removed' ($r.code -eq 0 -and $len29 -eq [long](4.3GB) -and -not (Test-Path $s29)) "code=$($r.code) entry=$len29 $($r.out)"
+Remove-Item -LiteralPath $z29 -Force -ErrorAction SilentlyContinue
+# 30 (Codex P2 4563002091 on #333): a long path gets the extended form; a long UNC path the \\?\UNC\ form; short ones stay.
+$longLocal = 'C:\' + ('a' * 250) + '\f.csv'; $longUnc = '\\server\share\' + ('b' * 250) + '\f.csv'
+Check 'long paths get the extended form, UNC ones \\?\UNC\, short ones stay' ([ZipArchiveStreams2]::ExtendedPath('C:\short\f.csv') -eq 'C:\short\f.csv' -and [ZipArchiveStreams2]::ExtendedPath($longLocal) -eq ('\\?\' + $longLocal) -and [ZipArchiveStreams2]::ExtendedPath($longUnc) -eq ('\\?\UNC\server\share\' + ('b' * 250) + '\f.csv') -and [ZipArchiveStreams2]::ExtendedPath('\\?\C:\x') -eq '\\?\C:\x') "unc -> $([ZipArchiveStreams2]::ExtendedPath($longUnc).Substring(0,30))"
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

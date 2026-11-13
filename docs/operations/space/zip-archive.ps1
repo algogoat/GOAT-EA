@@ -151,7 +151,7 @@ try {
 foreach ($k in $want.Keys) { if (-not $seen.ContainsKey($k)) { [void]$bad.Add("missing entry $k") } }
 if ($bad.Count) { Remove-Item -LiteralPath $zip, $man -Force -ErrorAction SilentlyContinue; Say ("VERIFY FAILED ({0}): {1}; the zip was deleted, the source is untouched" -f $bad.Count, (($bad | Select-Object -First 3) -join '; ')); exit 3 }
 $zb = (Get-Item -LiteralPath $zip).Length; $mh = (Get-FileHash -LiteralPath $man -Algorithm SHA256).Hash.ToLower()
-Say ("verified: {0} files, {1:N1} MB -> {2:N1} MB ({3:P0}); manifest {4}" -f @($rows).Count, ($bytes / 1MB), ($zb / 1MB), ($zb / [Math]::Max(1, $bytes)), $mh)
+Say ("verified: {0} files, {1:N1} MB -> {2:N1} MB ({3:P0}); manifest {4}" -f @($rows).Count, ($bytes / 1MB), ($zb / 1MB), ($zb / [Math]::Max([double]1, [double]$bytes)), $mh)
 if ($RemoveSource) {
   # 5a. The source as it is now must still be exactly the manifest (Codex on #332: the zip proves only the bytes read then).
   $now = @{}; $st2 = New-Object Collections.Stack; $st2.Push((New-Object IO.DirectoryInfo $src))

@@ -152,6 +152,15 @@ Check 'a source file with a named stream refuses before any write' ($r.code -eq 
 $s27 = Fixture 'Rc27000000000'; $addStream = { param($sp) Set-Content -LiteralPath (Join-Path $sp 'deploy\blob.bin') -Stream 'late' -Value 'added after the check' }
 $r = Run @{ Source = $s27; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; BeforeRemove = $addStream }
 Check 'a named stream added after the check stops the removal; the file keeps it' ($r.code -eq 3 -and (Test-Path (Join-Path $s27 'deploy\blob.bin')) -and (Get-Content -LiteralPath (Join-Path $s27 'deploy\blob.bin') -Stream 'late') -eq 'added after the check') $r.out
+# 28 (found by Ops 11-13 before the first real batch folder): a source over 2 GiB. [Math]::Max(1, $bytes) bound to the Int32
+#     overload when $bytes came from a variable, so the "verified" line threw for every folder over 2 GiB (after the zip
+#     was verified, before the removal). One 2.2 GB file (SetLength: zeros, fast to hash and zip) and one small one.
+$s28 = Join-Path $Work 'Rbig000000000'; $null = New-Item -ItemType Directory $s28
+$big = [IO.File]::Create((Join-Path $s28 'big.bin')); try { $big.SetLength(2.2GB) } finally { $big.Dispose() }
+[IO.File]::WriteAllText((Join-Path $s28 'small.csv'), "a,b`r`n1,2`r`n")
+$r = Run @{ Source = $s28; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'a source over 2 GiB is archived and removed' ($r.code -eq 0 -and $r.out -match 'verified: 2 files' -and -not (Test-Path $s28)) $r.out
+Remove-Item -LiteralPath (Join-Path $dest 'Rbig000000000.zip') -Force -ErrorAction SilentlyContinue
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

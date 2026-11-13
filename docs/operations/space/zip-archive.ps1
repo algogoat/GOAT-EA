@@ -57,17 +57,24 @@ public static class ZipArchiveNative2 {
 # every stream, so a named NTFS stream would be lost with no archived copy. As the product's run-folder archiver
 # (controller/studio_run_folder_archive.alternate_streams), a source holding one is refused; FindFirstStreamW needs only
 # attribute access, so it also reads a file that 5b holds with no sharing.
-if (-not ('ZipArchiveStreams' -as [type])) {
+if (-not ('ZipArchiveStreams2' -as [type])) {
   Add-Type -TypeDefinition @'
 using System; using System.ComponentModel; using System.Runtime.InteropServices;
-public static class ZipArchiveStreams {
+public static class ZipArchiveStreams2 {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct FindStreamData { public long StreamSize; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)] public string Name; }
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr FindFirstStreamW(string path, int level, out FindStreamData data, uint flags);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool FindNextStreamW(IntPtr h, out FindStreamData data);
   [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr h);
+  // Codex on #333 (P2 4563002091): a long path needs the extended form, and a UNC one the \\?\UNC\ form (\\?\ + \\server
+  // is not a valid path). Short paths are left as they are.
+  public static string ExtendedPath(string path) {
+    if (path.Length < 248 || path.StartsWith(@"\\?\")) return path;
+    if (path.StartsWith(@"\\")) return @"\\?\UNC\" + path.Substring(2);
+    return @"\\?\" + path;
+  }
   // The first stream name other than ::$DATA, or null when the file has none.
   public static string FirstNamed(string path) {
-    if (path.Length >= 248 && !path.StartsWith(@"\\?\")) path = @"\\?\" + path;
+    path = ExtendedPath(path);
     FindStreamData d; IntPtr h = FindFirstStreamW(path, 0, out d, 0);
     if (h == new IntPtr(-1)) { int e = Marshal.GetLastWin32Error(); if (e == 38) return null; throw new Win32Exception(e, "FindFirstStreamW " + path); }
     try { do { if (!string.Equals(d.Name, "::$DATA", StringComparison.OrdinalIgnoreCase)) return d.Name; } while (FindNextStreamW(h, out d)); return null; } finally { FindClose(h); }
@@ -106,7 +113,7 @@ while ($stack.Count) {
   $d = $stack.Pop()
   foreach ($s in $d.EnumerateDirectories()) { if ($s.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($s.FullName) is a junction or symlink inside the source" }; $stack.Push($s) }
   foreach ($f in $d.EnumerateFiles()) { if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($f.FullName) is a link inside the source" }
-    $ns = [ZipArchiveStreams]::FirstNamed($f.FullName); if ($ns) { Refuse "$($f.FullName) has the NTFS stream $ns, which the zip would not hold and the removal would destroy" }
+    $ns = [ZipArchiveStreams2]::FirstNamed($f.FullName); if ($ns) { Refuse "$($f.FullName) has the NTFS stream $ns, which the zip would not hold and the removal would destroy" }
     [void]$files.Add($f) }
 }
 if (-not $files.Count) { Refuse "$src holds no file" }
@@ -186,7 +193,7 @@ if ($RemoveSource) {
       try {
         $h = Sha $fs
         if ($DuringRemove) { & $DuringRemove $p }
-        if ($h -ne $r.sha256 -or [ZipArchiveStreams]::FirstNamed($p)) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }   # a named stream added since the check counts as a change
+        if ($h -ne $r.sha256 -or [ZipArchiveStreams2]::FirstNamed($p)) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }   # a named stream added since the check counts as a change
       } finally { $fs.Dispose() }
     } catch { $fail = $_.Exception.Message }
     if ($changedNow -or $fail) {

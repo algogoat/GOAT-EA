@@ -87,6 +87,8 @@ Check 'a source changed after the zip: nothing removed, the new bytes stay, the 
 $s16 = Fixture 'Rc16000000000'; $late = { param($sp) [IO.File]::AppendAllText((Join-Path $sp 'deploy\blob.bin'), 'x') }
 $r = Run @{ Source = $s16; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; BeforeRemove = $late }
 Check 'a source changed during the removal: it stays with its new bytes; the zip is kept' ($r.code -eq 3 -and $r.out -match 'SOURCE CHANGED during the removal' -and (Test-Path (Join-Path $s16 'deploy\blob.bin')) -and (Get-Item (Join-Path $s16 'deploy\blob.bin')).Length -eq 3001 -and (Test-Path (Join-Path $dest 'Rc16000000000.zip'))) $r.out
+$p16 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s16 })
+Check 'a removal that stopped part-way has a partial index row' ($p16.Count -eq 1 -and $p16[0].status -eq 'partial' -and [int]$p16[0].files_removed -ge 1 -and [int]$p16[0].files_removed -lt 3) ($p16 | ConvertTo-Json -Compress)
 # 17. A file that appears in the source after the check stays, with its folder.
 $s17 = Fixture 'Rc17000000000'; $add = { param($sp) [IO.File]::WriteAllText((Join-Path $sp 'deploy\new.csv'), 'new') }
 $r = Run @{ Source = $s17; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; BeforeRemove = $add }
@@ -95,6 +97,23 @@ Check 'a file that appears after the check stays' ($r.code -eq 3 -and $r.out -ma
 $s18 = Fixture 'Rc18000000000'; $add2 = { param($zp) [IO.File]::WriteAllText((Join-Path $s18 'extra.csv'), 'extra') }
 $r = Run @{ Source = $s18; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; AfterZip = $add2 }
 Check 'a file added after the manifest: nothing removed' ($r.code -eq 3 -and $r.out -match 'new extra.csv' -and @(Get-ChildItem $s18 -Recurse -File).Count -eq 4) $r.out
+# 19. Codex P1 4562087122: while a file is held for its check, a rename-and-replace at its path must be refused (no sharing),
+#     and the delete goes through the handle; every archived file is removed and nothing unarchived is created or deleted.
+$s19 = Fixture 'Rc19000000000'; $global:swap19 = $null
+$swap = { param($p) if (-not $global:swap19) { try { [IO.File]::Move($p, "$p.moved"); [IO.File]::WriteAllText($p, 'replacement'); $global:swap19 = 'done' } catch { $global:swap19 = 'refused' } } }
+$r = Run @{ Source = $s19; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; DuringRemove = $swap }
+Check 'a rename-and-replace during the removal is refused; every archived file goes, nothing else' ($r.code -eq 0 -and $global:swap19 -eq 'refused' -and -not (Test-Path $s19) -and (Test-Path (Join-Path $dest 'Rc19000000000.zip'))) "code=$($r.code) swap=$($global:swap19) $($r.out)"
+# 20. Codex P2 4562087134: the zip's creation fails after the manifest was written (a source file locked): the run removes
+#     its own manifest and partial zip, the source stays, and a retry is not refused (create-only).
+$s20 = Fixture 'Rc20000000000'; $global:lock20 = $null
+$lock = { param($sp) $global:lock20 = [IO.File]::Open((Join-Path $sp 'equity.csv'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None) }
+$r = Run @{ Source = $s20; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty; BeforeZip = $lock }
+if ($global:lock20) { $global:lock20.Dispose() }
+Check 'a failed zip leaves no zip or manifest; the source stays' ($r.code -eq 3 -and $r.out -match 'ZIP FAILED' -and -not (Test-Path (Join-Path $dest 'Rc20000000000.zip')) -and -not (Test-Path (Join-Path $dest 'Rc20000000000.zip.manifest.csv')) -and @(Get-ChildItem $s20 -Recurse -File).Count -eq 3) $r.out
+$r = Run @{ Source = $s20; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'the retry after a failed zip archives normally' ($r.code -eq 0 -and -not (Test-Path $s20)) $r.out
+$c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
+Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 "RESULT: $(if ($fail) { "$fail FAILED" } else { 'all passed' })"
 exit $fail

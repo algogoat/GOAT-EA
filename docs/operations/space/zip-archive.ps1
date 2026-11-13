@@ -10,19 +10,39 @@
 #   5. only with -RemoveSource (Codex on #332: a source written after the zip must never be deleted):
 #      a. every source file is hashed again; any file that changed, went missing or appeared since the manifest deletes
 #         the zip, removes nothing, exit 3;
-#      b. each file is then removed through a handle that shuts out every other reader and writer (FileShare.Delete
-#         only), hashed through that handle, and deleted only when it still equals its manifest row; a file that changed
-#         in between stays, the removal stops there (the zip, which holds every file removed so far, is kept), exit 3;
-#      c. the empty folders go, and one line is appended to <DestRoot>\ARCHIVE-INDEX.csv. A file that appeared after a
-#         stays with its folders, exit 3.
+#      b. each file is opened with read and delete rights and no sharing at all (nobody else can read, write, rename or
+#         replace it meanwhile), hashed through that handle, and deleted THROUGH THAT HANDLE (never by path) only when it
+#         still equals its manifest row; a file that changed stays, the removal stops there (the zip, which holds every
+#         file removed so far, is kept; the index gets a 'partial' row), exit 3;
+#      c. the empty folders go, and a 'complete' row is appended to <DestRoot>\ARCHIVE-INDEX.csv. A file that appeared
+#         after a stays with its folders ('partial' row), exit 3.
+#   A manifest or zip that fails while being written (disk full, an unreadable file) is removed by the run, exit 3.
 # Exit 0 = archived (or planned with -DryRun), 2 = refused before any write, 3 = verification failed or the source changed
 # (nothing of the changed source is removed).
 param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$DestRoot, [string]$NeedsLive = '',
       [switch]$RemoveSource, [switch]$DryRun,
       [scriptblock]$AfterZip = $null,       # TEST HOOK ONLY (corrupt or truncate the zip, or change a source file); a production run never passes it
-      [scriptblock]$BeforeRemove = $null)   # TEST HOOK ONLY (change or add a source file between 5a and 5b); a production run never passes it
+      [scriptblock]$BeforeRemove = $null,   # TEST HOOK ONLY (change or add a source file between 5a and 5b); a production run never passes it
+      [scriptblock]$BeforeZip = $null,      # TEST HOOK ONLY (make the zip's creation fail after the manifest is written)
+      [scriptblock]$DuringRemove = $null)   # TEST HOOK ONLY (try to rename or replace a file while 5b holds it)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+# Codex on #332 (P1, 4562087122): a verified file is deleted through the very handle it was hashed through, never by path, so
+# a rename-and-replace at that path can never redirect the delete. SetFileInformationByHandle(FileDispositionInfo) marks the
+# handle's own file; it goes when the handle closes.
+if (-not ('ZipArchiveNative' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
+public static class ZipArchiveNative {
+  [StructLayout(LayoutKind.Sequential)] struct FileDispositionInfo { [MarshalAs(UnmanagedType.U1)] public bool DeleteFile; }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle h, int infoClass, ref FileDispositionInfo info, int size);
+  public static void DeleteByHandle(SafeFileHandle h) {
+    FileDispositionInfo i = new FileDispositionInfo(); i.DeleteFile = true;
+    if (!SetFileInformationByHandle(h, 4, ref i, Marshal.SizeOf(typeof(FileDispositionInfo)))) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+  }
+}
+'@
+}
 function Say($m) { '{0:yyyy-MM-ddTHH:mm:ss}Z ZIP-ARCHIVE: {1}' -f [DateTime]::UtcNow, $m }
 function Refuse($m) { Say "REFUSED: $m"; exit 2 }
 function Sha([IO.Stream]$s) { $h = [Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-', '').ToLower() } finally { $h.Dispose() } }
@@ -61,8 +81,16 @@ $rows = foreach ($f in $files) { $fs = $f.OpenRead(); try { $h = Sha $fs } final
 $bytes = ($rows | Measure-Object bytes -Sum).Sum
 if ($DryRun) { Say ("DRY RUN: {0} files, {1:N1} MB from {2} would go to {3}" -f @($rows).Count, ($bytes / 1MB), $src, $zip); exit 0 }
 [void][IO.Directory]::CreateDirectory($dst)
-$rows | Export-Csv -LiteralPath $man -NoTypeInformation -Encoding UTF8
-[IO.Compression.ZipFile]::CreateFromDirectory($src, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+# Codex on #332 (P2, 4562087134): a manifest or zip that fails half-way (disk full, an unreadable source file) is removed by
+# this run (it created both: create-only above), so a retry is not refused and no partial file keeps disk space.
+try {
+  $rows | Export-Csv -LiteralPath $man -NoTypeInformation -Encoding UTF8
+  if ($BeforeZip) { & $BeforeZip $src }
+  [IO.Compression.ZipFile]::CreateFromDirectory($src, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+} catch {
+  Remove-Item -LiteralPath $zip, $man -Force -ErrorAction SilentlyContinue
+  Say ("ZIP FAILED: {0}; this run's zip and manifest were removed, the source is untouched" -f $_.Exception.Message); exit 3
+}
 if ($AfterZip) { & $AfterZip $zip }
 $want = @{}; foreach ($r in $rows) { $want[$r.rel] = $r.sha256 }
 $bad = New-Object Collections.ArrayList; $seen = @{}
@@ -90,25 +118,36 @@ if ($RemoveSource) {
   foreach ($k in $now.Keys) { if (-not $want.ContainsKey($k)) { [void]$changed.Add("new $k") } }
   if ($changed.Count) { Remove-Item -LiteralPath $zip, $man -Force -ErrorAction SilentlyContinue; Say ("SOURCE CHANGED after the zip ({0}): {1}; the zip was deleted, nothing was removed" -f $changed.Count, (($changed | Select-Object -First 3) -join '; ')); exit 3 }
   if ($BeforeRemove) { & $BeforeRemove $src }
-  # 5b. Each file: no other process may read or write it while it is checked (FileShare.Delete only); it is deleted only
-  # when it still hashes to its manifest row, and the delete completes when this handle closes.
+  # One index row per run that removed anything: status complete, or partial when 5b stopped part-way (Claude-Mac on #332).
+  $idx = Join-Path $dst 'ARCHIVE-INDEX.csv'
+  function Write-IndexRow([string]$status, [int]$removedCount) {
+    $line = [pscustomobject]@{ archived_utc = [DateTime]::UtcNow.ToString('o'); status = $status; source = $src; zip = $zip; files = @($rows).Count; files_removed = $removedCount; bytes = $bytes; zip_bytes = $zb; manifest_sha256 = $mh }
+    if (Test-Path -LiteralPath $idx) { $line | Export-Csv -LiteralPath $idx -Append -NoTypeInformation -Encoding UTF8 } else { $line | Export-Csv -LiteralPath $idx -NoTypeInformation -Encoding UTF8 }
+  }
+  # 5b. Each file is opened with read and delete rights and NO sharing: no other process can read, write, rename or replace
+  # it while it is checked. It is hashed through that handle and, only if it still matches its manifest row, deleted through
+  # that same handle (Codex P1 4562087122: never by path).
   $removed = 0
+  $rights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Delete
   foreach ($r in $rows) {
     $p = Join-Path $src ($r.rel.Replace('/', '\'))
-    $fs = [IO.File]::Open($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Delete)
+    $fs = New-Object IO.FileStream($p, [IO.FileMode]::Open, $rights, [IO.FileShare]::None, 65536, [IO.FileOptions]::None)
     try {
       $h = Sha $fs
-      if ($h -ne $r.sha256) { Say ("SOURCE CHANGED during the removal: {0}; it stays; {1} of {2} files were removed (the zip and its manifest hold them and are kept)" -f $r.rel, $removed, @($rows).Count); exit 3 }
-      [IO.File]::Delete($p); $removed++
+      if ($DuringRemove) { & $DuringRemove $p }
+      if ($h -ne $r.sha256) {
+        if ($removed) { Write-IndexRow 'partial' $removed }
+        Say ("SOURCE CHANGED during the removal: {0}; it stays; {1} of {2} files were removed (the zip and its manifest hold them and are kept{3})" -f $r.rel, $removed, @($rows).Count, $(if ($removed) { "; index row 'partial' in $idx" } else { '' })); exit 3
+      }
+      [ZipArchiveNative]::DeleteByHandle($fs.SafeFileHandle); $removed++
     } finally { $fs.Dispose() }
   }
   # 5c. Only empty folders go: a file that appeared after 5a keeps its folder (Remove-Item without -Recurse refuses a non-empty one).
   $left = @(Get-ChildItem -LiteralPath $src -Recurse -File -Force)
-  if ($left.Count) { Say ("{0} file(s) appeared in the source after the check ({1}); they stay; the {2} archived files were removed" -f $left.Count, (($left | Select-Object -First 3 | ForEach-Object { $_.FullName.Substring($src.Length + 1) }) -join '; '), $removed); exit 3 }
+  if ($left.Count) { Write-IndexRow 'partial' $removed; Say ("{0} file(s) appeared in the source after the check ({1}); they stay; the {2} archived files were removed; index row 'partial'" -f $left.Count, (($left | Select-Object -First 3 | ForEach-Object { $_.FullName.Substring($src.Length + 1) }) -join '; '), $removed); exit 3 }
   Get-ChildItem -LiteralPath $src -Recurse -Directory | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
   Remove-Item -LiteralPath $src -Force
-  $idx = Join-Path $dst 'ARCHIVE-INDEX.csv'; $line = [pscustomobject]@{ archived_utc = [DateTime]::UtcNow.ToString('o'); source = $src; zip = $zip; files = @($rows).Count; bytes = $bytes; zip_bytes = $zb; manifest_sha256 = $mh }
-  if (Test-Path -LiteralPath $idx) { $line | Export-Csv -LiteralPath $idx -Append -NoTypeInformation -Encoding UTF8 } else { $line | Export-Csv -LiteralPath $idx -NoTypeInformation -Encoding UTF8 }
+  Write-IndexRow 'complete' $removed
   Say "source removed after every file matched; indexed in $idx"
 }
 exit 0

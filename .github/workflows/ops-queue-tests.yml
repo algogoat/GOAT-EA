@@ -31,6 +31,13 @@ jobs:
           TMP: ${{ runner.temp }}
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\hold-reader.test.ps1
 
+      - name: Disk start floor and its watcher (15 GB floor, one post under 20 GB, re-arm above 22 GB)
+        shell: cmd
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\disk-floor.test.ps1
+
       - name: Every queue script parses
         shell: powershell
         run: |

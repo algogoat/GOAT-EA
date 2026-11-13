@@ -40,8 +40,17 @@ when more than 100 comments follow that comment; they are not changed here.
 A hold posted at or before a queue's `-InboxAfter` is not seen by that queue. So a queue must never be started with an
 `-InboxAfter` later than a hold that is still in force. After a hold is lifted, restart with an id after the lift.
 
-## Run the test
+## Disk start floor (2026-11-13)
+
+`disk-floor.ps1` refuses every seed, Prove batch and catch-up start while C: has less than 15 GB free, and when the free
+space cannot be read. Every queue gets it through `hold-reader.ps1` (`Get-HoldReason` reads the floor first), and
+`run-catchup.ps1` reads it before its first verb. `disk-floor-watch.ps1`, run every 10 minutes as a scheduled task, posts
+one `[Watch]` line on the inbox when C: falls under 20 GB and re-arms only after it is back above 22 GB. Why: on
+2026-11-13 C: reached 6.78 GB while two queues wrote, found by chance (goatai#2750 6845735751, 6845747846).
+
+## Run the tests
 
 ```
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\hold-reader.test.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\operations\queue\disk-floor.test.ps1
 ```

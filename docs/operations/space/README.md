@@ -19,7 +19,8 @@ nothing, exit 3), and each file is then opened with no sharing at all (nobody ca
 meanwhile), hashed through that handle and deleted through that same handle, never by path, only if it still matches (a
 file that changed stays, the zip is kept, the index gets a `partial` row, exit 3); a file that appears later stays with its
 folder. A manifest or zip that fails while being written (disk full, an unreadable file) is removed by the run, so a retry
-is not refused. It refuses (exit 2) a source or destination on E: or F:, a source or destination root that is
+is not refused. It refuses (exit 2) a source file with a named NTFS stream (the zip would not hold it and the removal
+would destroy it), a source or destination on E: or F:, a source or destination root that is
 (or sits under) a junction or symlink (a removal must never reach real files on another volume through a link),
 `-RemoveSource` without `-NeedsLive`, a source on the needs-live list (or inside or above a listed path), a junction or
 symlink inside the source, an existing zip, and an empty source.

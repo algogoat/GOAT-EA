@@ -2,7 +2,8 @@
 # "Ops needs to smartly manage space there"). Research run folders are 99% CSV and zip to about 10% (measured 6846190790).
 #
 #   1. refuse: a source or destination on E: or F: (Vince's own drives); a source on the needs-live list (or inside, or
-#      containing, a listed path); a source holding a junction or symlink; an existing zip (create-only); an empty source
+#      containing, a listed path); a source holding a junction or symlink; an existing zip (create-only); an empty source;
+#      a reserved device name or a name ending in a dot or space, in the source or on the source or destination path
 #   2. hash every source file (SHA-256) into a manifest
 #   3. zip to <DestRoot>\<leaf>.zip, the manifest beside it as <leaf>.zip.manifest.csv
 #   4. open the zip and hash every entry; the entry set must equal the manifest and every hash must match; on any mismatch
@@ -57,18 +58,19 @@ public static class ZipArchiveNative2 {
 # every stream, so a named NTFS stream would be lost with no archived copy. As the product's run-folder archiver
 # (controller/studio_run_folder_archive.alternate_streams), a source holding one is refused; FindFirstStreamW needs only
 # attribute access, so it also reads a file that 5b holds with no sharing.
-if (-not ('ZipArchiveStreams2' -as [type])) {
+if (-not ('ZipArchiveStreams3' -as [type])) {
   Add-Type -TypeDefinition @'
 using System; using System.ComponentModel; using System.Runtime.InteropServices;
-public static class ZipArchiveStreams2 {
+public static class ZipArchiveStreams3 {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct FindStreamData { public long StreamSize; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)] public string Name; }
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr FindFirstStreamW(string path, int level, out FindStreamData data, uint flags);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool FindNextStreamW(IntPtr h, out FindStreamData data);
   [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr h);
   // Codex on #333 (P2 4563002091): a long path needs the extended form, and a UNC one the \\?\UNC\ form (\\?\ + \\server
-  // is not a valid path). Short paths are left as they are.
+  // is not a valid path). Claude-Mac goatai#2750 6860158244 (a file literally named NUL, 11-13): EVERY path takes the
+  // extended form, not only long ones; a plain short path to such a file reaches the device and the probe throws.
   public static string ExtendedPath(string path) {
-    if (path.Length < 248 || path.StartsWith(@"\\?\")) return path;
+    if (path.StartsWith(@"\\?\")) return path;
     if (path.StartsWith(@"\\")) return @"\\?\UNC\" + path.Substring(2);
     return @"\\?\" + path;
   }
@@ -85,6 +87,15 @@ public static class ZipArchiveStreams2 {
 function Say($m) { '{0:yyyy-MM-ddTHH:mm:ss}Z ZIP-ARCHIVE: {1}' -f [DateTime]::UtcNow, $m }
 function Refuse($m) { Say "REFUSED: $m"; exit 2 }
 function Sha([IO.Stream]$s) { $h = [Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-', '').ToLower() } finally { $h.Dispose() } }
+# Claude-Mac goatai#2750 6860158244 (the first G: batch met a file literally named NUL, 11-13 16:57Z): Win32 resolves a plain
+# path whose name is a reserved device name (CON PRN AUX NUL CONIN$ CONOUT$ COM0-9 LPT0-9, superscript 1-3 too, with or
+# without an extension, any case) to the DEVICE, and trims a name ending in a dot or a space to a different name. The
+# hashing, the zip and the removal here use plain paths, so such a name in the source, or anywhere on the source or
+# destination path given (GetFullPath would trim it to another folder), is refused before any write.
+$OddName = '^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9¹²³]|LPT[0-9¹²³])(\..*)?$|[. ]$'
+foreach ($p in $Source, $DestRoot) {
+  foreach ($seg in ($p -split '[\\/]')) { if ($seg -and $seg -ne '.' -and $seg -ne '..' -and $seg -ne '?' -and $seg -match $OddName) { Refuse "the path $p has the segment '$seg', a reserved device name or a name ending in a dot or space" } }
+}
 $src = [IO.Path]::GetFullPath($Source).TrimEnd('\'); $dst = [IO.Path]::GetFullPath($DestRoot).TrimEnd('\')
 foreach ($p in $src, $dst) { if ($p -match '^[EeFf]:') { Refuse "$p is on E: or F:, which are Vince's own drives" } }
 if (-not (Test-Path -LiteralPath $src -PathType Container)) { Refuse "no source folder $src" }
@@ -111,9 +122,11 @@ if ((Test-Path -LiteralPath $zip) -or (Test-Path -LiteralPath $man)) { Refuse "$
 $files = New-Object Collections.ArrayList; $stack = New-Object Collections.Stack; $stack.Push((New-Object IO.DirectoryInfo $src))
 while ($stack.Count) {
   $d = $stack.Pop()
-  foreach ($s in $d.EnumerateDirectories()) { if ($s.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($s.FullName) is a junction or symlink inside the source" }; $stack.Push($s) }
-  foreach ($f in $d.EnumerateFiles()) { if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($f.FullName) is a link inside the source" }
-    $ns = [ZipArchiveStreams2]::FirstNamed($f.FullName); if ($ns) { Refuse "$($f.FullName) has the NTFS stream $ns, which the zip would not hold and the removal would destroy" }
+  foreach ($s in $d.EnumerateDirectories()) { if ($s.Name -match $OddName) { Refuse "$($s.FullName) is a reserved device name or ends in a dot or space; a plain path would reach the device or another folder" }
+    if ($s.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($s.FullName) is a junction or symlink inside the source" }; $stack.Push($s) }
+  foreach ($f in $d.EnumerateFiles()) { if ($f.Name -match $OddName) { Refuse "$($f.FullName) is a reserved device name or ends in a dot or space; a plain path would reach the device or another file" }
+    if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($f.FullName) is a link inside the source" }
+    $ns = [ZipArchiveStreams3]::FirstNamed($f.FullName); if ($ns) { Refuse "$($f.FullName) has the NTFS stream $ns, which the zip would not hold and the removal would destroy" }
     [void]$files.Add($f) }
 }
 if (-not $files.Count) { Refuse "$src holds no file" }
@@ -193,7 +206,7 @@ if ($RemoveSource) {
       try {
         $h = Sha $fs
         if ($DuringRemove) { & $DuringRemove $p }
-        if ($h -ne $r.sha256 -or [ZipArchiveStreams2]::FirstNamed($p)) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }   # a named stream added since the check counts as a change
+        if ($h -ne $r.sha256 -or [ZipArchiveStreams3]::FirstNamed($p)) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }   # a named stream added since the check counts as a change
       } finally { $fs.Dispose() }
     } catch { $fail = $_.Exception.Message }
     if ($changedNow -or $fail) {

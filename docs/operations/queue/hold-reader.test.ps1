@@ -3,6 +3,7 @@
 param([string]$Work = (Join-Path $env:TEMP ("hold-reader-test-" + [Guid]::NewGuid().ToString('N'))))
 $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path $MyInvocation.MyCommand.Path) 'hold-reader.ps1')
+$script:DiskFreeBytes = { param($d) 100GB }   # the hold cases below never depend on this PC's real C: (2026-11-13 disk floor)
 $null = New-Item -ItemType Directory -Path $Work -Force
 $issueFile = Join-Path $Work 'inbox-issue.txt'; [IO.File]::WriteAllText($issueFile, '#9999')
 $fail = 0
@@ -56,5 +57,18 @@ Check 'no issue file' (Get-HoldReason -InboxAfter 1000 -Gh (FakeGh 'c10' (Day 5 
 # 11. A body with a BOM and CRLF line ends: held.
 $d = Day 110 @{ 105 = ([char]0xFEFF + "Claude-Mac: [Ops] x`r`n`r`nHOLD: hunt and publishers`r`n") }
 Check 'BOM and CRLF' (Get-HoldReason -InboxAfter 1000 -Gh (FakeGh 'c11' $d) -IssueFile $issueFile) { param($g) $g -eq 'inbox post 1105 asks for a hold' }
+# 12-15. The disk start floor (disk-floor.ps1): under 15 GB on C: refuses, even with no hold and a clean inbox; a free-space
+# read that fails refuses; 15 GB and more starts; and the floor is read before the inbox (a full disk is not masked by a hold).
+$clean = FakeGh 'c12' (Day 5 @{})
+$script:DiskFreeBytes = { param($d) 14.9GB }
+Check 'C: at 14.9 GB refuses' (Get-HoldReason -InboxAfter 1000 -Gh $clean -IssueFile $issueFile) { param($g) "$g" -eq 'C: has 14.9 GB free, under the 15 GB start floor' }
+$script:DiskFreeBytes = { param($d) throw 'no volume' }
+Check 'free space unreadable refuses' (Get-HoldReason -InboxAfter 1000 -Gh $clean -IssueFile $issueFile) { param($g) "$g" -eq 'C: free space could not be read' }
+$script:DiskFreeBytes = { param($d) 15GB }
+Check 'C: at exactly 15 GB starts' (Get-HoldReason -InboxAfter 1000 -Gh $clean -IssueFile $issueFile) { param($g) $null -eq $g }
+$script:DiskFreeBytes = { param($d) 3GB }
+$h2 = Day 110 @{ 105 = $hold }
+Check 'floor reported before a hold' (Get-HoldReason -InboxAfter 1000 -Gh (FakeGh 'c15' $h2) -IssueFile $issueFile) { param($g) "$g" -like 'C: has 3.0 GB free*' }
+$script:DiskFreeBytes = { param($d) 100GB }
 "RESULT: $(if ($fail) { "$fail FAILED" } else { 'all passed' })"
 exit $fail

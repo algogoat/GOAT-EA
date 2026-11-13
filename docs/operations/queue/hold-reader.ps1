@@ -7,6 +7,9 @@
 # read that single page. GitHub returns the oldest first, so on a day with more than 100 comments every recent post was
 # outside the page, and a hold posted at 18:00:35Z on 2026-11-12 was not seen at 18:02Z. This reader takes every page
 # (gh --paginate), one comment per output line, and refuses (fails closed) when the read is not clean.
+# 2026-11-13: a start is also held while C: is under the disk start floor (disk-floor.ps1, beside this file), so every queue
+# that asks this reader before a start gets the floor too.
+. (Join-Path $PSScriptRoot 'disk-floor.ps1')
 $script:HoldGh = 'C:\Program Files\GitHub CLI\gh.exe'
 $script:HoldIssueFile = 'G:\GOAT-Build-Artifacts\claude-pc-ops\state\inbox-issue.txt'
 
@@ -33,7 +36,9 @@ function Find-Hold($Comments, [long]$InboxAfter) {
 }
 
 function Get-HoldReason([long]$InboxAfter, [string]$Gh = $script:HoldGh, [string]$IssueFile = $script:HoldIssueFile, [int]$Hours = 48) {
-  # $null = no hold. Any string = do not start (a hold, or a read that cannot be trusted).
+  # $null = no hold. Any string = do not start (a hold, a read that cannot be trusted, or C: under the disk start floor).
+  $disk = Get-DiskFloorReason
+  if ($disk) { return $disk }
   try {
     $issue = [IO.File]::ReadAllText($IssueFile).Trim().TrimStart('#')
     if ($issue -notmatch '^\d+$') { return 'the inbox issue number could not be read' }

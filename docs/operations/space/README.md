@@ -23,7 +23,10 @@ is not refused. It refuses (exit 2) a source file with a named NTFS stream (the 
 would destroy it), a source or destination on E: or F:, a source or destination root that is
 (or sits under) a junction or symlink (a removal must never reach real files on another volume through a link),
 `-RemoveSource` without `-NeedsLive`, a source on the needs-live list (or inside or above a listed path), a junction or
-symlink inside the source, an existing zip, and an empty source.
+symlink inside the source, an existing zip, and an empty source. It also refuses a reserved device name (`CON`, `PRN`,
+`AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9`, `LPT0`-`LPT9`, with or without an extension) or a name ending in a dot
+or a space, as a file or folder in the source or as a segment of the source or destination path: Win32 resolves a plain
+path to such a name to the device, or trims it to a different file or folder.
 
 For a finished catch-up's evidence in the suite, or a native run folder, use the product's own `evidence-archive` verb
 instead (`--run-folders` for run folders; a keep-list of what preregs and the book cite): it moves to another volume with a

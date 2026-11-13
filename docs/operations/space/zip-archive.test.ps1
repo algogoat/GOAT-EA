@@ -170,9 +170,10 @@ $len29 = 0; $z29 = Join-Path $dest 'Rhuge00000000.zip'
 if (Test-Path $z29) { $za29 = [IO.Compression.ZipFile]::OpenRead($z29); try { $len29 = ($za29.Entries | Where-Object { $_.FullName -eq 'huge.bin' }).Length } finally { $za29.Dispose() } }
 Check 'a single file over 4 GiB (zip64) is archived with its full length and removed' ($r.code -eq 0 -and $len29 -eq [long](4.3GB) -and -not (Test-Path $s29)) "code=$($r.code) entry=$len29 $($r.out)"
 Remove-Item -LiteralPath $z29 -Force -ErrorAction SilentlyContinue
-# 30 (Codex P2 4563002091 on #333): a long path gets the extended form; a long UNC path the \\?\UNC\ form; short ones stay.
+# 30 (Codex P2 4563002091 on #333; Claude-Mac goatai#2750 6860158244): EVERY path gets the extended form, a UNC one the
+#     \\?\UNC\ form, long or short; an extended path stays as it is.
 $longLocal = 'C:\' + ('a' * 250) + '\f.csv'; $longUnc = '\\server\share\' + ('b' * 250) + '\f.csv'
-Check 'long paths get the extended form, UNC ones \\?\UNC\, short ones stay' ([ZipArchiveStreams2]::ExtendedPath('C:\short\f.csv') -eq 'C:\short\f.csv' -and [ZipArchiveStreams2]::ExtendedPath($longLocal) -eq ('\\?\' + $longLocal) -and [ZipArchiveStreams2]::ExtendedPath($longUnc) -eq ('\\?\UNC\server\share\' + ('b' * 250) + '\f.csv') -and [ZipArchiveStreams2]::ExtendedPath('\\?\C:\x') -eq '\\?\C:\x') "unc -> $([ZipArchiveStreams2]::ExtendedPath($longUnc).Substring(0,30))"
+Check 'every path gets the extended form, UNC ones \\?\UNC\, long or short' ([ZipArchiveStreams3]::ExtendedPath('C:\short\f.csv') -eq '\\?\C:\short\f.csv' -and [ZipArchiveStreams3]::ExtendedPath('\\server\share\f.csv') -eq '\\?\UNC\server\share\f.csv' -and [ZipArchiveStreams3]::ExtendedPath($longLocal) -eq ('\\?\' + $longLocal) -and [ZipArchiveStreams3]::ExtendedPath($longUnc) -eq ('\\?\UNC\server\share\' + ('b' * 250) + '\f.csv') -and [ZipArchiveStreams3]::ExtendedPath('\\?\C:\x') -eq '\\?\C:\x') "short -> $([ZipArchiveStreams3]::ExtendedPath('C:\short\f.csv'))"
 # 31 (found by the first batch, 11-13 12:54Z: 2,799 empty folders in one run folder): .NET Framework names a zip's directory
 #     entries with backslashes, and the verify skipped only names ending in '/', so every empty folder read as an "extra
 #     entry" and the run stopped (safely: zip deleted, source untouched). A source with empty folders, one nested, is archived
@@ -185,6 +186,34 @@ Check 'a source with empty folders is archived and removed; the zip keeps them' 
 # Claude-Mac 6853570441: an empty source folder exists again after an unzip.
 $x31 = Join-Path $Work 'unzip31'; if (Test-Path $z31) { [IO.Compression.ZipFile]::ExtractToDirectory($z31, $x31) }
 Check 'after an unzip the empty folders exist again, still empty' ((Test-Path -LiteralPath (Join-Path $x31 'leftover_xml\Optimization Run') -PathType Container) -and @(Get-ChildItem -LiteralPath (Join-Path $x31 'leftover_xml\Optimization Run') -Force).Count -eq 0 -and (Test-Path -LiteralPath (Join-Path $x31 'empty') -PathType Container) -and (Test-Path -LiteralPath (Join-Path $x31 'equity.csv'))) "unzip: $(@(Get-ChildItem -LiteralPath $x31 -Recurse -Force -ErrorAction SilentlyContinue).Count) items"
+# 32-39 (Claude-Mac goatai#2750 6860158244; the first G: batch met a file literally named NUL in an old worktree copy,
+#     11-13 16:57Z): a reserved device name or a name ending in a dot or space, as a file or a folder, anywhere in the source,
+#     refuses before any write; the odd entry and every other file stay. Fixtures are written through \\?\ paths.
+$odd = [ordered]@{ 32 = 'NUL'; 33 = 'deploy\nul.txt'; 34 = 'deploy\EURUSD\COM1.log'; 35 = 'deploy\aux'; 36 = 'a.'; 37 = 'deploy\b '; 38 = 'con\'; 39 = 'deploy\x.\' }
+foreach ($e in $odd.GetEnumerator()) {   # (an int key on an ordered dictionary indexes by POSITION, so no $odd[$n])
+  $n = $e.Key; $rel = $e.Value; $sx = Fixture "Rodd$n"; $x = "\\?\$sx\$rel"
+  if ($rel.EndsWith('\')) { [void][IO.Directory]::CreateDirectory($x); [IO.File]::WriteAllText($x + 'in.txt', 'inside') } else { [IO.File]::WriteAllText($x, 'odd name') }
+  $r = Run @{ Source = $sx; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+  $kept = if ($rel.EndsWith('\')) { [IO.File]::Exists($x + 'in.txt') } else { [IO.File]::Exists($x) -and [IO.File]::ReadAllText($x) -eq 'odd name' }
+  Check "a source holding '$rel' refuses before any write; everything stays" ($r.code -eq 2 -and $r.out -match 'reserved device name' -and $kept -and [IO.Directory]::GetFiles("\\?\$sx", '*', 'AllDirectories').Count -eq 4 -and -not (Test-Path (Join-Path $dest "Rodd$n.zip")) -and -not (Test-Path (Join-Path $dest "Rodd$n.zip.manifest.csv"))) $r.out
+  if ([IO.Directory]::Exists("\\?\$sx")) { [IO.Directory]::Delete("\\?\$sx", $true) }
+}
+# 40. The stream probe reads a file named NUL as the file (no throw): every path takes the extended form.
+$s40 = Fixture 'Rc40000000000'; [IO.File]::WriteAllText("\\?\$s40\NUL", 'redirected stderr')
+$p40 = $null; try { $p40 = 'none'; $n40 = [ZipArchiveStreams3]::FirstNamed((Join-Path $s40 'NUL')); if ($n40) { $p40 = $n40 } } catch { $p40 = "THREW: $($_.Exception.Message)" }
+Check 'the stream probe reads a file named NUL as the file' ($p40 -eq 'none') $p40
+if ([IO.Directory]::Exists("\\?\$s40")) { [IO.Directory]::Delete("\\?\$s40", $true) }
+# 41-43. A source or destination path THROUGH such a name refuses: GetFullPath trims '...\Rdotp.' to '...\Rdotp' and
+#     '...\Rmid.\inner' to '...\Rmid\inner', so the old tool archived and removed a DIFFERENT, real folder. Both stay.
+$real41 = Fixture 'Rdotp'; $s41 = Join-Path $Work 'Rdotp.'; [void][IO.Directory]::CreateDirectory("\\?\$s41"); [IO.File]::WriteAllText("\\?\$s41\only.csv", 'dot folder')
+$r = Run @{ Source = $s41; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'a source path ending in a dot refuses; the folder it would trim to stays' ($r.code -eq 2 -and $r.out -match 'reserved device name' -and @(Get-ChildItem $real41 -Recurse -File).Count -eq 3 -and [IO.File]::Exists("\\?\$s41\only.csv") -and -not (Test-Path (Join-Path $dest 'Rdotp.zip'))) $r.out
+$real42 = Fixture 'Rmid\inner'; $s42 = Join-Path $Work 'Rmid.\inner'; [void][IO.Directory]::CreateDirectory("\\?\$s42"); [IO.File]::WriteAllText("\\?\$s42\only.csv", 'dot parent')
+$r = Run @{ Source = $s42; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'a source path through a dot-ending folder refuses; the folder it would trim to stays' ($r.code -eq 2 -and $r.out -match 'reserved device name' -and @(Get-ChildItem $real42 -Recurse -File).Count -eq 3 -and [IO.File]::Exists("\\?\$s42\only.csv") -and -not (Test-Path (Join-Path $dest 'inner.zip'))) $r.out
+$s43 = Fixture 'Rc43000000000'; $r = Run @{ Source = $s43; DestRoot = (Join-Path $Work 'archive \sub'); RemoveSource = $true; NeedsLive = $nlEmpty }
+Check 'a destination path through a space-ending folder refuses; the source stays' ($r.code -eq 2 -and $r.out -match 'reserved device name' -and @(Get-ChildItem $s43 -Recurse -File).Count -eq 3) $r.out
+foreach ($x in $s41, (Join-Path $Work 'Rmid.')) { if ([IO.Directory]::Exists("\\?\$x")) { [IO.Directory]::Delete("\\?\$x", $true) } }
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

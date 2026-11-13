@@ -150,7 +150,7 @@ $want = @{}; foreach ($r in $rows) { $want[$r.rel] = $r.sha256 }
 $bad = New-Object Collections.ArrayList; $seen = @{}
 try {
   $z = [IO.Compression.ZipFile]::OpenRead($zip)
-  try { foreach ($e in $z.Entries) { if ($e.FullName.EndsWith('/')) { continue }; $k = $e.FullName.Replace('\', '/'); $seen[$k] = 1
+  try { foreach ($e in $z.Entries) { $k = $e.FullName.Replace('\', '/'); if ($k.EndsWith('/')) { continue }; $seen[$k] = 1   # a directory entry (an empty folder; .NET Framework names it with backslashes) holds no data
           $st = $e.Open(); try { $h = Sha $st } finally { $st.Dispose() }
           if (-not $want.ContainsKey($k)) { [void]$bad.Add("extra entry $k") } elseif ($want[$k] -ne $h) { [void]$bad.Add("hash mismatch $k") } } }
   finally { $z.Dispose() }

@@ -173,6 +173,15 @@ Remove-Item -LiteralPath $z29 -Force -ErrorAction SilentlyContinue
 # 30 (Codex P2 4563002091 on #333): a long path gets the extended form; a long UNC path the \\?\UNC\ form; short ones stay.
 $longLocal = 'C:\' + ('a' * 250) + '\f.csv'; $longUnc = '\\server\share\' + ('b' * 250) + '\f.csv'
 Check 'long paths get the extended form, UNC ones \\?\UNC\, short ones stay' ([ZipArchiveStreams2]::ExtendedPath('C:\short\f.csv') -eq 'C:\short\f.csv' -and [ZipArchiveStreams2]::ExtendedPath($longLocal) -eq ('\\?\' + $longLocal) -and [ZipArchiveStreams2]::ExtendedPath($longUnc) -eq ('\\?\UNC\server\share\' + ('b' * 250) + '\f.csv') -and [ZipArchiveStreams2]::ExtendedPath('\\?\C:\x') -eq '\\?\C:\x') "unc -> $([ZipArchiveStreams2]::ExtendedPath($longUnc).Substring(0,30))"
+# 31 (found by the first batch, 11-13 12:54Z: 2,799 empty folders in one run folder): .NET Framework names a zip's directory
+#     entries with backslashes, and the verify skipped only names ending in '/', so every empty folder read as an "extra
+#     entry" and the run stopped (safely: zip deleted, source untouched). A source with empty folders, one nested, is archived
+#     and removed, and the zip keeps their entries.
+$s31 = Fixture 'Rc31000000000'; $null = New-Item -ItemType Directory (Join-Path $s31 'leftover_xml\Optimization Run') -Force; $null = New-Item -ItemType Directory (Join-Path $s31 'empty') -Force
+$r = Run @{ Source = $s31; DestRoot = $dest; RemoveSource = $true; NeedsLive = $nlEmpty }
+$dirs31 = @(); $z31 = Join-Path $dest 'Rc31000000000.zip'
+if (Test-Path $z31) { $za31 = [IO.Compression.ZipFile]::OpenRead($z31); try { $dirs31 = @($za31.Entries | Where-Object { $_.FullName.Replace('\', '/').EndsWith('/') } | ForEach-Object { $_.FullName.Replace('\', '/') }) } finally { $za31.Dispose() } }
+Check 'a source with empty folders is archived and removed; the zip keeps them' ($r.code -eq 0 -and -not (Test-Path $s31) -and $dirs31 -contains 'leftover_xml/Optimization Run/' -and $dirs31 -contains 'empty/') "code=$($r.code) dirs=$($dirs31 -join ',') $($r.out)"
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

@@ -40,6 +40,9 @@ const REMOVED={
   '','','','',
   // Codex on GOAT-EA#330: the poll reads the command id again after the fields and applies only if it is unchanged.
   'DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);',
+  // The B55 assembly: its own build ID and marker replace B54's.
+  '#define   GOAT_BUILD_ID "V1.49-BETA17-54"',
+  '#define   GOAT_BUILD_MARKER "B54"',
  ],
  // Codex on GOAT-EA#330: at each of the four publish sites the id's first write (the value) becomes a clear (0.0), and
  // the value is written after the other three fields.
@@ -49,7 +52,9 @@ const REMOVED={
 const NEW_INPUTS=['BRK_Start_Seq'];
 const NEW_DEFAULTS={BRK_Start_Seq:['sinput','bool','false']};
 const GROUP='====BREAKOUT SEQUENCE START (B55)====';
-// A0 keeps B54's identity lines (the assembly replaces them and lists them in REMOVED): each appears exactly once.
+// The B55 assembly (as test_b54_no_drift.cjs's IDENTITY_LINES for B54): B55's own build ID and marker replace B54's. They
+// are the one unmarked change (the build ID names no marker); each appears exactly once, and B54's are in REMOVED and gone.
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-55"','#define   GOAT_BUILD_MARKER "B55"'];
 const B54_IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-54"','#define   GOAT_BUILD_MARKER "B54"'];
 const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
@@ -118,12 +123,13 @@ for(const f of CHANGED){
  assert.ok(hunks.length>0,f+' differs from B54');
  for(const {added,removed} of hunks){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B54 line(s) is unmarked');
-  for(const n of added){const text=lines[n-1];assert.ok(/B55/.test(text)||inBlock[n-1],f+':'+n+' changed since B54 without a B55 marker: '+text.trim());}
+  for(const n of added){const text=lines[n-1];assert.ok(/B55/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)),f+':'+n+' changed since B54 without a B55 marker: '+text.trim());}
  }
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[])].sort(),f+': the B54 lines removed are exactly REMOVED');
 }
 {const main=read('GOAT V1.49.mq5').toString('utf8').split('\r\n');
- for(const l of B54_IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,1,'A0 keeps B54\'s identity line, once: '+l);
+ for(const l of IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,1,'B55\'s identity line, once: '+l);
+  for(const l of B54_IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,0,'B54\'s identity line is gone: '+l);
  // The replaced line keeps B54's alert and code (spec 3.1: B54's refusal for every SET that does not ask for a sequence).
  const narrowed=main.filter(x=>x.includes('BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single'));
  assert.equal(narrowed.length,1,'line 5128, once');

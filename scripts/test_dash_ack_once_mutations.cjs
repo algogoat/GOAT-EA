@@ -9,9 +9,11 @@ const MAIN=fs.readFileSync(path.join(ROOT,'GOAT V1.49.mq5'),'utf8').replace(/\r\
 const FINAL='return(ack_status==GOAT_DASH_ACK_APPLIED || ack_status==GOAT_DASH_ACK_REJECTED || ack_status==GOAT_DASH_ACK_EXPIRED);';
 const MUTANTS=[
  // The guard: a command id with a final acknowledgement is not processed again.
- ['the guard is removed (every tick acknowledges and flushes again)','   if(command_id==g_goat_dash_final_ack_id) return; // B55 (GOAT-EA#328)','   // B55 (GOAT-EA#328)'],
- ['the guard knows only the applied id (expired and rejected still loop)','   if(command_id==g_goat_dash_final_ack_id) return; // B55 (GOAT-EA#328)','   if(command_id==DashboardPortfolioCommandIdApplied) return; // B55 (GOAT-EA#328)'],
- ['a final acknowledgement is never recorded','   if(GoatDashAckIsFinal(ack_status)) g_goat_dash_final_ack_id=command_id; // B55 (GOAT-EA#328)','   // B55 (GOAT-EA#328)'],
+ ['the guard is removed (every tick acknowledges and flushes again)','   if(GoatDashFinalAcked(command_id)) return; // B55 (GOAT-EA#328)','   // B55 (GOAT-EA#328)'],
+ ['the guard knows only the applied id (expired and rejected still loop)','   if(GoatDashFinalAcked(command_id)) return; // B55 (GOAT-EA#328)','   if(command_id==DashboardPortfolioCommandIdApplied) return; // B55 (GOAT-EA#328)'],
+ ['a final acknowledgement is never recorded','   GoatDashNoteFinalAck(command_id,ack_status); // B55 (GOAT-EA#328)','   // B55 (GOAT-EA#328)'],
+ ['every acknowledgement is recorded as final (a close that is not flat is never retried)','   if(GoatDashAckIsFinal(ack_status)) g_goat_dash_final_ack_id=command_id;\n  }','   g_goat_dash_final_ack_id=command_id;\n  }'],
+ ['the guard compares nothing (every tick acknowledges and flushes again)','   return(command_id==g_goat_dash_final_ack_id);','   return(false);'],
  // Which statuses are final.
  ['APPLIED is not final',FINAL,'return(ack_status==GOAT_DASH_ACK_REJECTED || ack_status==GOAT_DASH_ACK_EXPIRED);'],
  ['REJECTED is not final',FINAL,'return(ack_status==GOAT_DASH_ACK_APPLIED || ack_status==GOAT_DASH_ACK_EXPIRED);'],

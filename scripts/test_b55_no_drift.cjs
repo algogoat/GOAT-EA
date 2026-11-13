@@ -33,6 +33,10 @@ const REMOVED={
  // A0 (spec 3.7): line 5128 gains "&& !BRK_Start_Seq" (and its B55 note), so B54's line is replaced. Alert and code stay.
  'GOAT V1.49.mq5':[
   'if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}',
+  // dash-ack-once (GOAT-EA#328): four blank lines each replaced by one marked call, so no line above OnInit's rules moves
+  // (gate 0 compares B54's refusal text, cited lines included): in DashboardBusAckCommand, DashboardBusAckCloseCommand,
+  // DashboardBusProcessCommands, and after OnInit's policy restore.
+  '','','','',
  ],
 };
 // The B55 input (spec section 3.1), appended at the very end.

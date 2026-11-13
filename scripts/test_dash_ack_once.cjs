@@ -81,6 +81,8 @@ function instance(store,{positions=0,refuse=0,now=1000,mode=0}={}){
  let code=js(blockGlobals)+'\nlet g_goat_dash_close_try_id=0,g_goat_dash_close_try_at=0;\n'
   +fn('GoatDashAckIsFinal',['ack_status'],bodyOf(main,'bool GoatDashAckIsFinal(const int ack_status)'))
   +fn('GoatDashSeedFinalAck',[],bodyOf(main,'void GoatDashSeedFinalAck(void)'))
+  +fn('GoatDashNoteFinalAck',['command_id','ack_status'],bodyOf(main,'void GoatDashNoteFinalAck(const long command_id,const int ack_status)'))
+  +fn('GoatDashFinalAcked',['command_id'],bodyOf(main,'bool GoatDashFinalAcked(const long command_id)'))
   +fn('GoatDashCloseAckUnchanged',['command_id','ack_status','closed_positions','close_errors','remaining'],
       bodyOf(main,'bool GoatDashCloseAckUnchanged(const long command_id,const int ack_status,const int closed_positions,const int close_errors,const int remaining)'))
   +fn('GoatDashCloseRetryWait',['command_id'],bodyOf(main,'bool GoatDashCloseRetryWait(const long command_id)'))

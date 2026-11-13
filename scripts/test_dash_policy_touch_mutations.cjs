@@ -1,48 +1,47 @@
 // Mutation check for the hourly policy touch (GOAT-EA#328 follow-up): every rule is load-bearing. Each mutant edits
 // GOAT V1.49.mq5 in memory; test_dash_policy_touch.cjs, run on the mutated entrypoint (GOAT_EA_MAIN), must then fail.
 // Anchors sit on the touch's own lines, never on the build ID or marker lines. Each mutant's line shows what the test
-// saw (the hour gate removed: a write every tick).
+// saw. The write mutants are the point of Claude-Mac's review on GOAT-EA#330: a write-back races the dashboard.
 'use strict';
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),TEST=path.join(__dirname,'test_dash_policy_touch.cjs');
 const MAIN=fs.readFileSync(path.join(ROOT,'GOAT V1.49.mq5'),'utf8').replace(/\r\n/g,'\n');
 const GATE='   if(dpt_hour<=0 || dpt_hour==g_goat_dash_policy_touched_hour) return;';
+const READ='   if(GlobalVariableCheck(dpt_name)) GlobalVariableGet(dpt_name,dpt_value); // a read only: it renews the lifetime';
+const DONE='   g_goat_dash_policy_touched_hour=dpt_hour;\n';
 const HEAD='void GoatDashPolicyHourlyTouch(void)\n  {\n';
 const GUARDS=HEAD+'   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;\n   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;\n   if(MAGIC1<=0)                                                         return;\n';
+const touchLine=arg=>'   GoatDashPolicyTouchOne('+arg+');\n';
 const MUTANTS=[
+ // Nothing is written: Claude-Mac's required change, and its neighbours.
+ ['the touch writes the value back (the race of GOAT-EA#330)',READ,'   if(GlobalVariableCheck(dpt_name) && GlobalVariableGet(dpt_name,dpt_value)) GlobalVariableSet(dpt_name,dpt_value);'],
+ ['the touch writes 0',READ,'   if(GlobalVariableCheck(dpt_name)) GlobalVariableSet(dpt_name,0.0);'],
+ ['the touch writes with a condition',READ,'   if(GlobalVariableCheck(dpt_name) && GlobalVariableGet(dpt_name,dpt_value)) GlobalVariableSetOnCondition(dpt_name,dpt_value,dpt_value);'],
+ ['the touch deletes the variable',READ,'   if(GlobalVariableCheck(dpt_name)) GlobalVariableDel(dpt_name);'],
+ ['the touch creates a missing variable',READ,'   if(!GlobalVariableCheck(dpt_name)) GlobalVariableTemp(dpt_name); GlobalVariableGet(dpt_name,dpt_value);'],
+ ['the touch flushes',DONE,DONE+'   GlobalVariablesFlush();\n'],
+ ['the touch reads nothing',READ,'   GlobalVariableCheck(dpt_name);'],
+ // Not a mutant: dropping the GlobalVariableCheck alone is equivalent in MT5 (a read of a missing variable answers false
+ // and creates nothing). It stays as GoatCidDailyTouch's explicit check before the read.
  // The hour gate.
- ['the hour gate is removed (a touch every tick)',GATE,'   if(dpt_hour<=0) return;'],
- ['the hour is never marked done (a touch every tick)','   g_goat_dash_policy_touched_hour=dpt_hour;\n','   ;\n'],
+ ['the hour gate is removed (a read every tick)',GATE,'   if(dpt_hour<=0) return;'],
+ ['the hour is never marked done (a read every tick)',DONE,'   ;\n'],
  ['the gate is a day, not an hour','   datetime dpt_hour=dpt_gmt-dpt_gmt%3600;','   datetime dpt_hour=dpt_gmt-dpt_gmt%86400;'],
  ['the gate is a minute','   datetime dpt_hour=dpt_gmt-dpt_gmt%3600;','   datetime dpt_hour=dpt_gmt-dpt_gmt%60;'],
- // No flush, nothing created, no value changed.
- ['the touch flushes','   g_goat_dash_policy_touched_hour=dpt_hour;\n','   g_goat_dash_policy_touched_hour=dpt_hour;\n   GlobalVariablesFlush();\n'],
- ['the touch creates a missing variable','   if(!GlobalVariableCheck(dpt_name))          return true; // missing: never created here\n   if(!GlobalVariableGet(dpt_name,dpt_value))  return true;','   GlobalVariableGet(dpt_name,dpt_value);'],
- // Not a mutant: dropping the GlobalVariableCheck line alone is equivalent (the by-reference read answers false for a
- // missing variable and the touch returns). It stays as GoatCidDailyTouch's explicit check before the read.
- ['a variable gone between the check and the read is re-created at 0','   if(!GlobalVariableGet(dpt_name,dpt_value))  return true;','   GlobalVariableGet(dpt_name,dpt_value);'],
- ['the touch writes a different value (0)','   return(GlobalVariableSet(dpt_name,dpt_value)!=0);','   return(GlobalVariableSet(dpt_name,0.0)!=0);'],
- ['the touch writes a different value (1)','   return(GlobalVariableSet(dpt_name,dpt_value)!=0);','   return(GlobalVariableSet(dpt_name,1.0)!=0);'],
- ['the touch only reads (nothing is re-set)','   return(GlobalVariableSet(dpt_name,dpt_value)!=0);','   return true;'],
  // The five variables.
- ['the chart\'s paused variable is not touched','   bool dpt_ok=GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED));','   bool dpt_ok=true;'],
- ['the chart\'s trade mask is not touched','   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK)))    dpt_ok=false;\n',''],
- ['the chart\'s exposure mode is not touched','   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE))) dpt_ok=false;\n',''],
- ['the portfolio\'s paused variable is not touched','   if(!GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardPolicyPaused")))                        dpt_ok=false;\n',''],
- ['the portfolio\'s exposure mode is not touched','   if(!GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardExposurePolicyMode")))                  dpt_ok=false;\n',''],
+ ['the chart\'s paused variable is not read',touchLine('GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED)'),''],
+ ['the chart\'s trade mask is not read',touchLine('GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK)'),''],
+ ['the chart\'s exposure mode is not read',touchLine('GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE)'),''],
+ ['the portfolio\'s paused variable is not read',touchLine('GoatPortfolioGVName("DashboardPolicyPaused")'),''],
+ ['the portfolio\'s exposure mode is not read',touchLine('GoatPortfolioGVName("DashboardExposurePolicyMode")'),''],
  // Live only.
  ['the touch runs on batch and dashboard charts',GUARDS,HEAD+'   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;\n   if(MAGIC1<=0)                                                         return;\n'],
  ['the touch runs in optimization and forward passes',GUARDS,HEAD+'   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;\n   if(MAGIC1<=0)                                                         return;\n'],
  ['the touch runs without a magic',GUARDS,HEAD+'   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;\n   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;\n'],
- // A failed write.
- ['a failed write marks the hour done','      g_goat_dash_policy_touch_failed_ms=dpt_now;\n      return;','      g_goat_dash_policy_touch_failed_ms=dpt_now;\n      g_goat_dash_policy_touched_hour=dpt_hour;\n      return;'],
- ['a failed write retries every tick','   if(g_goat_dash_policy_touch_failed && dpt_now-g_goat_dash_policy_touch_failed_ms<GOAT_DASH_POLICY_TOUCH_RETRY_MS) return;\n',''],
- ['a failed write is never retried within the hour','      g_goat_dash_policy_touch_failed=true;\n      g_goat_dash_policy_touch_failed_ms=dpt_now;\n      return;','      g_goat_dash_policy_touched_hour=dpt_hour;\n      return;'],
- ['a failure is logged every time','      if(!g_goat_dash_policy_touch_failed)\n','      if(true)\n'],
- ['a failure is never logged again','   g_goat_dash_policy_touch_failed=false;\n   g_goat_dash_policy_touched_hour=dpt_hour;','   g_goat_dash_policy_touched_hour=dpt_hour;'],
- ['a failed write goes unnoticed','   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE))) dpt_ok=false;','   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE));'],
  // On the timer.
  ['the touch is not on the timer','      GoatDashPolicyHourlyTouch(); // B55 (GOAT-EA#328)','      // B55 (GOAT-EA#328)'],
+ // The reference the read relies on stays quoted in the code.
+ ['the MQL5 reference is no longer quoted','// setting of a new value, but reading of the global variable value, as well."','// setting of a new value."'],
 ];
 function runOn(mainText){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'goat-dashtouch-'));

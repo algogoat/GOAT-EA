@@ -1,14 +1,17 @@
 // The hourly policy touch (GOAT-EA#328 follow-up). MT5 deletes a GlobalVariable nothing accesses for 4 weeks. The
 // every-second acknowledgement that dash-ack-once removed also re-set this chart's policy variables; without it a Buy
 // Only or paused rule could age out of the terminal's store and come back as "allow both, not paused" at a restart.
-// Once per UTC hour the one-second timer re-sets the five policy variables OnInit restores from, each to the value it
-// holds, without a flush. The production code runs here from GOAT V1.49.mq5 (the dash-policy-touch block), as
-// test_dash_ack_once.cjs runs the bus, against a modelled global-variable store:
-// 1. over ticks spanning 3 hours each of the five variables is re-set once an hour, values unchanged, zero flushes;
-// 2. a missing variable is never created;
+// Once per UTC hour the one-second timer READS the five policy variables OnInit restores from. A read is an access
+// (MQL5 Reference, "Global Variables of the Terminal"); a write-back would race the dashboard on the portfolio variables
+// (Claude-Mac, GOAT-EA#330). The production code runs here from GOAT V1.49.mq5 (the dash-policy-touch block), as
+// test_dash_ack_once.cjs runs the bus, against a modelled global-variable store whose every write path throws:
+// 1. over ticks spanning 3 hours each of the five variables is read once an hour; nothing is written or flushed;
+// 2. a missing variable is never read into existence or created;
 // 3. batch, dashboard, optimization and forward charts, and a chart with no magic, do nothing;
-// 4. the value written is the one the variable holds at the touch (a command in between is kept, never undone);
-// 5. a failed write is logged once, retried no sooner than a minute later, and the hour stays owed until it succeeds;
+// 4. the race: a dashboard pause (and a resume) landing between one chart's read and the next survives every touch, on
+//    any number of charts;
+// 5. the block names no write call at all (Set, SetOnCondition, Temp, Del, DeleteAll, Flush), and its comment quotes
+//    the MQL5 reference that a read is an access;
 // 6. the five names are exactly what OnInit's policy restore reads, and the touch is on the timer, beside the bus.
 // test_dash_policy_touch_mutations.cjs runs this file on mutated entrypoints (GOAT_EA_MAIN): each must fail.
 'use strict';
@@ -38,10 +41,9 @@ for(const m of header.matchAll(/^#define\s+(GOAT_GV_FIELD_POLICY_\w+)\s+"([^"]*)
 for(const k of ['GOAT_GV_FIELD_POLICY_PAUSED','GOAT_GV_FIELD_POLICY_TRADE_MASK','GOAT_GV_FIELD_POLICY_EXPOSURE_MODE']) assert.ok(DEF[k],'GOAT_Inputs_Definitions.mqh defines '+k);
 const block=(main.match(/\/\/ B55:begin dash-policy-touch\n([\s\S]*?)\/\/ B55:end dash-policy-touch\n/)||[])[1];
 assert.ok(block,'the dash-policy-touch block');
-const retryMs=Number((block.match(/^#define GOAT_DASH_POLICY_TOUCH_RETRY_MS\s+(\d+)\s*$/m)||[])[1]);
-assert.equal(retryMs,60000,'a failed write is retried no sooner than a minute later');
-const blockGlobals=block.split('\n').filter(l=>/^(?:datetime|uint|bool)\s+g_goat_dash_policy_\w+=[^()]*;/.test(l)).join('\n');
-assert.equal(blockGlobals.split('\n').length,3,'the touch\'s three state variables');
+const code=block.replace(/\/\/[^\n]*/g,'');
+const blockGlobals=code.split('\n').filter(l=>/^(?:datetime|uint|bool|int)\s+g_goat_dash_policy_\w+=[^()]*;/.test(l)).join('\n');
+assert.equal(blockGlobals.split('\n').length,1,'the touch keeps one state variable: the hour it last ran');
 
 const CHILD=f=>'77|EURUSD|'+f,PORT=n=>'P|'+n;
 const PAUSED=CHILD(DEF.GOAT_GV_FIELD_POLICY_PAUSED),MASK=CHILD(DEF.GOAT_GV_FIELD_POLICY_TRADE_MASK),EXPO=CHILD(DEF.GOAT_GV_FIELD_POLICY_EXPOSURE_MODE);
@@ -51,84 +53,80 @@ const FIVE=[PAUSED,MASK,EXPO,P_PAUSED,P_EXPO];
 const policy=()=>new Map([[PAUSED,1],[MASK,1],[EXPO,2],[P_PAUSED,1],[P_EXPO,2],[CHILD('CID'),123456],[PORT('Portfolio_StartTime'),1700000000]]);
 const HOUR=3600,H0=Math.floor(1731400000/HOUR)*HOUR;   // a UTC hour boundary
 
-// One EA instance on a chart: `now` is TimeGMT (s); GetTickCount follows it in ms. `failing` names fail their write.
-function instance(store,{now=H0,mode=0,optimization=false,forward=false,magic=77}={}){
+// One EA instance on a chart: `now` is TimeGMT (s). Every write path of the terminal's store is modelled as MT5 does it
+// (a Set writes, a Del deletes) and recorded: the touch must never reach one. `afterRead(key)` runs right after a read
+// (another chart or the dashboard acting in between).
+const WRITES=['GlobalVariableSet','GlobalVariableSetOnCondition','GlobalVariableTemp','GlobalVariableDel','GlobalVariablesDeleteAll','GlobalVariablesFlush'];
+const EFFECT={GlobalVariableSet:(s,k,v)=>{s.set(k,v);return 1;},GlobalVariableSetOnCondition:(s,k,v)=>{s.set(k,v);return true;},GlobalVariableTemp:(s,k)=>{if(!s.has(k))s.set(k,0);return true;},
+ GlobalVariableDel:(s,k)=>s.delete(k),GlobalVariablesDeleteAll:s=>{const n=s.size;s.clear();return n;},GlobalVariablesFlush:()=>{}};
+function instance(store,{now=H0,mode=0,optimization=false,forward=false,magic=77,chart='EURUSD'}={}){
  const c={...DEF,MAGIC1:magic,Operation_Batch:1,Operation_Dash:2,Mode_Operation:mode,MQL_OPTIMIZATION:1,MQL_FORWARD:2,
-  GOAT_DASH_POLICY_TOUCH_RETRY_MS:retryMs,now,start:now,sets:[],flushes:0,prints:[],failing:new Set(),store,
-  Symbol:()=>'EURUSD',GoatPortfolioGVName:PORT,GoatChildGVName:(m,s,f)=>m+'|'+s+'|'+f,IntegerToString:String,GetLastError:()=>4501};
+  now,reads:[],checks:0,writes:[],store,afterRead:()=>{},
+  Symbol:()=>chart,GoatPortfolioGVName:PORT,GoatChildGVName:(m,s,f)=>m+'|'+s+'|'+f,IntegerToString:String,GetLastError:()=>4501,Print:()=>{}};
  c.MQLInfoInteger=flag=>(flag===1&&optimization)||(flag===2&&forward)?1:0;
- c.TimeGMT=()=>c.now;c.GetTickCount=()=>((c.now-c.start)*1000+5000)>>>0;
- c.GlobalVariableCheck=k=>{const had=store.has(k);if(k===c.vanish)store.delete(k);return had;};   // `vanish`: deleted right after its check
- c.gvRead=k=>store.has(k)?[true,store.get(k)]:[false,0];
- c.GlobalVariableSet=(k,v)=>{c.sets.push([k,v,c.now]);if(c.failing.has(k))return 0;store.set(k,v);return c.now;};
- c.GlobalVariablesFlush=()=>{c.flushes++;};c.Print=s=>c.prints.push(s);
+ c.TimeGMT=()=>c.now;c.GetTickCount=()=>((c.now-H0)*1000+5000)>>>0;
+ c.GlobalVariableCheck=k=>{c.checks++;return store.has(k);};
+ c.gvRead=k=>{const r=store.has(k)?[true,store.get(k)]:[false,0];c.reads.push([k,c.now]);c.afterRead(k);return r;};
+ for(const w of WRITES) c[w]=(...a)=>{c.writes.push([w,...a]);return EFFECT[w](store,...a);};
  vm.createContext(c);
  vm.runInContext(js(blockGlobals)+'\n'
-  +fn('GoatDashPolicyTouchOne',['dpt_name'],bodyOf(main,'bool GoatDashPolicyTouchOne(const string dpt_name)'))
+  +fn('GoatDashPolicyTouchOne',['dpt_name'],bodyOf(main,'void GoatDashPolicyTouchOne(const string dpt_name)'))
   +fn('GoatDashPolicyHourlyTouch',[],bodyOf(main,'void GoatDashPolicyHourlyTouch(void)')),c);
  c.ticks=n=>{for(let i=0;i<n;i++){c.GoatDashPolicyHourlyTouch();c.now++;}};   // the 1 s timer (GoatTimerBody)
- c.touches=k=>c.sets.filter(s=>s[0]===k);
+ c.readsOf=k=>c.reads.filter(r=>r[0]===k);
  return c;
 }
-const summary=c=>c.sets.length+' write(s) and '+c.flushes+' flush(es)';
 
-{// 1. Three hours of timer ticks, from an hour boundary: each of the five is re-set at the top of each hour (3 times),
- // to the value it holds; nothing else is written, nothing is flushed, nothing is created or changed.
+{// 1. Three hours of timer ticks, from an hour boundary: each of the five is read at the top of each hour (3 times);
+ // nothing is written, flushed, created or changed.
  const store=policy(),before=new Map(store),c=instance(store);c.ticks(3*HOUR);
  for(const k of FIVE)
-  assert.deepEqual(c.touches(k),[[k,before.get(k),H0],[k,before.get(k),H0+HOUR],[k,before.get(k),H0+2*HOUR]],
-   k+': '+c.touches(k).length+' re-set(s) over 3 hours of ticks ('+summary(c)+' in all), want one an hour, at its own value');
- assert.deepEqual([c.sets.length,c.flushes,c.prints],[15,0,[]],'3 hours: '+summary(c)+', want 15 writes (5 an hour) and no flush');
+  assert.deepEqual(c.readsOf(k).map(r=>r[1]),[H0,H0+HOUR,H0+2*HOUR],k+': read at '+c.readsOf(k).map(r=>r[1]-H0).join(', ')+' s, want once an hour');
+ assert.deepEqual([c.reads.length,c.writes],[15,[]],'3 hours: '+c.reads.length+' read(s) and '+c.writes.length+' write(s), want 15 reads and no write');
  assert.deepEqual([...store],[...before],'no value changed, nothing created');
  // From the middle of an hour: at the first tick, then at each hour boundary.
  const s2=policy(),m=instance(s2,{now:H0+1234});m.ticks(3*HOUR);
- assert.deepEqual(m.touches(MASK).map(s=>s[2]),[H0+1234,H0+HOUR,H0+2*HOUR,H0+3*HOUR],'from mid-hour: the first tick, then each hour');
- assert.equal(m.flushes,0);
+ assert.deepEqual(m.readsOf(MASK).map(r=>r[1]),[H0+1234,H0+HOUR,H0+2*HOUR,H0+3*HOUR],'from mid-hour: the first tick, then each hour');
  ok();}
 
-{// 2. A missing variable is never created: only what exists is touched.
+{// 2. A missing variable is never read into existence or created: only what exists is read.
  const store=new Map([[MASK,1]]),c=instance(store);c.ticks(3*HOUR);
- assert.deepEqual([c.sets.map(s=>s[0]),[...store]],[[MASK,MASK,MASK],[[MASK,1]]],'only the trade mask exists: '+summary(c)+', store size '+store.size+', want 3 writes of it and nothing created');
+ assert.deepEqual([c.reads.map(r=>r[0]),[...store],c.writes],[[MASK,MASK,MASK],[[MASK,1]],[]],'only the trade mask exists: want 3 reads of it, nothing else read, nothing created');
  const empty=new Map(),e=instance(empty);e.ticks(3*HOUR);
- assert.deepEqual([e.sets,empty.size,e.flushes],[[],0,0],'an empty store: '+summary(e)+', '+empty.size+' variable(s), want nothing written or created');
- // Each of the five on its own (none depends on another).
+ assert.deepEqual([e.reads,empty.size,e.writes,e.checks],[[],0,[],15],'an empty store: every name is checked, none is read, nothing is created');
  for(const k of FIVE){const one=new Map([[k,2]]),o=instance(one);o.ticks(HOUR+1);
-  assert.deepEqual([o.sets.map(s=>s.slice(0,2)),[...one]],[[[k,2],[k,2]],[[k,2]]],k+' alone is touched, at its value');}
- // A variable deleted between the touch's check and its read (a dashboard reset) is not re-created, at 0 or otherwise.
- const raced=policy(),r=instance(raced);r.vanish=MASK;r.ticks(HOUR+1);
- assert.deepEqual([r.touches(MASK),raced.has(MASK),r.touches(EXPO).length,r.prints],[[],false,2,[]],'a variable gone between the check and the read stays gone; the others are touched');
+  assert.deepEqual([o.reads.map(r=>r[0]),[...one]],[[k,k],[[k,2]]],k+' alone is read, at each hour');}
  ok();}
 
 {// 3. Batch and dashboard charts, optimization and forward passes, and a chart without a magic: nothing.
  for(const [label,options] of [['batch',{mode:1}],['dashboard',{mode:2}],['optimization',{optimization:true}],['forward',{forward:true}],['no magic',{magic:0}]]){
   const store=policy(),before=[...store],c=instance(store,options);c.ticks(3*HOUR);
-  assert.deepEqual([c.sets.length,c.flushes,[...store]],[0,0,before],label+': '+summary(c)+', want nothing');
+  assert.deepEqual([c.reads.length,c.checks,c.writes,[...store]],[0,0,[],before],label+': '+c.reads.length+' read(s), want nothing');
  }
  ok();}
 
-{// 4. The value written is the one held at the touch: a rule changed between two touches (a dashboard command, another
- // chart) is kept, and the old value is never written back.
- const store=policy(),c=instance(store);c.ticks(HOUR/2);
- store.set(MASK,3);store.set(P_PAUSED,0);store.set(PAUSED,0);   // resumed, both directions
- c.ticks(3*HOUR-HOUR/2);
- assert.deepEqual([c.touches(MASK).map(s=>s[1]),c.touches(P_PAUSED).map(s=>s[1]),c.touches(PAUSED).map(s=>s[1])],[[1,3,3],[1,0,0],[1,0,0]],'the touch writes what the variable holds');
- assert.deepEqual([store.get(MASK),store.get(P_PAUSED),store.get(PAUSED),store.get(EXPO)],[3,0,0,2]);
- // A variable deleted between two touches is not brought back.
- store.delete(EXPO);c.ticks(HOUR);
- assert.equal(store.has(EXPO),false,'a deleted variable stays deleted');
+{// 4. The race of GOAT-EA#330: the dashboard pauses the portfolio (and later resumes it) while 36 charts run their
+ // hourly touch. The command lands right after one chart has read the variable and before its next read. With a
+ // write-back the chart would put the stale value back; the touch must leave every dashboard value as set.
+ const store=policy();store.set(P_PAUSED,0);
+ const charts=Array.from({length:36},(_,i)=>instance(store,{chart:'SYM'+i}));
+ let fired=0;
+ charts[17].afterRead=k=>{if(k===P_PAUSED&&!fired){fired=1;store.set(P_PAUSED,1);}};   // pause, mid-touch of chart 17
+ for(const c of charts) c.ticks(1);
+ assert.deepEqual([store.get(P_PAUSED),fired],[1,1],'a pause set between a chart\'s read and its next step stays set (read '+store.get(P_PAUSED)+')');
+ charts[5].afterRead=k=>{if(k===P_PAUSED&&fired===1){fired=2;store.set(P_PAUSED,0);}};    // resume, mid-touch of chart 5, next hour
+ for(const c of charts){c.now=H0+HOUR;c.ticks(1);}
+ assert.deepEqual([store.get(P_PAUSED),fired],[0,2],'a resume set mid-touch stays set');
+ assert.deepEqual(charts.flatMap(c=>c.writes),[],'no chart wrote anything');
  ok();}
 
-{// 5. A failed write: logged once, the other four still written, retried no sooner than a minute later (not every
- // tick), and the hour stays owed until every write succeeded.
- const store=policy(),c=instance(store);c.failing.add(EXPO);c.ticks(150);
- assert.deepEqual(c.touches(EXPO).map(s=>s[2]),[H0,H0+60,H0+120],'a failing write is retried each minute: tried at '+c.touches(EXPO).map(s=>s[2]-H0).join(', ')+' s');
- assert.deepEqual([c.touches(MASK).length,c.prints.length,c.flushes],[3,1,0],'the others are written with it; one log line');
- assert.match(c.prints[0],/^GOAT policy touch: a write failed for EURUSD \(error 4501\); retrying$/);
- c.failing.clear();c.ticks(HOUR);
- assert.deepEqual(c.touches(EXPO).map(s=>s[2]),[H0,H0+60,H0+120,H0+180,H0+HOUR],'succeeds at the next retry, then waits for the next hour');
- assert.equal(c.prints.length,1);
- // A later failure is logged again (the flag clears on success).
- c.failing.add(MASK);c.ticks(HOUR);assert.equal(c.prints.length,2);
+{// 5. Statically: the block's code names no write call; its comment quotes the MQL5 reference.
+ for(const w of WRITES) assert.ok(!new RegExp('\\b'+w+'\\b').test(code),'the touch names '+w);
+ assert.match(code,/\bGlobalVariableGet\(dpt_name,dpt_value\)/,'the touch reads with GlobalVariableGet');
+ const comment=block.split('\n').filter(l=>/^\s*\/\//.test(l)).map(l=>l.replace(/^\s*\/\/\s?/,'')).join(' ').replace(/\s+/g,' ');
+ assert.ok(comment.includes('https://www.mql5.com/en/docs/globals'),'the comment cites the MQL5 reference page');
+ assert.ok(comment.includes('"Global variables are kept in the client terminal for 4 weeks since the last access, then they will be deleted automatically. An access to a global variable is not only setting of a new value, but reading of the global variable value, as well."'),
+  'the comment quotes the reference that a read is an access');
  ok();}
 
 {// 6. The five names are what OnInit's policy restore reads, and the touch runs on the timer beside the bus.
@@ -140,13 +138,12 @@ const summary=c=>c.sets.length+' write(s) and '+c.flushes+' flush(es)';
  assert.match(restore,/string trade_mask_key=GoatChildGVName\(MAGIC1,Symbol\(\),GOAT_GV_FIELD_POLICY_TRADE_MASK\);/);
  assert.match(restore,/string exposure_mode_key=GoatChildGVName\(MAGIC1,Symbol\(\),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE\);/);
  const touch=bodyOf(main,'void GoatDashPolicyHourlyTouch(void)');
- const touched=[...touch.matchAll(/GoatDashPolicyTouchOne\((.*?)\)\)/g)].map(m=>m[1]+')');
+ const touched=[...touch.matchAll(/GoatDashPolicyTouchOne\((.*?)\)\);/g)].map(m=>m[1]+')');
  assert.deepEqual(touched,['GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED)','GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK)',
   'GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE)','GoatPortfolioGVName("DashboardPolicyPaused")','GoatPortfolioGVName("DashboardExposurePolicyMode")'],'the five variables');
- assert.ok(!/GlobalVariablesFlush/.test(block.replace(/\/\/[^\n]*/g,'')),'no flush in the touch');
  const timer=bodyOf(main,'void GoatTimerBody(void)');
  assert.match(timer,/\n      DashboardBusProcessCommands\(\);\n      GoatDashPolicyHourlyTouch\(\);/,'on the one-second timer, in the bus\'s live block');
  assert.equal(main.split('GoatDashPolicyHourlyTouch();').length-1,1,'called once');
  ok();}
 
-console.log(JSON.stringify({passed,test:'dash_policy_touch',hours:3}));
+console.log(JSON.stringify({passed,test:'dash_policy_touch',hours:3,charts:36}));

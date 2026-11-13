@@ -7261,22 +7261,21 @@ bool GoatDashFinalAcked(const long command_id)
 // that dash-ack-once removed also re-set this chart's three policy variables, which kept them alive by accident. Without
 // it a chart that runs 4+ weeks with no dashboard command and no restart could lose them, and the next OnInit would
 // restore "allow both, not paused" in place of a Buy Only or paused rule. Once per UTC hour (TimeGMT, as the CID touch)
-// the timer re-sets each policy variable OnInit restores from to the value it holds: this chart's paused, trade mask and
-// exposure mode, and the portfolio's DashboardPolicyPaused and DashboardExposurePolicyMode. A variable that does not
-// exist is never created (OnInit's defaults stay the defaults), no value changes, and nothing is flushed: the touch
-// keeps the variables alive in the terminal's store, which the terminal writes at its own exits and at every flush any
-// chart asks for. A failed write is logged once and retried no sooner than GOAT_DASH_POLICY_TOUCH_RETRY_MS.
+// the timer READS each policy variable OnInit restores from: this chart's paused, trade mask and exposure mode, and the
+// portfolio's DashboardPolicyPaused and DashboardExposurePolicyMode. A read is an access. MQL5 Reference, "Global
+// Variables of the Terminal" (https://www.mql5.com/en/docs/globals): "Global variables are kept in the client terminal
+// for 4 weeks since the last access, then they will be deleted automatically. An access to a global variable is not only
+// setting of a new value, but reading of the global variable value, as well."
+// Nothing is written, created, deleted or flushed. A write-back here would race the dashboard on the portfolio variables
+// across up to 36 charts: a pause set between one chart's read and its write would be overwritten with the stale value,
+// and charts restarting after it would come up unpaused (Claude-Mac, GOAT-EA#330). A variable that does not exist is
+// not touched, so OnInit's defaults stay the defaults.
 // Live only, no input: the bus's own three guards (never in a batch, on the dashboard chart or in an optimization).
-#define GOAT_DASH_POLICY_TOUCH_RETRY_MS 60000
 datetime g_goat_dash_policy_touched_hour=0;
-uint     g_goat_dash_policy_touch_failed_ms=0;
-bool     g_goat_dash_policy_touch_failed=false;
-bool GoatDashPolicyTouchOne(const string dpt_name)
+void GoatDashPolicyTouchOne(const string dpt_name)
   {
    double dpt_value=0.0;
-   if(!GlobalVariableCheck(dpt_name))          return true; // missing: never created here
-   if(!GlobalVariableGet(dpt_name,dpt_value))  return true; // gone between the check and the read: nothing to keep
-   return(GlobalVariableSet(dpt_name,dpt_value)!=0);        // the value it holds, unchanged
+   if(GlobalVariableCheck(dpt_name)) GlobalVariableGet(dpt_name,dpt_value); // a read only: it renews the lifetime
   }
 void GoatDashPolicyHourlyTouch(void)
   {
@@ -7287,23 +7286,12 @@ void GoatDashPolicyHourlyTouch(void)
    datetime dpt_gmt=TimeGMT();
    datetime dpt_hour=dpt_gmt-dpt_gmt%3600;
    if(dpt_hour<=0 || dpt_hour==g_goat_dash_policy_touched_hour) return;
-   uint dpt_now=GetTickCount();
-   if(g_goat_dash_policy_touch_failed && dpt_now-g_goat_dash_policy_touch_failed_ms<GOAT_DASH_POLICY_TOUCH_RETRY_MS) return;
 
-   bool dpt_ok=GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED));
-   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK)))    dpt_ok=false;
-   if(!GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE))) dpt_ok=false;
-   if(!GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardPolicyPaused")))                        dpt_ok=false;
-   if(!GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardExposurePolicyMode")))                  dpt_ok=false;
-   if(!dpt_ok)
-   {
-      if(!g_goat_dash_policy_touch_failed)
-         Print("GOAT policy touch: a write failed for "+Symbol()+" (error "+IntegerToString(GetLastError())+"); retrying");
-      g_goat_dash_policy_touch_failed=true;
-      g_goat_dash_policy_touch_failed_ms=dpt_now;
-      return;
-   }
-   g_goat_dash_policy_touch_failed=false;
+   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED));
+   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK));
+   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE));
+   GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardPolicyPaused"));
+   GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardExposurePolicyMode"));
    g_goat_dash_policy_touched_hour=dpt_hour;
   }
 // B55:end dash-policy-touch

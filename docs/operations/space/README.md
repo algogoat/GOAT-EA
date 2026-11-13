@@ -19,7 +19,8 @@ nothing, exit 3), and each file is then opened with no sharing at all (nobody ca
 meanwhile), hashed through that handle and deleted through that same handle, never by path, only if it still matches (a
 file that changed stays, the zip is kept, the index gets a `partial` row, exit 3); a file that appears later stays with its
 folder. A manifest or zip that fails while being written (disk full, an unreadable file) is removed by the run, so a retry
-is not refused. It refuses (exit 2) a source or destination on E: or F:, a source or destination root that is
+is not refused. It refuses (exit 2) a source file with a named NTFS stream (the zip would not hold it and the removal
+would destroy it), a source or destination on E: or F:, a source or destination root that is
 (or sits under) a junction or symlink (a removal must never reach real files on another volume through a link),
 `-RemoveSource` without `-NeedsLive`, a source on the needs-live list (or inside or above a listed path), a junction or
 symlink inside the source, an existing zip, and an empty source.
@@ -33,11 +34,11 @@ powershell -NoProfile -File docs\operations\space\zip-archive.ps1 -Source <folde
 powershell -NoProfile -File docs\operations\space\zip-archive.test.ps1
 ```
 
-The 31 tests cover the round trip, a corrupted member, a short write, a missing entry, E:/F:, the needs-live list,
+The 33 tests cover the round trip, a corrupted member, a short write, a missing entry, E:/F:, the needs-live list,
 create-only, a junction inside the source, an empty source, a dry run, `-RemoveSource` without `-NeedsLive`, a junction as
 the source root, as the destination root and above the source, a source changed after the zip, changed during the removal
 (with its `partial` index row), grown by a file after the check and grown by a file after the manifest, a rename-and-replace
-attempted while a file is held, a zip that fails after its manifest (and the retry), the `complete` index row, read-only source files (deleted through the handle with `FileDispositionInfoEx` ignoring the read-only attribute) an unexpected failure during the removal (a `partial` row and exit 3, never a bare throw), a run that loses a race for the same zip name (it refuses; the winner's zip and manifest stay), a zip of the same name that is not this run's (its cleanup never removes it) and a hidden subfolder (removed, the run completes). Each rule
+attempted while a file is held, a zip that fails after its manifest (and the retry), the `complete` index row, read-only source files (deleted through the handle with `FileDispositionInfoEx` ignoring the read-only attribute) an unexpected failure during the removal (a `partial` row and exit 3, never a bare throw), a run that loses a race for the same zip name (it refuses; the winner's zip and manifest stay), a zip of the same name that is not this run's (its cleanup never removes it) a hidden subfolder (removed, the run completes), a source file with a named NTFS stream (refused before any write) and a stream added after the check (the removal stops at that file, which keeps it). Each rule
 removed in turn fails exactly its own cases (the verification: the three corruption cases; the link chain: the three
 junction cases; the needs-live requirement, the re-hash, the hash at removal, the appeared-file check, no sharing, delete by
 handle, the failed-zip cleanup and the partial row: theirs).

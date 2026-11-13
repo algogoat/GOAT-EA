@@ -53,6 +53,28 @@ public static class ZipArchiveNative2 {
 }
 '@
 }
+# Codex on #332 (P2 4562628146): the zip holds and verifies only a file's unnamed data stream, and the handle delete removes
+# every stream, so a named NTFS stream would be lost with no archived copy. As the product's run-folder archiver
+# (controller/studio_run_folder_archive.alternate_streams), a source holding one is refused; FindFirstStreamW needs only
+# attribute access, so it also reads a file that 5b holds with no sharing.
+if (-not ('ZipArchiveStreams' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System; using System.ComponentModel; using System.Runtime.InteropServices;
+public static class ZipArchiveStreams {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct FindStreamData { public long StreamSize; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)] public string Name; }
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr FindFirstStreamW(string path, int level, out FindStreamData data, uint flags);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool FindNextStreamW(IntPtr h, out FindStreamData data);
+  [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr h);
+  // The first stream name other than ::$DATA, or null when the file has none.
+  public static string FirstNamed(string path) {
+    if (path.Length >= 248 && !path.StartsWith(@"\\?\")) path = @"\\?\" + path;
+    FindStreamData d; IntPtr h = FindFirstStreamW(path, 0, out d, 0);
+    if (h == new IntPtr(-1)) { int e = Marshal.GetLastWin32Error(); if (e == 38) return null; throw new Win32Exception(e, "FindFirstStreamW " + path); }
+    try { do { if (!string.Equals(d.Name, "::$DATA", StringComparison.OrdinalIgnoreCase)) return d.Name; } while (FindNextStreamW(h, out d)); return null; } finally { FindClose(h); }
+  }
+}
+'@
+}
 function Say($m) { '{0:yyyy-MM-ddTHH:mm:ss}Z ZIP-ARCHIVE: {1}' -f [DateTime]::UtcNow, $m }
 function Refuse($m) { Say "REFUSED: $m"; exit 2 }
 function Sha([IO.Stream]$s) { $h = [Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-', '').ToLower() } finally { $h.Dispose() } }
@@ -83,7 +105,9 @@ $files = New-Object Collections.ArrayList; $stack = New-Object Collections.Stack
 while ($stack.Count) {
   $d = $stack.Pop()
   foreach ($s in $d.EnumerateDirectories()) { if ($s.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($s.FullName) is a junction or symlink inside the source" }; $stack.Push($s) }
-  foreach ($f in $d.EnumerateFiles()) { if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($f.FullName) is a link inside the source" }; [void]$files.Add($f) }
+  foreach ($f in $d.EnumerateFiles()) { if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$($f.FullName) is a link inside the source" }
+    $ns = [ZipArchiveStreams]::FirstNamed($f.FullName); if ($ns) { Refuse "$($f.FullName) has the NTFS stream $ns, which the zip would not hold and the removal would destroy" }
+    [void]$files.Add($f) }
 }
 if (-not $files.Count) { Refuse "$src holds no file" }
 $rows = foreach ($f in $files) { $fs = $f.OpenRead(); try { $h = Sha $fs } finally { $fs.Dispose() }
@@ -127,7 +151,7 @@ try {
 foreach ($k in $want.Keys) { if (-not $seen.ContainsKey($k)) { [void]$bad.Add("missing entry $k") } }
 if ($bad.Count) { Remove-Item -LiteralPath $zip, $man -Force -ErrorAction SilentlyContinue; Say ("VERIFY FAILED ({0}): {1}; the zip was deleted, the source is untouched" -f $bad.Count, (($bad | Select-Object -First 3) -join '; ')); exit 3 }
 $zb = (Get-Item -LiteralPath $zip).Length; $mh = (Get-FileHash -LiteralPath $man -Algorithm SHA256).Hash.ToLower()
-Say ("verified: {0} files, {1:N1} MB -> {2:N1} MB ({3:P0}); manifest {4}" -f @($rows).Count, ($bytes / 1MB), ($zb / 1MB), ($zb / [Math]::Max(1, $bytes)), $mh)
+Say ("verified: {0} files, {1:N1} MB -> {2:N1} MB ({3:P0}); manifest {4}" -f @($rows).Count, ($bytes / 1MB), ($zb / 1MB), ($zb / [Math]::Max([double]1, [double]$bytes)), $mh)
 if ($RemoveSource) {
   # 5a. The source as it is now must still be exactly the manifest (Codex on #332: the zip proves only the bytes read then).
   $now = @{}; $st2 = New-Object Collections.Stack; $st2.Push((New-Object IO.DirectoryInfo $src))
@@ -162,7 +186,7 @@ if ($RemoveSource) {
       try {
         $h = Sha $fs
         if ($DuringRemove) { & $DuringRemove $p }
-        if ($h -ne $r.sha256) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }
+        if ($h -ne $r.sha256 -or [ZipArchiveStreams]::FirstNamed($p)) { $changedNow = $true } else { [ZipArchiveNative2]::DeleteByHandle($fs.SafeFileHandle); $removed++ }   # a named stream added since the check counts as a change
       } finally { $fs.Dispose() }
     } catch { $fail = $_.Exception.Message }
     if ($changedNow -or $fail) {

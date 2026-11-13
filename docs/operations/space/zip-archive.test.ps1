@@ -182,6 +182,9 @@ $r = Run @{ Source = $s31; DestRoot = $dest; RemoveSource = $true; NeedsLive = $
 $dirs31 = @(); $z31 = Join-Path $dest 'Rc31000000000.zip'
 if (Test-Path $z31) { $za31 = [IO.Compression.ZipFile]::OpenRead($z31); try { $dirs31 = @($za31.Entries | Where-Object { $_.FullName.Replace('\', '/').EndsWith('/') } | ForEach-Object { $_.FullName.Replace('\', '/') }) } finally { $za31.Dispose() } }
 Check 'a source with empty folders is archived and removed; the zip keeps them' ($r.code -eq 0 -and -not (Test-Path $s31) -and $dirs31 -contains 'leftover_xml/Optimization Run/' -and $dirs31 -contains 'empty/') "code=$($r.code) dirs=$($dirs31 -join ',') $($r.out)"
+# Claude-Mac 6853570441: an empty source folder exists again after an unzip.
+$x31 = Join-Path $Work 'unzip31'; if (Test-Path $z31) { [IO.Compression.ZipFile]::ExtractToDirectory($z31, $x31) }
+Check 'after an unzip the empty folders exist again, still empty' ((Test-Path -LiteralPath (Join-Path $x31 'leftover_xml\Optimization Run') -PathType Container) -and @(Get-ChildItem -LiteralPath (Join-Path $x31 'leftover_xml\Optimization Run') -Force).Count -eq 0 -and (Test-Path -LiteralPath (Join-Path $x31 'empty') -PathType Container) -and (Test-Path -LiteralPath (Join-Path $x31 'equity.csv'))) "unzip: $(@(Get-ChildItem -LiteralPath $x31 -Recurse -Force -ErrorAction SilentlyContinue).Count) items"
 $c1 = @(Import-Csv (Join-Path $dest 'ARCHIVE-INDEX.csv') | Where-Object { $_.source -eq $s1 })
 Check 'a full removal has a complete index row' ($c1.Count -eq 1 -and $c1[0].status -eq 'complete' -and [int]$c1[0].files_removed -eq 3) ($c1 | ConvertTo-Json -Compress)
 Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

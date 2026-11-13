@@ -93,8 +93,12 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b54_guard = (ROOT / 'scripts/test_b54_no_drift.cjs').read_text(encoding='utf-8')
         b54_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b54_guard, re.M)[1].replace("'", '"') + ']'))
         self.assertTrue({'GOAT_Inputs_Definitions.mqh'} <= b54_changed)
+        # B55 (GOAT-EA#330, Codex 4559573813): a file only B55 changes (Dashboard.mqh's publish order) is B54's, and so
+        # B53's, at B53's commit; its marked B55 lines are proven by scripts/test_b55_no_drift.cjs against B54's commit.
+        b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
+        b55_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']'))
         for relative, expected in identity['sources'].items():
-            if relative not in b54_changed:
+            if relative not in (b54_changed | b55_changed):
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
             else:
                 blob = subprocess.run(['git', 'show', '216e1622:' + relative], cwd=ROOT, capture_output=True, check=True).stdout

@@ -26,14 +26,24 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B54_SOURCE='a8c6766243ff577bdcfc90495a6de33ce0797c88';
 // Each item PR adds the files it changes, so the review sees the list grow.
-const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATPortfolioChildAudit.mqh'];
+const CHANGED=['GOAT V1.49.mq5','GOAT_Inputs_Definitions.mqh','GOATStudioSettingTypes.mqh','GOATPortfolioChildAudit.mqh',
+ 'Dashboard.mqh'];   // dash-ack-once, Codex on GOAT-EA#330: each publish clears the child's command id first and writes it last
 const ADDED=[];
 // Every B54 line a changed hunk removes, verbatim (trimmed), per file.
 const REMOVED={
  // A0 (spec 3.7): line 5128 gains "&& !BRK_Start_Seq" (and its B55 note), so B54's line is replaced. Alert and code stay.
  'GOAT V1.49.mq5':[
   'if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}',
+  // dash-ack-once (GOAT-EA#328): four blank lines each replaced by one marked call, so no line above OnInit's rules moves
+  // (gate 0 compares B54's refusal text, cited lines included): in DashboardBusAckCommand, DashboardBusAckCloseCommand,
+  // DashboardBusProcessCommands, and after OnInit's policy restore.
+  '','','','',
+  // Codex on GOAT-EA#330: the poll reads the command id again after the fields and applies only if it is unchanged.
+  'DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);',
  ],
+ // Codex on GOAT-EA#330: at each of the four publish sites the id's first write (the value) becomes a clear (0.0), and
+ // the value is written after the other three fields.
+ 'Dashboard.mqh':Array(4).fill('GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);'),
 };
 // The B55 input (spec section 3.1), appended at the very end.
 const NEW_INPUTS=['BRK_Start_Seq'];

@@ -3858,7 +3858,7 @@ void DashboardBusProcessCommands(void)
    int command_type=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_TYPE));
    int command_value=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_VALUE));
    datetime expires_at=(datetime)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_EXPIRES));
-   DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);
+   if((long)GlobalVariableGet(cmd_id_key)==command_id) DashboardBusApplyCommand(command_id,command_type,command_value,expires_at); // B55 (Codex on GOAT-EA#330): the id is read again after the fields; the dashboard clears it first and writes it last, so a changed id means the fields may be another command's: read again next time
   }
 // B49b:begin f8-export
 // F8 export integrity (goatai#2587 6433828681; Claude-Mac 6411161557, 6433854745 ruling 3, 6443122557): OPT-01 (the
@@ -7215,6 +7215,12 @@ void OnTimer(void)
 //   exposure mode) is restored in OnInit from its own variables, never by applying the command again.
 // - A retrying close writes (and flushes) its FAILED acknowledgement only when the status or a count changed since the
 //   one it wrote last; the retry itself, its 5 s spacing and its end at the command's expiry are B49b's, unchanged.
+// - A final acknowledgement is only ever given to a whole command (Codex on GOAT-EA#330). The dashboard (another chart,
+//   another thread) writes a command as four variables; when this chart's timer read them mid-publish it could take the
+//   new id with the older command's expiry, acknowledge it EXPIRED, and the guard above would then skip it for good
+//   (before B55 the next pass applied it). So each Dashboard.mqh publish clears the id (0) first and writes it last, and
+//   DashboardBusProcessCommands reads the id again after the fields and applies only if it is unchanged: a read that
+//   overlaps a publish sees 0, or a changed id, and waits for the next pass.
 // - Placed below OnInit and its rules, and called from above through GoatDashNoteFinalAck / GoatDashFinalAcked /
 //   GoatDashCloseAckUnchanged on lines that replace a blank line: no OnInit rule line moves, so every rule's cited line
 //   and the B55 gate 0 comparison with B54 stay as they were.

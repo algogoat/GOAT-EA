@@ -11,15 +11,22 @@
 // (d) a close that is not flat at first keeps being retried (B49b F3 DASH-04) until flat, then APPLIED once;
 // (e) a new command id after a final one is processed normally;
 // (f) a close that keeps failing retries as before (every 5 s until the command expires) and writes and flushes its
-//     acknowledgement only when the acknowledgement's values change.
-// test_dash_ack_once_mutations.cjs runs this file on mutated entrypoints (GOAT_EA_MAIN): each must fail.
+//     acknowledgement only when the acknowledgement's values change;
+// (g) Codex on GOAT-EA#330: a child poll that runs WHILE the dashboard publishes a command. The dashboard's write order is
+//     read from Dashboard.mqh's four publish sites (the id cleared first, written last); every interleaving of those writes
+//     with one poll's reads is tried, for a child that already finished the older command and for one that had not read
+//     it yet. Every command the child applies must be one whole command (no new id with an older command's fields, no
+//     older id with the new one's), and the new command must end APPLIED, never EXPIRED from an older expiry.
+// test_dash_ack_once_mutations.cjs runs this file on mutated entrypoints (GOAT_EA_MAIN) and dashboards (GOAT_EA_DASH):
+// each must fail.
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const ROOT=path.join(__dirname,'..');
 const clean=t=>t.replace(/^﻿/,'').replace(/\r\n/g,'\n');
 const main=clean(fs.readFileSync(process.env.GOAT_EA_MAIN||path.join(ROOT,'GOAT V1.49.mq5'),'utf8'));
 const header=clean(fs.readFileSync(path.join(ROOT,'GOAT_Inputs_Definitions.mqh'),'utf8'));
-let passed=0;const ok=()=>passed++;
+const dash=clean(fs.readFileSync(process.env.GOAT_EA_DASH||path.join(ROOT,'Dashboard.mqh'),'utf8'));
+let passed=0,interleaving=null;const ok=()=>passed++;
 
 function bodyOf(text,signature){
  const a=text.indexOf(signature);assert.ok(a>=0,'missing '+signature);
@@ -76,6 +83,14 @@ function instance(store,{positions=0,refuse=0,now=1000,mode=0}={}){
  c.FindNumberOfPositions=()=>c.open;c.DashboardBusCountCloseScopePositions=()=>c.open;
  c.DashboardBusSendStatus=s=>c.status.push(s);
  vm.createContext(c);
+ compiled().runInContext(c);
+ c.ticks=n=>{for(let i=0;i<n;i++){c.DashboardBusProcessCommands();c.now++;}};   // the 1 s timer (GoatTimerBody)
+ return c;
+}
+// The production code, extracted and compiled once (every instance runs the same script in its own context).
+let script=null;
+function compiled(){
+ if(script)return script;
  const apply=bodyOf(main,'void DashboardBusApplyCommand(const long command_id,const int command_type,const int command_value,const datetime expires_at)')
   .replace(/int closed_positions=DashboardBusClose(?:Own|Scope)Positions\([^)]*\);/g,'let [closed_positions,__e]=closeAttempt(); close_errors=__e;');
  let code=js(blockGlobals)+'\nlet g_goat_dash_close_try_id=0,g_goat_dash_close_try_at=0;\n'
@@ -93,9 +108,8 @@ function instance(store,{positions=0,refuse=0,now=1000,mode=0}={}){
   +fn('DashboardBusProcessCommands',[],bodyOf(main,'void DashboardBusProcessCommands(void)'))
   +fn('InitPolicyRestore',[],initRestore)
   +'function finalAckId(){return g_goat_dash_final_ack_id;}\n';
- vm.runInContext(code,c);
- c.ticks=n=>{for(let i=0;i<n;i++){c.DashboardBusProcessCommands();c.now++;}};   // the 1 s timer (GoatTimerBody)
- return c;
+ script=new vm.Script(code);
+ return script;
 }
 // The dashboard's side: a command is four variables on the child's chart (Dashboard.mqh, SendPortfolioCommand).
 function send(store,id,type,value,expires){
@@ -222,6 +236,57 @@ for(const [label,type] of [['portfolio close',CLOSE],['close scope',SCOPE]]){
  once(c2,ID+2,A,'(e) a new command after a restart');
  ok();}
 
+{// (g) A poll during a publish (Codex on GOAT-EA#330). The dashboard writes one child's command as consecutive
+ // GlobalVariableSet lines; their order, and whether a line clears the id (0.0) or writes the value, come from each of
+ // Dashboard.mqh's publish sites, which must all agree.
+ const sites=[];let site=null,prev=-2;
+ dash.split('\n').forEach((line,i)=>{
+  const m=line.match(/^\s*GlobalVariableSet\(GoatChildGVName\(g_sets\[idx\]\.magic,g_sets\[idx\]\.sym,(GOAT_GV_FIELD_CMD_\w+)\),([^;]*)\);/);
+  if(!m)return;if(i!==prev+1){site=[];sites.push(site);}prev=i;
+  site.push([DEF[m[1]],m[2].trim()==='0.0'?'clear':'value']);
+ });
+ assert.equal(sites.length,4,'Dashboard.mqh has four command publish sites (currency rules, close scope, exposure policy, portfolio)');
+ for(const s of sites)assert.deepEqual(s,sites[0],'every publish site writes the command in one order');
+ const WRITES=sites[0];
+ for(const f of [DEF.GOAT_GV_FIELD_CMD_TYPE,DEF.GOAT_GV_FIELD_CMD_VALUE,DEF.GOAT_GV_FIELD_CMD_EXPIRES,DEF.GOAT_GV_FIELD_CMD_ID])
+  assert.ok(WRITES.some(([g,k])=>g===f&&k==='value'),'a publish writes '+f);
+ // Every way to spread the publish's writes over one poll's reads (k writes before the poll's r-th read; the rest after
+ // the poll): compositions of the writes into the poll's read slots plus one slot after it. READS = what one poll of a
+ // whole new command reads (the store's reads counted), so every slot is a real read.
+ const OLD=[ID,PERM,DEF.GOAT_DASH_TRADE_ALLOW_BUY],NEW=[ID+1,PAUSE,1];
+ const READS=(()=>{const store=new Map(),c=instance(store);send(store,NEW[0],NEW[1],NEW[2],c.now+30);let n=0;
+  const g=c.GlobalVariableGet,k=c.GlobalVariableCheck;c.GlobalVariableGet=x=>{n++;return g(x);};c.GlobalVariableCheck=x=>{n++;return k(x);};c.ticks(1);return n;})();
+ assert.ok(READS>=5&&READS<=12,'one poll reads the command ('+READS+' reads)');
+ function* spreads(left,slots){if(slots===1){yield [left];return;}for(let k=0;k<=left;k++)for(const rest of spreads(left-k,slots-1))yield [k,...rest];}
+ const choose=(n,k)=>{let r=1;for(let i=1;i<=k;i++)r=r*(n-k+i)/i;return Math.round(r);};
+ let tried=0;
+ for(const seen of [true,false]){   // the child finished the older command already / it had not read it yet
+  for(const spread of spreads(WRITES.length,READS+1)){
+   const store=new Map(),c=instance(store);
+   const oldExpires=seen?c.now+30:c.now+20;send(store,OLD[0],OLD[1],OLD[2],oldExpires);
+   if(seen){c.ticks(40);assert.deepEqual(c.acks,[[ID,A]]);}   // applied, then its expiry passes: 40 s later, as Codex's case
+   const newExpires=c.now+30,value={[DEF.GOAT_GV_FIELD_CMD_ID]:NEW[0],[DEF.GOAT_GV_FIELD_CMD_TYPE]:NEW[1],[DEF.GOAT_GV_FIELD_CMD_VALUE]:NEW[2],[DEF.GOAT_GV_FIELD_CMD_EXPIRES]:newExpires};
+   const queue=WRITES.map(([f,k])=>[KEY(f),k==='clear'?0:value[f]]);
+   const applied=[];const realApply=c.DashboardBusApplyCommand;
+   c.DashboardBusApplyCommand=(...a)=>{applied.push(a);return realApply(...a);};
+   const realGet=c.GlobalVariableGet,realCheck=c.GlobalVariableCheck;let r=0;
+   const step=()=>{const n=r<READS?spread[r]:0;r++;for(let i=0;i<n;i++){const [k,v]=queue.shift();store.set(k,v);}};
+   c.GlobalVariableGet=k=>{step();return realGet(k);};c.GlobalVariableCheck=k=>{step();return realCheck(k);};
+   c.ticks(1);   // the one poll the publish runs through
+   c.GlobalVariableGet=realGet;c.GlobalVariableCheck=realCheck;
+   while(queue.length){const [k,v]=queue.shift();store.set(k,v);}   // the publish ends
+   c.ticks(60);
+   const whole=[[...OLD,oldExpires],[...NEW,newExpires]].map(x=>JSON.stringify(x));
+   for(const a of applied)assert.ok(whole.includes(JSON.stringify(a)),'(g) '+(seen?'after':'before')+' the older command, writes spread '+spread.join('')+': the child applied '+JSON.stringify(a)+', not one whole command');
+   assert.deepEqual(c.acks.filter(([id])=>id===ID+1),[[ID+1,A]],'(g) '+(seen?'after':'before')+' the older command, writes spread '+spread.join('')+': the new command\'s acknowledgements '+JSON.stringify(c.acks)+', want APPLIED once');
+   assert.equal(c.DashboardPortfolioPaused,true,'(g) the new pause is in force');
+   tried++;
+  }
+ }
+ assert.equal(tried,2*choose(WRITES.length+READS,READS),'(g) every interleaving of '+WRITES.length+' writes with '+READS+' reads, twice');
+ interleaving={reads:READS,writes:WRITES.length,tried};
+ ok();}
+
 {// Batch and dashboard charts never use the bus: nothing is seeded, processed or flushed there.
  for(const mode of [1,2]){const store=new Map();send(store,ID,PAUSE,1,5030);store.set(KEY(DEF.GOAT_GV_FIELD_ACK_ID),ID-1);store.set(KEY(DEF.GOAT_GV_FIELD_ACK_STATUS),A);
   const c=restart(store,{now:5000,mode});assert.equal(c.finalAckId(),0);c.ticks(TICKS);none(c,'mode '+mode);}
@@ -230,4 +295,4 @@ for(const [label,type] of [['portfolio close',CLOSE],['close scope',SCOPE]]){
  assert.equal(main.split('DashboardBusProcessCommands();').length-1,2,'the timer and the dashboard command event');
  ok();}
 
-console.log(JSON.stringify({passed,test:'dash_ack_once',ticks:TICKS}));
+console.log(JSON.stringify({passed,test:'dash_ack_once',ticks:TICKS,interleaving}));

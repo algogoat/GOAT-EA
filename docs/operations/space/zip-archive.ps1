@@ -21,6 +21,17 @@ function Sha([IO.Stream]$s) { $h = [Security.Cryptography.SHA256]::Create(); try
 $src = [IO.Path]::GetFullPath($Source).TrimEnd('\'); $dst = [IO.Path]::GetFullPath($DestRoot).TrimEnd('\')
 foreach ($p in $src, $dst) { if ($p -match '^[EeFf]:') { Refuse "$p is on E: or F:, which are Vince's own drives" } }
 if (-not (Test-Path -LiteralPath $src -PathType Container)) { Refuse "no source folder $src" }
+if ($RemoveSource -and -not $NeedsLive) { Refuse '-RemoveSource needs -NeedsLive (the list of folders that must stay live)' }
+# Claude-Mac on #332: a junction or symlink as the source or destination root, or anywhere above them, would let a removal
+# reach real files on another volume through the link, and would make the E:/F: check read the link's path, not the
+# target's. So no folder in either chain may be a reparse point; with none, the path checked above is the real location.
+foreach ($p in $src, $dst) {
+  $cur = $p
+  while ($cur -and $cur.Length -gt 3) {
+    if (Test-Path -LiteralPath $cur) { $it = Get-Item -LiteralPath $cur -Force; if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) { Refuse "$cur is a junction or symlink (on the path to $p); point at the real folder instead" } }
+    $cur = Split-Path $cur -Parent
+  }
+}
 if ($NeedsLive) {
   if (-not (Test-Path -LiteralPath $NeedsLive)) { Refuse "the needs-live list $NeedsLive cannot be read" }
   foreach ($l in (Get-Content -LiteralPath $NeedsLive | Where-Object { $_.Trim() -and -not $_.StartsWith('#') })) {

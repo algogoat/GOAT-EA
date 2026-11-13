@@ -14,7 +14,8 @@ Archives one folder as a zip by the per-file method: every source file is hashed
 the destination with the manifest beside it; every entry is read back and hashed; any extra, missing or different entry
 deletes the zip, leaves the source untouched and exits 3. Only with `-RemoveSource`, and only after every file matched, is
 the source removed and a row appended to `ARCHIVE-INDEX.csv` in the destination. It refuses (exit 2) a source or
-destination on E: or F:, a source on the needs-live list (or inside or above a listed path), a junction or symlink inside
+destination on E: or F:, a source or destination root that is (or sits under) a junction or symlink (a removal must never
+reach real files on another volume through a link), `-RemoveSource` without `-NeedsLive`, a source on the needs-live list (or inside or above a listed path), a junction or symlink inside
 the source, an existing zip, and an empty source.
 
 ```

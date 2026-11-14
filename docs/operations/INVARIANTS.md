@@ -400,3 +400,58 @@ verbs through the demo lane.
 (`same_inputs`, with the SET file). Forks made before this exist only in the desktop's library;
 their records can be added with `seed-promote-fork` from the fork SETs. `goat_studio.py` has no
 copy of the two verbs.
+
+## INV-CATCHUP-01: a catch-up verdict covers its whole evidence end
+
+**Incident (2026-11-14).** Catch-ups started early Saturday (`w12q-t3-a/b-1113` and most of
+`w12q-banker-a-1113`) ran before the terminals had Friday's history. 113 re-tests ended
+2026-11-12 under plans that said 2026-11-13, and each still stamped a verdict, carrying only an
+`EVIDENCE_END_SHORT` flag. Banker hit the same on 2026-10-10 (goatai#2350 6101219141). A known
+trap that recurred gets a mechanism, not care (Claude-Mac goatai#2750 6880394220, item 1).
+
+**Statement.** A catch-up does not start while any member's symbol lacks its evidence end's last
+trading bar in the terminal's history, and no catch-up verdict is stamped on a re-test whose own
+evidence end proves weekdays missing before the plan's evidence end. Each refusal names the
+symbol with its last bar time, or the member with its last data day.
+
+**Enforcement.**
+- Start: `CatchupRunner._start_refusals` (`controller/studio_catchup.py`) calls
+  `studio_history_bars.check_start` after the seed's own first-start refusals. Both
+  `precheck_start` and the drive's first start pass there, before the monitor closes.
+  - `last_bars` reads the running, selected MT5 through the MetaTrader5 adapter, attach-only,
+    under the terminal lease (joined by the drive). It refuses `MT5_NOT_RUNNING` rather than let
+    `initialize()` start a closed MT5, and `MT5_STARTED_BY_CHECK` if attaching found another
+    process. It reads the last M1 bar per symbol (`copy_rates_from_pos(symbol, M1, 0, 1)`).
+    That is the history the tester re-tests on. No ticks, no trading call, no `symbol_select`.
+  - A symbol passes when its last bar opens on the evidence end's server day at 19:00 server
+    (12:00 New York) or later, or on a later day. Otherwise the start is refused with
+    `CATCHUP_HISTORY_MISSING`, naming each short symbol and its last bar. An unreadable terminal
+    or a missing adapter refuses with `CATCHUP_HISTORY_UNCHECKED`; nothing falls through on doubt.
+- Stamp: `CatchupRunner._collect` refuses a re-test whose `evidence_end_short` (the provable
+  end: capture or FOOS header) shows missing weekdays before the plan's end. This happens before
+  the unit is moved, so the member fails with an `EVIDENCE_END_SHORT` error naming alias,
+  symbol, last data day and the plan's end, and no evidence version or verdict exists for it.
+
+**Tests.**
+- `controller/test_studio_history_bars.py`:
+  - the 2026-11-14 case: a plan end of 11-13 with EURUSD's last bar on 11-12 23:59 is refused,
+    named;
+  - the rule's edges: 19:00 passes, 18:59 does not, a later day passes, no bar refuses;
+  - the attach-only reader: no `initialize()` without a running terminal, a different process
+    after attaching, the wrong data path, no adapter, and a lease held by another process.
+- `controller/test_studio_catchup.py`:
+  - the pre-check and the drive both refuse a Thursday last bar and a Friday bar before 19:00,
+    with nothing launched and the batch still prepared;
+  - the same batch completes once Friday's bar is there;
+  - a re-test that stops on Thursday fails its member with no verdict, and the export stays
+    behind.
+
+**Not covered.**
+- A day that stops after 19:00 server passes the start. Its re-test fails at collection only
+  when the export's provable end misses a whole weekday.
+- An equity-CSV-only end is not provable and stays an `evidenceEndUnproven` note.
+- A market holiday on the evidence end is refused like missing history: give the plan the last
+  trading day.
+- Build-migration re-tests are checked at start but keep the `EVIDENCE_END_SHORT` flag at
+  collection: they stamp no verdict.
+- Hold-up tests, whose window is their own, are not checked.

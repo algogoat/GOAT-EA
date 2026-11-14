@@ -32,6 +32,10 @@ class DemoCatchupAgentTests(unittest.TestCase):
         self.data = base / 'data'; self.common = base / 'common'; self.root = base / 'state'
         for folder in (self.data, self.common, self.root): folder.mkdir()
         self.exe = base / 'bin/terminal64.exe'; self.exe.parent.mkdir(); self.exe.write_bytes(b'fake')
+        # INV-CATCHUP-01 reads the running MT5's last bar per symbol (studio_history_bars.last_bars); every symbol holds the
+        # evidence end's history here. test_studio_history_bars and test_studio_catchup test the check itself.
+        bars = patch('studio_history_bars.last_bars', side_effect=lambda c, p, symbols: {s: datetime(2100, 1, 1) for s in symbols})
+        bars.start(); self.addCleanup(bars.stop)
         self.binary = self.data / 'MQL5/Experts/GOAT-EA/GOAT V1.49.ex5'; self.binary.parent.mkdir(parents=True)
         self.binary.write_bytes(b'ea-149')
         self.installation = self.root / 'installation.json'

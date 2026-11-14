@@ -62,6 +62,12 @@ class CatchupCase(unittest.TestCase):
         drive = _sf.drive_of(_os.path.abspath(self.root))
         self.floors.write_text(_json.dumps(dict(schema=_sf.SCHEMA, floors_gb={drive: 0} if drive else {})), encoding='utf-8')
         floors = patch.dict(_os.environ, {_sf.POLICY_ENV: str(self.floors)}); floors.start(); self.addCleanup(floors.stop)
+        # INV-CATCHUP-01 reads the running MT5's last bar per symbol (studio_history_bars.last_bars): here every symbol
+        # holds the evidence end's history, unless a test sets self.last_bars. HistoryBarsTests test the check itself.
+        self.last_bars = None
+        bars = patch('studio_history_bars.last_bars', side_effect=lambda controller, process, symbols: {
+            s: (self.last_bars or {}).get(s, datetime(2100, 1, 1)) for s in symbols})
+        bars.start(); self.addCleanup(bars.stop)
         self.controller = c
         self.process = SimpleNamespace(inspect=lambda: copy.deepcopy(self.process_state), close=self.close, start=self.start)
         self.runner = sc.CatchupRunner(c, process=self.process, clock=lambda: self.now, sleep=self.sleep, now=AFTER_CLOSE)
@@ -418,30 +424,45 @@ class NativeCycleTests(CatchupCase):
         self.runner.resume('cu1', 5)
         self.assertEqual(len(self.starts), 2)
 
-    def test_data_that_stops_before_the_target_is_flagged_evidence_end_short(self):
-        # goatai#2350 6101219141 / 6101228603: Banker's Friday history had not arrived, so every re-test stopped Thu 23:59
-        # while the result stamped evidenceEnd = Friday. The result, version and report now say EVIDENCE_END_SHORT, and the
-        # scan still does not count the export as caught up.
+    def test_a_start_is_refused_while_the_terminal_lacks_the_evidence_ends_last_bar(self):
+        # INV-CATCHUP-01 (goatai#2750 6880394220). 2026-11-14's case was a plan ending Fri 11-13 started while MT5's last
+        # bar was Thu 11-12 (test_studio_history_bars has those dates); here the fixture's end is Fri 10-02 and EURUSD's
+        # last bar Thu 10-01 23:59. The pre-check and the drive both refuse, before any effect.
+        from studio_refusal import Refusal
+        self.runner.prepare('cu1', self.plan(sets=[self.behind]))
+        self.last_bars = {'EURUSD': datetime(2026, 10, 1, 23, 59)}
+        for name, start in (('precheck', lambda: self.runner.precheck_start('cu1')), ('start', lambda: self.runner.start('cu1', 5))):
+            with self.subTest(name), self.assertRaises(Refusal) as caught:
+                start()
+            self.assertEqual(caught.exception.code, 'CATCHUP_HISTORY_MISSING')
+            self.assertIn("does not yet hold 2026-10-02's last trading bar for EURUSD (last bar 2026-10-01 23:59)", str(caught.exception))
+            self.assertEqual(caught.exception.fields['symbols'], {'EURUSD': '2026-10-01 23:59'})
+        self.assertEqual(read_json(self.runner.path('cu1') / 'state.json')['status'], 'prepared')
+        self.assertEqual(self.starts, [])                              # no member launched, the monitor never closed
+        self.last_bars = {'EURUSD': datetime(2026, 10, 2, 18, 59)}       # Friday, before 19:00 server: still short
+        with self.assertRaises(Refusal):
+            self.runner.start('cu1', 5)
+        self.last_bars = {'EURUSD': datetime(2026, 10, 2, 23, 55)}       # Friday's history is in: the run goes ahead
+        self.auto = True
+        self.assertEqual(self.runner.start('cu1', 30)['status'], 'completed')
+
+    def test_data_that_stops_before_the_target_is_refused_a_verdict(self):
+        # goatai#2350 6101219141: Banker's Friday history had not arrived (10-10), so every re-test stopped Thu 23:59 while
+        # the result stamped evidenceEnd = Friday; it became an EVIDENCE_END_SHORT flag. The flag did not stop it: on
+        # 2026-11-14, 113 re-tests ended 11-12 under 11-13 plans. INV-CATCHUP-01 (goatai#2750 6880394220): such a re-test
+        # gets no verdict and no evidence version; the member fails, named, and the export stays behind.
         from test_studio_catchup_verdict import msc
         self.retest_observed_end = msc(datetime(2026, 10, 1, 23, 59))          # Thu: Fri 10-02 history missing
         self.runner.prepare('cu1', self.plan(sets=[self.behind]))
         self.auto = True
-        self.assertEqual(self.runner.start('cu1', 30)['status'], 'completed')
+        self.runner.start('cu1', 30)
         member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
-        version = read_json(Path(member['evidence_dir']) / 'evidence-version.json')
-        short = version['evidenceEndShort']
-        self.assertEqual((version['evidenceEnd'], version['evidence_end']), ('2026-10-02', '2026-10-01'))
-        self.assertEqual((short['code'], short['target'], short['last_data_day'], short['missing_weekdays'], short['source']),
-                         ('EVIDENCE_END_SHORT', '2026-10-02', '2026-10-01', 1, 'capture'))
-        report = self.runner.report('cu1')
-        row = report['members'][0]
-        self.assertEqual(row['evidenceEndShort'], short)
-        self.assertIn('no data for 1 weekday before the target 2026-10-02 (it ends on 2026-10-01): that history is not on '
-                      'this terminal yet, or it was a market holiday', row['summary']['plain'])
-        self.assertIsNone(version['evidenceEndUnproven'])
-        self.assertEqual((report['evidence_end_short']['count'], report['evidence_end_short']['last_data_days'],
-                          report['evidence_end_short']['aliases']), (1, {'2026-10-01': 1}, [row['alias']]))
-        self.assertIn('1 of 1 member stopped before 2026-10-02', report['evidence_end_short']['plain'])
+        item = read_json(self.runner.path('cu1') / 'state.json')['members'][0]
+        self.assertEqual(item['status'], 'failed')
+        self.assertIn("EVIDENCE_END_SHORT: the re-test of %s (EURUSD) ends on 2026-10-01, before the plan's evidence end "
+                      "2026-10-02 (1 weekday missing); no verdict was stamped" % member['alias'], item['error'])
+        self.assertFalse((Path(member['evidence_dir']) / 'evidence-version.json').exists())
+        self.assertFalse(sc.versions(self.controller.root))
         rows = {r['set_path']: r for r in sc.evidence_scan([self.run], now=AFTER_CLOSE, controller_root=self.controller.root)['exports']}
         self.assertEqual(rows[str(self.behind)]['status'], 'behind', 'a short re-test never carries the export to the target')
         # A weekend between the last data day and the target is not short; a full re-test carries no flag.

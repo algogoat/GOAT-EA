@@ -2,11 +2,15 @@
 from datetime import date, datetime, timedelta
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import unittest
+from unittest.mock import patch
 
 import studio_build_migration as bm
 import studio_catchup as sc
+import studio_storage_floor as sf
 from studio_installation import read_json
 from test_studio_catchup import AFTER_CLOSE, CatchupCase
 from test_studio_catchup_verdict import daily, make_unit, trading
@@ -25,7 +29,7 @@ class MigrationCase(CatchupCase):
     """Exports of an older build (B40, and a V1.47 export without a .goatseq); the installed EA reports B43."""
 
     def setUp(self):
-        super().setUp()
+        super().setUp()   # CatchupCase pins the temp drive's storage floor to 0 (self.floors)
         self.retest_build = TARGET
         self.behind = self.export('Rmig00001', 'EURUSD', self.history, build_id=SOURCE)
         self.v147 = self.export('Rv1470001', 'AUDUSD', self.history, capture=False)
@@ -414,6 +418,55 @@ class OutputRootTests(MigrationCase):
             with self.assertRaisesRegex(ValueError, 're-test units need about'):
                 self.runner.validate(self.mplan(output_root=out))
         self.assertEqual(self.runner.validate(self.mplan(output_root=out))['member_count'], 1)
+
+    def test_f_storage_floor_validate_shows_the_projection(self):
+        out = str(self.root / 'evidence-out')
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=60 * sf.GB)):
+            space = self.runner.validate(self.mplan(output_root=out))['output_root_space']
+        floor = 0 if sf.drive_of(os.path.abspath(self.root)) else sf.OTHER_FLOOR_GB * sf.GB   # off Windows: the default
+        self.assertEqual((space['floor']['members'], space['floor']['unit_bytes'], space['floor']['floor_bytes']), (1, sf.UNIT_FALLBACK_BYTES, floor))
+        self.assertIn('no finished unit here or in sibling roots under %s, so 128 MiB' % self.root, space['floor']['plain'])
+        self.assertIn('policy file %s' % self.floors, space['floor']['plain'])
+
+    def test_f_storage_floor_checks_default_root_plans_too(self):
+        # GOAT-EA#342 6878127520: a plan without output_root writes into the controller state's evidence folder (the
+        # customers' path); the same floor applies there, measuring that root's finished units.
+        default = self.controller.root / 'evidence'
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=60 * sf.GB)):
+            space = self.runner.validate(self.mplan())['output_root_space']
+        self.assertNotIn('needed_bytes', space)   # the room pre-check stays output_root-only (#199)
+        self.assertEqual((space['floor']['members'], space['floor']['unit_bytes']), (1, sf.UNIT_FALLBACK_BYTES))
+        self.run_all('bm1', self.mplan())          # one finished unit now sits in the default root
+        unit, measured = sf.largest_unit(default)
+        self.assertEqual(measured, 1)
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=60 * sf.GB)):   # a migration re-tests on purpose
+            space = self.runner.validate(self.mplan())['output_root_space']['floor']
+        self.assertEqual((space['unit_bytes'], space['units_measured']), (unit, 1))
+        self.assertIn('the largest of 1 finished unit(s) on disk', space['unit_basis'])
+        drive = sf.drive_of(os.path.abspath(self.root))
+        if not drive:
+            self.skipTest('a drive-letter floor needs a Windows path')
+        self.floors.write_text(json.dumps(dict(schema=sf.SCHEMA, floors_gb={drive: 50})), encoding='utf-8')
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=50 * sf.GB + unit - 1)):
+            with self.assertRaisesRegex(ValueError, 'Evidence root %s is refused: .*floor 50.0 GB' % re.escape(str(default))):
+                self.runner.validate(self.mplan())
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=50 * sf.GB + unit)):
+            self.assertEqual(self.runner.validate(self.mplan())['member_count'], 1)
+
+    def test_f_storage_floor_refuses_a_plan_that_would_end_under_the_floor(self):
+        out = str(self.root / 'evidence-out')
+        drive = sf.drive_of(os.path.abspath(self.root))
+        if not drive:
+            self.skipTest('a drive-letter floor needs a Windows path')
+        self.floors.write_text(json.dumps(dict(schema=sf.SCHEMA, floors_gb={drive: 50})), encoding='utf-8')
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=50 * sf.GB + sf.UNIT_FALLBACK_BYTES - 1)):
+            with self.assertRaisesRegex(ValueError, 'is refused: .* projected at the plan\'s end; floor 50.0 GB \\(policy file'):
+                self.runner.validate(self.mplan(output_root=out))
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=50 * sf.GB + sf.UNIT_FALLBACK_BYTES)):
+            self.assertEqual(self.runner.validate(self.mplan(output_root=out))['member_count'], 1)
+        self.floors.write_text('{broken', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'Storage floor policy .* cannot be read'):
+            self.runner.validate(self.mplan(output_root=out))
 
     def test_f_default_root_named_explicitly_is_not_recorded_twice(self):
         self.run_all('bm1', self.mplan(output_root=str(self.controller.root / 'evidence')))

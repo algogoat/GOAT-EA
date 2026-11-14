@@ -231,8 +231,10 @@ def output_root(value, *, windows=None):
 
 
 def free_space_check(root, members):
-    """Refuse an output root without room for ``members`` re-test units (UNIT_BYTES each) plus FREE_MARGIN_BYTES."""
+    """Refuse an output root without room for ``members`` re-test units (UNIT_BYTES each) plus FREE_MARGIN_BYTES, then
+    one whose projected free space at the plan's end falls under its drive's floor (studio_storage_floor)."""
     import shutil
+    import studio_storage_floor
     probe = Path(root)
     while not probe.exists() and probe.parent != probe:
         probe = probe.parent
@@ -244,7 +246,7 @@ def free_space_check(root, members):
     if free < needed:
         raise ValueError('output_root %s has %.1f GB free; %d re-test units need about %.1f GB (%d MB each plus 1 GB margin)'
                          % (root, free / 1e9, members, needed / 1e9, UNIT_BYTES // (1024 * 1024)))
-    return dict(free_bytes=free, needed_bytes=needed)
+    return dict(free_bytes=free, needed_bytes=needed, floor=studio_storage_floor.check(root, members))
 
 
 def _drive_type(root):

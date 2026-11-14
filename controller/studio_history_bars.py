@@ -86,8 +86,12 @@ def check_start(controller, process, manifest, *, read=None):
     short = missing({s: bars.get(s) for s in symbols}, end_iso)
     if short:
         named = ', '.join('%s (last bar %s)' % (s, last.strftime('%Y-%m-%d %H:%M') if last else 'none') for s, last in short)
+        no_bar = [s for s, last in short if last is None]
+        # A symbol with no bar at all is usually not in Market Watch: MT5 serves no history for it (Claude-Mac 6880752410).
+        hint = (' %s has no bar at all: add the symbol to Market Watch in MT5, then start again.' % ', '.join(no_bar)
+                if no_bar else '')
         raise Refusal('This terminal does not yet hold %s\'s last trading bar for %s, so the catch-up was not started: its '
-                      're-tests would stop short of %s. Start it again once MT5 has that history.'
-                      % (end_iso, named, end_iso), CODE, evidence_end=end_iso,
+                      're-tests would stop short of %s. Start it again once MT5 has that history.%s'
+                      % (end_iso, named, end_iso, hint), CODE, evidence_end=end_iso,
                       symbols={s: last.strftime('%Y-%m-%d %H:%M') if last else None for s, last in short})
     return dict(evidence_end=end_iso, symbols={s: bars[s].strftime('%Y-%m-%d %H:%M') for s in symbols})

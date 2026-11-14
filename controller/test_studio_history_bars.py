@@ -76,8 +76,14 @@ class HistoryBarsTests(unittest.TestCase):
         ok = hb.check_start(self.controller, None, self.manifest(),
                             read=lambda c, p, s: {x: datetime(2026, 11, 13, 23, 55) for x in s})
         self.assertEqual(ok, dict(evidence_end=end, symbols={'EURUSD': '2026-11-13 23:55', 'WS30': '2026-11-13 23:55'}))
-        with self.assertRaisesRegex(Refusal, 'for EURUSD \\(last bar none\\)'):
+        with self.assertRaises(Refusal) as caught:
             hb.check_start(self.controller, None, self.manifest(), read=lambda c, p, s: {'WS30': datetime(2026, 11, 16)})
+        self.assertIn('for EURUSD (last bar none)', str(caught.exception))
+        self.assertIn('EURUSD has no bar at all: add the symbol to Market Watch in MT5, then start again.', str(caught.exception))
+        self.assertEqual(caught.exception.fields['symbols'], {'EURUSD': None})
+        with self.assertRaises(Refusal) as caught:                                   # a late bar alone: no Market Watch hint
+            hb.check_start(self.controller, None, self.manifest(), read=lambda c, p, s: {x: datetime(2026, 11, 12, 23, 59) for x in s})
+        self.assertNotIn('Market Watch', str(caught.exception))
 
     def test_reader_attaches_only_to_the_running_terminal_and_reads_m1_bars(self):
         mt5 = FakeMT5({'EURUSD': datetime(2026, 11, 13, 23, 59), 'WS30': datetime(2026, 11, 13, 23, 14)}, str(self.data))

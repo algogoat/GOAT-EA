@@ -1,8 +1,10 @@
 """EA init-rule parity (beta.38): validate_strategy refuses what GOAT's OnInit refuses from input values alone,
 over every value an optimization range can reach, and every OnInit refusal is ported or listed as not ported."""
 import copy
+import json
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 from studio_ea_init_rules import (EA_INIT_CODE, EA_INIT_RULES, EA_INIT_SCHEMA_CODE, EA_SOURCE, MAX_COMBINATIONS,
@@ -14,6 +16,14 @@ from studio_template_tools import schema_default
 
 REPO = Path(__file__).resolve().parent.parent
 SCHEMAS = {version: contracts(version)[0] for version in ('1.48', '1.49')}
+B54_SOURCE = 'a8c6766243ff577bdcfc90495a6de33ce0797c88'   # B54 (V1.49-BETA17-54), the merge of GOAT-EA#306
+
+
+def b54_schema():
+    """B55 (spec 7, the third proof): B54's own contracts/v149/inputs.json, as committed at B54_SOURCE."""
+    blob = subprocess.run(['git', 'show', B54_SOURCE + ':controller/contracts/v149/inputs.json'], cwd=REPO, capture_output=True,
+                          check=True).stdout
+    return json.loads(blob.decode('utf-8-sig'))
 
 
 def defaults(schema):
@@ -150,21 +160,50 @@ class PortedRuleTests(RuleCase):
                                    dict(ORB, ORB_Min_Range_ATR='2.0', ORB_Max_Range_ATR='2.0')),
     }
 
+    # B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7, GOAT V1.49.mq5:5148-5160): breakout A as a grid sequence's first order.
+    # SEQ is a valid breakout sequence (the grid engine, a breakout mode, the switch, both delays 0). A0 ships the switch
+    # refused (BRK_SEQ_NOT_BUILT, the block's last line), so a "good" SET with the switch on passes every rule but that one
+    # (passes_or_unbuilt): it is refused only by BRK_SEQ_NOT_BUILT, and so by no earlier rule. PR A removes that rule.
+    SEQ = dict(Engine_Mode='0', BRK_Mode='1', BRK_Start_Seq='true', Delay_Trade='0', Delay_Trade_Live='0')
+    B55_CASES = {
+        'BRK_SEQ_WITHOUT_BRK': (dict(BRK_Start_Seq='false'), dict(BRK_Start_Seq='true')),
+        'BRK_SEQ_WITH_SINGLE': (NBAR, dict(NBAR, BRK_Start_Seq='true')),
+        'BRK_SEQ_WITH_DELAY': (SEQ, dict(SEQ, Delay_Trade='1')),
+        'BRK_SEQ_NOT_BUILT': (dict(SEQ, BRK_Start_Seq='false', Engine_Mode='1', Single_SL_ATR='1.0', Mode_Bias_Exit='0'), SEQ),
+    }
+    UNBUILT = {'BRK_SEQ_NOT_BUILT'}
+
+    def passes_or_unbuilt(self, **changes):
+        try:
+            validate_strategy(self.values(**changes), self.schema)
+        except ValueError as refusal:
+            found = re.search(r'Rule (\w+) \(', str(refusal))
+            self.assertTrue(found and found[1] in self.UNBUILT, str(refusal))
+            return found[1]
+        return None
+
     def test_every_ported_rule_has_a_passing_and_a_failing_set(self):
-        self.assertEqual(set(self.CASES) | set(self.B50_CASES) | set(self.B54_CASES), {rule['id'] for rule in EA_INIT_RULES})
-        self.assertFalse([rule['id'] for rule in EA_INIT_RULES if rule['id'].endswith('_NOT_BUILT')], 'PR B: every mode value has its term')
+        self.assertEqual(set(self.CASES) | set(self.B50_CASES) | set(self.B54_CASES) | set(self.B55_CASES),
+                         {rule['id'] for rule in EA_INIT_RULES})
+        self.assertEqual([rule['id'] for rule in EA_INIT_RULES if rule['id'].endswith('_NOT_BUILT')], ['BRK_SEQ_NOT_BUILT'],
+                         'PR B: every mode value has its term; B55 A0: the sequence switch has no start path yet')
         for rule_id, (good, bad) in self.B54_CASES.items():
             with self.subTest(rule=rule_id):
                 self.passes(**good)
                 self.refused(rule_id, **bad)
-        # B54: a schema without the B54 group (B53's) carries none of its rules and every other one; a B54 schema that lost
-        # one of its inputs or labels fails closed.
+        for rule_id, (good, bad) in self.B55_CASES.items():
+            with self.subTest(rule=rule_id):
+                self.assertEqual(self.passes_or_unbuilt(**good), 'BRK_SEQ_NOT_BUILT' if good.get('BRK_Start_Seq') == 'true' else None)
+                self.refused(rule_id, **bad)
+        # B54: a schema without the B54 group (B53's, so without B55's either) carries none of their rules and every other
+        # one; a B54 schema that lost one of its inputs or labels fails closed.
         b54 = set(self.B54_CASES)
         b53 = copy.deepcopy(SCHEMAS['1.49'])
         for name in ('BRK_Mode', 'BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_Mode', 'ORB_Clock', 'ORB_TF_',
-                     'ORB_Start_Minute', 'ORB_Range_Minutes', 'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR'):
+                     'ORB_Start_Minute', 'ORB_Range_Minutes', 'ORB_Entry_Minutes', 'ORB_Buffer_ATR', 'ORB_Min_Range_ATR', 'ORB_Max_Range_ATR',
+                     'BRK_Start_Seq'):
             del b53['inputs'][name]
-        self.assertEqual({rule['id'] for rule in applicable_rules(b53)}, {rule['id'] for rule in EA_INIT_RULES} - b54)
+        self.assertEqual({rule['id'] for rule in applicable_rules(b53)}, {rule['id'] for rule in EA_INIT_RULES} - b54 - set(self.B55_CASES))
         self.assertEqual(applicable_rules(b53, TESTER_INIT_RULES), list(TESTER_INIT_RULES[:2]))
         for lost in ('ORB_Clock', 'BRK_Bars', 'ORB_Max_Range_ATR'):
             with self.subTest(lost=lost):
@@ -210,6 +249,56 @@ class PortedRuleTests(RuleCase):
                 damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs'][lost]
                 with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no ' + lost):
                     applicable_rules(damaged)
+
+    def test_b55_the_switch_narrows_brk_without_single_and_a_b54_schema_keeps_b54s_rule(self):
+        # Spec 3.7's table for the changed rule, and spec 7's trap. Under this tree's schema: a breakout on the grid engine
+        # without the switch is refused by BRK_WITHOUT_SINGLE with B54's alert (must refuse); the same SET with the switch
+        # and both delays 0 passes it (must pass: in A0 it ends at BRK_SEQ_NOT_BUILT, and so at no earlier rule); a breakout
+        # single passes as before.
+        grid = dict(BRK_Mode='1', Engine_Mode='0')
+        message = self.refused('BRK_WITHOUT_SINGLE', **grid)
+        self.assertIn('(GOAT V1.49.mq5:5128) fails for BRK_Mode=1 (BRK_NBar), Engine_Mode=0 (Engine_Grid), BRK_Start_Seq=false. EA alert: '
+                      '"Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."', message)
+        self.assertEqual(self.passes_or_unbuilt(**dict(grid, BRK_Start_Seq='true', Delay_Trade='0', Delay_Trade_Live='0')), 'BRK_SEQ_NOT_BUILT')
+        self.passes(**self.NBAR)
+        self.refused('BRK_WITHOUT_SINGLE', **dict(grid, BRK_Mode='2'))
+        # A switch on a ladder is not a thing (an sinput is never an axis): validate_strategy refuses the tuple itself.
+        with self.assertRaisesRegex(ValueError, 'BRK_Start_Seq: Input not exposed for optimization'):
+            validate_strategy(self.values(**dict(grid, BRK_Start_Seq='false||false||0||true||Y')), self.schema)
+        # The delay rule over a ladder: Delay_Trade_Live reaching 1 is refused and named (spec 3.7's second refusal).
+        self.assertIn('(reachable through the optimization range of Delay_Trade_Live)',
+                      self.refused('BRK_SEQ_WITH_DELAY', **dict(self.SEQ, Delay_Trade_Live='0||0||1||1||Y')))
+        self.refused('BRK_SEQ_WITH_DELAY', **dict(self.SEQ, Delay_Trade_Live='1'))
+        # The switch off reads no delay: the sequence starter's defaults (both delays 1) pass.
+        self.passes(Delay_Trade='1', Delay_Trade_Live='1')
+        # The third proof (spec 7): B54's own schema, as committed at a8c6766, has no BRK_Start_Seq. It keeps BRK_WITHOUT_SINGLE
+        # with B54's condition, carries none of B55's rules, and still refuses a breakout on the grid engine.
+        b54 = b54_schema()
+        self.assertNotIn('BRK_Start_Seq', b54['inputs'])
+        self.assertEqual(list(b54['inputs']), [name for name in SCHEMAS['1.49']['inputs'] if name != 'BRK_Start_Seq'])
+        self.assertEqual({rule['id'] for rule in applicable_rules(b54)}, {rule['id'] for rule in EA_INIT_RULES} - set(self.B55_CASES))
+        self.schema = b54
+        message = self.refused('BRK_WITHOUT_SINGLE', **grid)
+        self.assertIn('(GOAT V1.49.mq5:5128) fails for BRK_Mode=1 (BRK_NBar), Engine_Mode=0 (Engine_Grid). EA alert: '
+                      '"Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."', message)
+        self.refused('BRK_WITHOUT_SINGLE', **dict(grid, BRK_Mode='2', Delay_Trade='0', Delay_Trade_Live='0'))
+        self.passes(**self.NBAR)
+        self.passes()
+        with self.assertRaisesRegex(ValueError, r"unknown=\['BRK_Start_Seq'\]"):   # a B54 schema cannot be asked for a sequence
+            validate_strategy(self.values(**dict(grid, BRK_Start_Seq='true')), b54)
+        # The trap itself, so the port's shape is load-bearing: the same rule with BRK_Start_Seq among its `inputs` is
+        # dropped on B54's schema (an input of an absent appended group), and the breakout on the grid engine then passes.
+        rule = next(rule for rule in EA_INIT_RULES if rule['id'] == 'BRK_WITHOUT_SINGLE')
+        self.assertEqual((rule['inputs'], rule['optional']), (('BRK_Mode', 'Engine_Mode'), ('BRK_Start_Seq',)))
+        trapped = dict(rule, inputs=rule['inputs'] + ('BRK_Start_Seq',))
+        self.assertEqual(applicable_rules(b54, (trapped,)), [])
+        self.assertEqual(applicable_rules(b54, (rule,)), [rule])
+        self.assertEqual(applicable_rules(SCHEMAS['1.49'], (rule,)), [rule])
+        # A B55 schema that lost an input one of its rules reads fails closed, as for any other lost input.
+        damaged = copy.deepcopy(SCHEMAS['1.49']); del damaged['inputs']['Delay_Trade_Live']
+        with self.assertRaisesRegex(ValueError, EA_INIT_SCHEMA_CODE + ': this input schema has no Delay_Trade_Live for EA init rule '
+                                    'BRK_SEQ_WITH_DELAY'):
+            applicable_rules(damaged)
 
     def test_the_ny_session_mirrors_the_eas_parse(self):
         # GOAT V1.49.mq5:5055-5066: one '-', one ':' per half, hours of one or two digits, two-digit minutes.
@@ -681,10 +770,13 @@ class InventoryTests(unittest.TestCase):
         # B54 (spec 4.6) adds 19: 18 INIT_PARAMETERS_INCORRECT (13 ported; the two pre-2007 test starts, tester rules; three
         # that read the chart's timeframe, not ported) and 1 INIT_FAILED (ORB on a live chart, not ported). The not-built
         # INIT_FAILED lines went with their terms: BRK_NBar's and BRK_PriorDay's in PR A, ORB_Breakout's in PR B.
-        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (107, 8, 111))
-        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 68)
+        # B55 (spec 3.7, A0) adds 5: 3 INIT_PARAMETERS_INCORRECT (the switch without a breakout mode, with the single engine,
+        # with a delay; ported) and 2 INIT_FAILED (the switch on a live chart, not ported; the switch itself while the tree
+        # has no sequence start path, ported, which PR A removes). Line 5128 is narrowed in place and adds nothing.
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (112, 8, 116))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 71)
         self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
-                          sum(len(e['lines']) for e in NOT_PORTED)), (57, 4, 50))
+                          sum(len(e['lines']) for e in NOT_PORTED)), (61, 4, 51))
         # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
         # the unreachable removal after the dashboard-cancel return.
         self.assertEqual(sorted(self.removals - set(self.returns)), [4434, 4545, 4562, 4837])

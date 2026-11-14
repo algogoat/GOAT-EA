@@ -18,6 +18,10 @@
 //   closing-paren lines), so the review sees the lists grow. A0 left the entrypoint byte-identical to B53's; PR A adds it.
 // test_b51_no_drift.cjs now proves B53's own commit (as test_b50_no_drift.cjs proves B50-alpha's), so the chain
 // B49a -> B50 -> B53 -> tree is checked end to end.
+// B55 (PR A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md section 6.3): B54's tree is merged (a8c6766, GOAT-EA#306) and B55 builds on
+// it, so this guard now proves B54's own tree, read from that commit (as test_b51_no_drift.cjs proves B53's), and that the
+// working tree descends from it. scripts/test_b55_no_drift.cjs proves the working tree against B54, so the chain
+// B49a -> B50 -> B53 -> B54 -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B54 change is marked, listed and reviewable. Neutrality with the
 // new inputs at their defaults is proven by gate 0 (scripts/test_b54_gate0.cjs and controller/test_b54_gate0.py, on the 61
 // pool SETs) and, later, by scripts/test_b54_parity.cjs and the native Banker parity on all 61 (ruling 3).
@@ -59,11 +63,15 @@ const GROUP='====SINGLE BREAKOUT ENTRIES (B54)====';
 // B54's identity lines (as test_b51_no_drift.cjs's IDENTITY_LINES): the one unmarked change, since the build ID names no
 // marker; each appears exactly once in the entrypoint, and B53's are gone (REMOVED above).
 const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-54"','#define   GOAT_BUILD_MARKER "B54"'];
-const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
 // .mq5/.mqh check out as CRLF (.gitattributes), so a blob hashes as the tree would.
 const checkedOut=(name,data)=>/\.mq[5h]$/.test(name)?Buffer.from(data.toString('utf8').replace(/\r\n/g,'\n').replace(/\n/g,'\r\n'),'utf8'):data;
+// B55 (A0): B54's files as its commit checks them out (the working tree is a B55 descendant; test_b55_no_drift.cjs reads it).
+const B54_TREE='a8c6766243ff577bdcfc90495a6de33ce0797c88';
+const read=f=>checkedOut(f,git(['show',B54_TREE+':'+f]));
+const existsAtB54=f=>{try{git(['cat-file','-e',B54_TREE+':'+f]);return true;}catch{return false;}};
+git(['merge-base','--is-ancestor',B54_TREE,'HEAD']);   // throws unless the working tree descends from B54
 git(['merge-base','--is-ancestor',B53_SOURCE,'HEAD']);   // throws unless the working tree descends from B53
 const b53=JSON.parse(git(['show',B53_SOURCE+':candidate-builds/beta17-B53/identity.json']).toString('utf8').replace(/^﻿/,''));
 let checks=0;
@@ -81,7 +89,7 @@ function closure(){
  while(todo.length){
   const f=todo.pop();if(seen.has(f))continue;seen.add(f);
   const text=read(f).toString('utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');
-  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(fs.existsSync(path.join(ROOT,inc)))todo.push(inc);}
+  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(existsAtB54(inc))todo.push(inc);}
  }
  return [...seen].sort();
 }
@@ -113,7 +121,7 @@ function markedBlocks(lines){
 for(const f of CHANGED){
  const lines=read(f).toString('utf8').replace(/^﻿/,'').split(/\r\n/);
  const inBlock=markedBlocks(lines);
- const diff=git(['diff','--no-color','--no-ext-diff','-U0',B53_SOURCE,'--',f]).toString('utf8').split('\n');
+ const diff=git(['diff','--no-color','--no-ext-diff','-U0',B53_SOURCE,B54_TREE,'--',f]).toString('utf8').split('\n');
  let newLine=0,hunk=null;const hunks=[],removedLines=[];
  for(const line of diff){
   const h=line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);

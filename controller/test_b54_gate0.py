@@ -21,6 +21,11 @@ tree's code on S53 gives B53's results exactly (the A0 controller change is neut
 Items 5 (OnInit through scripts/b50_tick_harness.cjs) and 6 (WriteSet bytes) are scripts/test_b54_gate0.cjs.
 Load-bearing: the same checks must fail on mutated schemas (an existing default changed, two existing inputs reordered,
 an existing input's type altered, a new input's default changed, a fifteenth input appended).
+
+B55 (PR A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md section 6.2): B54 is merged (a8c6766, GOAT-EA#306) and B55 appends its own
+input after the 14, so the candidate here is now B54's own commit: its controller package on its contracts/v149 (S54), read
+from history as B53's is. controller/test_b55_gate0.py is the gate from B54 to the working tree, so the chain
+B53 -> B54 -> tree is checked end to end. The mutants and "this tree's code on B53's schema" still run this tree's code.
 """
 import copy
 import hashlib
@@ -44,6 +49,7 @@ from studio_tester_report import pinned_tester_inputs
 ROOT = Path(__file__).resolve().parent.parent
 POOL = ROOT / 'scripts' / 'fixtures' / 'b54-pool'
 B53_SOURCE = '216e16225441cfc1bfe0546c1c70adaf327405cf'
+B54_TREE = 'a8c6766243ff577bdcfc90495a6de33ce0797c88'   # B55 (A0): the candidate, B54's own commit
 INVENTORY_SHA256 = 'f4337e1bd296f7a4de3c5e53d6f7acab9d7454d8b6172739eb5729183984936c'
 # The spec's input tables (sections 3.1 and 4.1), in declaration order: name, declaration, type, default expression,
 # the default as a SET spells it, and whether it is an optimization axis (an input that is not a string).
@@ -123,14 +129,15 @@ def _git(*args):
     return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, check=True).stdout
 
 
-def b53_baseline(names):
-    """B53's own controller code on B53's own schema, in a fresh interpreter over that commit's controller package."""
+def b53_baseline(names, source=B53_SOURCE):
+    """B53's own controller code on B53's own schema, in a fresh interpreter over that commit's controller package (B55:
+    and likewise B54's, with source=B54_TREE)."""
     with tempfile.TemporaryDirectory() as directory:
-        zipfile.ZipFile(io.BytesIO(_git('archive', '--format=zip', B53_SOURCE, 'controller'))).extractall(directory)
+        zipfile.ZipFile(io.BytesIO(_git('archive', '--format=zip', source, 'controller'))).extractall(directory)
         done = subprocess.run([sys.executable, '-I', '-c', _DRIVER, str(Path(directory) / 'controller'), str(POOL),
                                json.dumps(names)], capture_output=True, check=False)
         if done.returncode != 0:
-            raise AssertionError('the B53 baseline failed: ' + done.stderr.decode('utf-8', 'replace')[-2000:])
+            raise AssertionError('the ' + source[:8] + ' baseline failed: ' + done.stderr.decode('utf-8', 'replace')[-2000:])
         return json.loads(done.stdout)
 
 
@@ -193,10 +200,12 @@ class Gate0Tests(unittest.TestCase):
         cls.manifest = json.loads((POOL / 'manifest.json').read_text(encoding='utf-8'))
         cls.names = [row['file'] for row in cls.manifest['files']]
         cls.raw = {name: (POOL / name).read_bytes() for name in cls.names}
-        cls.s54 = json.loads((ROOT / 'controller/contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))
         cls.b53 = b53_baseline(cls.names)
         cls.s53 = cls.b53['schema']
-        cls.cand = {name: tree(cls.raw[name], cls.s54) for name in cls.names}
+        # B55 (A0): the candidate is B54's own commit (its code on its schema), not the working tree.
+        cls.b54 = b53_baseline(cls.names, B54_TREE)
+        cls.s54 = cls.b54['schema']
+        cls.cand = cls.b54['files']
 
     def test_the_pool_is_the_61_byte_identical(self):
         inventory = self.manifest['inventory']
@@ -218,12 +227,16 @@ class Gate0Tests(unittest.TestCase):
 
     def test_0_the_schema_is_b53_plus_the_14(self):
         self.assertEqual(schema_problems(self.s53, self.s54), [])
-        header = (ROOT / 'GOAT_Inputs_Definitions.mqh').read_bytes()
+        # B54's header as its commit checks it out (.mqh: CRLF, .gitattributes).
+        header = _git('show', B54_TREE + ':GOAT_Inputs_Definitions.mqh').replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
         self.assertEqual(discover(header, self.s54['defines']), self.s54, 'contracts/v149 is what discover reads from this header')
         self.assertEqual(self.s54['source_sha256'], hashlib.sha256(header).hexdigest())
         self.assertEqual(B54_INPUTS, B54_NAMES)
-        self.assertEqual(APPENDED_INPUTS, tuple(self.b53['appended']) + B54_NAMES, 'B54_INPUTS appended last')
-        self.assertEqual([list(g) for g in APPENDED_GROUPS], self.b53['groups'] + [list(B54_NAMES)])
+        self.assertEqual(tuple(self.b54['appended']), tuple(self.b53['appended']) + B54_NAMES, 'B54_INPUTS appended last')
+        self.assertEqual(self.b54['groups'], self.b53['groups'] + [list(B54_NAMES)])
+        # The working tree keeps B54's lists as a prefix (B55's input follows them; test_b55_gate0.py).
+        self.assertEqual(APPENDED_INPUTS[:len(self.b54['appended'])], tuple(self.b54['appended']))
+        self.assertEqual([list(g) for g in APPENDED_GROUPS][:len(self.b54['groups'])], self.b54['groups'])
 
     def test_this_trees_code_on_b53s_schema_is_b53(self):
         for name in self.names:

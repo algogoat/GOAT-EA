@@ -66,6 +66,10 @@ class _View:
     def has(self, name, label):
         return label in self._choices.get(name, {})
 
+    def declares(self, name):
+        """B55: whether the schema declares this input at all (a rule's `optional` inputs; see applicable_rules)."""
+        return name in self._choices
+
 
 # ---- MQL helpers --------------------------------------------------------------------------------------------
 def _mql_split_count(text, separator):
@@ -276,6 +280,12 @@ def _brk(v):
 
 def _orb(v):
     return v['ORB_Mode'] != v.choice('ORB_Mode', 'ORB_Disabled')
+
+
+def _start_seq(v):
+    """B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.1, 3.7): BRK_Start_Seq, read only where the schema declares it. A B54 schema
+    has no such input, so its build has no switch and the reading is off."""
+    return v.declares('BRK_Start_Seq') and bool(v['BRK_Start_Seq'])
 
 
 def _orb_lim(v):
@@ -502,11 +512,17 @@ EA_INIT_RULES = (
           lambda v: v['Single_Partial_ATR'] > 0.0 and v['Ledger_Mode'] != v.choice('Ledger_Mode', 'Ledger_PositionJoin')),
     # B54 (spec 4.6, GOAT V1.49.mq5:5122-5150): the breakout entries. A schema without the B54 group (B53 and earlier)
     # belongs to a build without these rules (applicable_rules, APPENDED_GROUPS). A family's ranges apply while it is on.
-    _rule('BRK_WITHOUT_SINGLE', [5128], 'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single',
-          ['BRK_Mode', 'Engine_Mode'], {'BRK_Mode': ['BRK_Disabled'], 'Engine_Mode': ['Engine_Single']},
-          'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single (spec 4.6)',
-          'Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single).',
-          lambda v: _brk(v) and not _single(v)),
+    # B55 (spec 3.7): narrowed by the switch. BRK_Start_Seq is an `optional` input, not one of `inputs`: applicable_rules
+    # drops a rule that names an input of an absent appended group, and a B54 schema (no B55 group) must keep this rule with
+    # B54's condition, or a breakout SET on the grid engine would pass there (fail open). Where the schema declares the
+    # switch the predicate reads it, last, as the EA does.
+    dict(_rule('BRK_WITHOUT_SINGLE', [5128], 'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single && !BRK_Start_Seq',
+               ['BRK_Mode', 'Engine_Mode'], {'BRK_Mode': ['BRK_Disabled'], 'Engine_Mode': ['Engine_Single']},
+               'BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single && !BRK_Start_Seq (b54 spec 4.6; b55 spec 3.7: a schema '
+               'without BRK_Start_Seq has no switch, so B54\'s condition)',
+               'Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single).',
+               lambda v: _brk(v) and not _single(v) and not _start_seq(v)),
+         optional=('BRK_Start_Seq',)),
     _rule('ORB_WITHOUT_SINGLE', [5129], 'ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single',
           ['ORB_Mode', 'Engine_Mode'], {'ORB_Mode': ['ORB_Disabled'], 'Engine_Mode': ['Engine_Single']},
           'ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single (spec 4.6)',
@@ -588,6 +604,31 @@ EA_INIT_RULES = (
     # B54 (ruling on GOAT-EA#303, condition 3): a mode value whose signal term the tree did not have yet was refused here and
     # in the EA (INIT_FAILED) until the commit that added its term removed both (the inventory test keeps them in step). PR
     # A's BRK signal commit removed BRK_NBar's and BRK_PriorDay's, and PR B's ORB signal commit ORB_Breakout's: none is left.
+    # B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7, GOAT V1.49.mq5:5148-5160): breakout A as a grid sequence's first order. A
+    # schema without the B55 group (B54 and earlier) belongs to a build without these rules (applicable_rules).
+    _rule('BRK_SEQ_WITHOUT_BRK', [5153], 'BRK_Start_Seq && BRK_Mode==BRK_Disabled',
+          ['BRK_Start_Seq', 'BRK_Mode'], {'BRK_Mode': ['BRK_Disabled']},
+          'BRK_Start_Seq && BRK_Mode==BRK_Disabled (spec 3.7)',
+          'Initialization Failed: BRK_Start_Seq needs a breakout mode (BRK_Mode=BRK_NBar or BRK_PriorDay).',
+          lambda v: bool(v['BRK_Start_Seq']) and not _brk(v)),
+    _rule('BRK_SEQ_WITH_SINGLE', [5154], 'BRK_Start_Seq && Engine_Mode==Engine_Single',
+          ['BRK_Start_Seq', 'Engine_Mode'], {'Engine_Mode': ['Engine_Single']},
+          'BRK_Start_Seq && Engine_Mode==Engine_Single (spec 3.7)',
+          'Initialization Failed: BRK_Start_Seq needs the grid engine (Engine_Mode=Engine_Grid).',
+          lambda v: bool(v['BRK_Start_Seq']) and _single(v)),
+    _rule('BRK_SEQ_WITH_DELAY', [5155], 'BRK_Start_Seq && (Delay_Trade!=0 || Delay_Trade_Live!=0)',
+          ['BRK_Start_Seq', 'Delay_Trade', 'Delay_Trade_Live'], {},
+          'BRK_Start_Seq && (Delay_Trade!=0 || Delay_Trade_Live!=0) (spec 3.7, question 4: the first real order must be the '
+          'break\'s)',
+          'Initialization Failed: BRK_Start_Seq needs Delay_Trade=0 and Delay_Trade_Live=0 (the break opens the sequence\'s '
+          'first position).',
+          lambda v: bool(v['BRK_Start_Seq']) and (v['Delay_Trade'] != 0 or v['Delay_Trade_Live'] != 0)),
+    # B55 (A0, spec 3.7): the tree has no sequence start path yet, so the switch is refused here and in the EA (INIT_FAILED,
+    # the block's last line) until PR A's commit that adds the path removes both (the inventory test keeps them in step).
+    _rule('BRK_SEQ_NOT_BUILT', [5159], 'BRK_Start_Seq=true is not built in this build yet', ['BRK_Start_Seq'], {},
+          'BRK_Start_Seq (A0: the sequence start path is not built; PR A removes this rule)',
+          'Initialization Failed: BRK_Start_Seq=true is not built in this build yet (it has no sequence start path).',
+          lambda v: bool(v['BRK_Start_Seq'])),
 )
 
 # OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
@@ -656,7 +697,7 @@ NOT_PORTED = (
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
     dict(lines=(4516,), anchor='dt_Fwrd_OOS<TimeCurrent()', condition='EXPORT && dt_FOOS_start before the test start',
          reason='tester start date (TimeCurrent) is in the tester configuration, not the SET'),
-    dict(lines=(4528,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5233)',
+    dict(lines=(4528,), anchor='TimeCurrent()>Expiry', condition='build expired (B49b F1: on a live trading chart manage-only instead; see 5246)',
          reason='current time vs build expiry'),
     dict(lines=(4690,), anchor='Export is only allowed in back testing mode', condition='EXPORT on a live chart',
          reason='run context (live chart)'),
@@ -713,23 +754,26 @@ NOT_PORTED = (
          reason='the chart timeframe (the tester Period or the live chart), not a SET value'),
     dict(lines=(5146,), anchor='ORB_Mode is tester-only in B54', condition='ORB_Mode!=ORB_Disabled on a live chart (ruling 7)',
          reason='run context (live chart)'),
+    # B55 (spec 3.7, question 8): the sequence switch is tester-only in B55, as ORB is.
+    dict(lines=(5156,), anchor='BRK_Start_Seq is tester-only in B55', condition='BRK_Start_Seq on a live chart',
+         reason='run context (live chart)'),
     # B49b (F7 SIG-01): every enabled signal indicator's handle, as ATR's.
-    dict(lines=(5166,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5167,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5168,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5169,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
-    dict(lines=(5170,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
+    dict(lines=(5179,), anchor='iRSI failed', condition='RSI enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5180,), anchor='iMA (EMA ', condition='EMA enabled, an iMA ladder handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5181,), anchor='iADX failed', condition='ADX enabled, iADX handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5182,), anchor='iBands failed', condition='BB enabled, iBands handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5183,), anchor='iCustom MACD failed', condition='MACD enabled, the compiled MACD indicator cannot load',
          reason='symbol/indicator runtime (the indicator file)'),
-    dict(lines=(5171,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
+    dict(lines=(5184,), anchor='iRSI (RSI2) failed', condition='RSI2 enabled, iRSI handle invalid', reason='symbol/indicator runtime'),
     # B49b (F1 full): live trading charts only (GoatManageOnlyLive); in the tester manage-only is never set.
-    dict(lines=(5233,), anchor='manage_only_init==INIT_FAILED',
+    dict(lines=(5246,), anchor='manage_only_init==INIT_FAILED',
          condition='live, a refused licence or an expired build (or a rejected credential whose replacement cannot begin) with no open basket to manage',
          reason='license service response and build expiry on a live chart'),
-    dict(lines=(5239,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
+    dict(lines=(5252,), anchor='Exporting CSV/SET is not allowed in Optimization mode', condition='EXPORT in optimization/forward',
          reason='run context (optimization)'),
-    dict(lines=(5240,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
-    dict(lines=(5248,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
-    dict(lines=(5253,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
+    dict(lines=(5253,), anchor='GoatSeqClaimAttempt()', condition='sequence export attempt already claimed', reason='files on disk'),
+    dict(lines=(5261,), anchor='GoatSeqPathFits', condition='sequence export path too long', reason='symbol name, terminal paths'),
+    dict(lines=(5266,), anchor='Failed to open/create the CSV file', condition='export CSV cannot be opened', reason='file system'),
 )
 
 
@@ -818,6 +862,8 @@ def applicable_rules(schema, table=EA_INIT_RULES):
         absent = {name for group in APPENDED_GROUPS if not any(name in inputs for name in group) for name in group}
         # Section 8.3: any, not all: a rule of an absent group may also read an older input its schema predates (a V1.48
         # schema has neither Single_Partial_ATR nor Ledger_Mode). A lost input of a present group is never in absent.
+        # B55 (spec 7, the trap): a later build that narrows an older rule by a new input lists it under `optional`, never
+        # under `inputs`, so the older schema keeps the rule with its own condition (BRK_WITHOUT_SINGLE on a B54 schema).
         if any(name in absent for name in missing):
             continue
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
@@ -843,8 +889,9 @@ def _enforce(table, values, schema, code, refused, where=''):
     from studio_template_tools import schema_default
     choices = {name: definition.get('enum_choices') or {} for name, definition in definitions.items()}
     for rule in rules:
+        # B55: a rule's `optional` inputs are read only where the schema declares them (_View.declares).
         encoded = {name: values[name] if name in values else schema_default(name, definitions[name], schema.get('defines'))
-                   for name in rule['inputs']}
+                   for name in rule['inputs'] + tuple(name for name in rule.get('optional', ()) if name in definitions)}
         try:
             failure = _first_failure(rule, encoded, definitions, choices)
         except _TooMany:

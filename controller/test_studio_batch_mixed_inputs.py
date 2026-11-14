@@ -298,7 +298,8 @@ class RealContractTests(unittest.TestCase):
             self.assertEqual(found, [] if name in named else [name], name)
         self.assertEqual(sorted(set(APPENDED_INPUTS) - named),
                          sorted(D1_INPUTS + ('Fix_MoneyVolume', 'Gate_Recheck', 'Fix_ClosePath', 'Max_Spread_Points', 'Min_Margin_Level_PC',
-                                             'Fix_Clock', 'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad', 'BRK_Mode', 'ORB_Mode', 'ORB_Clock')))
+                                             'Fix_Clock', 'Fix_FeedGuard', 'Diag_TickTiming', 'Fix_TickLoad', 'BRK_Mode', 'ORB_Mode', 'ORB_Clock',
+                                             'BRK_Start_Seq')))   # B55 (A0): an sinput, never an axis, so the EA does not name it for a member that omits it
         # EA_Desc differs in every member and is never mixed; one member, or none, always passes.
         self.assertEqual(self.mixed(self.member(EA_Desc='one', Ledger_Mode='1'), self.member(EA_Desc='two', Ledger_Mode='1')), [])
         self.assertEqual(self.mixed(self.member(Ledger_Mode='1')), [])

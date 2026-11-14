@@ -19,7 +19,7 @@
 // file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
 void GoatDeployNotice(const string goat_notice_text);
 #define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
-#define   GOAT_BUILD_ID "V1.49-BETA17-54"
+#define   GOAT_BUILD_ID "V1.49-BETA17-55"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -34,7 +34,7 @@ void GoatDeployNotice(const string goat_notice_text);
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B54"
+#define   GOAT_BUILD_MARKER "B55"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -3648,7 +3648,7 @@ void DashboardBusAckCommand(const long command_id,const int ack_status)
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
    if(MAGIC1<=0)                                                         return;
-
+   GoatDashNoteFinalAck(command_id,ack_status); // B55 (GOAT-EA#328): final, so never processed again
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ID),(double)command_id);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_STATUS),(double)ack_status);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_TIME),(double)TimeCurrent());
@@ -3714,7 +3714,7 @@ void DashboardBusAckCloseCommand(const long command_id,const int ack_status,cons
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
    if(MAGIC1<=0)                                                         return;
-
+   if(GoatDashCloseAckUnchanged(command_id,ack_status,closed_positions,close_errors,remaining)) return; // B55 (GOAT-EA#328): a retry with nothing new neither rewrites nor flushes
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_CLOSED),(double)closed_positions);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ERRORS),(double)close_errors);
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_REMAINING),(double)remaining);
@@ -3854,11 +3854,11 @@ void DashboardBusProcessCommands(void)
 
    long command_id=(long)GlobalVariableGet(cmd_id_key);
    if(command_id<=0) return;
-
+   if(GoatDashFinalAcked(command_id)) return; // B55 (GOAT-EA#328): finally acknowledged (applied, expired or rejected): nothing more, no second flush
    int command_type=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_TYPE));
    int command_value=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_VALUE));
    datetime expires_at=(datetime)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_EXPIRES));
-   DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);
+   if((long)GlobalVariableGet(cmd_id_key)==command_id) DashboardBusApplyCommand(command_id,command_type,command_value,expires_at); // B55 (Codex on GOAT-EA#330): the id is read again after the fields; the dashboard clears it first and writes it last, so a changed id means the fields may be another command's: read again next time
   }
 // B49b:begin f8-export
 // F8 export integrity (goatai#2587 6433828681; Claude-Mac 6411161557, 6433854745 ruling 3, 6443122557): OPT-01 (the
@@ -5125,7 +5125,7 @@ int OnInit()
    // chart's timeframe or the live chart is NOT_PORTED. A family's ranges (3.1, 4.1) apply while its mode is on. Lim (4.1,
    // 4.4) is 1020 (17:00 NY) under ORB_Clock_NewYork, 1260 (21:00 London) under ORB_Clock_London; each input is bounded before
    // a sum reads it (a 32-bit int wraps; Claude-Mac 6764975563). ORB_TF_ names its minutes (TF_M1=1 ... TF_H1=60).
-   if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Mode!=BRK_Disabled && Engine_Mode!=Engine_Single && !BRK_Start_Seq) {Alert("Initialization Failed: BRK_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;} // B55 (spec 3.7): unless the break starts a sequence (BRK_Start_Seq; b55-init below)
    if(ORB_Mode!=ORB_Disabled && Engine_Mode!=Engine_Single) {Alert("Initialization Failed: ORB_Mode needs the single-trade engine (Engine_Mode=Engine_Single)."); return INIT_PARAMETERS_INCORRECT;}
    if(BRK_Mode!=BRK_Disabled && ORB_Mode!=ORB_Disabled)     {Alert("Initialization Failed: BRK_Mode and ORB_Mode cannot both be on (one breakout family per SET)."); return INIT_PARAMETERS_INCORRECT;} // ruling 15
    if(BRK_Mode==BRK_NBar && (BRK_Bars<2 || BRK_Bars>500))   {Alert("Initialization Failed: BRK_Bars must be between 2 and 500 with BRK_Mode=BRK_NBar."); return INIT_PARAMETERS_INCORRECT;}
@@ -5145,6 +5145,19 @@ int OnInit()
    if(ORB_Mode!=ORB_Disabled && ORB_Clock==ORB_Clock_London && MQLInfoInteger(MQL_TESTER) && TimeCurrent()<D'2007.03.11') {Alert("Initialization Failed: ORB_Clock_London needs a test start on or after 2007.03.11 under every server model (its UTC comes through the 2007 US DST rules)."); return INIT_PARAMETERS_INCORRECT;}
    if(ORB_Mode!=ORB_Disabled && !MQLInfoInteger(MQL_TESTER)) {Alert("Initialization Failed: ORB_Mode is tester-only in B54 (ruling 7); use ORB_Disabled on a live chart."); return INIT_FAILED;}
 // B54:end b54-init
+// B55:begin b55-init
+   // B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7; Claude-Mac goatai#2750 6789761790): BRK_Start_Seq lets breakout A start a
+   // grid sequence, so line 5128 above now guards only a SET that does not ask for one, with B54's alert and code. A rule
+   // that reads input values only is ported to the controller's EA_INIT_RULES; the live-chart rule is NOT_PORTED. ORB needs
+   // no rule here: the switch needs BRK_Mode on, and BRK_Mode with ORB_Mode is refused above (5130).
+   if(BRK_Start_Seq && BRK_Mode==BRK_Disabled)              {Alert("Initialization Failed: BRK_Start_Seq needs a breakout mode (BRK_Mode=BRK_NBar or BRK_PriorDay)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Start_Seq && Engine_Mode==Engine_Single)          {Alert("Initialization Failed: BRK_Start_Seq needs the grid engine (Engine_Mode=Engine_Grid)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Start_Seq && (Delay_Trade!=0 || Delay_Trade_Live!=0)) {Alert("Initialization Failed: BRK_Start_Seq needs Delay_Trade=0 and Delay_Trade_Live=0 (the break opens the sequence's first position)."); return INIT_PARAMETERS_INCORRECT;}
+   if(BRK_Start_Seq && !MQLInfoInteger(MQL_TESTER))         {Alert("Initialization Failed: BRK_Start_Seq is tester-only in B55; use BRK_Start_Seq=false on a live chart."); return INIT_FAILED;}
+   // B55 (A0, spec 3.7): this tree has no sequence start path yet, so the switch is refused outright, in the tester and on a
+   // live chart. PR A's commit that adds the path removes this line (as b54-init's not-built lines went; scripts/test_b55_init.cjs).
+   if(BRK_Start_Seq)                                        {Alert("Initialization Failed: BRK_Start_Seq=true is not built in this build yet (it has no sequence start path)."); return INIT_FAILED;}
+// B55:end b55-init
 // B54:begin brk-init
    // B54 (ruling on GOAT-EA#303, condition 3): every BRK_Mode and ORB_Mode value now has its signal term, so no not-built
    // refusal is left (PR A removed BRK_NBar's and BRK_PriorDay's, PR B ORB_Breakout's; scripts/test_b54_init.cjs reads the terms).
@@ -5210,7 +5223,7 @@ int OnInit()
         DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(exposure_mode_key));
      else if(GlobalVariableCheck(GoatPortfolioGVName("DashboardExposurePolicyMode")))
         DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(GoatPortfolioGVName("DashboardExposurePolicyMode")));
-
+     GoatDashSeedFinalAck(); // B55 (GOAT-EA#328): a stored command this chart already finished is neither acknowledged nor applied again (the policy above is restored from its own variables)
                                   Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      GoatLedgerOwnerReset(); // B49a (F2): owners are cached per MAGIC1 (a live re-init may restore another)
      g_GoatStateRestored=false; // B52 (second read P3): OnInit's own adoptions restore nothing late; GoatStateRestore, next, restores them and marks the pass (a re-init that skips this block keeps it)
@@ -7186,6 +7199,108 @@ void OnTimer(void)
    GoatTimingSlot(6,timing_timer); // B49b (LAG-T)
   }
 
+// B55:begin dash-ack-once
+// GOAT-EA#328: one final acknowledgement per dashboard command id. The one-second timer re-reads this chart's stored
+// command id (it stays in the terminal's store for good), and every pass acknowledged it again: APPLIED for the applied
+// id, EXPIRED for any stored command after a restart (the applied id starts at 0, the command is past its 30 s), REJECTED
+// for an unknown type. Each acknowledgement ends in GlobalVariablesFlush, a rewrite of the terminal's whole store: one
+// per chart per second, for ever (33 rewrites a second on a 36-chart terminal).
+// - g_goat_dash_final_ack_id is the last command id this chart gave a FINAL acknowledgement. DashboardBusProcessCommands
+//   returns on it, so a command is acknowledged (and flushed) once. Final = the command needs nothing more from this
+//   chart: APPLIED (every path sets it only with the work done; a close only once flat), EXPIRED and REJECTED (nothing
+//   will ever be done). FAILED is not final: it is only written by a close that left positions open, which B49b's
+//   F3 DASH-04 retries every 5 s until flat (APPLIED) or until the command expires (EXPIRED).
+// - OnInit seeds it from the chart's own stored acknowledgement when that is final, so a restart neither acknowledges
+//   nor applies a second time a command this chart already finished. The policy a command set (paused, trade mask,
+//   exposure mode) is restored in OnInit from its own variables, never by applying the command again.
+// - A retrying close writes (and flushes) its FAILED acknowledgement only when the status or a count changed since the
+//   one it wrote last; the retry itself, its 5 s spacing and its end at the command's expiry are B49b's, unchanged.
+// - A final acknowledgement is only ever given to a whole command (Codex on GOAT-EA#330). The dashboard (another chart,
+//   another thread) writes a command as four variables; when this chart's timer read them mid-publish it could take the
+//   new id with the older command's expiry, acknowledge it EXPIRED, and the guard above would then skip it for good
+//   (before B55 the next pass applied it). So each Dashboard.mqh publish clears the id (0) first and writes it last, and
+//   DashboardBusProcessCommands reads the id again after the fields and applies only if it is unchanged: a read that
+//   overlaps a publish sees 0, or a changed id, and waits for the next pass.
+// - Placed below OnInit and its rules, and called from above through GoatDashNoteFinalAck / GoatDashFinalAcked /
+//   GoatDashCloseAckUnchanged on lines that replace a blank line: no OnInit rule line moves, so every rule's cited line
+//   and the B55 gate 0 comparison with B54 stay as they were.
+// Live only, no input: the dashboard bus never runs in a batch, on the dashboard chart or in an optimization.
+long     g_goat_dash_final_ack_id=0;
+long     g_goat_dash_close_ack_id=0;
+int      g_goat_dash_close_ack_status=0,g_goat_dash_close_ack_closed=0,g_goat_dash_close_ack_errors=0,g_goat_dash_close_ack_remaining=0;
+bool GoatDashAckIsFinal(const int ack_status)
+  {
+   return(ack_status==GOAT_DASH_ACK_APPLIED || ack_status==GOAT_DASH_ACK_REJECTED || ack_status==GOAT_DASH_ACK_EXPIRED);
+  }
+void GoatDashSeedFinalAck(void)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   string ack_id_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ID);
+   string ack_status_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_STATUS);
+   if(!GlobalVariableCheck(ack_id_key) || !GlobalVariableCheck(ack_status_key)) return;
+
+   long ack_id=(long)GlobalVariableGet(ack_id_key);
+   if(ack_id>0 && GoatDashAckIsFinal((int)GlobalVariableGet(ack_status_key))) g_goat_dash_final_ack_id=ack_id;
+  }
+bool GoatDashCloseAckUnchanged(const long command_id,const int ack_status,const int closed_positions,const int close_errors,const int remaining)
+  {
+   if(!GoatDashAckIsFinal(ack_status) && command_id==g_goat_dash_close_ack_id && ack_status==g_goat_dash_close_ack_status &&
+      closed_positions==g_goat_dash_close_ack_closed && close_errors==g_goat_dash_close_ack_errors && remaining==g_goat_dash_close_ack_remaining) return true;
+   g_goat_dash_close_ack_id=command_id;           g_goat_dash_close_ack_status=ack_status;
+   g_goat_dash_close_ack_closed=closed_positions; g_goat_dash_close_ack_errors=close_errors; g_goat_dash_close_ack_remaining=remaining;
+   return false;
+  }
+void GoatDashNoteFinalAck(const long command_id,const int ack_status)
+  {
+   if(GoatDashAckIsFinal(ack_status)) g_goat_dash_final_ack_id=command_id;
+  }
+bool GoatDashFinalAcked(const long command_id)
+  {
+   return(command_id==g_goat_dash_final_ack_id);
+  }
+// B55:end dash-ack-once
+// B55:begin dash-policy-touch
+// GOAT-EA#328 follow-up: MT5 deletes a GlobalVariable that nothing accesses for 4 weeks. The every-second acknowledgement
+// that dash-ack-once removed also re-set this chart's three policy variables, which kept them alive by accident. Without
+// it a chart that runs 4+ weeks with no dashboard command and no restart could lose them, and the next OnInit would
+// restore "allow both, not paused" in place of a Buy Only or paused rule. Once per UTC hour (TimeGMT, as the CID touch)
+// the timer READS each policy variable OnInit restores from: this chart's paused, trade mask and exposure mode, and the
+// portfolio's DashboardPolicyPaused and DashboardExposurePolicyMode. A read is an access. MQL5 Reference, "Global
+// Variables of the Terminal" (https://www.mql5.com/en/docs/globals): "Global variables are kept in the client terminal
+// for 4 weeks since the last access, then they will be deleted automatically. An access to a global variable is not only
+// setting of a new value, but reading of the global variable value, as well."
+// Nothing is written, created, deleted or flushed. A write-back here would race the dashboard on the portfolio variables
+// across up to 36 charts: a pause set between one chart's read and its write would be overwritten with the stale value,
+// and charts restarting after it would come up unpaused (Claude-Mac, GOAT-EA#330). A variable that does not exist is
+// not touched, so OnInit's defaults stay the defaults.
+// Live only, no input: the bus's own three guards (never in a batch, on the dashboard chart or in an optimization).
+datetime g_goat_dash_policy_touched_hour=0;
+void GoatDashPolicyTouchOne(const string dpt_name)
+  {
+   double dpt_value=0.0;
+   if(GlobalVariableCheck(dpt_name)) GlobalVariableGet(dpt_name,dpt_value); // a read only: it renews the lifetime
+  }
+void GoatDashPolicyHourlyTouch(void)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   datetime dpt_gmt=TimeGMT();
+   datetime dpt_hour=dpt_gmt-dpt_gmt%3600;
+   if(dpt_hour<=0 || dpt_hour==g_goat_dash_policy_touched_hour) return;
+
+   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED));
+   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK));
+   GoatDashPolicyTouchOne(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE));
+   GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardPolicyPaused"));
+   GoatDashPolicyTouchOne(GoatPortfolioGVName("DashboardExposurePolicyMode"));
+   g_goat_dash_policy_touched_hour=dpt_hour;
+  }
+// B55:end dash-policy-touch
 void GoatTimerBody(void)
   {
    GoatSetupControlPoll();
@@ -7289,6 +7404,7 @@ void GoatTimerBody(void)
    if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
      {
       DashboardBusProcessCommands();
+      GoatDashPolicyHourlyTouch(); // B55 (GOAT-EA#328): once an hour the policy variables OnInit restores from are re-set to their own values, unflushed, so none ages out of the terminal's store
       if(MAGIC1!=0) GoatDirectionGuardPublish(Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
       if(MAGIC1!=0 && GlobalVariableCheck("Dashboard_ChartID"))
       {

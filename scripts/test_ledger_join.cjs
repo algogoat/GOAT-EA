@@ -297,9 +297,10 @@ function dailyFixture(mode,text=main){
 {const writeSet=bodyOf(header,'void WriteSet(string desc)');
  // B50 (A0) and B51 write their own blocks in this tail; they are tested in scripts/test_b50_parity.cjs and
  // scripts/test_b51_parity.cjs (the WriteSet goldens), so they are cut here. B49b's flags follow B50's block. B54 (A0): its
- // block likewise, tested in scripts/test_b54_gate0.cjs (the pool's bytes and the WriteSet golden).
+ // block likewise, tested in scripts/test_b54_gate0.cjs (the pool's bytes and the WriteSet golden). B55 (A0): its one line
+ // likewise, tested in scripts/test_b55_gate0.cjs.
  const tail=text=>text.slice(text.indexOf('FileWrite(FileSET_handle,"Trade_December="'),text.indexOf('FileClose(FileSET_handle);'))
-  .replace(/\/\/ (B50|B51|B54):begin (\S+)[^\n]*\n[\s\S]*?\/\/ \1:end \2[^\n]*\n/g,'');
+  .replace(/\/\/ (B50|B51|B54|B55):begin (\S+)[^\n]*\n[\s\S]*?\/\/ \1:end \2[^\n]*\n/g,'');
  // B49b (F7): Fix_MoneyVolume is written under the same rule (only when on), after Ledger_Mode.
  const run=(text,mode,fix=0,gate=0,close=0,spread=0,margin=0,clock=0)=>{const lines=[];const c={FileSET_handle:1,Trade_December:true,Ledger_Mode:mode,Ledger_Legacy:0,Ledger_PositionJoin:1,
   Fix_MoneyVolume:fix,GoatFix_Off:0,GoatFix_On:1,Gate_Recheck:gate,Gate_Legacy:0,Gate_AtFirstOrder:1,Fix_ClosePath:close,Max_Spread_Points:spread,Min_Margin_Level_PC:margin,Fix_Clock:clock,Fix_TickLoad:0,Diag_TickTiming:0,Fix_FeedGuard:0,FileWrite:(h,s)=>lines.push(s)};vm.createContext(c);vm.runInContext(js(tail(text).replace(/\(string\)(?:\(int\))?(\w+)/g,'String($1)')),c);return lines;};

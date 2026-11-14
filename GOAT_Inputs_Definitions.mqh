@@ -641,6 +641,10 @@ if(ORB_Buffer_ATR!=0.0)                   FileWrite(FileSET_handle,"ORB_Buffer_A
 if(ORB_Min_Range_ATR!=0.0)                FileWrite(FileSET_handle,"ORB_Min_Range_ATR="+(string)ORB_Min_Range_ATR);
 if(ORB_Max_Range_ATR!=0.0)                FileWrite(FileSET_handle,"ORB_Max_Range_ATR="+(string)ORB_Max_Range_ATR);
 // B54:end b54-writeset
+// B55:begin b55-writeset
+// B55 (A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md section 3.1): likewise for the sequence switch, so a default SET stays B54's bytes.
+if(BRK_Start_Seq)                         FileWrite(FileSET_handle,"BRK_Start_Seq="+(string)BRK_Start_Seq);
+// B55:end b55-writeset
 FileClose(FileSET_handle); FileSET_handle=INVALID_HANDLE;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1003,6 +1007,14 @@ input    double                  ORB_Buffer_ATR                =                
 input    double                  ORB_Min_Range_ATR             =                           0.0;       // Breakout B: no trade if the range is below N ATR (0 = off)
 input    double                  ORB_Max_Range_ATR             =                           0.0;       // Breakout B: no trade if the range is above N ATR (0 = off)
 // B54:end b54-inputs
+// B55:begin b55-inputs
+// B55 (docs/b55/BREAKOUT_SEQUENCE_SPEC.md sections 3.1 and 6.1; Claude-Mac goatai#2750 6789761790): one switch, in its own
+// group at the very end of the inputs. On, breakout A (BRK_Mode) starts a grid sequence: the break opens its first position.
+// PR A0 (gate 0) declares it and OnInit refuses it on, because the start path is PR A's. Its default (false) reproduces B54,
+// and WriteSet writes it only when on. An sinput, as Engine_Mode and BRK_Mode are: it is never an optimization axis.
+input    group                   "====BREAKOUT SEQUENCE START (B55)====";
+sinput   bool                    BRK_Start_Seq                 =                         false;       // Breakout A starts a grid sequence: the break opens its first position
+// B55:end b55-inputs
 /*input  group                   "=============NEWS DISPLAY==============                    ";
 input    bool                    input_ShowComments            =                          true;       // Show Comments
 input    string                  input_Prefix                  =                        "News";       // News Text Label

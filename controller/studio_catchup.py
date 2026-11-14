@@ -912,6 +912,14 @@ class CatchupRunner(SeedRunner):
             raise ValueError('Catch-up ID must use 1..80 letters/digits/underscore/hyphen')
         return self.base / batch_id
 
+    def _start_refusals(self, batch_id, manifest):
+        """The seed's first-start refusals, then INV-CATCHUP-01 (goatai#2750 6880394220): every member's symbol holds the
+        evidence end's last trading bar on this terminal (studio_history_bars), before any effect. precheck_start and
+        the drive both come here, so the detached start and its worker refuse alike."""
+        super()._start_refusals(batch_id, manifest)
+        import studio_history_bars
+        studio_history_bars.check_start(self.c, self.process, manifest)
+
     # ---- plan --------------------------------------------------------------------------
     def _plan(self, plan):
         if not isinstance(plan, dict) or not PLAN_KEYS <= set(plan) or set(plan) - PLAN_KEYS - PLAN_OPTIONAL or plan['schema_version'] != 1:
@@ -1515,6 +1523,15 @@ class CatchupRunner(SeedRunner):
         original = read_export(spec['original']['set_path'])
         if original['set_sha256'] != spec['original']['set_sha256'] or original['evidence_end'] != spec['original']['evidence_end']:
             raise ValueError('Original export changed since the catch-up was prepared')
+        # INV-CATCHUP-01 at stamp time (goatai#2750 6880394220): a re-test whose own evidence end proves weekdays missing
+        # before the plan's end gets no verdict and no evidence version; the member fails, named, and is run again once
+        # the terminal holds that history. It used to be stamped with EVIDENCE_END_SHORT (11-14: 113 re-tests lost Friday).
+        short, _ = evidence_end_short(retest, manifest['evidence_end']['iso'])
+        if short:
+            raise ValueError('%s: the re-test of %s (%s) ends on %s, before the plan\'s evidence end %s (%s); no verdict was '
+                             'stamped. Run this member again once the terminal holds that history.'
+                             % (EVIDENCE_END_SHORT, spec['alias'], tester['Symbol'], short['last_data_day'], short['target'],
+                                _n(short['missing_weekdays'], 'weekday') + ' missing'))
         moved = self._move(path, Path(spec['evidence_dir']))
         retest = read_export(moved)
         if not retest['evidence_end']:

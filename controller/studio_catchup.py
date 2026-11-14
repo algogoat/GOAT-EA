@@ -1023,8 +1023,10 @@ class CatchupRunner(SeedRunner):
             rows.append(row)
         if len({m['member_id'] for m in members}) != len(members):
             raise ValueError('Duplicate export values/window in catch-up plan')
+        self.space = None
         if 'output_root' in plan and members and not is_default_root(self.c.root, self.evidence):
-            migration.free_space_check(self.evidence, len(members))
+            # Room for the units, then the drive's floor at the plan's end (studio_storage_floor); validate shows both.
+            self.space = migration.free_space_check(self.evidence, len(members))
         # Held-out lock (goatai#2221 §4.3): catch-up re-tests run to the evidence end, so they are
         # the likeliest to read a locked window. A reveal plan must be its lock's frozen candidate.
         from studio_heldout_guard import check_catchup
@@ -1343,6 +1345,8 @@ class CatchupRunner(SeedRunner):
             value['build_migration'] = self._migration_public()
         if 'output_root' in plan:
             value['output_root'] = plain(os.path.abspath(self.evidence))
+        if getattr(self, 'space', None):
+            value['output_root_space'] = self.space
         return value
 
     def prepare(self, batch_id, plan):

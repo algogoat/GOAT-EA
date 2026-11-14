@@ -302,6 +302,9 @@ class HoldupTests(unittest.TestCase):
         self.assertIn('87%, below the 90% floor', result['evidence_reason'])
         self.assertFalse(result['summary']['evidence_offered'])
 
+    # The fixture's member ends within a second with no output: it models a member that RAN and failed, so the fast-fail
+    # re-run (studio_fast_fail, goatai#2750 6884089927; tested in test_studio_fast_fail) is off here.
+    @patch('studio_fast_fail.FAST_FAIL_SECONDS', 0)
     def test_a_missing_report_fails_the_test_with_a_plain_reason(self):
         self.runner.prepare('h1', self.plan())
         self.runner.start('h1', 1)

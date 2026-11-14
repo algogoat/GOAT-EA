@@ -5,6 +5,7 @@ import tempfile
 import json
 import sqlite3
 from unittest.mock import patch
+import studio_fast_fail
 import studio_seed
 import studio_seed_process
 import studio_seed_results
@@ -180,6 +181,9 @@ class SeedTests(unittest.TestCase):
         self.assertTrue(all(lease for _,lease in seen),seen)
         self.assertFalse(held(self.controller.root),'released when the drive returns')
 
+    # The fixture's member ends within a second with no output: it models a member that RAN and failed, so the fast-fail
+    # re-run (studio_fast_fail, goatai#2750 6884089927; tested in test_studio_fast_fail) is off here.
+    @patch('studio_fast_fail.FAST_FAIL_SECONDS', 0)
     def test_resume_running_does_not_restart_and_missing_output_is_null(self):
         self.prepare();state=self.runner.start('batch',1);self.assertTrue(state['driver_budget_exhausted']);self.assertEqual(len(self.starts),1)
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),1)
@@ -341,8 +345,15 @@ class MemberFailureTests(unittest.TestCase):
     listing every reason. Cancelled still stops. seed-resume re-activates a batch stopped by failures under
     first-start checks; completed and failed members are never re-run, and a status read never re-activates.
     """
-    setUp=SeedTests.setUp;tearDown=SeedTests.tearDown;close=SeedTests.close;start=SeedTests.start
+    tearDown=SeedTests.tearDown;close=SeedTests.close;start=SeedTests.start
     prepare=SeedTests.prepare;member=SeedTests.member;output=SeedTests.output
+
+    def setUp(self):
+        SeedTests.setUp(self)
+        # These tests model members that RAN and failed (the breaker's subject). The fixture ends a failing member within
+        # a second, which studio_fast_fail would re-run once as a fast-fail (goatai#2750 6884089927); that rule and its
+        # breaker accounting are tested in test_studio_fast_fail, so it is switched off here.
+        patcher=patch.object(studio_fast_fail,'FAST_FAIL_SECONDS',0);patcher.start();self.addCleanup(patcher.stop)
     MONITOR=dict(pid=10,executable='terminal64.exe',created_utc='first')
 
     def matrix(self,count,fail=()):

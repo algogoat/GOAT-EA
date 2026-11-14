@@ -97,6 +97,21 @@ class FastFailRunnerTests(unittest.TestCase):
         self.assertEqual(order, [names[0], names[1], names[2], names[0]])
         self.assertEqual([m['attempts'] for m in self.state()['members']], [2, 1, 1])
 
+    def test_three_fast_fails_in_a_row_trip_the_breaker_with_their_members_pending(self):
+        # A systemic launch fault (every MT5 closes at once): the breaker counts each first attempt, so it stops after 3
+        # launches, not after every member was also re-run once. The members wait as pending for their one re-run.
+        self.jobs(3);import copy
+        for symbol in ('EURJPY', 'AUDJPY'):
+            extra = copy.deepcopy(self.plan['jobs'][0]);extra['tester']['Symbol'] = symbol;self.plan['jobs'].append(extra)
+        self.fail_starts = {1, 2, 3, 4, 5, 6}
+        self.prepare();result = self.runner.start('batch', 400)
+        self.assertEqual(len(self.starts), 3, 'stopped after three launches')
+        self.assertEqual((result['status'], result['stopped_reason']['rules']), ('stopped', ['in_a_row']))
+        members = self.state()['members']
+        self.assertEqual([m['status'] for m in members], ['pending'] * 5)
+        self.assertEqual([bool(m.get('fast_fail')) for m in members], [True, True, True, False, False])
+        self.assertTrue(SeedRunner.resumable(self.state()))
+
     def test_resumable_accepts_a_waiting_re_run_but_not_a_plain_attempted_member(self):
         base = dict(status='stopped', generation=1, error=None)
         waiting = dict(alias='a', status='pending', attempts=1, fast_fail=dict(retry_after_unix=1.0))

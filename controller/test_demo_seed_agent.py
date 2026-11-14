@@ -272,9 +272,12 @@ class DemoSeedAgentTests(unittest.TestCase):
         logged = [a for a in self.actions() if a['operation'] == 'seed_promote_fork']
         self.assertEqual([(a['phase'], a['fork_set_sha256'], a['relation']) for a in logged], [('written', recorded['fork_set_sha256'], 'same_inputs')])
 
+    @patch('studio_fast_fail.FAST_FAIL_SECONDS', 0)
     def test_failed_members_stop_the_hunt_and_seed_resume_continues_it_under_a_fresh_broker_check(self):
         # goatai#1885 (T2 seedhunt-t2-4-b41): members without output fail alone; after the breaker stops the hunt,
         # seed-resume re-activates it with start-grade checks and runs only the pending members.
+        # These members model ones that RAN and failed; the fixture ends them within a second, which studio_fast_fail
+        # would re-run once as fast-fails (goatai#2750 6884089927), so that rule is off here (tested in test_studio_fast_fail).
         plan = json.loads(self.plan.read_text()); base = plan['jobs'][0]
         plan['jobs'] = [dict(copy.deepcopy(base), tester=dict(base['tester'], Symbol='SYM%d' % i)) for i in range(5)]
         self.plan.write_text(json.dumps(plan))

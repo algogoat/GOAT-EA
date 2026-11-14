@@ -740,8 +740,16 @@ class SeedRunner:
         Every failed member's reason is listed.
         """
         since=(state.get('reactivations') or [{}])[-1].get('unix')
-        ended=sorted((m for m in state['members'] if m.get('attempts') and m['status'] in FAILED_MEMBER|{'completed'}
-                      and (since is None or (m.get('started_unix') or 0)>=since)),key=lambda m:m.get('started_unix') or 0)
+        ended=[m for m in state['members'] if m.get('attempts') and m['status'] in FAILED_MEMBER|{'completed'}
+               and (since is None or (m.get('started_unix') or 0)>=since)]
+        # A fast-fail's first attempt counts as a failed attempt, in launch order (studio_fast_fail): a systemic launch fault
+        # trips the breaker after 3 in a row, not after every member was also re-run once. Its member stays pending.
+        for m in state['members']:
+            first=(m.get('fast_fail') or {}).get('first_attempt') if isinstance(m.get('fast_fail'),dict) else None
+            if first and type(first.get('started_unix')) in (int,float) and (since is None or first['started_unix']>=since):
+                ended.append(dict(alias=m['alias'],status='missing_output',error='fast-fail (first attempt): '+str(first.get('error')),
+                                  started_unix=first['started_unix']))
+        ended=sorted(ended,key=lambda m:m.get('started_unix') or 0)
         failed=[m for m in ended if m['status'] in FAILED_MEMBER]
         in_a_row=0
         for m in reversed(ended):
@@ -771,7 +779,9 @@ class SeedRunner:
         if statuses<={'completed'}:state['status']='completed';return
         if 'cancelled' in statuses:state['status']='stopped';return
         failed=statuses&FAILED_MEMBER
-        if not failed or statuses&self.LIVE_MEMBER:return
+        # A fast-failed member waits as pending, but its first attempt counts for the breaker (studio_fast_fail).
+        fast=any(isinstance(m.get('fast_fail'),dict) for m in state['members'])
+        if not (failed or fast) or statuses&self.LIVE_MEMBER:return
         if state['status'] not in ('active','closing_monitor'):
             # Already stopped (kept as recorded, including batches stopped before this rule), or a batch-level
             # doubt beside a failed member: stopped, exactly as before. Only seed-resume re-activates it.

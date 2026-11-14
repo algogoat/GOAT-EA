@@ -1027,6 +1027,13 @@ class CatchupRunner(SeedRunner):
         if 'output_root' in plan and members and not is_default_root(self.c.root, self.evidence):
             # Room for the units, then the drive's floor at the plan's end (studio_storage_floor); validate shows both.
             self.space = migration.free_space_check(self.evidence, len(members))
+        elif members:
+            # The default root (controller state's evidence folder) gets the same floor (Claude-Mac, GOAT-EA#342
+            # 6878127520): it is the customers' path and the system drive the 15 GB default protects. The room pre-check
+            # (UNIT_BYTES per member + 1 GiB) stays output_root-only, as #199 added it with output_root and left
+            # default-root plans as they were; the floor asks more than that margin on every drive by default (5 GB).
+            import studio_storage_floor
+            self.space = dict(floor=studio_storage_floor.check(self.evidence, len(members)))
         # Held-out lock (goatai#2221 §4.3): catch-up re-tests run to the evidence end, so they are
         # the likeliest to read a locked window. A reveal plan must be its lock's frozen candidate.
         from studio_heldout_guard import check_catchup
@@ -1346,7 +1353,7 @@ class CatchupRunner(SeedRunner):
         if 'output_root' in plan:
             value['output_root'] = plain(os.path.abspath(self.evidence))
         if getattr(self, 'space', None):
-            value['output_root_space'] = self.space
+            value['output_root_space'] = self.space   # an output_root or the default root alike
         return value
 
     def prepare(self, batch_id, plan):

@@ -8,7 +8,10 @@ that drive's floor:
 ``unit`` is the LARGEST on-disk size of a finished unit already in that output root, never a mean (compression ratios
 vary by unit). On disk means the compressed size (``GetCompressedFileSizeW`` on Windows), summed over the unit's files.
 A finished unit is a ``c.<10 hex>\\<5 digits>`` folder holding its record (``evidence-version.json`` or
-``build-migration-retest.json``). While none is finished, a unit counts as UNIT_FALLBACK_BYTES (128 MiB).
+``build-migration-retest.json``). A root with no finished unit yet (a new plan's folder) takes the largest finished unit
+in its sibling roots: the other folders under the same parent on the same drive, as G:\\GOAT-Evidence\\<plan> roots sit
+side by side (Claude-Mac on GOAT-EA#342 6878127520). Only when none exists does a unit count as UNIT_FALLBACK_BYTES
+(128 MiB). The check runs for an ``output_root`` and for the default root (the controller state's evidence folder).
 
 Floors: 15 GB on the Windows system drive and 5 GB on any other drive, unless the machine policy file overrides them.
 The file is ``%LOCALAPPDATA%\\GOAT Portfolio Desktop\\storage-floors.json``, beside the ``suite`` folder, so every
@@ -33,6 +36,7 @@ OTHER_FLOOR_GB = 5
 UNIT_FALLBACK_BYTES = 128 * 1024 * 1024
 UNIT_RECORDS = ('evidence-version.json', 'build-migration-retest.json')
 MAX_UNITS_MEASURED = 5000
+MAX_SIBLING_ROOTS = 200
 MAX_POLICY_BYTES = 64 * 1024
 DRIVE = re.compile(r'[A-Za-z]:')
 
@@ -139,6 +143,30 @@ def largest_unit(root, size=None):
     return best, measured
 
 
+def real_drive(path):
+    """The drive a folder really lives on, through junctions and links ('' without a drive letter)."""
+    return drive_of(os.path.realpath(str(path)))
+
+
+def sibling_unit(root, size=None):
+    """(largest finished unit in the other folders under ``root``'s parent on the same drive, units measured, sibling
+    roots holding one, parent); (None, 0, 0, parent) when there is none."""
+    own = os.path.normcase(os.path.abspath(root))
+    parent = Path(os.path.abspath(root)).parent
+    drive = drive_of(root)
+    best, measured, roots = None, 0, 0
+    if not parent.is_dir() or Path(own) == parent:
+        return None, 0, 0, parent
+    for sibling in sorted(parent.iterdir())[:MAX_SIBLING_ROOTS]:
+        if not sibling.is_dir() or os.path.normcase(os.path.abspath(sibling)) == own or real_drive(sibling) != drive:
+            continue
+        unit, count = largest_unit(sibling, size)
+        if unit is not None:
+            measured, roots = measured + count, roots + 1
+            best = unit if best is None else max(best, unit)
+    return best, measured, roots, parent
+
+
 def check(root, members, *, path=None, system=None, size=None):
     """Refuse ``root`` when free now - members x unit falls under its drive's floor; else return the projection."""
     import shutil
@@ -150,14 +178,19 @@ def check(root, members, *, path=None, system=None, size=None):
     try:
         free = shutil.disk_usage(probe).free
     except OSError as exc:
-        raise ValueError('output_root %s: free space cannot be read (%s)' % (root, exc)) from None
+        raise ValueError('Evidence root %s: free space cannot be read (%s)' % (root, exc)) from None
     try:
         measured_unit, measured = largest_unit(root, size)
+        if measured_unit is not None:
+            basis = 'the largest of %d finished unit(s) on disk' % measured
+        else:
+            measured_unit, measured, roots, parent = sibling_unit(root, size)
+            basis = ('no finished unit here yet: the largest of %d finished unit(s) on disk in %d sibling root(s) under %s'
+                     % (measured, roots, parent) if measured_unit is not None
+                     else 'no finished unit here or in sibling roots under %s, so 128 MiB' % parent)
     except OSError as exc:
-        raise ValueError('output_root %s: the finished units cannot be measured (%s)' % (root, exc)) from None
+        raise ValueError('Evidence root %s: the finished units cannot be measured (%s)' % (root, exc)) from None
     unit = measured_unit if measured_unit is not None else UNIT_FALLBACK_BYTES
-    basis = ('the largest of %d finished unit(s) on disk' % measured if measured_unit is not None
-             else 'no finished unit yet, so 128 MiB')
     drive = drive_of(root)
     floor, source = floor_for(drive, path=path, system=system)
     projected = free - members * unit
@@ -167,5 +200,5 @@ def check(root, members, *, path=None, system=None, size=None):
     report['plain'] = ('%s: %.1f GB free now - %d unit(s) x %.0f MB (%s) = %.1f GB projected at the plan\'s end; floor %.1f GB (%s)'
                        % (drive or root, free / GB, members, unit / 1e6, basis, projected / GB, floor / GB, source))
     if projected < floor:
-        raise ValueError('output_root %s is refused: %s' % (root, report['plain']))
+        raise ValueError('Evidence root %s is refused: %s' % (root, report['plain']))
     return report

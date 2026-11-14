@@ -70,8 +70,34 @@ class StorageFloorTests(unittest.TestCase):
         self.assertEqual(sf.largest_unit(self.root, self.size), (None, 0))
         report = self.check(2, 100 * sf.GB, self.policy({'G:': 50}))
         self.assertEqual(report['unit_bytes'], sf.UNIT_FALLBACK_BYTES)
-        self.assertIn('no finished unit yet, so 128 MiB', report['plain'])
+        self.assertIn('no finished unit here or in sibling roots under %s, so 128 MiB' % Path(self.tmp.name), report['plain'])
         self.assertEqual(sf.largest_unit(Path(self.tmp.name) / 'missing', self.size), (None, 0))
+
+    def test_a_new_root_takes_the_largest_unit_of_its_sibling_roots(self):
+        # GOAT-EA#342 6878127520: a new plan's folder (no finished unit yet) is priced by its siblings under the same
+        # parent on the same drive, before the 128 MiB fallback.
+        top = Path(self.tmp.name)
+        self.root = top / 'older'
+        self.unit('c.aaaaaaaaaa', 1, 40)
+        self.unit('c.aaaaaaaaaa', 2, 60)
+        self.root = top / 'oldest'
+        self.unit('c.bbbbbbbbbb', 1, 55, record='build-migration-retest.json')
+        self.unit('c.bbbbbbbbbb', 2, 900, record=None)        # unfinished: never counted
+        self.root = top / 'elsewhere'
+        self.unit('c.cccccccccc', 1, 500)                      # a junction to another drive: never counted
+        self.root = top / 'new'
+        self.root.mkdir()
+        other = os.path.normcase(str(top / 'elsewhere'))
+        with patch('studio_storage_floor.real_drive', side_effect=lambda p: 'X:' if os.path.normcase(str(p)) == other else sf.drive_of(top)):
+            unit, measured, roots, parent = sf.sibling_unit(self.root, self.size)
+            self.assertEqual((unit, measured, roots, parent), (60 * MB, 3, 2, top))
+            report = self.check(100, 60 * sf.GB, self.policy({'G:': 50}), drive=sf.drive_of(top))
+        self.assertEqual(report['unit_bytes'], 60 * MB)
+        self.assertIn('no finished unit here yet: the largest of 3 finished unit(s) on disk in 2 sibling root(s) under %s' % top,
+                      report['unit_basis'])
+        self.unit('c.dddddddddd', 1, 10)                       # once the new root has its own unit, that unit decides
+        with patch('studio_storage_floor.real_drive', return_value=sf.drive_of(top)):
+            self.assertEqual(self.check(100, 60 * sf.GB, self.policy({'G:': 50}), drive=sf.drive_of(top))['unit_bytes'], 10 * MB)
 
     def test_system_drive_and_other_drive_defaults(self):
         missing = Path(self.tmp.name) / 'no-policy.json'
@@ -112,7 +138,7 @@ class StorageFloorTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             self.check(204, 58 * sf.GB, path)
         text = str(caught.exception)
-        self.assertIn('output_root %s is refused' % self.root, text)
+        self.assertIn('Evidence root %s is refused' % self.root, text)
         self.assertIn('58.0 GB free now - 204 unit(s) x 100 MB', text)
         self.assertIn('= 37.6 GB projected at the plan\'s end', text)
         self.assertIn('floor 50.0 GB (policy file %s)' % path, text)

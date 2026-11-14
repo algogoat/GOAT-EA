@@ -54,6 +54,14 @@ class CatchupCase(unittest.TestCase):
         c.runtime = lambda **kw: ({'loaded': True, 'owner': self.owner['owner'], 'generation': self.owner['generation'], 'state_base': state_base}, {})
         # Never inspect this PC's real MT5 processes from a test.
         isolation = patch('studio_terminal_isolation.live_terminals', return_value=[]); isolation.start(); self.addCleanup(isolation.stop)
+        # The storage floor (studio_storage_floor) reads the host drive and the machine policy file: these tests are about
+        # other rules, so their temp drive's floor is 0 here. test_studio_storage_floor and the test_f_storage_floor_*
+        # tests in test_studio_build_migration test the floors themselves.
+        import json as _json, os as _os, studio_storage_floor as _sf
+        self.floors = self.root / 'storage-floors.json'
+        drive = _sf.drive_of(_os.path.abspath(self.root))
+        self.floors.write_text(_json.dumps(dict(schema=_sf.SCHEMA, floors_gb={drive: 0} if drive else {})), encoding='utf-8')
+        floors = patch.dict(_os.environ, {_sf.POLICY_ENV: str(self.floors)}); floors.start(); self.addCleanup(floors.stop)
         self.controller = c
         self.process = SimpleNamespace(inspect=lambda: copy.deepcopy(self.process_state), close=self.close, start=self.start)
         self.runner = sc.CatchupRunner(c, process=self.process, clock=lambda: self.now, sleep=self.sleep, now=AFTER_CLOSE)

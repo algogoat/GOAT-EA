@@ -19,8 +19,12 @@ INITIALIZE_SITES = {
     # broker-fit's one read (GOAT-EA#228): leased, and attach-only (MT5_NOT_RUNNING before initialize when the selected
     # terminal64.exe is not running).
     ('studio_broker_fit', 'read_broker'): 'lexical',
+    # the catch-up history check's one read (INV-CATCHUP-01, GOAT-EA#343): leased, and attach-only as read_broker
+    # (refuses before initialize when the selected terminal64.exe is not running; a different process after attaching
+    # drops the link and refuses).
+    ('studio_history_bars', 'last_bars'): 'lexical',
 }
-METATRADER_IMPORTERS = {'demo_agent', 'studio_agent_setup', 'studio_monitor_probe', 'studio_broker_fit'}
+METATRADER_IMPORTERS = {'demo_agent', 'studio_agent_setup', 'studio_monitor_probe', 'studio_broker_fit', 'studio_history_bars'}
 
 
 def modules():

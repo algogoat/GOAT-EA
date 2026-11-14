@@ -1,7 +1,9 @@
 """Frozen standalone SeedFarming matrix and recoverable, bounded process driver.
 
 No native batch queue/control files are armed. All process effects have a durable
-write-ahead state; uncertain start/close is never automatically retried.
+write-ahead state; uncertain start/close is never automatically retried. The one automatic
+re-run is a member that fast-failed (MT5 closed inside 30 s with no output on its first
+attempt: it never really ran), once, recorded (studio_fast_fail, goatai#2750 6884089927).
 """
 import hashlib
 import math
@@ -24,6 +26,7 @@ from studio_template_tools import source_bytes,validate_raw
 from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES,MAX_XML_BYTES
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import controller_preflight
+import studio_fast_fail as fast_fail
 import studio_tester_report as tester_report
 
 TERMINAL={'completed','cancelled','timeout','failed','missing_output'}
@@ -693,6 +696,17 @@ class SeedRunner:
                 if item['status'] in ('timeout','missing_output') and not item.get('error'):
                     item['error']=self._failure_reason(manifest,item)
             item['finished_unix']=self.clock()
+            if item['status']=='missing_output' and type(item.get('started_unix')) in (int,float):
+                # A fast-fail (goatai#2750 6884089927): MT5 closed inside FAST_FAIL_SECONDS with no output, so the member never
+                # really ran. The first one is recorded with its agent-log lines and re-run once, after the batch's other
+                # pending members; a second one is final, with both attempts in the error.
+                ran=item['finished_unix']-item['started_unix']
+                if fast_fail.is_fast_fail(item,ran,bool(paths)):
+                    fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
+                                     install=self.c.install,agents_root=getattr(self,'agents_root',None))
+                elif (item.get('attempts')==2 and isinstance(item.get('fast_fail'),dict) and not paths
+                      and 0<=ran<fast_fail.FAST_FAIL_SECONDS):
+                    item['error']=fast_fail.final_error(item,int(round(ran)),item.get('error'))
         self._settle_status(state)
         self._settle_slot(root,manifest,state,current)
         return current
@@ -779,12 +793,13 @@ class SeedRunner:
     @staticmethod
     def resumable(state):
         """A stopped batch that seed-resume may re-activate: it started, nothing is uncertain or cancelled,
-        no member runs, and members are still pending with no attempt. Completed and failed members are never re-run."""
+        no member runs, and members are still pending with no attempt, or waiting for their one fast-fail re-run
+        (studio_fast_fail). Completed and failed members are never re-run."""
         members=state.get('members') or []
         statuses={m.get('status') for m in members}
         return (state.get('status')=='stopped' and state.get('generation') is not None and state.get('error') is None
                 and 'pending' in statuses and not statuses&({'cancelled','reconcile_required'}|SeedRunner.LIVE_MEMBER)
-                and all(m.get('attempts')==0 for m in members if m.get('status')=='pending'))
+                and all(m.get('attempts')==0 or fast_fail.waiting_retry(m) for m in members if m.get('status')=='pending'))
 
     def status(self,batch_id):
         from studio_process_query import POLL_BUDGET
@@ -1238,10 +1253,13 @@ class SeedRunner:
                     return self._public(root,state)|dict(paused=True,pause_requested=True,
                         next_action='Paused between members; batch-resume releases the pause and continues the pending members')
                 elif current is None and state['status']=='active' and pass_open:
-                    index=next((i for i,m in enumerate(state['members']) if m['status']=='pending'),None)
+                    # Never-attempted members first, in order; then a fast-failed member whose one re-run is due
+                    # (studio_fast_fail: after the others, and not before its delay). Nothing else is ever re-run.
+                    index=next((i for i,m in enumerate(state['members']) if m['status']=='pending' and not m.get('attempts')),None)
+                    if index is None:index=next((i for i,m in enumerate(state['members']) if fast_fail.retry_due(m,self.clock())),None)
                     if index is not None:
                         item=state['members'][index];spec=manifest['members'][index]
-                        if item['attempts']!=0:raise ValueError('Seed retry forbidden')
+                        if item['attempts']!=0 and not fast_fail.retry_due(item,self.clock()):raise ValueError('Seed retry forbidden')
                         if self._outputs(spec):raise ValueError('Output already exists for unstarted seed member')
                         self._owner(state['generation'])
                         self._verify_prepared(batch_id,manifest)
@@ -1264,14 +1282,15 @@ class SeedRunner:
                             # becomes this member's own [TesterInputs] (studio_tester_profile). A refusal raises here, with
                             # the member still pending and nothing launched.
                             profile=self._tester_profile(spec)
-                            item.update(status='starting',attempts=1,started_unix=self.clock(),tester_profile=profile);self._save(root,state)
+                            item.update(status='starting',attempts=item['attempts']+1,started_unix=self.clock(),tester_profile=profile);self._save(root,state)
                             try:
                                 identity=self.process.start(spec['config_path'])
                                 item.update(status='running',process=identity);self._save(root,state)
                             except ResearchLaunchRefused as exc:
                                 # Nothing ran (the suspended MT5 was terminated before it ran, or never created):
                                 # the member stays pending and the batch active; the plain refusal is raised.
-                                item.update(status='pending',attempts=0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
+                                # A refused re-run launch keeps its fast-fail record and its one re-run (nothing ran).
+                                item.update(status='pending',attempts=1 if isinstance(item.get('fast_fail'),dict) else 0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
                                 self._save(root,state);raise
                             except BaseException as exc:
                                 item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise

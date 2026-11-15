@@ -481,6 +481,9 @@ class NativeCycleTests(CatchupCase):
         with self.assertRaisesRegex(ValueError, 'owns this terminal'):
             guard_active_seed(self.controller.root)
 
+    # The fixture's member ends within a second with no output: it models a member that RAN and failed, so the fast-fail
+    # re-run (studio_fast_fail, goatai#2750 6884089927; tested in test_studio_fast_fail) is off here.
+    @patch('studio_fast_fail.FAST_FAIL_SECONDS', 0)
     def test_missing_output_fails_only_that_member(self):
         self.runner.prepare('cu1', self.plan())
         self.runner.start('cu1', 1)
@@ -887,6 +890,9 @@ class SameModelAndEquivalenceTests(CatchupCase):
         self.assertEqual(version['verdict']['verdict'], 'not_comparable')
         self.assertEqual((version['equivalence']['status_at_collect'], version['equivalence']['valid_at_collect']), ('refuted', False))
 
+    # The fixture's member ends within a second with no output: it models a member that RAN and failed, so the fast-fail
+    # re-run (studio_fast_fail, goatai#2750 6884089927; tested in test_studio_fast_fail) is off here.
+    @patch('studio_fast_fail.FAST_FAIL_SECONDS', 0)
     def test_low7_unfinished_canary_members_count_against_the_canary(self):
         import studio_equivalence as eq
         sets = self.ten_exports()

@@ -33,7 +33,7 @@ MUTATIONS = [
     ('no breaker for half of 4+ attempted failing', SEED,
      "        if len(ended)>=BREAKER_SHARE_MIN and 2*len(failed)>=len(ended):rules.append('half_failed')", "        pass"),
     ('breaker counts members from before the re-activation', SEED,
-     "\n                      and (since is None or (m.get('started_unix') or 0)>=since)),", "),"),
+     "\n               and (since is None or (m.get('started_unix') or 0)>=since)]", "]"),
     ('cancelled no longer stops the batch', SEED,
      "        if 'cancelled' in statuses:state['status']='stopped';return\n", ""),
     ('a cancelled or uncertain batch is resumable', SEED,

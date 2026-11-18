@@ -2068,10 +2068,11 @@ bool CGOATDashboard::SendCurrencyRulesCommand(void)
       if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
       int mask=CurrencyPolicyMaskForSymbol(g_sets[idx].sym);
       g_sets[idx].target_trade_allow_mask=mask;
-      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),0.0); // B55 (Codex on GOAT-EA#330): the id is cleared first and written last, so a child never reads a new id with an older command's fields
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_TRADE_PERMISSIONS);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)mask);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id); // B55: the id last (above)
       EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)mask,"CurrencyRules");
       g_sets[idx].status="Syncing";
    }
@@ -2131,10 +2132,11 @@ bool CGOATDashboard::SendCloseScopeCommand(const int scope)
       int command_value=GoatCloseCommandValue(clean_scope,mask);
       g_sets[idx].target_trade_allow_mask=mask;
       g_sets[idx].target_close_scope=clean_scope;
-      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),0.0); // B55 (Codex on GOAT-EA#330): the id is cleared first and written last, so a child never reads a new id with an older command's fields
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_CLOSE_SCOPE);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)command_value);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id); // B55: the id last (above)
       EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)command_value,"Close"+currency);
       g_sets[idx].status=(SymbolMatchesCloseScope(g_sets[idx].sym,clean_scope) ? "Closing" : "Syncing");
    }
@@ -2195,10 +2197,11 @@ bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
    {
       if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
       g_sets[idx].target_exposure_policy_mode=clean_mode;
-      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),0.0); // B55 (Codex on GOAT-EA#330): the id is cleared first and written last, so a child never reads a new id with an older command's fields
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_EXPOSURE_POLICY);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)clean_mode);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id); // B55: the id last (above)
       EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)clean_mode,"ExposurePolicy");
       g_sets[idx].status="Syncing";
    }
@@ -2581,10 +2584,11 @@ bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int comma
    {
       if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
 
-      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),0.0); // B55 (Codex on GOAT-EA#330): the id is cleared first and written last, so a child never reads a new id with an older command's fields
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)command_type);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)command_value);
       GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id); // B55: the id last (above)
       EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)command_value,event_label);
       g_sets[idx].status=(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : "Syncing");
    }

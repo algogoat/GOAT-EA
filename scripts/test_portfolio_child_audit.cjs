@@ -144,7 +144,15 @@ assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,
   assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b54.replace(from,to)+tail,expert),false,'B49a SET, child at '+to);passed++;
  }
  assert.equal(api.GoatChildAuditMaps(original+'BRK_Bars=55\n',0,50,2,child+b54.replace('BRK_Bars=20','BRK_Bars=55')+tail,expert),true,'a B54 SET and its child');passed++;
- assert.equal(api.GoatChildAuditMaps(original+'BRK_Bars=55\n',0,50,2,child+tail,expert),false,'a B54 SET, a B53 child without the inputs');passed++;}
+ assert.equal(api.GoatChildAuditMaps(original+'BRK_Bars=55\n',0,50,2,child+tail,expert),false,'a B54 SET, a B53 child without the inputs');passed++;
+ // B55 (A0): a B55 child also carries the sequence switch at the end, which WriteSet writes only when it is on: a SET
+ // without it maps only to a child holding false.
+ const b55='BRK_Start_Seq=false\n';
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b54+b55+tail,expert),true,'B49a SET, B55 child at the defaults');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,child+b54+'BRK_Start_Seq=true\n'+tail,expert),false,'B49a SET, child at BRK_Start_Seq=true');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'BRK_Start_Seq=true\n',0,50,2,child+b54+'BRK_Start_Seq=true\n'+tail,expert),true,'a B55 SET and its child');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'BRK_Start_Seq=true\n',0,50,2,child+b54+b55+tail,expert),false,'a B55 SET, a child with the switch off');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'BRK_Start_Seq=true\n',0,50,2,child+b54+tail,expert),false,'a B55 SET, a B54 child without the input');passed++;}
 // The merged line (B50 + B51 with B49b): a child carries B50's, B49b's and B51's inputs, in the header's order (each
 // written only when it differs from its default); a SET without them maps only to a child holding every default.
 {const b50='Engine_Mode=0\nSingle_SL_ATR=0.0\nSingle_TP_ATR=0\nSingle_TP_R=0.00\nSingle_Exit_Opposite=false\nSingle_Time_Stop_Bars=0\n'

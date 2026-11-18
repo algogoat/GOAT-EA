@@ -261,6 +261,16 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(!GoatChildAuditAdd(names,values,b54_names[b54_n],b54_values[b54_n])) return false;b54_found=true;}
    }
    // B54:end b54-audit
+   // B55:begin b55-audit
+   // B55 (A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md section 7): the same rule for the sequence switch, appended at the end of
+   // the inputs; its default (false) reproduces B54.
+   {
+      bool b55_found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]=="BRK_Start_Seq") b55_found=true;
+      for(int j=0;j<ArraySize(actual_names) && !b55_found;j++) if(actual_names[j]=="BRK_Start_Seq")
+      {if(!GoatChildAuditAdd(names,values,"BRK_Start_Seq","false")) return false;b55_found=true;}
+   }
+   // B55:end b55-audit
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

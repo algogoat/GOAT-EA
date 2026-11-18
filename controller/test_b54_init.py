@@ -19,7 +19,7 @@ import unittest
 
 from studio_ea_init_rules import EA_INIT_CODE, EA_INIT_RULES, EA_SOURCE
 from studio_installation import contracts
-from studio_strategy_settings import read_values, validate_strategy
+from studio_strategy_settings import B55_INPUTS, read_values, validate_strategy
 from studio_template_tools import schema_default
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,9 +32,13 @@ AXES = ('BRK_TF_', 'BRK_Bars', 'BRK_Buffer_ATR', 'BRK_Once_Per_Level', 'ORB_TF_'
 
 
 def render(entry, schema=SCHEMA):
-    """The SET MT5 would read: every input in the schema's order, at the entry's value, else the base's, else the default."""
+    """The SET MT5 would read: every input in the schema's order, at the entry's value, else the base's, else the default.
+    B55 (A0): these are B54 SETs, committed before BRK_Start_Seq existed, so they do not name it; they stay byte-identical
+    and must get the same verdicts under the newer schema (docs/b55/BREAKOUT_SEQUENCE_SPEC.md 3.7, 6.3)."""
     lines = ['; GOAT B54 synthetic axis SET ' + entry['file'] + ' (scripts/fixtures/b54-axes/axes.json; not a pool file)']
     for name, definition in schema['inputs'].items():
+        if name in B55_INPUTS:
+            continue
         value = entry['lines'].get(name, TABLE['base'].get(name))
         lines.append(name + '=' + (value if value is not None else schema_default(name, definition, schema.get('defines'))))
     return b'\xff\xfe' + ('\r\n'.join(lines) + '\r\n').encode('utf-16-le')

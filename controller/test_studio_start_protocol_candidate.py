@@ -1,4 +1,4 @@
-"""Keep the forward B54 candidate (research only), the retained B53 (the experiments' final build), B52 (superseded, never installed), B51, B50, B49a, B47, B46, B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward B55 candidate (demo candidate for the dashboard fixes), the retained B54 (research only), B53 (the experiments' final build), B52 (superseded, never installed), B51, B50, B49a, B47, B46, B45, B44, B43, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
@@ -7,7 +7,8 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/beta17-B54'
+CANDIDATE = ROOT / 'candidate-builds/beta17-B55'
+RETAINED_B54 = ROOT / 'candidate-builds/beta17-B54'
 RETAINED_B53 = ROOT / 'candidate-builds/beta17-B53'
 RETAINED_B52 = ROOT / 'candidate-builds/beta17-B52'
 RETAINED_B51 = ROOT / 'candidate-builds/beta17-B51'
@@ -30,22 +31,62 @@ RETAINED_ROOT_BINARY = '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568
 
 
 class StartProtocolCandidateTests(unittest.TestCase):
-    def test_forward_b54_candidate_binds_to_exact_source(self):
+    def test_forward_b55_candidate_binds_to_exact_source(self):
+        # B55 (Claude-Mac goatai#2750 6853274219): the demo candidate for the dashboard bus fixes, B54 plus PR A0 (GOAT-EA#314,
+        # BRK_Start_Seq refused as not built) and the dashboard fixes (#330). Demo candidate (the T2 reading, then the two kept
+        # Exp 01 terminals), no live admission. It supersedes no candidate: B54 stays the research build, B53 the experiments'
+        # final build. The tree IS B55: every source hashes to it, and its build ID and marker are the tree's.
+        b55 = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
+        text = (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig')
+        self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
+        self.assertIn('#define   GOAT_BUILD_ID "' + b55['build_id'] + '"', text)
+        self.assertIn('#define   GOAT_BUILD_MARKER "' + b55['build_marker'] + '"', text)
+        self.assertEqual((b55['build_id'], b55['build_marker']), ('V1.49-BETA17-55', 'B55'))
+        self.assertIsNone(b55['supersedes_candidate'])
+        self.assertEqual(b55['source_base'], 'a8c6766243ff577bdcfc90495a6de33ce0797c88', 'B55 is built on B54\'s commit')
+        self.assertEqual(b55['consolidates'], ['B55.0', 'B55.d'])
+        self.assertEqual(list(b55['consolidated_heads']), b55['consolidates'])
+        for relative, expected in b55['sources'].items():
+            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+        b54 = json.loads((RETAINED_B54 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(b55['sources']), sorted(b54['sources']), 'same compile closure as B54')
+        b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
+        b55_changed = json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']')
+        self.assertEqual(sorted(name for name in b55['sources'] if b55['sources'][name] != b54['sources'][name]), sorted(b55_changed),
+                         'B55 differs from B54 in exactly the files scripts/test_b55_no_drift.cjs marks')
+        self.assertFalse(b55['native_qualified'])
+        self.assertFalse(b55['customer_delivery'])
+        serialized = json.dumps(b55)
+        for host in ('C:\\', 'G:\\', 'AppData'):
+            self.assertNotIn(host, serialized)
+
+    def test_retained_b54_binds_to_its_own_commit(self):
         # B54 (Claude-Mac goatai#2750 6781557904 item 1): the research build for breakout entries, B53 plus entry A
         # (GOAT-EA#304) and entry B (#305), its own identity. It supersedes no candidate: B53 stays the experiments' final
         # build, and B54 has no demo or live admission until Claude-Mac rules. Every source hashes to the tree.
-        b54 = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        text = (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig')
-        self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
-        self.assertIn('#define   GOAT_BUILD_ID "' + b54['build_id'] + '"', text)
-        self.assertIn('#define   GOAT_BUILD_MARKER "' + b54['build_marker'] + '"', text)
+        b54 = json.loads((RETAINED_B54 / 'identity.json').read_text(encoding='utf-8'))
+        # B55 (the forward candidate) is B54 plus marked lines: the tree carries B55's identity, so B54's defines are checked
+        # at its own commit through its sources below, not in the tree.
         self.assertEqual((b54['build_id'], b54['build_marker']), ('V1.49-BETA17-54', 'B54'))
         self.assertIsNone(b54['supersedes_candidate'])
         self.assertEqual(b54['source_base'], '216e16225441cfc1bfe0546c1c70adaf327405cf', 'B54 is built on B53\'s commit')
         self.assertEqual(b54['consolidates'], ['B54.s', 'B54.0', 'B54.A', 'B54.B'])
         self.assertEqual(list(b54['consolidated_heads']), b54['consolidates'])
+        # B55 in progress (PR A0, docs/b55/BREAKOUT_SEQUENCE_SPEC.md): the tree is B54 plus marked B55 lines in the files
+        # scripts/test_b55_no_drift.cjs lists, and every other B54 source is byte-identical (proven there, against B54's
+        # commit). Those files carry B55's lines by design, so each is checked where it hashes to B54's identity: B54's own
+        # commit (a8c6766, checked out with CRLF as .gitattributes does). The build ID and marker stay B54's until a B55
+        # assembly binds the tree to its own identity.
+        b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
+        b55_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']'))
+        self.assertTrue({'GOAT_Inputs_Definitions.mqh'} <= b55_changed)
         for relative, expected in b54['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b55_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                blob = subprocess.run(['git', 'show', 'a8c6766:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+                blob = blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                self.assertEqual(hashlib.sha256(blob).hexdigest(), expected, relative + ' (B54 commit)')
         b53 = json.loads((RETAINED_B53 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(sorted(b54['sources']), sorted(b53['sources']), 'same compile closure as B53')
         b54_guard = (ROOT / 'scripts/test_b54_no_drift.cjs').read_text(encoding='utf-8')
@@ -80,8 +121,12 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b54_guard = (ROOT / 'scripts/test_b54_no_drift.cjs').read_text(encoding='utf-8')
         b54_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b54_guard, re.M)[1].replace("'", '"') + ']'))
         self.assertTrue({'GOAT_Inputs_Definitions.mqh'} <= b54_changed)
+        # B55 (GOAT-EA#330, Codex 4559573813): a file only B55 changes (Dashboard.mqh's publish order) is B54's, and so
+        # B53's, at B53's commit; its marked B55 lines are proven by scripts/test_b55_no_drift.cjs against B54's commit.
+        b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
+        b55_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']'))
         for relative, expected in identity['sources'].items():
-            if relative not in b54_changed:
+            if relative not in (b54_changed | b55_changed):
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
             else:
                 blob = subprocess.run(['git', 'show', '216e1622:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
@@ -279,7 +324,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_B53, 'B53', 'beta17-B52'), (RETAINED_B52, 'B52', 'beta17-B51'), (RETAINED_B51, 'B51', 'beta17-B50'), (RETAINED_B50, 'B50', 'beta17-B49a'), (RETAINED_B49A, 'B49a', 'beta17-B47'), (RETAINED_B47, 'B47', 'beta17-B46'), (RETAINED_B46, 'B46', 'beta17-B45'), (RETAINED_B45, 'B45', 'beta17-B44'), (RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
+        for folder, marker, supersedes in ((RETAINED_B54, 'B54', None), (RETAINED_B53, 'B53', 'beta17-B52'), (RETAINED_B52, 'B52', 'beta17-B51'), (RETAINED_B51, 'B51', 'beta17-B50'), (RETAINED_B50, 'B50', 'beta17-B49a'), (RETAINED_B49A, 'B49a', 'beta17-B47'), (RETAINED_B47, 'B47', 'beta17-B46'), (RETAINED_B46, 'B46', 'beta17-B45'), (RETAINED_B45, 'B45', 'beta17-B44'), (RETAINED_B44, 'B44', 'beta17-B43'), (RETAINED_B43, 'B43', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
                                            (RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'), (RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
                                            (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))

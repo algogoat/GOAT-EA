@@ -15,3 +15,5 @@ scripts/fixtures/hunt-d1/** -text
 scripts/fixtures/b54-pool/** -text
 # B54 PR A: synthetic axis SETs (UTF-16LE, CRLF) and their table, byte-exact as controller/test_b54_init.py renders them.
 scripts/fixtures/b54-axes/** -text
+# B55 PR A0: synthetic axis SETs (UTF-16LE, CRLF) and their table, byte-exact as controller/test_b55_init.py renders them.
+scripts/fixtures/b55-axes/** -text

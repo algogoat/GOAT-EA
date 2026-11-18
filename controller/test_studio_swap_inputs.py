@@ -159,6 +159,30 @@ class ClassifyTests(unittest.TestCase):
                 self.assertFalse(si.held_back(result))
                 self.assertIn('not a flag', result['plain'])
 
+    def test_a_permission_error_is_unreadable_and_a_vanished_file_unmeasured_without_any_existence_probe(self):
+        # Codex P2 on GOAT-EA#353: exists()/is_file() raise PermissionError on Python <= 3.13 and return False on 3.14
+        # for a file in a directory we may not read; the read itself must decide. Simulated on the real fixture path.
+        from unittest import mock
+        real_stat = Path.stat
+        def denied(self, *args, **kwargs):
+            if self.name == 'deals.csv' or str(self).endswith('swap-free-inputs.deals.csv'):
+                raise PermissionError(13, 'Permission denied')
+            return real_stat(self, *args, **kwargs)
+        with mock.patch.object(Path, 'stat', denied), mock.patch.object(Path, 'exists', side_effect=AssertionError('no probe')), \
+                mock.patch.object(Path, 'is_file', side_effect=AssertionError('no probe')):
+            result = si.classify(SWAP_FREE)
+            self.assertEqual(result['verdict'], 'unreadable')
+            self.assertTrue(si.held_back(result))
+            self.assertIn('could not be read', result['plain'])
+            # capture_deals never probes the file: it hands classify() the path of a complete capture.
+            capture = dict(capture=dict(complete=True, path=str(Path(self.tmp.name) / 'cap' / 'manifest.json')))
+            self.assertEqual(si.capture_deals(capture), str(Path(self.tmp.name) / 'cap' / 'deals.csv'))
+        # A complete capture whose deals.csv does not exist: the read raises FileNotFoundError -> unmeasured, not a flag.
+        capture = dict(capture=dict(complete=True, path=str(Path(self.tmp.name) / 'gone' / 'manifest.json')))
+        result = si.classify(si.capture_deals(capture))
+        self.assertEqual((result['verdict'], si.held_back(result)), ('unmeasured', False))
+        self.assertIsNone(si.capture_deals(dict(capture=dict(complete=False, path='x'))))
+
     def test_a_present_but_unreadable_or_malformed_deals_csv_is_unreadable_and_held_back(self):
         # Claude-Mac goatai#2750 6976984165: the catch-up's own verdict parsers tolerate some of these (deal_window compares
         # deal_entry as a string and takes Decimal('inf')), so the swap check must hold such a run back, never pass it through.

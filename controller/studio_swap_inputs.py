@@ -58,12 +58,12 @@ def server_day(msc):
 
 
 def capture_deals(export):
-    """The deals.csv of an export record's complete capture (studio_evidence.read_export), else None."""
+    """The deals.csv path of an export record's complete capture (studio_evidence.read_export), else None. No existence
+    probe here either: classify() reads it, and a missing file reads `unmeasured`, an unreadable one `unreadable`."""
     capture = (export or {}).get('capture') or {}
     if not capture.get('complete') or not capture.get('path'):
         return None
-    path = Path(capture['path']).parent / 'deals.csv'
-    return str(path) if _io(path).is_file() else None
+    return str(Path(capture['path']).parent / 'deals.csv')
 
 
 def verdict_of(value):
@@ -153,11 +153,15 @@ def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
     echo = dict(live_spec) if isinstance(live_spec, dict) else None
     result = dict(schema=SCHEMA, verdict=UNMEASURED, positions=None, held_over_rollover=None, with_swap=None,
                   swap_total=None, held_lots=None, min_roll=min_roll, live_spec=echo)
-    if not deals_csv_path or not _io(deals_csv_path).exists():
+    if not deals_csv_path:
         return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'no complete capture deals.csv'))
+    # No existence probe before the read (Codex P2 on GOAT-EA#353): exists()/is_file() raise PermissionError on Python
+    # <= 3.13 and return False on 3.14 for a file in a directory we may not read, which would turn an unreadable capture
+    # into "unmeasured". The read itself tells the two apart: FileNotFoundError is "no deals.csv", any other OSError is
+    # a file we could not read.
     try:
         positions = _positions(deals_csv_path)
-    except FileNotFoundError:   # gone between the check and the read: still "no deals.csv", not a malformed one
+    except FileNotFoundError:
         return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'no complete capture deals.csv'))
     except OSError as exc:
         return dict(result, verdict=UNREADABLE, plain=_plain(UNREADABLE, 0, 0, 0, min_roll, 'deals.csv could not be read: %s'

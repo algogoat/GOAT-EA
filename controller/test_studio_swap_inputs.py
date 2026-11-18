@@ -70,6 +70,24 @@ class ClassifyTests(unittest.TestCase):
                               with_swap=0, swap_total=0.0, live_spec=None, min_roll=3))
         self.assertTrue(si.held_back(result))
         self.assertIn('Held back until re-run', result['plain'])
+        # The held positions' opening lots are reported, so a reader can see the known false hold-backs (INV-SWAP-01).
+        self.assertEqual(result['held_lots'], 0.6)
+        self.assertIn('(0.60 lots opened in all)', result['plain'])
+
+    def test_held_lots_are_the_opening_lots_of_held_positions_only_and_optional(self):
+        self.assertEqual(si.classify(SWAP_CHARGED)['held_lots'], 0.74)
+        self.assertEqual(si.classify(NOT_EXERCISED)['held_lots'], 0.0)
+        # A capture without a lots column keeps its verdict; held_lots is then unknown, never a guess.
+        no_lots = self.edited(lambda r: None, name='nolots.csv', drop=('lots',))
+        result = si.classify(no_lots)
+        self.assertEqual((result['verdict'], result['held_lots']), ('swap_free_inputs', None))
+        self.assertNotIn('lots opened', result['plain'])
+        # Doubling a held position's opening lots moves held_lots; doubling a same-day position's does not.
+        held = self.edited(lambda r: r.update(lots=str(float(r['lots']) * 2)) if r['position_id'] == HELD_POSITION and r['deal_entry'] == '0' else None, name='h.csv')
+        same = self.edited(lambda r: r.update(lots=str(float(r['lots']) * 2)) if r['position_id'] == SAME_DAY_POSITION and r['deal_entry'] == '0' else None, name='s.csv')
+        self.assertGreater(si.classify(held)['held_lots'], 0.6)
+        self.assertEqual(si.classify(same)['held_lots'], 0.6)
+        self.assertIsNone(si.classify(None)['held_lots'])
 
     def test_a_real_swap_charged_run_is_swap_charged(self):
         result = si.classify(SWAP_CHARGED)

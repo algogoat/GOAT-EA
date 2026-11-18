@@ -494,7 +494,8 @@ until re-run, and the hunt board never counts it.
 - `controller/test_studio_swap_inputs.py`:
   - `ClassifyTests`: the three real captures in `controller/fixtures/swap-inputs` (swap-free, charged, not
     exercised); the by-design case with a swap-free and a charging live spec; the 3-position floor; one charged held
-    position; swap on a same-day position or an opening deal ignored; unmeasured files;
+    position; swap on a same-day position or an opening deal ignored; `held_lots` (held positions' opening lots only;
+    `None` when the capture has no lots column, the verdict unchanged); unmeasured files;
   - `OosRuleHookTests`: a held-back re-test is `not_judged`, never `pass`; a charged, not-exercised or unmeasured one
     is judged as before; the recount's `_judge` reproduces the hold-back;
   - `CatchupSummaryHookTests`: a real catch-up over a swap-free capture stores `not_judged` in the summary, the
@@ -503,6 +504,14 @@ until re-run, and the hunt board never counts it.
   - `MigrationRecordHookTests`: the record carries `swap_inputs` for the re-test and the pinned original, `null`
     for an original without a pinned `deals.csv`.
 - `controller/test_hunt_board_count.py` `test_a_file_held_back_for_swap_is_never_counted_and_is_counted_apart`.
+
+**Known false hold-backs (fail closed until the EA records the symbol spec at run time).** The verdict is read from
+the deals alone, so two honest runs are held back too, and every record carries `held_over_rollover` and `held_lots`
+(the opening lots of the held positions) so a reader can tell them apart:
+- a strategy that only ever holds overnight the side whose broker swap is truly zero (its swap long or short is 0);
+- a strategy whose overnight positions are all so small that each night's swap rounds to 0.00 (look at `held_lots`).
+Both read `swap_free_inputs`. Holding them back is the safe direction; the B56 EA step (swap long, swap short and swap
+mode written into the capture's `run.csv` at run time) lets the check read the spec the tester used instead.
 
 **Not covered.**
 - No live symbol spec is recorded in the catch-up or migration path, so `swap_free_by_design` is reached only

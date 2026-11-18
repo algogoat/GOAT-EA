@@ -96,11 +96,18 @@ def _positions(path):
         missing = [name for name in COLUMNS if name not in (reader.fieldnames or [])]
         if missing:
             raise ValueError('deals.csv has no %s column' % ', '.join(missing))
+        has_lots = 'lots' in (reader.fieldnames or [])   # optional: a capture without it keeps the verdict, held_lots None
         for row in reader:
-            p = positions.setdefault(row['position_id'], dict(open=None, outs=[]))
+            p = positions.setdefault(row['position_id'], dict(open=None, outs=[], lots=None))
             entry = int(row['deal_entry'])
             if entry == 0 and p['open'] is None:
                 p['open'] = int(row['server_time_msc'])
+                if has_lots:   # diagnostic only: an unreadable value is unknown (held_lots None), never a verdict change
+                    try:
+                        lots = float(row['lots'])
+                    except (TypeError, ValueError):
+                        lots = None
+                    p['lots'] = lots if lots is not None and math.isfinite(lots) else None
             elif entry in (1, 2, 3):
                 swap = float(row['swap'])
                 if not math.isfinite(swap):
@@ -109,7 +116,8 @@ def _positions(path):
     return positions
 
 
-def _plain(verdict, held, charged, total, min_roll, reason=None):
+def _plain(verdict, held, charged, total, min_roll, reason=None, held_lots=None):
+    lots = '' if held_lots is None else ' (%.2f lots opened in all)' % held_lots
     if verdict == UNMEASURED:
         return 'Swap inputs unmeasured (%s); not a flag.' % reason
     if verdict == NOT_EXERCISED:
@@ -119,12 +127,12 @@ def _plain(verdict, held, charged, total, min_roll, reason=None):
         return ('Swap charged: %d of the %d positions held over a server rollover closed with swap (%+.2f in all).'
                 % (charged, held, total))
     if verdict == SWAP_FREE_INPUTS:
-        return ('Swap-free inputs: all %d positions held over a server rollover closed with zero swap, so the tester ran '
+        return ('Swap-free inputs: all %d positions held over a server rollover%s closed with zero swap, so the tester ran '
                 'on a symbol spec that charged no swap and the result is optimistic. Held back until re-run on a spec '
-                'that charges the broker\'s swap.' % held)
-    return ('Swap-free by design: all %d positions held over a server rollover closed with zero swap, and the live '
+                'that charges the broker\'s swap.' % (held, lots))
+    return ('Swap-free by design: all %d positions held over a server rollover%s closed with zero swap, and the live '
             'symbol spec has swap long 0 and swap short 0. Held back until re-run or reviewed: the deals alone cannot '
-            'tell a swap-free symbol from a stale spec.' % held)
+            'tell a swap-free symbol from a stale spec.' % (held, lots))
 
 
 def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
@@ -136,7 +144,7 @@ def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
         raise ValueError('min_roll must be a whole number of at least 1')
     echo = dict(live_spec) if isinstance(live_spec, dict) else None
     result = dict(schema=SCHEMA, verdict=UNMEASURED, positions=None, held_over_rollover=None, with_swap=None,
-                  swap_total=None, min_roll=min_roll, live_spec=echo)
+                  swap_total=None, held_lots=None, min_roll=min_roll, live_spec=echo)
     if not deals_csv_path:
         return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'no complete capture deals.csv'))
     try:
@@ -147,7 +155,7 @@ def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
     except (ValueError, KeyError, TypeError, csv.Error, UnicodeError) as exc:
         return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'deals.csv is malformed: %s: %s'
                                          % (type(exc).__name__, str(exc)[:120])))
-    held, charged, total = 0, 0, 0.0
+    held, charged, total, lots, lots_known = 0, 0, 0.0, 0.0, True
     for p in positions.values():
         if p['open'] is None or not p['outs']:
             continue
@@ -157,6 +165,10 @@ def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
             total += sum(x for _, x in p['outs'])
             if sum(abs(x) for _, x in p['outs']) > 0:
                 charged += 1
+            if p['lots'] is None:
+                lots_known = False
+            else:
+                lots += p['lots']
     if held < min_roll:
         verdict = NOT_EXERCISED
     elif charged == 0:
@@ -164,5 +176,9 @@ def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
     else:
         verdict = SWAP_CHARGED
     total = round(total, 2) + 0.0   # money in cents; + 0.0 turns -0.0 into 0.0
+    # held_lots (Claude-Mac's review on GOAT-EA#351): the opening lots of the held positions, so a reader can see the two
+    # known false hold-backs (tiny overnight positions whose swap rounds to 0.00; a strategy holding only a zero-swap side).
+    held_lots = round(lots, 2) + 0.0 if lots_known else None
     return dict(result, verdict=verdict, positions=len(positions), held_over_rollover=held, with_swap=charged,
-                swap_total=total, plain=_plain(verdict, held, charged, total, min_roll))
+                swap_total=total, held_lots=held_lots,
+                plain=_plain(verdict, held, charged, total, min_roll, held_lots=held_lots))

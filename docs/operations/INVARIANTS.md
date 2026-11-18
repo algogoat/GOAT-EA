@@ -469,9 +469,11 @@ from its own capture's `deals.csv` (`goat-swap-inputs-v1`). A position is held o
 of its last closing deal is later than the server date of its opening deal. The verdict is `swap_charged` (a held
 position closed with swap), `not_exercised` (fewer than 3 held positions; never a flag), `swap_free_inputs` (3 or more
 held, every one closed with swap exactly 0), `swap_free_by_design` (the same, with a live symbol spec of swap long 0
-and swap short 0) or `unmeasured` (no readable `deals.csv`; never a flag). A run whose verdict is `swap_free_inputs`
-or `swap_free_by_design` produces no qualifier: its OOS rule reads `not_judged`, its plain text says it is held back
-until re-run, and the hunt board never counts it.
+and swap short 0), `unmeasured` (no capture or no `deals.csv`; never a flag) or `unreadable` (a `deals.csv` that is
+present but unreadable or malformed). A run whose verdict is `swap_free_inputs`, `swap_free_by_design` or
+`unreadable` produces no qualifier: its OOS rule reads `not_judged`, its plain text says it is held back, and the hunt
+board never counts it. `unreadable` fails closed because the catch-up's own verdict parsers tolerate some
+malformations (a non-integer `deal_entry`, an `inf` swap) that the swap check cannot read.
 
 **Enforcement.**
 - `controller/studio_swap_inputs.py`: `classify` (the rule, ported unchanged from the research sweep

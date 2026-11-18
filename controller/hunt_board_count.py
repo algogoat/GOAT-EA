@@ -104,7 +104,7 @@ MIN_COMMON_DAYS = 20            # a correlation over a shorter common span is no
 EMPTY_DIFF = {'only_first': ['?'], 'only_second': [], 'different': {}}
 # studio_swap_inputs.HELD_BACK, repeated here: this counter imports nothing of the controller (its mutation check runs it
 # alone). test_studio_swap_inputs holds the two equal.
-SWAP_HELD_BACK = frozenset(('swap_free_inputs', 'swap_free_by_design'))
+SWAP_HELD_BACK = frozenset(('swap_free_inputs', 'swap_free_by_design', 'unreadable'))
 HELD_BACK_STATE = 'held_back_swap_inputs'
 
 

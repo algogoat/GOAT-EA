@@ -19,7 +19,11 @@ server time stored as epoch milliseconds, so the UTC date of that epoch is the s
 * ``swap_free_by_design``: the same deals as ``swap_free_inputs``, and the caller's live symbol spec has
   ``swap_long == 0`` and ``swap_short == 0`` (a symbol that is swap-free at the broker). Kept apart from
   ``swap_free_inputs`` so a reader can tell them apart; both are held back (``HELD_BACK``).
-* ``unmeasured``: no deals.csv, or one that cannot be read. Never a flag, and never an exception for the caller.
+* ``unmeasured``: no capture, or no deals.csv (models other than 4 have none). Never a flag, never an exception.
+* ``unreadable``: a deals.csv that is present but cannot be read, or is malformed (a non-integer time or entry, a
+  non-finite swap, a missing column). Held back (``HELD_BACK``): the catch-up's own verdict parsers tolerate some of
+  these (a non-integer ``deal_entry``, an ``inf`` swap), so the swap check must not let such a run through unmeasured
+  (Claude-Mac goatai#2750 6976984165). Never an exception for the caller either.
 
 A run whose verdict is in ``HELD_BACK`` produces no qualifier: its catch-up OOS rule reads ``not_judged``
 (studio_catchup.CatchupRunner._oos_rule) and the hunt board does not count it (hunt_board_count).
@@ -39,8 +43,9 @@ NOT_EXERCISED = 'not_exercised'
 SWAP_FREE_INPUTS = 'swap_free_inputs'
 SWAP_FREE_BY_DESIGN = 'swap_free_by_design'
 UNMEASURED = 'unmeasured'
-VERDICTS = (SWAP_CHARGED, NOT_EXERCISED, SWAP_FREE_INPUTS, SWAP_FREE_BY_DESIGN, UNMEASURED)
-HELD_BACK = frozenset((SWAP_FREE_INPUTS, SWAP_FREE_BY_DESIGN))
+UNREADABLE = 'unreadable'
+VERDICTS = (SWAP_CHARGED, NOT_EXERCISED, SWAP_FREE_INPUTS, SWAP_FREE_BY_DESIGN, UNMEASURED, UNREADABLE)
+HELD_BACK = frozenset((SWAP_FREE_INPUTS, SWAP_FREE_BY_DESIGN, UNREADABLE))
 # The OOS-rule status of a held-back run (CatchupRunner._oos_rule): not judged, never a pass.
 NOT_JUDGED = 'not_judged'
 COLUMNS = ('server_time_msc', 'position_id', 'deal_entry', 'swap')
@@ -53,12 +58,12 @@ def server_day(msc):
 
 
 def capture_deals(export):
-    """The deals.csv of an export record's complete capture (studio_evidence.read_export), else None."""
+    """The deals.csv path of an export record's complete capture (studio_evidence.read_export), else None. No existence
+    probe here either: classify() reads it, and a missing file reads `unmeasured`, an unreadable one `unreadable`."""
     capture = (export or {}).get('capture') or {}
     if not capture.get('complete') or not capture.get('path'):
         return None
-    path = Path(capture['path']).parent / 'deals.csv'
-    return str(path) if _io(path).is_file() else None
+    return str(Path(capture['path']).parent / 'deals.csv')
 
 
 def verdict_of(value):
@@ -120,6 +125,9 @@ def _plain(verdict, held, charged, total, min_roll, reason=None, held_lots=None)
     lots = '' if held_lots is None else ' (%.2f lots opened in all)' % held_lots
     if verdict == UNMEASURED:
         return 'Swap inputs unmeasured (%s); not a flag.' % reason
+    if verdict == UNREADABLE:
+        return ('Swap inputs unreadable (%s): the capture\'s deals.csv is present but could not be read whole, so the swap '
+                'the tester charged is unknown. Held back until the capture is re-read or the member is re-run.' % reason)
     if verdict == NOT_EXERCISED:
         what = ('no position was' if held == 0 else 'only 1 position was' if held == 1 else 'only %d positions were' % held)
         return ('Swap inputs not exercised: %s held over a server rollover (%d needed to tell); not a flag.' % (what, min_roll))
@@ -136,10 +144,10 @@ def _plain(verdict, held, charged, total, min_roll, reason=None, held_lots=None)
 
 
 def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
-    """The swap verdict of one run from its deals.csv (module docstring). Never raises for a missing or unreadable
-    file: that is ``unmeasured``. ``live_spec``: the symbol's live spec ({swap_long, swap_short, ...}) when the
-    caller has one; echoed back, and only a spec with both swaps 0 turns ``swap_free_inputs`` into
-    ``swap_free_by_design``."""
+    """The swap verdict of one run from its deals.csv (module docstring). Never raises for the file: no path or no
+    file is ``unmeasured`` (not a flag); a file that is present but unreadable or malformed is ``unreadable`` (held
+    back). ``live_spec``: the symbol's live spec ({swap_long, swap_short, ...}) when the caller has one; echoed back,
+    and only a spec with both swaps 0 turns ``swap_free_inputs`` into ``swap_free_by_design``."""
     if type(min_roll) is not int or min_roll < 1:
         raise ValueError('min_roll must be a whole number of at least 1')
     echo = dict(live_spec) if isinstance(live_spec, dict) else None
@@ -147,14 +155,20 @@ def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):
                   swap_total=None, held_lots=None, min_roll=min_roll, live_spec=echo)
     if not deals_csv_path:
         return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'no complete capture deals.csv'))
+    # No existence probe before the read (Codex P2 on GOAT-EA#353): exists()/is_file() raise PermissionError on Python
+    # <= 3.13 and return False on 3.14 for a file in a directory we may not read, which would turn an unreadable capture
+    # into "unmeasured". The read itself tells the two apart: FileNotFoundError is "no deals.csv", any other OSError is
+    # a file we could not read.
     try:
         positions = _positions(deals_csv_path)
+    except FileNotFoundError:
+        return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'no complete capture deals.csv'))
     except OSError as exc:
-        return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'deals.csv could not be read: %s'
-                                         % (exc.strerror or type(exc).__name__)))
+        return dict(result, verdict=UNREADABLE, plain=_plain(UNREADABLE, 0, 0, 0, min_roll, 'deals.csv could not be read: %s'
+                                                              % (exc.strerror or type(exc).__name__)))
     except (ValueError, KeyError, TypeError, csv.Error, UnicodeError) as exc:
-        return dict(result, plain=_plain(UNMEASURED, 0, 0, 0, min_roll, 'deals.csv is malformed: %s: %s'
-                                         % (type(exc).__name__, str(exc)[:120])))
+        return dict(result, verdict=UNREADABLE, plain=_plain(UNREADABLE, 0, 0, 0, min_roll, 'deals.csv is malformed: %s: %s'
+                                                              % (type(exc).__name__, str(exc)[:120])))
     held, charged, total, lots, lots_known = 0, 0, 0.0, 0.0, True
     for p in positions.values():
         if p['open'] is None or not p['outs']:

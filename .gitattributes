@@ -3,6 +3,8 @@
 
 controller/fixtures/oosc/** -text
 controller/fixtures/heldout/** -text
+# Rows cut from real tester captures (deals.csv, CRLF as the EA writes it; INV-SWAP-01): never normalise them.
+controller/fixtures/swap-inputs/** -text
 # Golden profile fixtures are byte-exact (UTF-16, CRLF/LF mixes): never normalise them.
 controller/contracts/profile-fixtures/** -text
 # Vendored byte-identical from goatai docs/fixtures (goatai#2500): never normalise it.

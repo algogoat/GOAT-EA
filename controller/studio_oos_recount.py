@@ -49,6 +49,7 @@ from studio_evidence import read_export, unit_paths
 from studio_evidence_archive import ArchiveUnreachable, locate
 import studio_oos_windows as rule
 from studio_seed_results import MAX_MANIFEST_BYTES, MAX_RESULT_BYTES, MAX_STATE_BYTES
+from studio_swap_inputs import NOT_JUDGED, held_back, verdict_of
 
 SCHEMA = 'goat-oos-rule-recount-v1'
 FOLDER = 'catchups'
@@ -145,10 +146,13 @@ def _unit(root, set_path):
     return physical
 
 
-def _judge(original, retest, spec, manifest, verdict, version):
-    """``CatchupRunner._oos_rule`` for one stored member under one rule version, without its write-side stamps."""
+def _judge(original, retest, spec, manifest, verdict, version, swap=None):
+    """``CatchupRunner._oos_rule`` for one stored member under one rule version, without its write-side stamps.
+    ``swap``: the member's stored ``swapInputs`` (INV-SWAP-01); a held-back run is not judged under any version."""
     if verdict in UNJUDGED:
         return dict(status='no_data', reasons=['the re-test was not judged as the same test as the original (%s)' % verdict])
+    if held_back(swap):
+        return dict(status=NOT_JUDGED, reasons=[verdict_of(swap)])
     try:
         return rule.judge_retest(original, retest, tester=spec['original'].get('tester'),
                                  evidence_end=manifest['evidence_end']['iso'], rule_version=version)
@@ -205,7 +209,8 @@ def _member(root, manifest, spec, item, versions):
             if (kept or measured) and not (kept and _io(Path(capture['path']).parent / 'deals.csv').is_file()):
                 raise Unreadable("The re-test capture's deals.csv is missing (the capture is recorded complete, or the "
                                  'stored verdict was measured from it)')
-        judged ={label(version): _view(_judge(original, retest, spec, manifest, verdict.get('verdict'), version), version)
+        judged ={label(version): _view(_judge(original, retest, spec, manifest, verdict.get('verdict'), version,
+                                              verdict.get('swapInputs')), version)
                   for version in versions}
     except Unreadable as exc:
         row['unreadable'] = str(exc)

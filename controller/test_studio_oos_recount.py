@@ -332,7 +332,8 @@ class RecountTests(FormulaCase):
             elif isinstance(node, ast.ImportFrom):
                 imported.add(node.module)
         self.assertEqual(imported, {'hashlib', 'json', 'os', 'pathlib', 're', 'studio_agent_mailbox', 'studio_evidence',
-                                    'studio_evidence_archive', 'studio_oos_windows', 'studio_seed_results'})
+                                    'studio_evidence_archive', 'studio_oos_windows', 'studio_seed_results',
+                                    'studio_swap_inputs'})   # INV-SWAP-01's pure constants and verdict reader
         # Every call the module makes, by name: no write, create, rename, remove, lock, process or SDK call.
         called = set()
         for node in ast.walk(tree):

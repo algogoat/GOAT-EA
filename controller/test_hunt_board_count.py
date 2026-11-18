@@ -292,6 +292,35 @@ class HuntBoardCountTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 board.count(folder.path)
 
+    def test_a_file_held_back_for_swap_is_never_counted_and_is_counted_apart(self):
+        """INV-SWAP-01: a judged file whose catch-up found swap-free inputs is not on the board, whatever its rule."""
+        b = board.count(FIXTURE)   # real negative: no record carries swapInputs, nothing is held back
+        self.assertEqual((b['counted']['total'], b['held_back']['swap_inputs'], b['held_back']['aliases']), (16, 0, []))
+        for harmless in ('swap_charged', 'not_exercised', 'unmeasured', dict(verdict='swap_charged')):
+            folder = Folder(self)
+            folder.alter('judged.json', lambda rows: [r.update(swapInputs=harmless) for r in rows])
+            counted = board.count(folder.path)
+            self.assertEqual((counted['counted']['total'], counted['held_back']['swap_inputs']), (16, 0), harmless)
+        held = dict(schema='goat-swap-inputs-v1', verdict='swap_free_inputs', held_over_rollover=15, with_swap=0)
+        folder = Folder(self)
+        folder.alter('judged.json', lambda rows: [r.update(swapInputs=held if r['alias'] == CLEAN_COUNTED else 'swap_free_by_design')
+                                                  for r in rows if r['alias'] in (CLEAN_COUNTED, 'Cc7f257b6799f4936_00004')])
+        b = board.count(folder.path)
+        row = next(f for f in b['files'] if f['alias'] == CLEAN_COUNTED)
+        self.assertEqual(row['state'], board.HELD_BACK_STATE)
+        self.assertEqual(b['counted']['total'], 15)   # the pass left the board; its group's other pass stays counted
+        self.assertEqual(next(f for f in b['files'] if f['alias'] == 'Cc7f257b6799f4936_00007')['state'], 'counted')
+        self.assertEqual((b['held_back']['swap_inputs'], b['held_back']['passes'], b['held_back']['by_verdict']),
+                         (2, 1, dict(swap_free_by_design=1, swap_free_inputs=1)))
+        self.assertEqual(b['held_back']['aliases'], ['Cc7f257b6799f4936_00004', CLEAN_COUNTED])
+        self.assertIn('Held back for swap', board.markdown(b))
+        self.assertIn(CLEAN_COUNTED, board.markdown(b))
+        # It takes no room: the next pass of its group would be counted and must bring its own records (here no curve).
+        folder = Folder(self)
+        folder.alter('judged.json', lambda rows: [r.update(swapInputs='swap_free_inputs') for r in rows if r['alias'] == THRUSH[0]])
+        refusal = self.refused(folder)
+        self.assertEqual((refusal.rule, refusal.path.lower()), ('R8', judged(folder, THRUSH[1])['source'].lower()))
+
     def test_a_folder_without_a_record_file_is_an_error_not_a_board(self):
         folder = Folder(self)
         (folder.path / 'holdout.json').unlink()

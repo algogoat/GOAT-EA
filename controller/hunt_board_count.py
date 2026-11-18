@@ -16,7 +16,8 @@ Input folder (schema ``hunt-board-input-v1``; a close step cuts these records fr
                           second file belongs to, else null), rule (pass / fail / not_eligible_yet), export_bar,
                           prove_status, set_sha256, duplicate (true when the close found the file's SET bytes, values
                           or key already on the board or earlier in the round), duplicate_hits (optional: what it
-                          duplicates, one line per hit)
+                          duplicates, one line per hit), swapInputs (optional: the catch-up result's ``swapInputs``,
+                          or just its verdict)
   prove-exports.json      every export of the round's Prove reports: set_path, machine, part, index, status, reason,
                           source_ledger, ini_ledger, export_ledger (the Ledger_Mode line of the member's source SET, of
                           its start config and of the exported SET; null when the line is absent)
@@ -76,6 +77,11 @@ Only a file that would be counted can refuse under R4, R5 and R6: a reserve with
 R7 covers every judged file. A counted file without proof is not counted: its state is ``apart`` and every breakdown
 (by machine, clean / disclosed, groups, assets, families) is built from the proven files only.
 
+Held back for swap (INV-SWAP-01): a judged file whose ``swapInputs`` verdict is ``swap_free_inputs`` or
+``swap_free_by_design`` (studio_swap_inputs: its tester charged no swap) is never counted, whatever its rule says. A pass
+of it is listed with the state ``held_back_swap_inputs`` and takes no room in its group, and every such judged file is
+counted under ``held_back`` instead of on the board.
+
 Nothing here judges a strategy: the verdicts, the duplicate check and the input comparisons are the close's records.
 """
 import argparse
@@ -96,6 +102,17 @@ CURVES_SCHEMA = 'hunt-board-curves-v1'
 DUPLICATE_CORRELATION = 0.999   # daily re-test returns at or above this, on one symbol, are one file
 MIN_COMMON_DAYS = 20            # a correlation over a shorter common span is not read
 EMPTY_DIFF = {'only_first': ['?'], 'only_second': [], 'different': {}}
+# studio_swap_inputs.HELD_BACK, repeated here: this counter imports nothing of the controller (its mutation check runs it
+# alone). test_studio_swap_inputs holds the two equal.
+SWAP_HELD_BACK = frozenset(('swap_free_inputs', 'swap_free_by_design'))
+HELD_BACK_STATE = 'held_back_swap_inputs'
+
+
+def swap_held_back(x):
+    """The held-back swap verdict of a judged record (its ``swapInputs``: a dict with ``verdict`` or the verdict), else None."""
+    value = x.get('swapInputs')
+    value = value.get('verdict') if isinstance(value, dict) else value
+    return value if value in SWAP_HELD_BACK else None
 
 
 class Refused(Exception):
@@ -183,7 +200,7 @@ def one_curve(a, b):
 
 
 def cap_states(rules, pool, judged):
-    """{source: counted | reserve | not_counted_export_bar} for every pass, in export order.
+    """{source: counted | reserve | not_counted_export_bar | held_back_swap_inputs} for every pass, in export order.
 
     A duplicate takes its place in the order like any other pass: count() refuses when it lands on ``counted``."""
     rank = {machine: number for number, machine in enumerate(rules['machines'])}
@@ -191,6 +208,9 @@ def cap_states(rules, pool, judged):
     used, states = Counter(), {}
     for x in sorted(judged, key=lambda x: (x['part'], rank[x['machine']], x['index'], x['position'])):
         if x['rule'] != 'pass':
+            continue
+        if swap_held_back(x):   # INV-SWAP-01: never counted and takes no room
+            states[x['source'].lower()] = HELD_BACK_STATE
             continue
         group = ('held', x['held_group']) if x.get('held_group') else ('new', x['member'])
         room = max(0, rules['cap'] - (held[x['held_group']] if x.get('held_group') else 0))
@@ -385,6 +405,7 @@ def count(folder):
     migrated = [r for r in migrated if r['original_set'].lower() not in in_effect]
     machines = rules['machines']
     kind = lambda x: 'disclosed' if x['prove_status'] == 'unverified' else 'clean'
+    held_back = [x for x in judged if swap_held_back(x)]
     return dict(
         schema='hunt-board-v1', input=str(folder), round=rules.get('round'), reading=rules.get('reading'), rulings=ruling,
         pool=dict(files=len(pool_before), groups=len({p['group'] for p in pool_before}), assets=len({p['asset'] for p in pool_before})),
@@ -406,6 +427,11 @@ def count(folder):
         unverified_exports=len(unverified), tagged=len(tags), duplicates=sum(1 for x in judged if x.get('duplicate')),
         curves=dict(records=len(curves), checked=len(board_order), correlation=DUPLICATE_CORRELATION, min_common_days=MIN_COMMON_DAYS),
         duplicates_in_effect=list(in_effect.values()),
+        held_back=dict(swap_inputs=len(held_back), passes=sum(x['rule'] == 'pass' for x in held_back),
+                       by_verdict=dict(sorted(Counter(swap_held_back(x) for x in held_back).items())),
+                       aliases=[x['alias'] for x in held_back], state=HELD_BACK_STATE,
+                       reason='swap_free_inputs / swap_free_by_design (INV-SWAP-01): the tester charged no swap; held back '
+                              'until re-run, never counted'),
         files=[dict(machine=x['machine'], part=x['part'], index=x['index'], position=x['position'], alias=x['alias'], asset=x['asset'],
                     family=x['family'], template=x['template'], group=x['held_group'] or 'new:' + x['member'],
                     state=states[x['source'].lower()], kind=kind(x), disclosure=reason if kind(x) == 'disclosed' else None,
@@ -445,6 +471,9 @@ def markdown(b):
            '- Proof of the catch-up tests: ' + '; '.join('%s: %s' % (m, ', '.join(v) or 'no counted file') for m, v in b['proof_by_machine'].items())
            + '. MT5-report records: %d of %d identical.' % (b['report_crosscheck']['passed'], b['report_crosscheck']['runs']),
            '- Unverified exports in the Prove reports: %d, tags: %d.' % (b['unverified_exports'], b['tagged']),
+           '- Held back for swap (%s), not counted: %d judged files%s.' % (
+               b['held_back']['reason'], b['held_back']['swap_inputs'],
+               (': ' + ', '.join(b['held_back']['aliases'])) if b['held_back']['aliases'] else ''),
            '- Duplicates in effect (one symbol; identical re-test equity curve, or daily returns correlating %s or more): %d of %d files checked. '
            'Each is one file with the earlier one and is not counted.' % (b['curves']['correlation'], len(b['duplicates_in_effect']), b['curves']['checked']), '',
            '## Every pass (export order)', '', '| Machine | Part | Member | Export | Catch-up alias | Asset | Template | Group | State | Kind | Proof |',

@@ -455,3 +455,61 @@ symbol with its last bar time, or the member with its last data day.
 - Build-migration re-tests are checked at start but keep the `EVIDENCE_END_SHORT` flag at
   collection: they stamp no verdict.
 - Hold-up tests, whose window is their own, are not checked.
+
+## INV-SWAP-01: a run the tester charged no swap never qualifies
+
+**Incident (2026-11-18).** Twice MT5's Strategy Tester ran JPY pairs on a cached broker symbol spec that held zero
+swap: Banker 2026-10-09..10-27, and runs made 2026-09-19/20. Positions held over a rollover paid no swap, so every
+result judged on those runs is optimistic. Nothing recorded the swap a run was given
+(`studio_catchup_verdict.SYMBOL_SPEC`), and the only swap check (`studio_catchup_rebase`, cause `swap_or_spec`)
+bounds the difference between an original and its re-test, which two swap-free runs pass.
+
+**Statement.** Every catch-up re-test and every build-migration re-test records the swap its tester charged, read
+from its own capture's `deals.csv` (`goat-swap-inputs-v1`). A position is held over a rollover when the server date
+of its last closing deal is later than the server date of its opening deal. The verdict is `swap_charged` (a held
+position closed with swap), `not_exercised` (fewer than 3 held positions; never a flag), `swap_free_inputs` (3 or more
+held, every one closed with swap exactly 0), `swap_free_by_design` (the same, with a live symbol spec of swap long 0
+and swap short 0) or `unmeasured` (no readable `deals.csv`; never a flag). A run whose verdict is `swap_free_inputs`
+or `swap_free_by_design` produces no qualifier: its OOS rule reads `not_judged`, its plain text says it is held back
+until re-run, and the hunt board never counts it.
+
+**Enforcement.**
+- `controller/studio_swap_inputs.py`: `classify` (the rule, ported unchanged from the research sweep
+  `swap_free_sweep.py`), `HELD_BACK`, `held_back`, `NOT_JUDGED`. A missing or unreadable file is `unmeasured`, never
+  an exception.
+- `CatchupRunner._collect` (`controller/studio_catchup.py`) stamps `swapInputs` on the verdict, the result `summary`
+  and `evidence-version.json`, and adds the held-back sentence to `plain`. `CatchupRunner._oos_rule` returns
+  `status: not_judged` with `reasons` and `firstFailingCause` `swap_free_inputs` or `swap_free_by_design` for a
+  held-back run, before any gate is applied.
+- `CatchupRunner._collect_migration` stamps `swap_inputs` on the record's `retest`, and on its `original` when the
+  plan pins the original's `deals.csv` (`null` otherwise).
+- `controller/hunt_board_count.py`: `cap_states` gives a held-back pass the state `held_back_swap_inputs` (never
+  counted, takes no room in its group); `count` lists every held-back judged file under `held_back`, whatever its
+  rule. `SWAP_HELD_BACK` repeats `HELD_BACK`, because the counter imports nothing of the controller.
+- `controller/studio_oos_recount.py` `_judge` reproduces a stored hold-back under every rule version.
+- `controller/studio_heldout_guard.py`: `swapInputs` and `swap_inputs` are `METRIC_KEYS` (position counts and swap
+  money of the tested window).
+
+**Tests.**
+- `controller/test_studio_swap_inputs.py`:
+  - `ClassifyTests`: the three real captures in `controller/fixtures/swap-inputs` (swap-free, charged, not
+    exercised); the by-design case with a swap-free and a charging live spec; the 3-position floor; one charged held
+    position; swap on a same-day position or an opening deal ignored; unmeasured files;
+  - `OosRuleHookTests`: a held-back re-test is `not_judged`, never `pass`; a charged, not-exercised or unmeasured one
+    is judged as before; the recount's `_judge` reproduces the hold-back;
+  - `CatchupSummaryHookTests`: a real catch-up over a swap-free capture stores `not_judged` in the summary, the
+    result and `evidence-version.json`; the same evidence without the hold-back passes; the control member passes;
+    the recount's self-check stays clean;
+  - `MigrationRecordHookTests`: the record carries `swap_inputs` for the re-test and the pinned original, `null`
+    for an original without a pinned `deals.csv`.
+- `controller/test_hunt_board_count.py` `test_a_file_held_back_for_swap_is_never_counted_and_is_counted_apart`.
+
+**Not covered.**
+- No live symbol spec is recorded in the catch-up or migration path, so `swap_free_by_design` is reached only
+  through `classify(live_spec=...)`. There a genuinely swap-free symbol reads `swap_free_inputs`; it is held back
+  either way.
+- The catch-up's new-weeks verdict (`held_up`, `weakened`, ...) is unchanged; only the OOS rule is held back.
+  Gate calibration (`held_up` target) and research status still read that verdict.
+- A re-test without a complete capture (models other than 4 have none) is `unmeasured`. A catch-up's original
+  export is not classified.
+- Results stored before this change carry no `swapInputs` and are not classified again.

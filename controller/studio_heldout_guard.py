@@ -54,6 +54,8 @@ METRIC_KEYS = frozenset((
     'rebase', 'tickHistoryDrift', 'rebasedWindows', 'firstDifference',
     # OOS window rule (studio_oos_windows) and exact pre-FOOS metrics (studio_window_metrics).
     'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport',
+    # Swap inputs of a tester run (studio_swap_inputs, INV-SWAP-01): position counts and swap money of the tested window.
+    'swapInputs', 'swap_inputs',
     # Build-migration re-tests (studio_build_migration): drift against the original and its counts.
     'drift', 'drift_delta', 'drift_reasons', 'drift_counts'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.

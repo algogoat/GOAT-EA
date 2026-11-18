@@ -216,6 +216,182 @@ class ClassifyTests(unittest.TestCase):
                                             'unmeasured', 'unreadable'})
 
 
+def ea_double(value):
+    """A double as B56's swap-spec writes it: DoubleToString(x,-16), 17 significant digits in MQL's scientific form."""
+    mantissa, exponent = ('%.16e' % value).split('e')
+    return '%se%s%02d' % (mantissa, exponent[0], abs(int(exponent)))
+
+
+def spec_lines(mode=1, long=-12.4, short=3.1, rollover=3, contract=100000.0, digits=3, point=0.001):
+    """B56's seven run.csv lines (GOAT_SequenceExport.mqh swap-spec block), in its order and format."""
+    return ['symbol_swap_mode,%d' % mode, 'symbol_swap_long,' + ea_double(long), 'symbol_swap_short,' + ea_double(short),
+            'symbol_swap_rollover3days,%d' % rollover, 'symbol_contract_size,' + ea_double(contract),
+            'symbol_digits,%d' % digits, 'symbol_point,' + ea_double(point)]
+
+
+class RecordedSpecTests(unittest.TestCase):
+    """B56 swap-spec (GOAT-EA#354; Claude-Mac goatai#2750 6978371254): the spec the tester ran on, from the run.csv beside
+    deals.csv, judged per side. SWAP_FREE holds 12 long and 3 short positions over a rollover, all at zero swap;
+    SWAP_CHARGED holds 8 short, all charged; NOT_EXERCISED holds none."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.n = 0
+
+    def capture(self, deals=SWAP_FREE, run=None, change=None, drop=(), keep=None):
+        """A capture folder: deals.csv (a fixture, optionally edited, or only the rows ``keep`` accepts) and, unless
+        ``run`` is None, a run.csv of a pre-B56 header plus ``run`` (a list of lines, or bytes written as they are)."""
+        self.n += 1
+        folder = Path(self.tmp.name) / ('cap%d' % self.n)
+        folder.mkdir()
+        with deals.open(encoding='utf-8', newline='') as stream:
+            reader = csv.DictReader(stream)
+            fields, rows = [f for f in reader.fieldnames if f not in drop], [r for r in reader if keep is None or keep(r)]
+        for row in rows:
+            if change:
+                change(row)
+        with (folder / 'deals.csv').open('w', encoding='utf-8', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields, extrasaction='ignore', lineterminator='\r\n')
+            writer.writeheader()
+            writer.writerows(rows)
+        if isinstance(run, bytes):
+            (folder / 'run.csv').write_bytes(run)
+        elif run is not None:
+            head = ['key,value', 'schema,goat-native-sequence-capture-v1', 'time_basis,broker-server-time; NOT UTC',
+                    'symbol,GBPJPY', 'initial_orders,0']
+            (folder / 'run.csv').write_bytes(('﻿' + '\r\n'.join(head + run) + '\r\n').encode('utf-8'))
+        return folder / 'deals.csv'
+
+    def test_a_capture_without_a_recorded_spec_reads_exactly_as_before(self):
+        for deals in (SWAP_FREE, SWAP_CHARGED, NOT_EXERCISED):
+            before = si.classify(deals)
+            for run in (None, []):   # no run.csv; a pre-B56 run.csv without the keys
+                with self.subTest(deals=deals.name, run=run):
+                    result = si.classify(self.capture(deals, run=run))
+                    self.assertEqual((result['verdict'], result['plain'], result['held_over_rollover'], result['with_swap']),
+                                     (before['verdict'], before['plain'], before['held_over_rollover'], before['with_swap']))
+                    self.assertEqual((result['tester_spec'], result['sides'], result['notes']), (None, None, []))
+
+    def test_the_ea_format_reads_back_exactly(self):
+        # 17 significant digits show the binary value (-7.35 is written -7.3499999999999996e+00) and read back exactly.
+        self.assertEqual(ea_double(-7.35), '-7.3499999999999996e+00')
+        self.assertEqual(float(ea_double(-7.35)), -7.35)
+        spec = si.tester_spec(self.capture(run=spec_lines(mode=1, long=-7.35, short=0.000123, contract=100000.0, point=0.001)))
+        self.assertEqual(spec, dict(swap_mode=1, swap_long=-7.35, swap_short=0.000123, swap_rollover3days=3,
+                                    contract_size=100000.0, digits=3, point=0.001))
+        self.assertIsNone(si.tester_spec(self.capture(run=None)))
+        self.assertIsNone(si.tester_spec(self.capture(run=[])))
+
+    def test_a_spec_that_charges_both_sides_against_zero_booked_swap_is_a_contradiction_held_back(self):
+        result = si.classify(self.capture(run=spec_lines(mode=1, long=-12.4, short=3.1)))
+        self.assertEqual((result['verdict'], result['notes']), ('swap_free_inputs', ['spec_contradiction']))
+        self.assertEqual(result['sides'], dict(long=dict(held=12, with_swap=0, tester_charges=True, verdict='swap_free_inputs'),
+                                               short=dict(held=3, with_swap=0, tester_charges=True, verdict='swap_free_inputs')))
+        self.assertTrue(si.held_back(result))
+        self.assertIn('the booked swap decides', result['plain'])
+        self.assertIn('Held back until re-run', result['plain'])
+
+    def test_a_spec_that_charges_nothing_holds_back_from_the_first_held_position_by_design_only_where_live_agrees(self):
+        disabled = self.capture(run=spec_lines(mode=0, long=-12.4, short=3.1))   # rates set, swap disabled
+        result = si.classify(disabled)
+        self.assertEqual((result['verdict'], result['notes']), ('swap_free_inputs', []))
+        self.assertEqual([result['sides'][s]['tester_charges'] for s in si.SIDES], [False, False])
+        self.assertIn('as the spec says', result['plain'])
+        self.assertEqual(si.classify(disabled, live_spec=SWAP_FREE_SPEC)['verdict'], 'swap_free_by_design')
+        mixed = si.classify(disabled, live_spec=dict(swap_long=0.0, swap_short=1.5))
+        self.assertEqual((mixed['verdict'], mixed['sides']['long']['verdict'], mixed['sides']['short']['verdict']),
+                         ('swap_free_inputs', 'swap_free_by_design', 'swap_free_inputs'))
+        # No 3-position floor once the spec says it: one held position on a side the spec does not charge is enough.
+        one = self.capture(run=spec_lines(mode=0), keep=lambda r: r['position_id'] in (HELD_POSITION, SAME_DAY_POSITION))
+        result = si.classify(one)
+        self.assertEqual((result['verdict'], result['held_over_rollover']), ('swap_free_inputs', 1))
+        self.assertEqual(si.classify(self.capture(run=None, keep=lambda r: r['position_id'] in (HELD_POSITION, SAME_DAY_POSITION)))['verdict'],
+                         'not_exercised')   # the same deals without the spec: too few to tell
+
+    def test_note_2_every_held_position_on_the_zero_side_agrees_with_the_spec_and_says_so(self):
+        # Claude-Mac's note 2: the tester spec charges one side only and every held position sat on the other side.
+        all_long = lambda r: r.update(deal_type='0') if r['deal_entry'] == '0' else None
+        deals = self.capture(run=spec_lines(mode=1, long=0.0, short=3.1), change=all_long)
+        result = si.classify(deals)
+        self.assertEqual((result['verdict'], result['notes']), ('swap_free_inputs', []))
+        self.assertEqual((result['sides']['long']['verdict'], result['sides']['short']['verdict']), ('swap_free_inputs', 'not_held'))
+        self.assertIn('long: the spec charges no swap (mode 1, swap long 0) and the 15 held positions closed with zero swap, '
+                      'as the spec says; no live spec shows this side swap-free', result['plain'])
+        self.assertTrue(si.held_back(result))
+        by_design = si.classify(deals, live_spec=dict(swap_long=0, swap_short=-2.0))
+        self.assertEqual(by_design['verdict'], 'swap_free_by_design')
+        self.assertIn('the live spec agrees', by_design['plain'])
+        self.assertTrue(si.held_back(by_design))
+
+    def test_one_side_charged_does_not_clear_a_side_that_ran_swap_free(self):
+        # Both sides held: the tester spec charges short (and the short positions paid) but not long, where 12 positions
+        # were held at zero swap. The long side's stale zero still makes the result optimistic: held back.
+        with SWAP_FREE.open(encoding='utf-8', newline='') as stream:
+            shorts = {r['position_id'] for r in csv.DictReader(stream) if r['deal_entry'] == '0' and r['deal_type'] == '1'}
+        paid_short = lambda r: r.update(swap='-1.25') if r['position_id'] in shorts and r['deal_entry'] != '0' else None
+        result = si.classify(self.capture(run=spec_lines(mode=1, long=0.0, short=-4.0), change=paid_short))
+        self.assertEqual((result['sides']['long']['verdict'], result['sides']['short']['verdict']), ('swap_free_inputs', 'swap_charged'))
+        self.assertEqual((result['verdict'], result['notes']), ('swap_free_inputs', []))
+        self.assertTrue(si.held_back(result))
+        # Without the recorded spec the same deals read swap_charged: the per-side reading is what catches it.
+        self.assertEqual(si.classify(self.capture(run=None, change=paid_short))['verdict'], 'swap_charged')
+
+    def test_charged_runs_and_runs_that_never_held_overnight(self):
+        charged = si.classify(self.capture(SWAP_CHARGED, run=spec_lines(mode=1, long=-12.4, short=3.1)))
+        self.assertEqual((charged['verdict'], charged['notes'], charged['sides']['short']['verdict'], charged['sides']['long']['verdict']),
+                         ('swap_charged', [], 'swap_charged', 'not_held'))
+        # A spec that says no swap, against deals that booked it: the deals decide, the note says the spec disagrees.
+        booked = si.classify(self.capture(SWAP_CHARGED, run=spec_lines(mode=0)))
+        self.assertEqual((booked['verdict'], booked['notes']), ('swap_charged', ['spec_contradiction']))
+        self.assertFalse(si.held_back(booked))
+        # A zero-swap spec on a run that held nothing overnight is no hold-back: swap could not touch its result.
+        for spec in (spec_lines(mode=0), spec_lines(mode=1)):
+            result = si.classify(self.capture(NOT_EXERCISED, run=spec))
+            self.assertEqual((result['verdict'], result['sides']['long']['verdict'], result['sides']['short']['verdict']),
+                             ('not_exercised', 'not_held', 'not_held'))
+            self.assertFalse(si.held_back(result))
+        # A charging side with fewer than min_roll held positions, none paid: too few to tell, as without a spec (SWAP_FREE
+        # holds 3 short; with min_roll 4 the charging short side cannot tell, the uncharged long side still holds it back).
+        few = si.classify(self.capture(run=spec_lines(mode=1, long=0.0, short=3.1)), min_roll=4)
+        self.assertEqual((few['verdict'], few['notes'], few['sides']['short']['verdict'], few['sides']['long']['verdict']),
+                         ('swap_free_inputs', [], 'not_exercised', 'swap_free_inputs'))
+        self.assertIn('short: the spec charges swap short 3.1; only 3 held positions, none with swap (4 needed to tell)', few['plain'])
+
+    def test_an_unreadable_or_malformed_recorded_spec_is_unreadable_and_held_back(self):
+        good = spec_lines()
+        cases = dict(partial=good[:-1], duplicate=good + good[:1], mode_not_whole=['symbol_swap_mode,1.0'] + good[1:],
+                     nan_rate=good[:1] + ['symbol_swap_long,nan'] + good[2:], inf_rate=good[:2] + ['symbol_swap_short,inf'] + good[3:],
+                     rollover_7=good[:3] + ['symbol_swap_rollover3days,7'] + good[4:],
+                     contract_zero=good[:4] + ['symbol_contract_size,' + ea_double(0.0)] + good[5:],
+                     point_negative=good[:6] + ['symbol_point,' + ea_double(-0.001)],
+                     empty_digits=good[:5] + ['symbol_digits,'] + good[6:])
+        paths = {name: self.capture(run=lines) for name, lines in cases.items()}
+        paths['not_utf8'] = self.capture(run=b'key,value\r\nsymbol_swap_mode,\xff\xfe\r\n')
+        folder_run = self.capture(run=None)
+        (folder_run.parent / 'run.csv').mkdir()                       # present, but not readable as a file
+        paths['run_csv_a_folder'] = folder_run
+        paths['side_unreadable'] = self.capture(run=good, drop=('deal_type',))
+        for name, path in paths.items():
+            with self.subTest(name=name):
+                result = si.classify(path, live_spec=SWAP_FREE_SPEC)
+                self.assertEqual(result['verdict'], 'unreadable')
+                self.assertTrue(si.held_back(result))
+                self.assertIn('Held back until the capture is re-read', result['plain'])
+                self.assertNotIn(self.tmp.name, result['plain'])
+        # Without a recorded spec the side is never needed: the same deals read as before.
+        self.assertEqual(si.classify(self.capture(run=None, drop=('deal_type',)))['verdict'], 'swap_free_inputs')
+
+    def test_the_spec_is_read_beside_the_capture_deals_without_an_existence_probe(self):
+        from unittest import mock
+        deals = self.capture(run=spec_lines(mode=0))
+        export = dict(capture=dict(complete=True, path=str(deals.parent / 'manifest.json')))
+        with mock.patch.object(Path, 'exists', side_effect=AssertionError('no probe')), \
+                mock.patch.object(Path, 'is_file', side_effect=AssertionError('no probe')):
+            result = si.classify(si.capture_deals(export))
+        self.assertEqual((result['verdict'], result['tester_spec']['swap_mode']), ('swap_free_inputs', 0))
+
+
 class OosRuleHookTests(RetestFixture, unittest.TestCase):
     """CatchupRunner._oos_rule: a held-back re-test is never judged, so it never reads pass."""
 

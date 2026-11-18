@@ -475,10 +475,23 @@ present but unreadable or malformed). A run whose verdict is `swap_free_inputs`,
 board never counts it. `unreadable` fails closed because the catch-up's own verdict parsers tolerate some
 malformations (a non-integer `deal_entry`, an `inf` swap) that the swap check cannot read.
 
+From B56 (GOAT-EA#354) the capture's `run.csv` also records the symbol spec the tester ran on (`symbol_swap_mode`,
+`symbol_swap_long`, `symbol_swap_short`, `symbol_swap_rollover3days`, `symbol_contract_size`, `symbol_digits`,
+`symbol_point`). When it is there the run is judged per side, from each held position's opening `deal_type`: a side
+the recorded spec does not charge (mode 0 or that side's rate 0) that held a position is `swap_free_inputs` from the
+first held position (`swap_free_by_design` when a live spec's rate for that side is 0); a side it charges is
+`swap_charged` when a held position there paid swap, `swap_free_inputs` with 3 or more held there and none paid, and
+`not_exercised` below that. The run takes the first of `swap_free_inputs`, `swap_free_by_design`, `swap_charged` any
+side has, else `not_exercised`. Where the recorded spec and the booked swap disagree the booked swap decides and the
+record notes `spec_contradiction`. A `run.csv` that cannot be read, a partial, duplicated or out-of-range spec, or a
+held position whose side cannot be read while a spec is recorded is `unreadable`. A capture without the keys (every
+run before B56) is judged exactly as above.
+
 **Enforcement.**
 - `controller/studio_swap_inputs.py`: `classify` (the rule, ported unchanged from the research sweep
-  `swap_free_sweep.py`), `HELD_BACK`, `held_back`, `NOT_JUDGED`. A missing or unreadable file is `unmeasured`, never
-  an exception.
+  `swap_free_sweep.py`, and the per-side reading of a recorded spec), `tester_spec`, `HELD_BACK`, `held_back`,
+  `NOT_JUDGED`. A missing `deals.csv` is `unmeasured`; a present but unreadable or malformed capture is `unreadable`;
+  neither is an exception. The record carries `tester_spec`, `sides` and `notes`.
 - `CatchupRunner._collect` (`controller/studio_catchup.py`) stamps `swapInputs` on the verdict, the result `summary`
   and `evidence-version.json`, and adds the held-back sentence to `plain`. `CatchupRunner._oos_rule` returns
   `status: not_judged` with `reasons` and `firstFailingCause` `swap_free_inputs` or `swap_free_by_design` for a
@@ -498,6 +511,12 @@ malformations (a non-integer `deal_entry`, an `inf` swap) that the swap check ca
     exercised); the by-design case with a swap-free and a charging live spec; the 3-position floor; one charged held
     position; swap on a same-day position or an opening deal ignored; `held_lots` (held positions' opening lots only;
     `None` when the capture has no lots column, the verdict unchanged); unmeasured files;
+  - `RecordedSpecTests` (B56): the same real captures with a `run.csv` in the EA's format: no spec reads exactly as
+    before; a spec charging both sides against zero booked swap (`spec_contradiction`, held back); a disabled spec from
+    the first held position, by design only where the live spec agrees per side; Claude-Mac's note 2 (every held
+    position on the uncharged side); one charged side never clears a side that ran swap-free; a charged run; a
+    zero-swap spec on a run that held nothing overnight (no hold-back); a malformed, partial, duplicated or unreadable
+    spec and an unreadable side (`unreadable`); the spec read beside the capture's deals with no existence probe;
   - `OosRuleHookTests`: a held-back re-test is `not_judged`, never `pass`; a charged, not-exercised or unmeasured one
     is judged as before; the recount's `_judge` reproduces the hold-back;
   - `CatchupSummaryHookTests`: a real catch-up over a swap-free capture stores `not_judged` in the summary, the
@@ -512,8 +531,9 @@ the deals alone, so two honest runs are held back too, and every record carries 
 (the opening lots of the held positions) so a reader can tell them apart:
 - a strategy that only ever holds overnight the side whose broker swap is truly zero (its swap long or short is 0);
 - a strategy whose overnight positions are all so small that each night's swap rounds to 0.00 (look at `held_lots`).
-Both read `swap_free_inputs`. Holding them back is the safe direction; the B56 EA step (swap long, swap short and swap
-mode written into the capture's `run.csv` at run time) lets the check read the spec the tester used instead.
+Both read `swap_free_inputs`. Holding them back is the safe direction. A B56 capture records the spec the tester used:
+the first case then reads per side ("the spec charges no swap ... as the spec says"), still held back until a live
+spec shows that side swap-free (`swap_free_by_design`); the second stays a deal-only reading on a charging side.
 
 **Not covered.**
 - No live symbol spec is recorded in the catch-up or migration path, so `swap_free_by_design` is reached only

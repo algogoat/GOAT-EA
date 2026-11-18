@@ -72,6 +72,7 @@ import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
 import studio_installed_build as installed_build
 from studio_refusal import Refusal
+import studio_swap_inputs as swap_inputs
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
 from studio_strategy_settings import read_values
@@ -1559,6 +1560,12 @@ class CatchupRunner(SeedRunner):
                            reproduction=dict(reproduced=None), comparability=None, rules=manifest.get('verdict_rules'),
                            evidence_model=model_tag(tester['Model'], tester['Period'], source=pins.get('model_source')),
                            equivalence=pins.get('equivalence'))
+        # INV-SWAP-01: the swap the re-test was charged, from its own capture. A held-back run (swap_free_inputs /
+        # swap_free_by_design) is never judged by the OOS rule (_oos_rule) and says so in plain words. No live symbol
+        # spec is recorded in the catch-up path, so swap_free_by_design is not reached from here (live_spec=None).
+        verdict['swapInputs'] = swap_inputs.classify(swap_inputs.capture_deals(retest), live_spec=None)
+        if swap_inputs.held_back(verdict['swapInputs']):
+            verdict['plain'] = verdict['plain'] + ' ' + verdict['swapInputs']['plain']
         # Evidence for live decisions runs to the latest closed day: every result stamps the catch-up's resolved end.
         verdict['evidenceEnd'] = manifest['evidence_end']['iso']
         verdict['evidenceEndMode'] = evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True)
@@ -1587,7 +1594,7 @@ class CatchupRunner(SeedRunner):
                        evidenceEndEffective=verdict['evidenceEndEffective'], evidenceEndShort=short, evidenceEndUnproven=unproven,
                        comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
                        tickHistoryDrift=verdict.get('tickHistoryDrift'), rebase=verdict.get('rebase'),
-                       rebasedWindows=verdict.get('rebasedWindows'))
+                       rebasedWindows=verdict.get('rebasedWindows'), swapInputs=verdict.get('swapInputs'))
         version_path = Path(spec['evidence_dir']) / 'evidence-version.json'
         with version_path.open('x', encoding='utf-8', newline='\n') as stream:
             json.dump(version, stream, sort_keys=True, separators=(',', ':'))
@@ -1604,6 +1611,7 @@ class CatchupRunner(SeedRunner):
                        equivalence_mode=(pins.get('equivalence') or {}).get('mode'),
                        oos_rule=verdict['oos_rule']['status'], evidenceEnd=verdict['evidenceEnd'],
                        evidenceEndMode=verdict['evidenceEndMode'], evidenceEndEffective=verdict['evidenceEndEffective'],
+                       swapInputs=verdict.get('swapInputs'),
                        comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
                        tickHistoryDrift=verdict.get('tickHistoryDrift'),
                        firstFailingRule=verdict.get('firstFailingRule'), firstFailingCause=verdict.get('firstFailingCause'),
@@ -1695,6 +1703,12 @@ class CatchupRunner(SeedRunner):
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         evidence_model = model_tag(tester['Model'], tester['Period'], source=pins.get('model_source'))
         short, unproven = evidence_end_short(retest, target_end)
+        # INV-SWAP-01: the swap each run was charged, from its own capture: the re-test's, and the original's when the
+        # plan pins its deals.csv (the same file check_original verified). No live symbol spec here (live_spec=None).
+        original_deals = migration.baseline_paths(original.get('archived_set_path') or original['set_path'])[1] \
+            if baseline['deals'] else None
+        swap_retest = swap_inputs.classify(deals, live_spec=None)
+        swap_original = swap_inputs.classify(original_deals, live_spec=None) if baseline['deals'] else None
         record = dict(schema=migration.RECORD_SCHEMA, kind=migration.KIND, provenance=bm['provenance'],
                       catchup_id=manifest['batch_id'], alias=spec['alias'], created_utc=created,
                       source_build=bm['source_build'], source_ea_sha256=bm.get('source_ea_sha256'),
@@ -1704,12 +1718,14 @@ class CatchupRunner(SeedRunner):
                                     deals_sha256=baseline['deals'], values_sha256=original['values_sha256'],
                                     evidence_start=original['evidence_start'], evidence_end=original['evidence_end'],
                                     csv_path=original['csv_path'], metrics=original.get('metrics'), windows=original.get('windows'),
-                                    capture_status=(original.get('capture') or {}).get('status'), threshold=spec['original'].get('threshold')),
+                                    capture_status=(original.get('capture') or {}).get('status'), threshold=spec['original'].get('threshold'),
+                                    swap_inputs=swap_original),
                       retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], values_sha256=retest['values_sha256'],
                                   csv_path=retest['csv_path'], evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'],
                                   metrics=retest.get('metrics'), goatseq=bool(tested), goatseq_from=bm.get('goatseq_from'),
                                   capture=tested and dict(path=tested['path'], status=tested['status'], complete=tested['complete'],
-                                                          manifest_sha256=tested['manifest_sha256'], build_id=tested.get('build_id'))),
+                                                          manifest_sha256=tested['manifest_sha256'], build_id=tested.get('build_id')),
+                                  swap_inputs=swap_retest),
                       inputs_unchanged=True, original_set_unchanged=True, source_inputs_sha256=spec.get('source_inputs_sha256'),
                       drift=drift, windows=windows, new_weeks=new_weeks, window_error=window_error,
                       new_weeks_judged=False, judgement=migration.UNSEEN_WEEKS,
@@ -1761,6 +1777,15 @@ class CatchupRunner(SeedRunner):
             result = dict(schema=EVALUATION, ruleVersion=RULE_VERSION, status='no_data', reasons=[reason], used_for_ranking=False,
                         boosContaminatedBy=BOOS_CONTAMINATED_BY,
                         plain='No hold-out data under the OOS window rule: ' + reason + '.')
+        elif swap_inputs.held_back(verdict.get('swapInputs')):
+            # INV-SWAP-01: a re-test the tester charged no swap (swap_free_inputs), or one on a swap-free symbol
+            # (swap_free_by_design), is held back: not judged, so it never passes and never qualifies until re-run.
+            swap = verdict['swapInputs'] if isinstance(verdict['swapInputs'], dict) else {}
+            cause = swap_inputs.verdict_of(verdict['swapInputs'])
+            result = dict(schema=EVALUATION, ruleVersion=RULE_VERSION, status=swap_inputs.NOT_JUDGED, reasons=[cause],
+                          firstFailingCause=cause, used_for_ranking=False, boosContaminatedBy=BOOS_CONTAMINATED_BY,
+                          plain=('Not judged under the OOS window rule: held back until re-run (%s). %s'
+                                 % (cause, swap.get('plain') or '')).strip())
         else:
             try:
                 result = judge_retest(original, retest, tester=spec['original'].get('tester'), evidence_end=evidence_end)

@@ -134,7 +134,7 @@ class ClassifyTests(unittest.TestCase):
         # The spec never overrides the deals: charged stays charged, too few stays too few.
         self.assertEqual(si.classify(SWAP_CHARGED, live_spec=SWAP_FREE_SPEC)['verdict'], 'swap_charged')
         self.assertEqual(si.classify(NOT_EXERCISED, live_spec=SWAP_FREE_SPEC)['verdict'], 'not_exercised')
-        self.assertEqual(si.HELD_BACK, {'swap_free_inputs', 'swap_free_by_design'})
+        self.assertEqual(si.HELD_BACK, {'swap_free_inputs', 'swap_free_by_design', 'unreadable'})
 
     def test_one_held_position_with_swap_makes_the_run_swap_charged_a_same_day_one_does_not(self):
         held = self.edited(lambda r: r.update(swap='-0.01') if r['position_id'] == HELD_POSITION and r['deal_entry'] != '0' else None)
@@ -151,30 +151,45 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(si.server_day(1760572799999), date(2025, 10, 15))     # 23:59:59.999 is still the same day
         self.assertEqual(si.server_day(1760572800000), date(2025, 10, 16))     # 00:00 is the rollover
 
-    def test_a_missing_or_unreadable_deals_csv_is_unmeasured_never_an_exception(self):
-        cases = dict(none=None, missing=Path(self.tmp.name) / 'gone' / 'deals.csv',
-                     no_swap_column=self.edited(lambda r: None, name='a.csv', drop=('swap',)),
-                     bad_number=self.edited(lambda r: r.update(swap='x') if r['position_id'] == HELD_POSITION else None, name='b.csv'),
-                     not_finite=self.edited(lambda r: r.update(swap='nan') if r['position_id'] == HELD_POSITION else None, name='c.csv'),
-                     bad_entry=self.edited(lambda r: r.update(deal_entry='?'), name='d.csv'))
-        folder = Path(self.tmp.name) / 'a folder'
-        folder.mkdir()
-        cases['a_folder'] = folder
-        for name, path in cases.items():
+    def test_no_deals_csv_is_unmeasured_never_a_flag(self):
+        for name, path in dict(none=None, empty='', missing=Path(self.tmp.name) / 'gone' / 'deals.csv').items():
             with self.subTest(name=name):
                 result = si.classify(path, live_spec=SWAP_FREE_SPEC)
                 self.assertEqual((result['verdict'], result['positions'], result['held_over_rollover']), ('unmeasured', None, None))
                 self.assertFalse(si.held_back(result))
                 self.assertIn('not a flag', result['plain'])
+
+    def test_a_present_but_unreadable_or_malformed_deals_csv_is_unreadable_and_held_back(self):
+        # Claude-Mac goatai#2750 6976984165: the catch-up's own verdict parsers tolerate some of these (deal_window compares
+        # deal_entry as a string and takes Decimal('inf')), so the swap check must hold such a run back, never pass it through.
+        first_close = lambda r: r['position_id'] == HELD_POSITION and r['deal_entry'] != '0'
+        cases = dict(no_swap_column=self.edited(lambda r: None, name='a.csv', drop=('swap',)),
+                     bad_number=self.edited(lambda r: r.update(swap='x') if r['position_id'] == HELD_POSITION else None, name='b.csv'),
+                     nan_swap=self.edited(lambda r: r.update(swap='nan') if r['position_id'] == HELD_POSITION else None, name='c.csv'),
+                     inf_swap_on_every_close=self.edited(lambda r: r.update(swap='inf') if r['deal_entry'] != '0' else None, name='e.csv'),
+                     every_entry_bad=self.edited(lambda r: r.update(deal_entry='?'), name='d.csv'),
+                     one_closing_entry_x=self.edited(lambda r: r.update(deal_entry='x') if first_close(r) else None, name='f.csv'),
+                     one_time_x=self.edited(lambda r: r.update(server_time_msc='x') if first_close(r) else None, name='g.csv'))
+        folder = Path(self.tmp.name) / 'a folder'   # present, but not readable as a file (an OSError on read)
+        folder.mkdir()
+        cases['a_folder'] = folder
+        for name, path in cases.items():
+            with self.subTest(name=name):
+                result = si.classify(path, live_spec=SWAP_FREE_SPEC)
+                self.assertEqual((result['verdict'], result['positions'], result['held_over_rollover']), ('unreadable', None, None))
+                self.assertTrue(si.held_back(result))
+                self.assertIn('Held back until the capture is re-read', result['plain'])
                 self.assertNotIn(self.tmp.name, result['plain'])
 
     def test_verdict_readers_and_the_counter_and_guard_agree(self):
         self.assertEqual((si.verdict_of(dict(verdict='swap_free_inputs')), si.verdict_of('swap_charged'), si.verdict_of(None),
                           si.verdict_of(5)), ('swap_free_inputs', 'swap_charged', None, None))
-        self.assertTrue(si.held_back('swap_free_by_design') and not si.held_back('unmeasured') and not si.held_back(None))
+        self.assertTrue(si.held_back('swap_free_by_design') and si.held_back('unreadable')
+                        and not si.held_back('unmeasured') and not si.held_back(None))
         self.assertEqual(board.SWAP_HELD_BACK, si.HELD_BACK)                  # the counter repeats the set; they must agree
         self.assertLessEqual({'swapInputs', 'swap_inputs'}, METRIC_KEYS)     # window-derived numbers: redacted in a lock
-        self.assertEqual(set(si.VERDICTS), {'swap_charged', 'not_exercised', 'swap_free_inputs', 'swap_free_by_design', 'unmeasured'})
+        self.assertEqual(set(si.VERDICTS), {'swap_charged', 'not_exercised', 'swap_free_inputs', 'swap_free_by_design',
+                                            'unmeasured', 'unreadable'})
 
 
 class OosRuleHookTests(RetestFixture, unittest.TestCase):
@@ -195,6 +210,9 @@ class OosRuleHookTests(RetestFixture, unittest.TestCase):
                 # A bare verdict string holds back too.
                 self.assertEqual(sc.CatchupRunner._oos_rule(original, retest, spec, dict(verdict='held_up', swapInputs=cause))['status'],
                                  'not_judged')
+        # A present but malformed capture is held back the same way (verdict `unreadable`; ClassifyTests builds the files).
+        result = sc.CatchupRunner._oos_rule(original, retest, spec, dict(verdict='held_up', swapInputs=dict(verdict='unreadable')))
+        self.assertEqual((result['status'], result['firstFailingCause']), ('not_judged', 'unreadable'))
         for harmless in (si.classify(SWAP_CHARGED), si.classify(NOT_EXERCISED), si.classify(None)):
             with self.subTest(harmless=harmless['verdict']):
                 self.assertEqual(sc.CatchupRunner._oos_rule(original, retest, spec, dict(verdict='held_up', swapInputs=harmless))['status'],

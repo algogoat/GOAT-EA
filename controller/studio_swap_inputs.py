@@ -102,11 +102,12 @@ def _positions(path):
             entry = int(row['deal_entry'])
             if entry == 0 and p['open'] is None:
                 p['open'] = int(row['server_time_msc'])
-                if has_lots:
-                    lots = float(row['lots'])
-                    if not math.isfinite(lots):
-                        raise ValueError('lots is not a finite number: %r' % row['lots'])
-                    p['lots'] = lots
+                if has_lots:   # diagnostic only: an unreadable value is unknown (held_lots None), never a verdict change
+                    try:
+                        lots = float(row['lots'])
+                    except (TypeError, ValueError):
+                        lots = None
+                    p['lots'] = lots if lots is not None and math.isfinite(lots) else None
             elif entry in (1, 2, 3):
                 swap = float(row['swap'])
                 if not math.isfinite(swap):
@@ -115,11 +116,8 @@ def _positions(path):
     return positions
 
 
-def _lots_text(held_lots):
-    return '' if held_lots is None else ' (%.2f lots opened in all)' % held_lots
-
-
 def _plain(verdict, held, charged, total, min_roll, reason=None, held_lots=None):
+    lots = '' if held_lots is None else ' (%.2f lots opened in all)' % held_lots
     if verdict == UNMEASURED:
         return 'Swap inputs unmeasured (%s); not a flag.' % reason
     if verdict == NOT_EXERCISED:
@@ -131,10 +129,10 @@ def _plain(verdict, held, charged, total, min_roll, reason=None, held_lots=None)
     if verdict == SWAP_FREE_INPUTS:
         return ('Swap-free inputs: all %d positions held over a server rollover%s closed with zero swap, so the tester ran '
                 'on a symbol spec that charged no swap and the result is optimistic. Held back until re-run on a spec '
-                'that charges the broker\'s swap.' % (held, _lots_text(held_lots)))
+                'that charges the broker\'s swap.' % (held, lots))
     return ('Swap-free by design: all %d positions held over a server rollover%s closed with zero swap, and the live '
             'symbol spec has swap long 0 and swap short 0. Held back until re-run or reviewed: the deals alone cannot '
-            'tell a swap-free symbol from a stale spec.' % (held, _lots_text(held_lots)))
+            'tell a swap-free symbol from a stale spec.' % (held, lots))
 
 
 def classify(deals_csv_path, *, min_roll=MIN_ROLL, live_spec=None):

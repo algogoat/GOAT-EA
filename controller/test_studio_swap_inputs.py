@@ -82,6 +82,17 @@ class ClassifyTests(unittest.TestCase):
         result = si.classify(no_lots)
         self.assertEqual((result['verdict'], result['held_lots']), ('swap_free_inputs', None))
         self.assertNotIn('lots opened', result['plain'])
+        # An unreadable lots value (blank, non-numeric, non-finite) is unknown: held_lots None, and the hold-back stands
+        # (Codex P2 on GOAT-EA#352: it must never turn a swap-free run into `unmeasured`, which is not held back).
+        for n, bad in enumerate(('', 'x', 'nan', 'inf')):
+            with self.subTest(lots=bad):
+                path = self.edited(lambda r, bad=bad: r.update(lots=bad) if r['deal_entry'] == '0' else None, name='bad-%d.csv' % n)
+                result = si.classify(path)
+                self.assertEqual((result['verdict'], result['held_lots']), ('swap_free_inputs', None))
+                self.assertTrue(si.held_back(result))
+        first_only = self.edited(lambda r: r.update(lots='') if r['position_id'] == HELD_POSITION and r['deal_entry'] == '0' else None, name='first.csv')
+        result = si.classify(first_only)
+        self.assertEqual((result['verdict'], result['held_lots']), ('swap_free_inputs', None))
         # Doubling a held position's opening lots moves held_lots; doubling a same-day position's does not.
         held = self.edited(lambda r: r.update(lots=str(float(r['lots']) * 2)) if r['position_id'] == HELD_POSITION and r['deal_entry'] == '0' else None, name='h.csv')
         same = self.edited(lambda r: r.update(lots=str(float(r['lots']) * 2)) if r['position_id'] == SAME_DAY_POSITION and r['deal_entry'] == '0' else None, name='s.csv')

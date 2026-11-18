@@ -29,7 +29,7 @@ concurrency:
 #           test_ledger_join, test_restart_adopt,
 #           test_b50_no_drift, test_b50_parity, test_b50_single, test_b50_clock,
 #           test_b50_exits, test_b50_integration,
-#           test_b51_no_drift, test_b54_no_drift, test_b55_no_drift, test_b51_parity, test_b51_random, test_b51_modify,
+#           test_b51_no_drift, test_b54_no_drift, test_b55_no_drift, test_b56_no_drift, test_b51_parity, test_b51_random, test_b51_modify,
 #           test_b51_partial,
 #           test_b49b_f7, test_b49b_f5, test_b49b_f3,
 #           test_b49b_f3b, test_b49b_f6, test_b49b_f4, test_b49b_lag, test_b49b_f8,
@@ -103,6 +103,8 @@ jobs:
           # B55: test_b55_gate0 (.cjs and .py) and test_b55_no_drift read B54's source and controller package (a8c6766) from
           # history, test_b55_init.py and test_studio_ea_init_rules.py its contracts/v149; test_b54_no_drift and test_b54_gate0
           # now prove B54's own commit.
+          # B56: test_b56_no_drift reads B55's source, identity and contracts (41396df) from history; test_b55_no_drift now
+          # proves B55's own commit.
           fetch-depth: 0
 
       - name: Set up Windows x64 Python
@@ -186,8 +188,10 @@ jobs:
         run: node scripts/test_b51_no_drift.cjs
       - name: B54 no drift from B53 (every changed line marked; contract follows the tree; inputs append-only, the 14 breakout inputs at the end)
         run: node scripts/test_b54_no_drift.cjs
-      - name: B55 no drift from B54 (every changed line marked; contract follows the tree; inputs append-only, BRK_Start_Seq at the end; B54's build ID kept)
+      - name: B55 no drift from B54, on B55's own tree (every changed line marked; contract follows the tree; inputs append-only, BRK_Start_Seq at the end; B55's build ID)
         run: node scripts/test_b55_no_drift.cjs
+      - name: B56 no drift from B55 (every changed line marked; swap-spec writes exactly its seven run.csv keys; inputs and contract are B55's; B55's build ID kept)
+        run: node scripts/test_b56_no_drift.cjs
       - name: B51 flags-off parity with B50-alpha (converted OnTick region, grid and single fixtures; WriteSet golden)
         run: node scripts/test_b51_parity.cjs
       - name: B51 random-direction benchmark (splitmix64 of seed and signal-bar time; same timing, gates, sizing and exits; flags off = B50-alpha)

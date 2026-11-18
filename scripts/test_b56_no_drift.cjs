@@ -11,7 +11,8 @@
 //   header and the entrypoint the tree has;
 // - swap-spec writes exactly the seven accepted keys, in order, once each, inside its block, right after initial_orders;
 //   the mode, the 3-day rollover and the digits as the integers the terminal returns, every double at full precision;
-// - the items keep B55's build ID and marker (the B56 assembly replaces them and lists them in REMOVED).
+// - the B56 assembly (Claude-Mac goatai#2750 6980043568: B56 = B55 plus swap-spec; the breakout start path is B57) replaces
+//   B55's two identity defines with B56's: the one unmarked change, each once, B55's listed in REMOVED and gone.
 // test_b55_no_drift.cjs now proves B55's own tree (as test_b54_no_drift.cjs proves B54's), so the chain
 // B49a -> B50 -> B53 -> B54 -> B55 -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B56 change is marked, listed and reviewable. That swap-spec only
@@ -20,11 +21,17 @@
 const path=require('node:path'),crypto=require('node:crypto'),fs=require('node:fs'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
 const ROOT=path.join(__dirname,'..'),B55_SOURCE='41396df479fd7fb1a9095d74a11735e48b8ee8b0';
 // Each item PR adds the files it changes, so the review sees the list grow.
-const CHANGED=['GOAT_SequenceExport.mqh'];   // swap-spec
+// swap-spec changes GOAT_SequenceExport.mqh; the B56 assembly changes the entrypoint (its own build ID and marker).
+const CHANGED=['GOAT_SequenceExport.mqh','GOAT V1.49.mq5'];
 const ADDED=[];
 // Every B55 line a changed hunk removes, verbatim (trimmed), per file. swap-spec only adds lines.
-const REMOVED={};
-// The items keep B55's identity lines (the assembly replaces them and lists them in REMOVED): each appears exactly once.
+const REMOVED={
+ // The B56 assembly: its own build ID and marker replace B55's.
+ 'GOAT V1.49.mq5':['#define   GOAT_BUILD_ID "V1.49-BETA17-55"','#define   GOAT_BUILD_MARKER "B55"'],
+};
+// The B56 assembly (as test_b55_no_drift.cjs's IDENTITY_LINES for B55): B56's own build ID and marker replace B55's. They
+// are the one unmarked change (the build ID names no marker); each appears exactly once, and B55's are in REMOVED and gone.
+const IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-56"','#define   GOAT_BUILD_MARKER "B56"'];
 const B55_IDENTITY_LINES=['#define   GOAT_BUILD_ID "V1.49-BETA17-55"','#define   GOAT_BUILD_MARKER "B55"'];
 // swap-spec: the seven keys Claude-Mac accepted (6978371254), in order, with the expression each is written from.
 const SWAP_SPEC=[
@@ -103,13 +110,14 @@ for(const f of CHANGED){
  assert.ok(hunks.length>0,f+' differs from B55');
  for(const {added,removed} of hunks){
   assert.ok(added.length>0,f+': a pure deletion of '+removed+' B55 line(s) is unmarked');
-  for(const n of added){const text=lines[n-1];assert.ok(/B56/.test(text)||inBlock[n-1],f+':'+n+' changed since B55 without a B56 marker: '+text.trim());}
+  for(const n of added){const text=lines[n-1];assert.ok(/B56/.test(text)||inBlock[n-1]||(f==='GOAT V1.49.mq5'&&IDENTITY_LINES.includes(text)),f+':'+n+' changed since B55 without a B56 marker: '+text.trim());}
  }
  assert.deepEqual([...removedLines].sort(),[...(REMOVED[f]||[])].sort(),f+': the B55 lines removed are exactly REMOVED');
 }
 for(const f of Object.keys(REMOVED)) assert.ok(CHANGED.includes(f),'REMOVED names only CHANGED files: '+f);
 {const main=read('GOAT V1.49.mq5').toString('utf8').split('\r\n');
- for(const l of B55_IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,1,'the items keep B55\'s identity line, once: '+l);}
+ for(const l of IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,1,'B56\'s identity line, once: '+l);
+ for(const l of B55_IDENTITY_LINES) assert.equal(main.filter(x=>x===l).length,0,'B55\'s identity line is gone: '+l);}
 checks++;
 
 // 5. swap-spec: exactly the seven keys, in order, once each, inside its block, right after initial_orders.
@@ -123,11 +131,13 @@ checks++;
  for(const [key] of SWAP_SPEC) assert.equal(text.split('"'+key+'"').length-1,1,'the key is written once: '+key);
  checks++;}
 
-// 6. The input contract is B55's: no input added or changed, and the pins still match the header and entrypoint.
+// 6. The input contract is B55's: no input added or changed, and the pins match the header and entrypoint. The assembly's
+// identity lines move the entrypoint's hash, so main_sha256 is re-pinned; every other field of dependencies.json is B55's.
 const deps=JSON.parse(bom(read('controller/contracts/v149/dependencies.json').toString('utf8')));
 assert.equal(deps.header_sha256,sha(read('GOAT_Inputs_Definitions.mqh')),'dependencies.json pins this header');
 assert.equal(deps.main_sha256,sha(read('GOAT V1.49.mq5')),'dependencies.json pins this entrypoint');
-assert.deepEqual(deps,JSON.parse(bom(git(['show',B55_SOURCE+':controller/contracts/v149/dependencies.json']).toString('utf8'))),'dependencies.json is B55\'s');
+assert.deepEqual({...deps,main_sha256:null},{...JSON.parse(bom(git(['show',B55_SOURCE+':controller/contracts/v149/dependencies.json']).toString('utf8'))),main_sha256:null},
+ 'dependencies.json is B55\'s but for the entrypoint pin');
 assert.deepEqual(JSON.parse(bom(read('controller/contracts/v149/inputs.json').toString('utf8'))),
  JSON.parse(bom(git(['show',B55_SOURCE+':controller/contracts/v149/inputs.json']).toString('utf8'))),'inputs.json is B55\'s');
 checks++;

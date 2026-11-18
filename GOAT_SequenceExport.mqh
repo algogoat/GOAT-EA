@@ -336,6 +336,20 @@ bool GoatTraceInit()
    GoatTraceWritten(FileWrite(g_trace_files[0],"initial_balance",g_trace_initial_balance));
    GoatTraceWritten(FileWrite(g_trace_files[0],"initial_positions",PositionsTotal()));
    GoatTraceWritten(FileWrite(g_trace_files[0],"initial_orders",OrdersTotal()));
+   // B56:begin swap-spec
+   // Swap guard step 3 (INV-SWAP-01; Claude-Mac goatai#2750 6978371254): the symbol spec this run is charged from. In the
+   // Strategy Tester SymbolInfo* returns the tester's cached spec, the input that charged zero swap twice (Banker
+   // 2026-10-09..10-27 and the 2026-09-19/20 runs). Recorded as the terminal returns it: the mode as its integer, each
+   // double at full precision (17 significant digits, so it reads back exactly). The controller interprets them; the swap
+   // the deals booked stays the cross-check.
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_swap_mode",SymbolInfoInteger(_Symbol,SYMBOL_SWAP_MODE)));
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_swap_long",DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_SWAP_LONG),-16)));
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_swap_short",DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_SWAP_SHORT),-16)));
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_swap_rollover3days",SymbolInfoInteger(_Symbol,SYMBOL_SWAP_ROLLOVER3DAYS)));
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_contract_size",DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_CONTRACT_SIZE),-16)));
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_digits",SymbolInfoInteger(_Symbol,SYMBOL_DIGITS)));
+   GoatTraceWritten(FileWrite(g_trace_files[0],"symbol_point",DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_POINT),-16)));
+   // B56:end swap-spec
    if(PositionsTotal()!=0 || OrdersTotal()!=0) GoatTraceFail("capture did not initialize flat");
    GoatTraceWritten(FileWrite(g_trace_files[1],"ordinal","server_time_msc","sequence_id","direction","virtual","kind","reason","logical_active"));
    GoatTraceWritten(FileWrite(g_trace_files[2],"ordinal","server_time_msc","sequence_id","direction","order_id","deal_id","retcode","sent","requested_lots","result_lots","result_price"));

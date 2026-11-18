@@ -28,6 +28,22 @@ RETAINED_SM32 = ROOT / 'candidate-builds/terminal-isolation-SM32'
 RETAINED_SM31 = ROOT / 'candidate-builds/ndx-symbol-map-SM31'
 RETAINED = ROOT / 'candidate-builds/start-protocol-SP30'
 RETAINED_ROOT_BINARY = '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9'
+B55_COMMIT = '41396df479fd7fb1a9095d74a11735e48b8ee8b0'
+
+
+def _b56_changed():
+    """The files B56's items change (scripts/test_b56_no_drift.cjs CHANGED). B56 in progress (swap-spec, Claude-Mac
+    goatai#2750 6978371254): the tree is B55 plus marked B56 lines in these files, and every other B55 source is
+    byte-identical (proven there, against B55's commit). They carry B56's lines by design, so each is checked where it
+    hashes to its build's identity: that build's own commit. The build ID and marker stay B55's until a B56 assembly."""
+    guard = (ROOT / 'scripts/test_b56_no_drift.cjs').read_text(encoding='utf-8')
+    return set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", guard, re.M)[1].replace("'", '"') + ']'))
+
+
+def _checked_out_blob(commit, relative):
+    """A source as its commit checks it out (CRLF, as .gitattributes does)."""
+    blob = subprocess.run(['git', 'show', commit + ':' + relative], cwd=ROOT, capture_output=True, check=True).stdout
+    return blob.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
 
 
 class StartProtocolCandidateTests(unittest.TestCase):
@@ -46,8 +62,13 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertEqual(b55['source_base'], 'a8c6766243ff577bdcfc90495a6de33ce0797c88', 'B55 is built on B54\'s commit')
         self.assertEqual(b55['consolidates'], ['B55.0', 'B55.d'])
         self.assertEqual(list(b55['consolidated_heads']), b55['consolidates'])
+        b56_changed = _b56_changed()
+        self.assertTrue({'GOAT_SequenceExport.mqh'} <= b56_changed)
         for relative, expected in b55['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b56_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                self.assertEqual(hashlib.sha256(_checked_out_blob(B55_COMMIT, relative)).hexdigest(), expected, relative + ' (B55 commit)')
         b54 = json.loads((RETAINED_B54 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(sorted(b55['sources']), sorted(b54['sources']), 'same compile closure as B54')
         b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
@@ -81,7 +102,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b55_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']'))
         self.assertTrue({'GOAT_Inputs_Definitions.mqh'} <= b55_changed)
         for relative, expected in b54['sources'].items():
-            if relative not in b55_changed:
+            if relative not in (b55_changed | _b56_changed()):
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
             else:
                 blob = subprocess.run(['git', 'show', 'a8c6766:' + relative], cwd=ROOT, capture_output=True, check=True).stdout
@@ -126,7 +147,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b55_guard = (ROOT / 'scripts/test_b55_no_drift.cjs').read_text(encoding='utf-8')
         b55_changed = set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", b55_guard, re.M)[1].replace("'", '"') + ']'))
         for relative, expected in identity['sources'].items():
-            if relative not in (b54_changed | b55_changed):
+            if relative not in (b54_changed | b55_changed | _b56_changed()):
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
             else:
                 blob = subprocess.run(['git', 'show', '216e1622:' + relative], cwd=ROOT, capture_output=True, check=True).stdout

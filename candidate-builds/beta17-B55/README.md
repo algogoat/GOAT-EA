@@ -1,8 +1,11 @@
 B55 (`V1.49-BETA17-55`) is the **demo candidate for the dashboard bus fixes**: B54 (the research build, `V1.49-BETA17-54`,
 `candidate-builds/beta17-B54/`) plus PR A0 (GOAT-EA#314: `BRK_Start_Seq` declared and refused as not built) and the dashboard
 fixes of GOAT-EA#330. **Demo candidate: the T2 reading, then the two kept Exp 01 terminals; no live admission** (Claude-Mac
-goatai#2750 6853274219). Nothing else rides on it: `BRK_Start_Seq`, the EA status push and anything new go to B56. It supersedes
-no candidate: B54 stays the research build and B53 the experiments' final build until B55 is proven.
+goatai#2750 6853274219). Nothing else rides on it: `BRK_Start_Seq`, the EA status push and anything new go to later builds. It
+supersedes no candidate: B54 stays the research build and B53 the experiments' final build until B55 is proven.
+
+**Later builds (Claude-Mac goatai#2750 6980043568).** B56 is B55 plus swap-spec only (GOAT-EA#354: the capture's run.csv records
+the symbol spec the tester ran on). The breakout start path (`BRK_Start_Seq`, spec GOAT-EA#311) is B57.
 
 **What it fixes (GOAT-EA#328).**
 - On B54 and earlier, every child chart's one-second timer acknowledged its stored dashboard command again, every second, for

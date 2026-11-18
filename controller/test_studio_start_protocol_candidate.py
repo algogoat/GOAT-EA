@@ -51,9 +51,11 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # B55 (Claude-Mac goatai#2750 6853274219): the demo candidate for the dashboard bus fixes, B54 plus PR A0 (GOAT-EA#314,
         # BRK_Start_Seq refused as not built) and the dashboard fixes (#330). Demo candidate (the T2 reading, then the two kept
         # Exp 01 terminals), no live admission. It supersedes no candidate: B54 stays the research build, B53 the experiments'
-        # final build. The tree IS B55: every source hashes to it, and its build ID and marker are the tree's.
+        # final build. Every B55 source hashes to the tree, or (for the files B56 changes) to B55's own commit. The B56
+        # assembly (Claude-Mac goatai#2750 6980043568) gives the tree B56's build ID and marker, so B55's are read where
+        # they live: its own commit's entrypoint.
         b55 = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        text = (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig')
+        text = _checked_out_blob(B55_COMMIT, 'GOAT V1.49.mq5').decode('utf-8-sig')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + b55['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + b55['build_marker'] + '"', text)

@@ -442,6 +442,8 @@ class SeedRunner:
             return result
         except (ValueError,OSError) as exc:
             item['status']='failed';item['error']=str(exc)
+            # B57: a report that names no expert and no symbol (studio_fast_fail.EmptyReport) is marked for the fast-fail check.
+            if isinstance(exc,fast_fail.EmptyReport):item['empty_report']=True
             # Keep the refused XML visible (never as accepted evidence) for diagnosis.
             item['observed_xml']=self._observed_xml(paths[0])
             return None
@@ -696,16 +698,27 @@ class SeedRunner:
                 if item['status'] in ('timeout','missing_output') and not item.get('error'):
                     item['error']=self._failure_reason(manifest,item)
             item['finished_unix']=self.clock()
-            if item['status']=='missing_output' and type(item.get('started_unix')) in (int,float):
+            if item['status'] in ('missing_output','failed') and type(item.get('started_unix')) in (int,float):
                 # A fast-fail (goatai#2750 6884089927): MT5 closed inside FAST_FAIL_SECONDS with no output, so the member never
                 # really ran. The first one is recorded with its agent-log lines and re-run once, after the batch's other
-                # pending members; a second one is final, with both attempts in the error.
+                # pending members; a second one is final, with both attempts in the error. B57 (goatai#2943 7226979353): a
+                # first attempt that failed on an empty report (no expert, no symbol) inside the same 30 s counts too; its
+                # report is moved aside first (create-only, never deleted), and if that move fails the member stays failed.
                 ran=item['finished_unix']-item['started_unix']
                 if fast_fail.is_fast_fail(item,ran,bool(paths)):
                     fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
                                      install=self.c.install,agents_root=getattr(self,'agents_root',None))
-                elif (item.get('attempts')==2 and isinstance(item.get('fast_fail'),dict) and not paths
-                      and 0<=ran<fast_fail.FAST_FAIL_SECONDS):
+                elif fast_fail.is_empty_report_fast_fail(item,ran) and len(paths)==1:
+                    try:
+                        moved=fast_fail.set_aside(paths[0],root/(spec['alias']+'.fastfail-attempt1'+paths[0].suffix))
+                    except (OSError,ValueError) as exc:
+                        item['error']=(item.get('error') or '')+(' An empty report inside %d s, but it could not be set aside for '
+                                       'its one re-run (%s), so it is not re-run.'%(fast_fail.FAST_FAIL_SECONDS,str(exc)[:200]))
+                    else:
+                        fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
+                                         install=self.c.install,agents_root=getattr(self,'agents_root',None),set_aside_report=moved)
+                elif (item.get('attempts')==2 and isinstance(item.get('fast_fail'),dict) and 0<=ran<fast_fail.FAST_FAIL_SECONDS
+                      and ((item['status']=='missing_output' and not paths) or (item['status']=='failed' and item.get('empty_report') is True))):
                     item['error']=fast_fail.final_error(item,int(round(ran)),item.get('error'))
         self._settle_status(state)
         self._settle_slot(root,manifest,state,current)

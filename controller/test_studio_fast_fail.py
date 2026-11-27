@@ -5,6 +5,8 @@ agent hit `bind error on 127.0.0.1:3024 [10048]` while T3's agent held the port)
 batch's other pending members and not before RETRY_DELAY_SECONDS; a second fast-fail is final; nothing else is re-run.
 """
 from datetime import datetime
+import gzip
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,8 +15,15 @@ import unittest.mock
 from studio_installation import read_json
 from studio_seed import SeedRunner
 import studio_fast_fail as fast_fail
-# Fixture module, not its TestCase class: importing the class here would run its suite twice.
+import studio_tester_report as tester_report
+# Fixture modules, not their TestCase classes: importing a class here would run its suite twice.
+import test_studio_holdup as holdup_fixture
 import test_studio_seed as seed_fixture
+
+# B57: MT5 build 6230's own report from the 2026-11-27 hold-up probe fwr-depth-sp500 member _00010 (T3, 15 s, agent 3033 bind
+# error): it names no expert and no symbol, period M0 1970.01.01, deposit 0, leverage 1:0, no deals. Gzipped, mtime 0.
+EMPTY_REPORT = Path(__file__).resolve().parent / 'fixtures' / 'holdup' / 'mt5-empty-report-6230.htm.gz'
+EMPTY_REPORT_SHA256 = 'd6375f984b20ee4912f6933257b0fa93011dcbc2ad279f5b8477816d0d9d3d34'
 
 
 class FastFailRunnerTests(unittest.TestCase):
@@ -103,6 +112,114 @@ class FastFailRunnerTests(unittest.TestCase):
         fresh = dict(alias='b', status='pending', attempts=0)
         self.assertTrue(SeedRunner.resumable(dict(base, members=[waiting, fresh])))
         self.assertFalse(SeedRunner.resumable(dict(base, members=[dict(alias='c', status='pending', attempts=1), fresh])))
+
+
+class EmptyReportFastFailTests(unittest.TestCase):
+    """B57 (goatai#2943, Claude-Mac 7226979353): the 2026-11-27 SP500 probe shape. The real HoldupRunner, driver, report
+    parser and checks run; only MT5 is a fixture, and its empty report is the real one's bytes."""
+
+    def setUp(self):
+        holdup_fixture.HoldupTests.setUp(self)
+        self.empty_starts = set()       # 1-based start numbers whose MT5 writes the empty report and closes
+        self.empty_after = 15           # seconds: the 11-27 member closed after 15 s
+        self.started_at = {}
+        self.runner.agents_root = self.root / 'agents'
+        self.empty = gzip.decompress(EMPTY_REPORT.read_bytes())
+
+    tearDown, close, mt5_writes_report, write_set, spec_for, plan = (
+        holdup_fixture.HoldupTests.tearDown, holdup_fixture.HoldupTests.close, holdup_fixture.HoldupTests.mt5_writes_report,
+        holdup_fixture.HoldupTests.write_set, holdup_fixture.HoldupTests.spec_for, holdup_fixture.HoldupTests.plan)
+
+    def start(self, config):
+        identity = holdup_fixture.HoldupTests.start(self, config)
+        self.started_at[len(self.starts)] = self.now
+        return identity
+
+    def report_path(self):
+        alias = read_json(self.runner.path('h1') / 'manifest.json')['members'][0]['alias']
+        return Path(self.c.install['terminal_data_root']) / 'MQL5/Files/GOATStudio/HoldupReports' / (alias + '.htm'), alias
+
+    def sleep(self, seconds):
+        self.now += seconds
+        if not (self.starts and self.process_state):
+            return
+        n = len(self.starts)
+        if n in self.empty_starts:
+            if self.now - self.started_at[n] >= self.empty_after:
+                path, alias = self.report_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(self.empty)                       # MT5's own empty report, as written on 11-27
+                for png in ('-hst', '-mfemae', '-holding'):
+                    path.with_name(alias + png + '.png').write_bytes(b'png')
+                self.process_state = None
+            return
+        self.mt5_writes_report(0)
+        self.process_state = None
+
+    def state(self):
+        return read_json(self.runner.path('h1') / 'state.json')
+
+    def run_batch(self):
+        self.runner.prepare('h1', self.plan())
+        return self.runner.start('h1', 400)
+
+    def test_the_real_empty_report_names_nothing_and_a_real_report_names_its_expert(self):
+        self.assertEqual(hashlib.sha256(self.empty).hexdigest(), EMPTY_REPORT_SHA256)
+        path = self.root / 'empty.htm';path.write_bytes(self.empty)
+        report = tester_report.read_report(path)
+        self.assertTrue(fast_fail.names_nothing(report))
+        self.assertEqual((report['settings']['period'], report['settings']['from_date'], report['results']['deals']), ('M0', '1970.01.01', 0))
+        good = self.root / 'good.htm';good.write_bytes(b'\xff\xfe' + holdup_fixture.fixture_text().encode('utf-16-le'))
+        self.assertFalse(fast_fail.names_nothing(tester_report.read_report(good)))
+
+    def test_an_empty_report_inside_30_s_is_set_aside_and_re_run_once(self):
+        self.empty_starts = {1}
+        result = self.run_batch()
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(self.starts), 2, 'one re-run')
+        m = self.state()['members'][0]
+        self.assertEqual((m['status'], m['attempts']), ('completed', 2))
+        first = m['fast_fail']['first_attempt']
+        self.assertEqual(first['kind'], 'empty_report')
+        self.assertLess(first['ran_seconds'], fast_fail.FAST_FAIL_SECONDS)
+        self.assertIn('report expert is , the frozen test ran', first['error'])     # the collector's own refusal, unchanged
+        self.assertGreaterEqual(self.started_at[2] - first['finished_unix'], fast_fail.RETRY_DELAY_SECONDS)
+        # Moved, never deleted: the empty report's exact bytes now sit in the batch folder; the member's report is the re-run's.
+        moved = Path(first['report']['path'])
+        self.assertEqual(moved.parent, self.runner.path('h1'))
+        self.assertEqual((first['report']['sha256'], hashlib.sha256(moved.read_bytes()).hexdigest()), (EMPTY_REPORT_SHA256,) * 2)
+        path, _ = self.report_path()
+        self.assertNotEqual(hashlib.sha256(path.read_bytes()).hexdigest(), EMPTY_REPORT_SHA256)
+        self.assertIn('empty report', m['fast_fail']['plain'])
+
+    def test_a_second_empty_report_is_final_with_both_attempts(self):
+        self.empty_starts = {1, 2}
+        result = self.run_batch()
+        self.assertEqual(len(self.starts), 2, 'never a third start')
+        m = self.state()['members'][0]
+        self.assertEqual((m['status'], m['attempts']), ('failed', 2))
+        self.assertIn('Fast-failed twice', m['error'])
+        self.assertEqual(result['status'], 'stopped')
+        path, _ = self.report_path()
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), EMPTY_REPORT_SHA256, 'the final one stays where MT5 wrote it')
+
+    def test_a_slow_empty_report_or_a_fast_report_that_names_its_test_is_never_re_run(self):
+        # 40 s: MT5 ran long enough to be more than a bind failure, so the report's refusal stands.
+        self.empty_starts = {1};self.empty_after = 40
+        self.run_batch()
+        m = self.state()['members'][0]
+        self.assertEqual((len(self.starts), m['status'], m['attempts']), (1, 'failed', 1))
+        self.assertNotIn('fast_fail', m)
+        self.assertTrue(m.get('empty_report'))
+        # A fast report that names its expert and symbol but ran a different input: a real refusal, never re-run.
+        self.tearDown();self.setUp()
+        self.drift = {'Grid_Size': ('-4', '-6')}
+        self.run_batch()
+        m = self.state()['members'][0]
+        self.assertEqual((len(self.starts), m['status'], m['attempts']), (1, 'failed', 1))
+        self.assertIn('MT5 ran different inputs than the frozen SET', m['error'])
+        self.assertNotIn('fast_fail', m)
+        self.assertNotIn('empty_report', m)
 
 
 class AgentLogTests(unittest.TestCase):

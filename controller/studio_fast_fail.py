@@ -13,8 +13,18 @@ closed: it cost one member, never a wrong result. A member like that never reall
   agent-log lines of its window (bind error, invalid password, anything else MT5's agents logged at warning or error).
   ``attempts`` reads 2 once the re-run starts.
 * **Final:** a second fast-fail is ``missing_output`` with both attempts in its error; it is never re-run again.
+
+B57 (goatai#2943, Claude-Mac 7226979353): **an empty report is a fast-fail too.** On 2026-11-27 the hold-up probe
+``fwr-depth-sp500`` member ``_00010`` ended ``failed`` 15 s after its launch: MT5 (build 6230) wrote a report that names no
+expert and no symbol (period M0 1970.01.01, deposit 0, leverage 1:0, no deals), because its agent 3033 had hit a bind
+error. The member never really ran, exactly like a ``missing_output`` fast-fail, but the report file existed. So a FIRST
+attempt that ends ``failed`` with such a report (``EmptyReport``, raised by the hold-up collector) inside
+``FAST_FAIL_SECONDS`` is recorded the same way, its report is set aside (moved, create-only, never deleted, its sha256
+recorded) so the member's output path is free, and it is re-run once on the same rules. Only hold-ups read an MT5 report;
+seed and catch-up outputs are not reports, so their fast-fail stays ``missing_output``.
 """
 from datetime import datetime, timedelta
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -28,10 +38,38 @@ WINDOW_PAD_SECONDS = 5
 NOTABLE = re.compile(r'bind error|invalid password|error|failed|cannot|refused|denied|not found', re.I)
 
 
+class EmptyReport(ValueError):
+    """MT5 wrote a report that names no expert and no symbol: the test never ran (B57, the 2026-11-27 SP500 probe). The
+    message is the collector's own refusal, unchanged; only its type marks the shape."""
+
+
+def names_nothing(report):
+    """A parsed MT5 report (studio_tester_report.read_report) whose settings name no expert and no symbol."""
+    settings = (report or {}).get('settings') or {}
+    return not str(settings.get('expert') or '').strip() and not str(settings.get('symbol') or '').strip()
+
+
 def is_fast_fail(item, ran_seconds, has_output):
     """True for a member whose FIRST attempt ended missing_output, with no output, inside FAST_FAIL_SECONDS."""
     return (item.get('status') == 'missing_output' and not has_output and item.get('attempts') == 1
             and not item.get('fast_fail') and type(ran_seconds) in (int, float) and 0 <= ran_seconds < FAST_FAIL_SECONDS)
+
+
+def is_empty_report_fast_fail(item, ran_seconds):
+    """True for a member whose FIRST attempt ended failed on an EmptyReport, inside FAST_FAIL_SECONDS (B57)."""
+    return (item.get('status') == 'failed' and item.get('empty_report') is True and item.get('attempts') == 1
+            and not item.get('fast_fail') and type(ran_seconds) in (int, float) and 0 <= ran_seconds < FAST_FAIL_SECONDS)
+
+
+def set_aside(path, target):
+    """Move an empty report out of the member's output path before its re-run: create-only (an existing target refuses),
+    never deleted. Returns its record (from, to, sha256, size); raises OSError or ValueError, and then nothing moved."""
+    path, target = Path(path), Path(target)
+    if target.exists():
+        raise ValueError('A set-aside report already exists: ' + target.name)
+    raw = path.read_bytes()
+    path.rename(target)
+    return dict(from_path=str(path), path=str(target), sha256=hashlib.sha256(raw).hexdigest(), size_bytes=len(raw))
 
 
 def retry_due(item, now):
@@ -101,17 +139,23 @@ def agent_log_lines(install, started_unix, finished_unix, *, agents_root=None):
         return ['agent logs could not be read: ' + str(error)[:200]]
 
 
-def record(item, *, started_unix, finished_unix, error, install, agents_root=None):
-    """The fast_fail record for the first attempt, and the member set back to pending for its one re-run."""
+def record(item, *, started_unix, finished_unix, error, install, agents_root=None, set_aside_report=None):
+    """The fast_fail record for the first attempt, and the member set back to pending for its one re-run. With
+    ``set_aside_report`` (B57) the first attempt was an empty report, already moved out of the output path."""
     ran = int(round(finished_unix - started_unix))
-    item['fast_fail'] = dict(first_attempt=dict(started_unix=started_unix, finished_unix=finished_unix, ran_seconds=ran,
-                                                error=error, process=item.get('process')),
+    first = dict(started_unix=started_unix, finished_unix=finished_unix, ran_seconds=ran, error=error, process=item.get('process'))
+    if set_aside_report is None:
+        plain = 'MT5 closed %d s after the launch with no output' % ran
+    else:
+        first.update(kind='empty_report', report=set_aside_report)
+        plain = ('MT5 closed %d s after the launch with an empty report (no expert, no symbol), set aside as %s'
+                 % (ran, Path(set_aside_report['path']).name))
+    item['fast_fail'] = dict(first_attempt=first,
                              agent_log=agent_log_lines(install, started_unix, finished_unix, agents_root=agents_root),
                              retry_after_unix=finished_unix + RETRY_DELAY_SECONDS,
-                             plain=('MT5 closed %d s after the launch with no output (a fast-fail: the member never really '
-                                    'ran). It is re-run once, after the batch\'s other pending members and not before %d s.'
-                                    % (ran, RETRY_DELAY_SECONDS)))
-    for key in ('error', 'process', 'started_unix', 'finished_unix', 'result'):
+                             plain=(plain + ' (a fast-fail: the member never really ran). It is re-run once, after the '
+                                    'batch\'s other pending members and not before %d s.' % RETRY_DELAY_SECONDS))
+    for key in ('error', 'process', 'started_unix', 'finished_unix', 'result', 'observed_xml', 'empty_report'):
         item.pop(key, None)
     item['status'] = 'pending'
     return item

@@ -15,6 +15,10 @@
 //   B55's two identity defines with B56's: the one unmarked change, each once, B55's listed in REMOVED and gone.
 // test_b55_no_drift.cjs now proves B55's own tree (as test_b54_no_drift.cjs proves B54's), so the chain
 // B49a -> B50 -> B53 -> B54 -> B55 -> tree is checked end to end.
+// B57 line (Claude-Mac goatai#2943 7222542209): this guard now proves B56's own tree, read from its sealed commit
+// (claude-pc/b56-line 5a07056, whose 42 sources hash to candidate-builds/beta17-B56/identity.json), and that the working tree
+// descends from it, as test_b55_no_drift.cjs proves B55's. scripts/test_b57_no_drift.cjs proves the working tree against
+// B56, so the chain B49a -> B50 -> B53 -> B54 -> B55 -> B56 -> tree is checked end to end.
 // VISIBILITY, NOT NEUTRALITY: this guard proves that every B56 change is marked, listed and reviewable. That swap-spec only
 // adds run.csv keys (no trading path reads them) is visible in its block: seven FileWrite calls to the run file.
 'use strict';
@@ -43,12 +47,16 @@ const SWAP_SPEC=[
  ['symbol_digits','SymbolInfoInteger(_Symbol,SYMBOL_DIGITS)'],
  ['symbol_point','DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_POINT),-16)'],
 ];
-const read=f=>fs.readFileSync(path.join(ROOT,f));
 const sha=buf=>crypto.createHash('sha256').update(buf).digest('hex');
 const git=args=>execFileSync('git',args,{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']});
 // .mq5/.mqh check out as CRLF (.gitattributes), so a blob hashes as the tree would.
 const checkedOut=(name,data)=>/\.mq[5h]$/.test(name)?Buffer.from(data.toString('utf8').replace(/\r\n/g,'\n').replace(/\n/g,'\r\n'),'utf8'):data;
 const bom=text=>text.replace(/^﻿/,'');
+// B57 line: B56's files as its sealed commit checks them out (the working tree is a B57 descendant; test_b57_no_drift.cjs reads it).
+const B56_TREE='5a07056fce93b00656d5a45d7fe36d543660032d';
+const read=f=>checkedOut(f,git(['show',B56_TREE+':'+f]));
+const existsAtB56=f=>{try{git(['cat-file','-e',B56_TREE+':'+f]);return true;}catch{return false;}};
+git(['merge-base','--is-ancestor',B56_TREE,'HEAD']);   // throws unless the working tree descends from B56
 git(['merge-base','--is-ancestor',B55_SOURCE,'HEAD']);   // throws unless the working tree descends from B55
 const b55=JSON.parse(bom(git(['show',B55_SOURCE+':candidate-builds/beta17-B55/identity.json']).toString('utf8')));
 let checks=0;
@@ -66,7 +74,7 @@ function closure(){
  while(todo.length){
   const f=todo.pop();if(seen.has(f))continue;seen.add(f);
   const text=read(f).toString('utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');
-  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(fs.existsSync(path.join(ROOT,inc)))todo.push(inc);}
+  for(const m of text.matchAll(/^\s*#include\s+"([^"]+)"/gm)){const inc=m[1].replace(/\\/g,'/');if(existsAtB56(inc))todo.push(inc);}
  }
  return [...seen].sort();
 }
@@ -98,7 +106,7 @@ function markedBlocks(lines){
 for(const f of CHANGED){
  const lines=bom(read(f).toString('utf8')).split(/\r\n/);
  const inBlock=markedBlocks(lines);
- const diff=git(['diff','--no-color','--no-ext-diff','-U0',B55_SOURCE,'--',f]).toString('utf8').split('\n');
+ const diff=git(['diff','--no-color','--no-ext-diff','-U0',B55_SOURCE,B56_TREE,'--',f]).toString('utf8').split('\n');
  let newLine=0,hunk=null;const hunks=[],removedLines=[];
  for(const line of diff){
   const h=line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
@@ -142,4 +150,4 @@ assert.deepEqual(JSON.parse(bom(read('controller/contracts/v149/inputs.json').to
  JSON.parse(bom(git(['show',B55_SOURCE+':controller/contracts/v149/inputs.json']).toString('utf8'))),'inputs.json is B55\'s');
 checks++;
 
-console.log('b56_no_drift: '+checks+' checks passed (B55 '+B55_SOURCE.slice(0,8)+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+'; swap-spec keys: '+SWAP_SPEC.length+')');
+console.log('b56_no_drift: '+checks+' checks passed (B56 tree '+B56_TREE.slice(0,8)+' vs B55 '+B55_SOURCE.slice(0,8)+', changed: '+CHANGED.join(', ')+(ADDED.length?'; added: '+ADDED.join(', '):'')+'; swap-spec keys: '+SWAP_SPEC.length+')');

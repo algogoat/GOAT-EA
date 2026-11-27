@@ -30,6 +30,15 @@ RETAINED_SM31 = ROOT / 'candidate-builds/ndx-symbol-map-SM31'
 RETAINED = ROOT / 'candidate-builds/start-protocol-SP30'
 RETAINED_ROOT_BINARY = '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9'
 B55_COMMIT = '41396df479fd7fb1a9095d74a11735e48b8ee8b0'
+B56_COMMIT = '5a07056fce93b00656d5a45d7fe36d543660032d'
+
+
+def _b57_changed():
+    """The files the B57 line changes (scripts/test_b57_no_drift.cjs CHANGED: item 1 handle-reset, GOAT-EA#361). The line is
+    B56 plus marked B57 lines in these files, and every other B56 source is byte-identical (proven there, against B56's
+    commit). So, as B56 did for B55, each of these is checked for B56 (and earlier builds) at its own commit."""
+    guard = (ROOT / 'scripts/test_b57_no_drift.cjs').read_text(encoding='utf-8')
+    return set(json.loads('[' + re.search(r"^const CHANGED=\[([^\]]*)\]", guard, re.M)[1].replace("'", '"') + ']'))
 
 
 def _b56_changed():
@@ -51,10 +60,12 @@ class StartProtocolCandidateTests(unittest.TestCase):
     def test_forward_b56_candidate_binds_to_exact_source(self):
         # B56 (Claude-Mac goatai#2750 6980043568): B55 plus swap-spec (GOAT-EA#354) only; the breakout start path is B57. It
         # supersedes no candidate: B55 stays the demo candidate, B54 the research build, B53 the experiments' final build. No
-        # tester lane and no admission row without Claude-Mac's ruling. The tree IS B56: every source hashes to it, and its
-        # build ID and marker are the tree's.
+        # tester lane and no admission row without Claude-Mac's ruling. On the B57 line every B56 source hashes to the tree, or
+        # (for the files B57 changes) to B56's own commit, where its build ID and marker are read too.
         b56 = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        text = (ROOT / 'GOAT V1.49.mq5').read_text(encoding='utf-8-sig')
+        b57_changed = _b57_changed()
+        self.assertEqual(b57_changed, {'GOAT V1.49.mq5'})
+        text = _checked_out_blob(B56_COMMIT, 'GOAT V1.49.mq5').decode('utf-8-sig')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + b56['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + b56['build_marker'] + '"', text)
@@ -64,7 +75,10 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertEqual(b56['consolidates'], ['B56.s'])
         self.assertEqual(list(b56['consolidated_heads']), b56['consolidates'])
         for relative, expected in b56['sources'].items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            if relative not in b57_changed:
+                self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
+            else:
+                self.assertEqual(hashlib.sha256(_checked_out_blob(B56_COMMIT, relative)).hexdigest(), expected, relative + ' (B56 commit)')
         b55 = json.loads((RETAINED_B55 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(list(b56['sources']), list(b55['sources']), 'same compile closure as B55')
         self.assertEqual(sorted(name for name in b56['sources'] if b56['sources'][name] != b55['sources'][name]), sorted(_b56_changed()),
@@ -94,7 +108,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         b56_changed = _b56_changed()
         self.assertTrue({'GOAT_SequenceExport.mqh'} <= b56_changed)
         for relative, expected in b55['sources'].items():
-            if relative not in b56_changed:
+            if relative not in b56_changed | _b57_changed():
                 self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
             else:
                 self.assertEqual(hashlib.sha256(_checked_out_blob(B55_COMMIT, relative)).hexdigest(), expected, relative + ' (B55 commit)')

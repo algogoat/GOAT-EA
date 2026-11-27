@@ -15,3 +15,5 @@ scripts/fixtures/hunt-d1/** -text
 scripts/fixtures/b54-pool/** -text
 # B54 PR A: synthetic axis SETs (UTF-16LE, CRLF) and their table, byte-exact as controller/test_b54_init.py renders them.
 scripts/fixtures/b54-axes/** -text
+# build-set declared-input fixture (Claude-Mac goatai#2943 7213040506): the hunt hawk base SET, byte-identical (UTF-16 LE BOM, CRLF).
+controller/fixtures/build-set/** -text

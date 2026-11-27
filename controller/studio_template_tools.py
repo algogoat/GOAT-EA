@@ -16,8 +16,8 @@ import re
 import uuid
 
 from campaign_ledger import sha
-from studio_strategy_settings import (INTEGER_LIMITS,RISK_SIZING_CODE,RISK_SIZING_MESSAGE,can_reach,check_risk_sizing,
-                                      read_values,validate_strategy)
+from studio_strategy_settings import (INTEGER_LIMITS,RISK_SIZING_CODE,RISK_SIZING_MESSAGE,appended_default,can_reach,
+                                      check_risk_sizing,read_values,validate_strategy)
 from studio_dependencies import audit_dependencies
 
 MAX_SET_BYTES=2_000_000
@@ -338,13 +338,25 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
     # Risk lineage: the starter's marker line, or the source's own verified .build.json, says Risk was
     # never chosen on this chain. It stays on every descendant until a change sets Risk.
     unchosen=risk_not_chosen(original) or build_lineage_risk_unchosen(source,original)
+    # A declared input the source SET omits may be ADDED (Claude-Mac goatai#2943 7213040506): the EA writes an appended input
+    # only off its default (WriteSet; e.g. Engine_Mode, BRK_Mode), so no catalog SET carries a single-engine or breakout line.
+    # Only a name the installed schema declares is added; its type, enum ladder and range are then checked on the built SET by
+    # validate_raw like every other line. An undeclared name still refuses above, and restating the declared default (which
+    # the omitted line already means) refuses as unchanged.
+    order={name:i for i,name in enumerate(schema['inputs'])};added={}
     for name,value in changes.items():
         if name=='EA_Desc' or name not in schema['inputs']:
             raise ValueError('Unknown input or reserved EA_Desc change: '+str(name))
         if not isinstance(value,str) or any(c in value for c in '\r\n\x00') or len(value)>8192:
             raise ValueError('Replacement must be one bounded SET value string: '+name)
-        # While Risk is unchosen, stating it is the choice, even when the user's amount equals the placeholder.
-        if value==values[name] and not (unchosen and name=='Risk'): raise ValueError('Replacement is unchanged: '+name)
+        if name in values:
+            # While Risk is unchosen, stating it is the choice, even when the user's amount equals the placeholder.
+            if value==values[name] and not (unchosen and name=='Risk'): raise ValueError('Replacement is unchanged: '+name)
+        else:
+            default=appended_default(schema['inputs'][name])
+            if value.split('||',1)[0]==default and not value.endswith('||Y'):
+                raise ValueError('Replacement is unchanged: '+name+' is omitted by the source, which already means its declared default '+default)
+            added[name]=value
         _text(rationale[name],'rationale.'+name)
     still_unchosen=unchosen and 'Risk' not in changes
     variant_id=uuid.uuid4().hex
@@ -360,6 +372,16 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
             newline='\r\n' if line.endswith('\r\n') else ''
             edited.append(key+'='+replacements[key]+newline)
         else: edited.append(line)
+    # Added inputs go in declared order: after the last source line of an input declared before them (else before the first
+    # declared line), so the SET reads as WriteSet would order it.
+    for name in sorted(added,key=order.get):
+        def declared(line):
+            key=line.split('=',1)[0]
+            return None if line.lstrip().startswith(';') or '=' not in line else order.get(key)
+        prior=[i for i,line in enumerate(edited) if declared(line) is not None and declared(line)<order[name]]
+        at=prior[-1]+1 if prior else next((i for i,line in enumerate(edited) if declared(line) is not None),len(edited))
+        if at>0 and not edited[at-1].endswith('\r\n'): edited[at-1]+='\r\n'
+        edited.insert(at,name+'='+added[name]+('\r\n' if at<len(edited) or (edited and edited[-1].endswith('\r\n')) else ''))
     if still_unchosen and not risk_not_chosen(original):
         # Lineage known only from .build.json (comments lost, e.g. an MT5 re-save): restore the marker.
         edited.insert(0,RISK_NOT_CHOSEN_MARKER+' Risk='+values.get('Risk','?')+' was never chosen on this strategy\'s '
@@ -373,7 +395,8 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
         raise ValueError(RISK_NOT_CHOSEN_CODE+': '+RISK_NOT_CHOSEN_MESSAGE)
     if starter is not None:
         starter['entry_filters_enabled'],starter['warnings']=_starter_checks(after,schema,policy)
-    delta=[dict(input=name,before=values[name],after=value,rationale=rationale.get(name,'Unique new variant identity; source identity retained in provenance')) for name,value in replacements.items()]
+    delta=[dict(input=name,before=values.get(name),after=value,rationale=rationale.get(name,'Unique new variant identity; source identity retained in provenance'))
+           |(dict(added=True,declared_default=appended_default(schema['inputs'][name])) if name in added else {}) for name,value in replacements.items()]
     record=dict(schema_version=1,variant_id=variant_id,created_utc=datetime.now(timezone.utc).isoformat(),
         status='untested_variant',controller_version=controller_version,ea_version=ea_version,
         parent=starter['label'] if starter else 'set',
@@ -391,7 +414,8 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
         notes+='### '+label+'\n\n'+spec[key].strip()+'\n\n'
     notes+='## Input changes\n\n'
     for change in delta:
-        notes+='- **'+change['input']+'**: `'+change['before']+'` → `'+change['after']+'`. '+change['rationale']+'\n'
+        before='(absent: declared default '+change['declared_default']+')' if change.get('added') else change['before']
+        notes+='- **'+change['input']+'**: `'+before+'` → `'+change['after']+'`. '+change['rationale']+'\n'
     notes+='\n## Provenance and evidence\n\n'
     notes+='Source SET SHA-256: `'+record['source']['sha256']+'`. New SET SHA-256: `'+validation['sha256']+'`.\n\n'
     if starter is not None:

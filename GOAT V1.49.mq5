@@ -5286,7 +5286,19 @@ int OnInit()
    ChartRedraw(); Sleep(50);
    return (INIT_SUCCEEDED);
   }
+// B57:begin handle-reset
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// GOAT-EA#361: close a global file handle only while it is valid, and always forget it. A closed handle that keeps its number
+// is reused by MT5 for the next FileOpen; OnTesterDeinit's "close if not INVALID" then closed the seed-farming XML that had taken
+// FileTester_handle's freed number (OnTesterInit opened and closed it under Opti_PF_MRFp / Opti_PF_MRF_SRp, the default), so a
+// seed that ended below its frame target was renamed without </Table></Worksheet></Workbook> (hunt-banker-ws2b-seed-1126).
+void GoatFileCloseReset(int &handle)
+  {
+   if(handle!=INVALID_HANDLE) FileClose(handle);
+   handle=INVALID_HANDLE;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// B57:end handle-reset
 void OnDeinit(const int reason)
   {
    GoatTraceClose(reason);
@@ -5338,8 +5350,8 @@ void OnDeinit(const int reason)
        if(StringFind(name,Key,0)>=0) ObjectDelete(0,name);
       }
       Comment("");
-      if(FileCSV_handle!=INVALID_HANDLE) FileClose(FileCSV_handle);
-      if(FileSET_handle!=INVALID_HANDLE) FileClose(FileSET_handle);
+      GoatFileCloseReset(FileCSV_handle);   // B57 (GOAT-EA#361)
+      GoatFileCloseReset(FileSET_handle);   // B57 (GOAT-EA#361)
       HidePrompt();
       EA_LOGO.BmpArrayFree();
       ObjectDelete(0,"GOAT_Panel_Logo");
@@ -5808,8 +5820,8 @@ int OnTesterInit()
    {
     //if(FileIsExist(Key+"\\"+"Tester.txt",FILE_COMMON))
     FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol(),g_goat_fitness_nonce),FILE_TXT|FILE_WRITE|FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
-    FileWrite(FileTester_handle,0.02);
-    FileClose(FileTester_handle);
+    if(FileTester_handle!=INVALID_HANDLE) FileWrite(FileTester_handle,0.02);   // B57 (GOAT-EA#361)
+    GoatFileCloseReset(FileTester_handle);   // B57 (GOAT-EA#361): the freed number must not stay in the global
    }
    if(!GoatBatchStartAllowed()) {g_batchStartupAccepted=false;return INIT_FAILED;}
    return INIT_SUCCEEDED;
@@ -6035,7 +6047,7 @@ double OnTester()
     readVal=0;
     if(FileTester_handle!=INVALID_HANDLE)
       {
-       string stored=FileReadString(FileTester_handle); FileClose(FileTester_handle);
+       string stored=FileReadString(FileTester_handle); GoatFileCloseReset(FileTester_handle);   // B57 (GOAT-EA#361)
        fitness_read=(stored!="");
        readVal=StringToDouble(stored);
       }
@@ -6050,7 +6062,7 @@ double OnTester()
      FileTester_handle=INVALID_HANDLE;
      while(FileTester_handle==INVALID_HANDLE && GetTickCount64()<fitness_deadline)
         FileTester_handle = FileOpen(fitness_file,FILE_TXT|FILE_WRITE|FILE_SHARE_WRITE|FILE_COMMON);
-     if(FileTester_handle!=INVALID_HANDLE) {FileWrite(FileTester_handle,fitness); FileClose(FileTester_handle);}
+     if(FileTester_handle!=INVALID_HANDLE) {FileWrite(FileTester_handle,fitness); GoatFileCloseReset(FileTester_handle);}   // B57 (GOAT-EA#361)
     }
    }
 //-----------------------------------------------------------------------------------
@@ -6154,8 +6166,10 @@ void OnTesterPass()
 void OnTesterDeinit()
   {
    Print(EA_Name+": "+Symbol()+" Optimization Ended");                     Sleep(100);
-   if(FileCSV_handle    != INVALID_HANDLE) {FileClose(FileCSV_handle);     Sleep(100);}
-   if(FileTester_handle != INVALID_HANDLE) {FileClose(FileTester_handle);  Sleep(100);}
+   // B57 (GOAT-EA#361): only a handle this instance still holds open is closed; every close above now forgets its number, so
+   // B57: neither global can alias the seed-farming XML (or any later FileOpen) here.
+   if(FileCSV_handle    != INVALID_HANDLE) {GoatFileCloseReset(FileCSV_handle);     Sleep(100);}   // B57
+   if(FileTester_handle != INVALID_HANDLE) {GoatFileCloseReset(FileTester_handle);  Sleep(100);}   // B57
    FileDelete(GoatOptTesterFitnessFile(EA_Desc,Symbol(),g_goat_fitness_nonce),FILE_COMMON); Sleep(500);
    ChartSetInteger(0, CHART_BRING_TO_TOP, true);                           Sleep(100);
 

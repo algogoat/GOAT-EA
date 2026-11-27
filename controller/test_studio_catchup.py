@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import studio_catchup as sc
+import studio_fast_fail
 from studio_installation import read_json
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import relative_base
@@ -452,6 +453,9 @@ class NativeCycleTests(CatchupCase):
         with self.assertRaisesRegex(ValueError, 'owns this terminal'):
             guard_active_seed(self.controller.root)
 
+    # Not a fast-fail case (studio_fast_fail): the fixture's MT5 closes seconds after its launch, inside the 30 s fast-fail
+    # window, so the window is 0 here and the missing output stays final. Re-runs: test_studio_fast_fail.py.
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_missing_output_fails_only_that_member(self):
         self.runner.prepare('cu1', self.plan())
         self.runner.start('cu1', 1)
@@ -858,6 +862,8 @@ class SameModelAndEquivalenceTests(CatchupCase):
         self.assertEqual(version['verdict']['verdict'], 'not_comparable')
         self.assertEqual((version['equivalence']['status_at_collect'], version['equivalence']['valid_at_collect']), ('refuted', False))
 
+    # Not a fast-fail case: the window is 0 here so the unfinished member stays missing_output (see the test above).
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_low7_unfinished_canary_members_count_against_the_canary(self):
         import studio_equivalence as eq
         sets = self.ten_exports()

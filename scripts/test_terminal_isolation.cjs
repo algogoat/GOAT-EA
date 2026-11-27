@@ -144,6 +144,10 @@ function terminal(h,login,dataPath,{globals=new Map(),name=''}={}){
       if(!found.length)return -1;handles.set(next,{found,pos:1});c.__found=found[0];return next++;},
     FileFindNext:id=>{const x=handles.get(id);if(x.pos>=x.found.length)return false;c.__found=x.found[x.pos++];return true;},
     FileFindClose:id=>handles.delete(id),Symbol:()=>'EURUSD',
+    // B57 handle-reset (GOAT-EA#361): OnTesterInit and the agent fitness path close through GoatFileCloseReset, which closes
+    // only a valid handle (through this FileClose, so the file is written as before). Its by-reference reset cannot be
+    // expressed here; test_b57_no_drift and controller/test_ea_file_handle_reset.py prove it in the source.
+    GoatFileCloseReset:id=>{if(id!==-1)c.FileClose(id);},
     // OnTesterInit collaborators outside this test's scope.
     GoatBatchStartAllowed:()=>true,SeedFarmingPrepareReceiver:()=>false,ShowPrompt:()=>{},
     AdjustFitness:f=>f,fitness:0,fitness_real:0,trades:10,mean_duration:1,readVal:0,FileTester_handle:-1,

@@ -105,6 +105,8 @@ jobs:
           # now prove B54's own commit.
           # B56: test_b56_no_drift reads B55's source, identity and contracts (41396df) from history; test_b55_no_drift now
           # proves B55's own commit.
+          # B57: test_b57_no_drift reads B56's source, identity and contracts (5a07056) from history; test_b56_no_drift now
+          # proves B56's own commit.
           fetch-depth: 0
 
       - name: Set up Windows x64 Python
@@ -190,8 +192,10 @@ jobs:
         run: node scripts/test_b54_no_drift.cjs
       - name: B55 no drift from B54, on B55's own tree (every changed line marked; contract follows the tree; inputs append-only, BRK_Start_Seq at the end; B55's build ID)
         run: node scripts/test_b55_no_drift.cjs
-      - name: B56 no drift from B55 (every changed line marked; swap-spec writes exactly its seven run.csv keys; inputs and contract are B55's; B55's build ID kept)
+      - name: B56 no drift from B55, on B56's own tree (every changed line marked; swap-spec writes exactly its seven run.csv keys; inputs and contract are B55's; B56's build ID)
         run: node scripts/test_b56_no_drift.cjs
+      - name: B57 no drift from B56 (every changed line marked; handle-reset closes the seven globals through GoatFileCloseReset; inputs and contract are B56's; B56's build ID kept)
+        run: node scripts/test_b57_no_drift.cjs
       - name: B51 flags-off parity with B50-alpha (converted OnTick region, grid and single fixtures; WriteSet golden)
         run: node scripts/test_b51_parity.cjs
       - name: B51 random-direction benchmark (splitmix64 of seed and signal-bar time; same timing, gates, sizing and exits; flags off = B50-alpha)

@@ -862,6 +862,45 @@ class SameModelAndEquivalenceTests(CatchupCase):
         self.assertEqual(version['verdict']['verdict'], 'not_comparable')
         self.assertEqual((version['equivalence']['status_at_collect'], version['equivalence']['valid_at_collect']), ('refuted', False))
 
+    def test_a_fast_failed_then_re_run_canary_member_counts_once(self):
+        # Claude-Mac goatai#2943 7227893902 item 4, at the real 30 s window: the first member's MT5 closes 10 s after its
+        # launch with no output (an agent-port fast-fail), is re-run once after the other nine, and completes. The catch-up
+        # and the canary count it once: 10 members, 10 pairs, none incomplete, never 11.
+        import studio_equivalence as eq
+        sets = self.ten_exports()
+        cert = self.certificate()
+        self.runner.prepare('cu1', self.plan(sets=sets, canary_certificate=cert['digest']))
+        launched = {}
+
+        def sleep(seconds):
+            launched.setdefault(len(self.starts), self.now)         # the first sleep after a launch starts its clock
+            self.now += seconds
+            if not (self.starts and self.process_state):
+                return
+            if len(self.starts) == 1:
+                if self.now - launched[1] >= 10:
+                    self.process_state = None                     # the fast-fail: closed with no output
+                return
+            manifest = read_json(self.runner.path('cu1') / 'manifest.json')
+            index = [m['config_path'] for m in manifest['members']].index(self.starts[-1])
+            self.native_retest(manifest['members'][index])
+            self.process_state = None
+
+        self.runner.sleep = sleep
+        result = self.runner.start('cu1', 400)
+        state = read_json(self.runner.path('cu1') / 'state.json')
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(self.starts), 11, 'ten members, one re-run')
+        self.assertEqual([(m['status'], m['attempts']) for m in state['members']], [('completed', 2)] + [('completed', 1)] * 9)
+        self.assertLess(state['members'][0]['fast_fail']['first_attempt']['ran_seconds'], studio_fast_fail.FAST_FAIL_SECONDS)
+        self.assertEqual(len(self.runner.report('cu1')['members']), 10)
+        pairs, skipped, incomplete = eq.catchup_pairs(self.controller.root, 'cu1', cert['digest'])
+        self.assertEqual((len(pairs), skipped, incomplete), (10, [], []))
+        self.assertEqual(len({p['candidate_deals'] for p in pairs}), 10, 'each member paired once')
+        canary = eq.canary_result(cert, pairs, source='catchup:cu1')
+        self.assertTrue(canary['matched'], canary['plain'])
+        self.assertEqual(len(canary['sets']), 10)
+
     # Not a fast-fail case: the window is 0 here so the unfinished member stays missing_output (see the test above).
     @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_low7_unfinished_canary_members_count_against_the_canary(self):

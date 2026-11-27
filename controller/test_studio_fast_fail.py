@@ -106,6 +106,101 @@ class FastFailRunnerTests(unittest.TestCase):
         self.assertEqual(order, [names[0], names[1], names[2], names[0]])
         self.assertEqual([m['attempts'] for m in self.state()['members']], [2, 1, 1])
 
+    # ---- the re-run's edges with stops, the breaker and restarts, at the real 30 s window (Claude-Mac goatai#2943 7227893902)
+    def more_jobs(self, symbols):
+        import copy
+        for symbol in symbols:
+            extra = copy.deepcopy(self.plan['jobs'][0]);extra['tester']['Symbol'] = symbol;self.plan['jobs'].append(extra)
+
+    def waiting_rerun(self):
+        """Member 1 fast-fails (14 s), member 2 completes, and the driver returns before member 1's re-run is due."""
+        self.jobs(2);self.fail_starts = {1}
+        self.prepare();self.runner.start('batch', 40)
+        first, second = self.state()['members']
+        self.assertEqual([(m['status'], m['attempts']) for m in (first, second)], [('pending', 1), ('completed', 1)])
+        self.assertTrue(fast_fail.waiting_retry(first));self.assertFalse(fast_fail.retry_due(first, self.now))
+        self.assertEqual(len(self.starts), 2)
+
+    def assert_final_cancelled(self):
+        m = self.state()['members'][0]
+        self.assertEqual((m['status'], m['attempts']), ('cancelled', 1), 'the waiting re-run ended final, never run')
+        self.assertIn('fast_fail', m, 'the first attempt stays recorded')
+        self.assertFalse(SeedRunner.resumable(self.state()))
+        self.assertEqual(len(self.starts), 2, 'no re-run launched')
+
+    def test_a_human_cancel_ends_a_waiting_re_run_for_good(self):
+        self.waiting_rerun()
+        self.runner.cancel('batch')
+        self.assertEqual(self.state()['status'], 'stopped')
+        self.assert_final_cancelled()
+        self.now += 120                                          # past the re-run's due time: a status read starts nothing
+        self.runner.status('batch')
+        self.assert_final_cancelled()
+
+    def test_a_recorded_cancel_request_wins_over_a_due_re_run(self):
+        # The batch-cancel GV / cancel-request route: honoured at the next safe point, even when the re-run is already due.
+        self.waiting_rerun()
+        self.runner.request_cancel('batch', now=self.now)
+        self.now += 120
+        self.assertTrue(fast_fail.retry_due(self.state()['members'][0], self.now))
+        result = self.runner.resume('batch', 200)
+        self.assertTrue(result['cancel_request_honoured'])
+        self.assert_final_cancelled()
+
+    def test_an_owner_stop_before_the_re_run_launches_nothing_and_its_cancel_is_final(self):
+        # An owner STOP read right before the re-run's launch: nothing is launched, and the STOP the demo agent then applies
+        # (seed-cancel, demo_agent._stop_seed) ends the member for good. The retry never undoes the stop.
+        self.waiting_rerun()
+        self.runner.stop_requested = lambda: 'owner_stop'
+        self.now += 120
+        result = self.runner.resume('batch', 200)
+        self.assertTrue(result['stopped_before_launch'])
+        self.assertEqual(len(self.starts), 2)
+        self.runner.cancel('batch')
+        self.assert_final_cancelled()
+
+    def test_the_breaker_counts_a_fast_failed_member_once(self):
+        # Members 1-3 fast-fail on their first attempt: pending, not failures, so three in a row do not trip the breaker and
+        # members 4-5 run. Member 1's re-run fails too (one failure); members 2-3's re-runs complete (none).
+        self.more_jobs(('GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD'));self.fail_starts = {1, 2, 3, 6}
+        self.plan['job_timeout_seconds'] = 30
+        self.prepare();result = self.runner.start('batch', 600)
+        state = self.state()
+        self.assertEqual(len(self.starts), 8)
+        self.assertEqual([(m['status'], m['attempts']) for m in state['members']],
+                         [('missing_output', 2), ('completed', 2), ('completed', 2), ('completed', 1), ('completed', 1)])
+        self.assertEqual((result['status'], state['failed_members']), ('completed', 1))
+        self.assertNotIn('stopped_reason', state)
+        self.assertIn('Fast-failed twice', state['members'][0]['error'])
+
+    def test_failed_re_runs_count_toward_the_breaker_once_each(self):
+        # Every first attempt fast-fails (all pending, no breaker); the first three re-runs fail: three failures in a row,
+        # each member counted once, and the breaker stops the batch with the last two re-runs still waiting.
+        self.more_jobs(('GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD'));self.fail_starts = set(range(1, 9))
+        self.prepare();result = self.runner.start('batch', 600)
+        state = self.state();reason = state['stopped_reason']
+        self.assertEqual(len(self.starts), 8)
+        self.assertEqual((result['status'], reason['rules']), ('stopped', ['in_a_row']))
+        self.assertEqual((reason['attempted'], reason['failed'], reason['in_a_row'], reason['pending']), (3, 3, 3, 2))
+        self.assertEqual([(m['status'], m['attempts']) for m in state['members']],
+                         [('missing_output', 2)] * 3 + [('pending', 1)] * 2)
+        self.assertTrue(SeedRunner.resumable(state), 'seed-resume continues the two waiting re-runs')
+
+    def test_a_restart_resumes_a_waiting_re_run_exactly_once(self):
+        # The driver returned (budget) with member 1 waiting; a fresh runner, as after a restart, reads only the persisted
+        # attempts and fast_fail record, runs the re-run once, and never again.
+        self.waiting_rerun()
+        saved = self.state()['members'][0]
+        self.assertEqual((saved['attempts'], sorted(saved['fast_fail'])), (1, ['agent_log', 'first_attempt', 'plain', 'retry_after_unix']))
+        self.runner = SeedRunner(self.controller, process=self.process, clock=lambda: self.now, sleep=self.sleep)
+        self.runner.agents_root = self.agents
+        result = self.runner.resume('batch', 200)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(self.starts), 3, 'one re-run')
+        self.assertEqual([(m['status'], m['attempts']) for m in self.state()['members']], [('completed', 2), ('completed', 1)])
+        self.runner.resume('batch', 200)
+        self.assertEqual(len(self.starts), 3, 'never twice')
+
     def test_resumable_accepts_a_waiting_re_run_but_not_a_plain_attempted_member(self):
         base = dict(status='stopped', generation=1, error=None)
         waiting = dict(alias='a', status='pending', attempts=1, fast_fail=dict(retry_after_unix=1.0))

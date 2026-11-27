@@ -1,7 +1,9 @@
 """Frozen standalone SeedFarming matrix and recoverable, bounded process driver.
 
 No native batch queue/control files are armed. All process effects have a durable
-write-ahead state; uncertain start/close is never automatically retried.
+write-ahead state; uncertain start/close is never automatically retried. The one automatic
+re-run is a member that fast-failed (MT5 closed inside 30 s with no output on its first
+attempt: it never really ran), once, recorded (studio_fast_fail, goatai#2750 6884089927).
 """
 import hashlib
 import math
@@ -24,6 +26,7 @@ from studio_template_tools import source_bytes,validate_raw
 from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES,MAX_XML_BYTES
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import controller_preflight
+import studio_fast_fail as fast_fail
 import studio_tester_report as tester_report
 
 TERMINAL={'completed','cancelled','timeout','failed','missing_output'}
@@ -439,6 +442,8 @@ class SeedRunner:
             return result
         except (ValueError,OSError) as exc:
             item['status']='failed';item['error']=str(exc)
+            # B57: a report that names no expert and no symbol (studio_fast_fail.EmptyReport) is marked for the fast-fail check.
+            if isinstance(exc,fast_fail.EmptyReport):item['empty_report']=True
             # Keep the refused XML visible (never as accepted evidence) for diagnosis.
             item['observed_xml']=self._observed_xml(paths[0])
             return None
@@ -521,6 +526,11 @@ class SeedRunner:
         item['status']='completed';item['finished_unix']=self.clock()
         return None
 
+    def _retry_blocked(self,spec):
+        """Why a fast-failed member cannot have its one re-run, or None. A runner whose first attempt can leave evidence a
+        re-run would collide with says so here (catch-up: its native capture), and the member then ends as it is."""
+        return None
+
     def _stray_output(self,root,spec):
         """Paths of any output a member already has before its start (its own output or a retained result)."""
         found=[str(p) for p in self._outputs(spec)]
@@ -575,7 +585,7 @@ class SeedRunner:
             self._settle_unowned(root,manifest,state)
             return []
         targets=[(spec,item) for spec,item in zip(manifest['members'],state['members'])
-                 if item['status']=='reconcile_required' and item.get('attempts')==1 and not item.get('result') and 'started_unix' in item]
+                 if item['status']=='reconcile_required' and fast_fail.own_launch(item) and not item.get('result') and 'started_unix' in item]
         if not targets:reasons=[]
         elif state.get('error')==UNOWNED_BETWEEN_MEMBERS and self.locked_journal is not None:
             reasons=[state['error']+'; close that MT5, then '+self.COMMAND_PREFIX+'-resume continues (or '+self.COMMAND_PREFIX
@@ -645,7 +655,7 @@ class SeedRunner:
         uncertain=[(spec,item) for spec,item in zip(manifest['members'],state['members']) if item['status']=='reconcile_required']
         if len(uncertain)!=1:return
         spec,item=uncertain[0]
-        if (item.get('attempts')!=1 or item.get('process') is not None or item.get('result')
+        if (not fast_fail.own_launch(item) or item.get('process') is not None or item.get('result')
                 or type(item.get('started_unix')) not in (int,float) or not launch_unconfirmed(item.get('error'))):
             return
         reason=self._adoption_refusal(spec,item,state,current)
@@ -682,6 +692,9 @@ class SeedRunner:
                 if current!=expected:
                     state['status']='reconcile_required';item['status']='reconcile_required';item['error']='Selected terminal PID/provenance changed';break
                 continue
+            # Read before collection, which can turn a cancel or timeout into 'failed' (Codex P1 on GOAT-EA#363): a member a
+            # person cancelled, or the runner timed out, is never a fast-fail, whatever its report says.
+            asked=item['status'] in ('cancel_requested','timeout_requested')
             paths=self._outputs(spec)
             result=None
             if len(paths)>1:
@@ -693,6 +706,36 @@ class SeedRunner:
                 if item['status'] in ('timeout','missing_output') and not item.get('error'):
                     item['error']=self._failure_reason(manifest,item)
             item['finished_unix']=self.clock()
+            if item['status'] in ('missing_output','failed') and type(item.get('started_unix')) in (int,float):
+                # A fast-fail (goatai#2750 6884089927): MT5 closed inside FAST_FAIL_SECONDS with no output, so the member never
+                # really ran. The first one is recorded with its agent-log lines and re-run once, after the batch's other
+                # pending members; a second one is final, with both attempts in the error. B57 (goatai#2943 7226979353): a
+                # first attempt that failed on an empty report (no expert, no symbol) inside the same 30 s counts too; its
+                # report is moved aside first (create-only, never deleted), and if that move fails the member stays failed.
+                ran=item['finished_unix']-item['started_unix']
+                missing=fast_fail.is_fast_fail(item,ran,bool(paths))
+                empty=not asked and fast_fail.is_empty_report_fast_fail(item,ran) and len(paths)==1
+                # Codex P2 on GOAT-EA#363: a first attempt that left evidence its re-run would collide with (a catch-up's
+                # native capture) is not re-run; it ends as it is, its evidence kept, and the batch goes on.
+                blocked=self._retry_blocked(spec) if (missing or empty) else None
+                if blocked:
+                    item['error']=(item.get('error') or '')+(' MT5 closed inside %d s, but %s, so it is not re-run.'
+                                                             %(fast_fail.FAST_FAIL_SECONDS,blocked))
+                elif missing:
+                    fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
+                                     install=self.c.install,agents_root=getattr(self,'agents_root',None))
+                elif empty:
+                    try:
+                        moved=fast_fail.set_aside(paths[0],root/(spec['alias']+'.fastfail-attempt1'+paths[0].suffix))
+                    except (OSError,ValueError) as exc:
+                        item['error']=(item.get('error') or '')+(' An empty report inside %d s, but it could not be set aside for '
+                                       'its one re-run (%s), so it is not re-run.'%(fast_fail.FAST_FAIL_SECONDS,str(exc)[:200]))
+                    else:
+                        fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
+                                         install=self.c.install,agents_root=getattr(self,'agents_root',None),set_aside_report=moved)
+                elif (not asked and item.get('attempts')==2 and isinstance(item.get('fast_fail'),dict) and 0<=ran<fast_fail.FAST_FAIL_SECONDS
+                      and ((item['status']=='missing_output' and not paths) or (item['status']=='failed' and item.get('empty_report') is True))):
+                    item['error']=fast_fail.final_error(item,int(round(ran)),item.get('error'))
         self._settle_status(state)
         self._settle_slot(root,manifest,state,current)
         return current
@@ -779,12 +822,13 @@ class SeedRunner:
     @staticmethod
     def resumable(state):
         """A stopped batch that seed-resume may re-activate: it started, nothing is uncertain or cancelled,
-        no member runs, and members are still pending with no attempt. Completed and failed members are never re-run."""
+        no member runs, and members are still pending with no attempt, or waiting for their one fast-fail re-run
+        (studio_fast_fail). Completed and failed members are never re-run."""
         members=state.get('members') or []
         statuses={m.get('status') for m in members}
         return (state.get('status')=='stopped' and state.get('generation') is not None and state.get('error') is None
                 and 'pending' in statuses and not statuses&({'cancelled','reconcile_required'}|SeedRunner.LIVE_MEMBER)
-                and all(m.get('attempts')==0 for m in members if m.get('status')=='pending'))
+                and all(m.get('attempts')==0 or fast_fail.waiting_retry(m) for m in members if m.get('status')=='pending'))
 
     def status(self,batch_id):
         from studio_process_query import POLL_BUDGET
@@ -1238,10 +1282,13 @@ class SeedRunner:
                     return self._public(root,state)|dict(paused=True,pause_requested=True,
                         next_action='Paused between members; batch-resume releases the pause and continues the pending members')
                 elif current is None and state['status']=='active' and pass_open:
-                    index=next((i for i,m in enumerate(state['members']) if m['status']=='pending'),None)
+                    # Never-attempted members first, in order; then a fast-failed member whose one re-run is due
+                    # (studio_fast_fail: after the others, and not before its delay). Nothing else is ever re-run.
+                    index=next((i for i,m in enumerate(state['members']) if m['status']=='pending' and not m.get('attempts')),None)
+                    if index is None:index=next((i for i,m in enumerate(state['members']) if fast_fail.retry_due(m,self.clock())),None)
                     if index is not None:
                         item=state['members'][index];spec=manifest['members'][index]
-                        if item['attempts']!=0:raise ValueError('Seed retry forbidden')
+                        if item['attempts']!=0 and not fast_fail.retry_due(item,self.clock()):raise ValueError('Seed retry forbidden')
                         if self._outputs(spec):raise ValueError('Output already exists for unstarted seed member')
                         self._owner(state['generation'])
                         self._verify_prepared(batch_id,manifest)
@@ -1264,14 +1311,15 @@ class SeedRunner:
                             # becomes this member's own [TesterInputs] (studio_tester_profile). A refusal raises here, with
                             # the member still pending and nothing launched.
                             profile=self._tester_profile(spec)
-                            item.update(status='starting',attempts=1,started_unix=self.clock(),tester_profile=profile);self._save(root,state)
+                            item.update(status='starting',attempts=item['attempts']+1,started_unix=self.clock(),tester_profile=profile);self._save(root,state)
                             try:
                                 identity=self.process.start(spec['config_path'])
                                 item.update(status='running',process=identity);self._save(root,state)
                             except ResearchLaunchRefused as exc:
                                 # Nothing ran (the suspended MT5 was terminated before it ran, or never created):
                                 # the member stays pending and the batch active; the plain refusal is raised.
-                                item.update(status='pending',attempts=0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
+                                # A refused re-run launch keeps its fast-fail record and its one re-run (nothing ran).
+                                item.update(status='pending',attempts=1 if isinstance(item.get('fast_fail'),dict) else 0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
                                 self._save(root,state);raise
                             except BaseException as exc:
                                 item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise

@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from campaign_ledger import packed, sha
 from demo_agent import DemoAgent, digest, read_json
+import studio_fast_fail
 from studio_research_authority import authority, operation, CURRENT_OPERATION, DEMO_AGENT_SCOPE
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import relative_base
@@ -272,6 +273,9 @@ class DemoSeedAgentTests(unittest.TestCase):
         logged = [a for a in self.actions() if a['operation'] == 'seed_promote_fork']
         self.assertEqual([(a['phase'], a['fork_set_sha256'], a['relation']) for a in logged], [('written', recorded['fork_set_sha256'], 'same_inputs')])
 
+    # Not a fast-fail case (studio_fast_fail): the failing members exit seconds after their launch, inside the 30 s fast-fail
+    # window, and this test is about failures that trip the breaker, so the window is 0 here. Re-runs: test_studio_fast_fail.py.
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_failed_members_stop_the_hunt_and_seed_resume_continues_it_under_a_fresh_broker_check(self):
         # goatai#1885 (T2 seedhunt-t2-4-b41): members without output fail alone; after the breaker stops the hunt,
         # seed-resume re-activates it with start-grade checks and runs only the pending members.
@@ -302,6 +306,7 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.assertEqual(reactivated[0]['stopped_reason'], ['in_a_row'])
         self.assertIn('seed-resume', [o['operation'] for o in self.opened])
 
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)        # not a fast-fail case: see the test above
     def test_a_hunt_that_stops_after_the_routing_check_is_never_reactivated_without_the_start_grade_check(self):
         # Codex P2 on GOAT-EA#160: the unlocked routing check said "not resumable", then the hunt stopped on
         # failures before this resume took the lock. The ordinary (not start-grade) scope must not re-activate it.

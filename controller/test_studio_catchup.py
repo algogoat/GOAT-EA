@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import studio_catchup as sc
+import studio_fast_fail
 from studio_installation import read_json
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import relative_base
@@ -452,6 +453,9 @@ class NativeCycleTests(CatchupCase):
         with self.assertRaisesRegex(ValueError, 'owns this terminal'):
             guard_active_seed(self.controller.root)
 
+    # Not a fast-fail case (studio_fast_fail): the fixture's MT5 closes seconds after its launch, inside the 30 s fast-fail
+    # window, so the window is 0 here and the missing output stays final. Re-runs: test_studio_fast_fail.py.
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_missing_output_fails_only_that_member(self):
         self.runner.prepare('cu1', self.plan())
         self.runner.start('cu1', 1)
@@ -465,6 +469,29 @@ class NativeCycleTests(CatchupCase):
         # "Bring all" re-queues under a new attempt id: the failed and the never-run member are both still behind.
         again = self.runner.validate(self.plan())
         self.assertEqual([m['symbol'] for m in again['members']], ['EURUSD', 'GBPUSD'])
+
+    def test_a_fast_fail_after_the_ea_wrote_its_capture_is_not_re_run_and_never_strands_the_batch(self):
+        # Codex P2 on GOAT-EA#363, at the real 30 s window: the EA initialised (GoatTraceInit wrote
+        # GOATSequencePending/<capture id>/run.csv), then MT5 closed with no export. A re-run under the same capture id would
+        # be refused by _before_start on every resume, so the member ends missing_output with its capture kept, and the
+        # batch goes on with its next member.
+        self.runner.prepare('cu1', self.plan())
+        self.runner.start('cu1', 1)
+        member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
+        run = Path(self.controller.install['common_files_root']) / 'GOATSequencePending' / member['capture_id'] / 'run.csv'
+        run.write_text('capture', encoding='utf-8')
+        self.process_state = None
+        first = self.runner.status('cu1')['members'][0]
+        self.assertEqual((first['status'], first['attempts']), ('missing_output', 1))
+        self.assertNotIn('fast_fail', first)
+        self.assertIn('so it is not re-run', first['error'])
+        self.now += 120
+        self.auto = True
+        self.runner.resume('cu1', 60)
+        state = read_json(self.runner.path('cu1') / 'state.json')
+        self.assertEqual([m['status'] for m in state['members']], ['missing_output', 'completed'])
+        self.assertEqual(len(self.starts), 2, 'the captured member is never re-run')
+        self.assertEqual(run.read_text(encoding='utf-8'), 'capture')
 
     def test_requeue_skips_caught_up_members_and_retries_unjudged_ones(self):
         self.runner.prepare('cu1', self.plan())
@@ -858,6 +885,47 @@ class SameModelAndEquivalenceTests(CatchupCase):
         self.assertEqual(version['verdict']['verdict'], 'not_comparable')
         self.assertEqual((version['equivalence']['status_at_collect'], version['equivalence']['valid_at_collect']), ('refuted', False))
 
+    def test_a_fast_failed_then_re_run_canary_member_counts_once(self):
+        # Claude-Mac goatai#2943 7227893902 item 4, at the real 30 s window: the first member's MT5 closes 10 s after its
+        # launch with no output (an agent-port fast-fail), is re-run once after the other nine, and completes. The catch-up
+        # and the canary count it once: 10 members, 10 pairs, none incomplete, never 11.
+        import studio_equivalence as eq
+        sets = self.ten_exports()
+        cert = self.certificate()
+        self.runner.prepare('cu1', self.plan(sets=sets, canary_certificate=cert['digest']))
+        launched = {}
+
+        def sleep(seconds):
+            launched.setdefault(len(self.starts), self.now)         # the first sleep after a launch starts its clock
+            self.now += seconds
+            if not (self.starts and self.process_state):
+                return
+            if len(self.starts) == 1:
+                if self.now - launched[1] >= 10:
+                    self.process_state = None                     # the fast-fail: closed with no output
+                return
+            manifest = read_json(self.runner.path('cu1') / 'manifest.json')
+            index = [m['config_path'] for m in manifest['members']].index(self.starts[-1])
+            self.native_retest(manifest['members'][index])
+            self.process_state = None
+
+        self.runner.sleep = sleep
+        result = self.runner.start('cu1', 400)
+        state = read_json(self.runner.path('cu1') / 'state.json')
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(self.starts), 11, 'ten members, one re-run')
+        self.assertEqual([(m['status'], m['attempts']) for m in state['members']], [('completed', 2)] + [('completed', 1)] * 9)
+        self.assertLess(state['members'][0]['fast_fail']['first_attempt']['ran_seconds'], studio_fast_fail.FAST_FAIL_SECONDS)
+        self.assertEqual(len(self.runner.report('cu1')['members']), 10)
+        pairs, skipped, incomplete = eq.catchup_pairs(self.controller.root, 'cu1', cert['digest'])
+        self.assertEqual((len(pairs), skipped, incomplete), (10, [], []))
+        self.assertEqual(len({p['candidate_deals'] for p in pairs}), 10, 'each member paired once')
+        canary = eq.canary_result(cert, pairs, source='catchup:cu1')
+        self.assertTrue(canary['matched'], canary['plain'])
+        self.assertEqual(len(canary['sets']), 10)
+
+    # Not a fast-fail case: the window is 0 here so the unfinished member stays missing_output (see the test above).
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_low7_unfinished_canary_members_count_against_the_canary(self):
         import studio_equivalence as eq
         sets = self.ten_exports()

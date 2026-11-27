@@ -5,6 +5,7 @@ import tempfile
 import json
 import sqlite3
 from unittest.mock import patch
+import studio_fast_fail
 import studio_seed
 import studio_seed_process
 import studio_seed_results
@@ -180,6 +181,9 @@ class SeedTests(unittest.TestCase):
         self.assertTrue(all(lease for _,lease in seen),seen)
         self.assertFalse(held(self.controller.root),'released when the drive returns')
 
+    # Not a fast-fail case (studio_fast_fail): this fixture's MT5 closes a second or two after its launch, inside the 30 s
+    # fast-fail window, so the window is 0 here and the member's missing output stays final. Re-runs: test_studio_fast_fail.py.
+    @patch.object(studio_fast_fail,'FAST_FAIL_SECONDS',0)
     def test_resume_running_does_not_restart_and_missing_output_is_null(self):
         self.prepare();state=self.runner.start('batch',1);self.assertTrue(state['driver_budget_exhausted']);self.assertEqual(len(self.starts),1)
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),1)
@@ -333,6 +337,10 @@ class SeedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'completed seed evidence'):self.runner.resume('batch',1)
 
 
+# Not fast-fail cases (studio_fast_fail): these members exit with no output seconds after their launch, inside the 30 s
+# fast-fail window, and the tests are about failures that count (the breaker, resume), so the window is 0 for every test
+# here. Fast-fail re-runs: test_studio_fast_fail.py.
+@patch.object(studio_fast_fail,'FAST_FAIL_SECONDS',0)
 class MemberFailureTests(unittest.TestCase):
     """goatai#1885 (T2 seedhunt-t2-4-b41 / t2-6-b41): a member that ends without a result fails only itself.
 

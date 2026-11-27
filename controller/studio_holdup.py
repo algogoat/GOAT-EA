@@ -40,6 +40,7 @@ import uuid
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_evidence import parse_header, parse_stem, read_json_bounded
+import studio_fast_fail as fast_fail
 from studio_heldout import HeldOutRefused
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, MAX_RESULT_BYTES, read_seed_json
@@ -450,11 +451,18 @@ class HoldupRunner(SeedRunner):
         root = self.path(manifest['batch_id'])
         report = tester_report.read_report(path)
         tester = spec['tester']
-        checks = tester_report.check(report, values=spec['values'], schema=self.c.schema,
-                                     expert=Path(self.c.install['ea_relative_path'].replace('\\', '/')).stem,
-                                     symbol=tester['Symbol'], period=tester['Period'], from_date=tester['FromDate'],
-                                     to_date=tester['ToDate'], deposit=tester['Deposit'], currency=tester['Currency'],
-                                     leverage=tester['Leverage'])
+        try:
+            checks = tester_report.check(report, values=spec['values'], schema=self.c.schema,
+                                         expert=Path(self.c.install['ea_relative_path'].replace('\\', '/')).stem,
+                                         symbol=tester['Symbol'], period=tester['Period'], from_date=tester['FromDate'],
+                                         to_date=tester['ToDate'], deposit=tester['Deposit'], currency=tester['Currency'],
+                                         leverage=tester['Leverage'])
+        except ValueError as exc:
+            # B57: a report naming no expert and no symbol is a test that never ran (the 2026-11-27 SP500 probe). Same refusal,
+            # typed, so the runner's fast-fail rule can re-run it once (studio_fast_fail); any other refusal is unchanged.
+            if fast_fail.names_nothing(report):
+                raise fast_fail.EmptyReport(str(exc)) from None
+            raise
         copy = root / (spec['alias'] + '.report.htm')
         self._retain(Path(path).read_bytes(), copy)
         if digest(copy) != report['sha256']:

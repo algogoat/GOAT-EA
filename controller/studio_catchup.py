@@ -1419,6 +1419,16 @@ class CatchupRunner(SeedRunner):
             return []
         return sorted(p for p in folder.glob('*.set') if p.is_file())
 
+    def _retry_blocked(self, spec):
+        """A capture member whose first attempt already wrote its native capture (GoatTraceInit's run.csv) cannot be re-run
+        under the same capture id: _before_start refuses that for good, which would strand the batch (Codex P2 on
+        GOAT-EA#363). It ends missing_output, the capture kept for diagnosis."""
+        if spec.get('capture'):
+            run = Path(self.c.install['common_files_root']) / 'GOATSequencePending' / spec['capture_id'] / 'run.csv'
+            if run.exists():
+                return 'its EA had already written its native capture (GOATSequencePending\\%s\\run.csv) and a re-run under the same capture id is refused' % spec['capture_id']
+        return None
+
     def _stray_output(self, root, spec):
         """A pending member's output before its start also includes a native capture in its own namespace.
 

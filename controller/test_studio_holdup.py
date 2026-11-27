@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import studio_evidence_end
+import studio_fast_fail
 from studio_heldout import HeldOutRefused
 from studio_holdup import HoldupRunner, evidence_hint, relation_of
 from studio_installation import read_json
@@ -302,6 +303,9 @@ class HoldupTests(unittest.TestCase):
         self.assertIn('87%, below the 90% floor', result['evidence_reason'])
         self.assertFalse(result['summary']['evidence_offered'])
 
+    # Not a fast-fail case (studio_fast_fail): the fixture's MT5 exits seconds after its launch, inside the 30 s fast-fail
+    # window, so the window is 0 here and the missing report stays final. Re-runs: test_studio_fast_fail.py.
+    @patch.object(studio_fast_fail, 'FAST_FAIL_SECONDS', 0)
     def test_a_missing_report_fails_the_test_with_a_plain_reason(self):
         self.runner.prepare('h1', self.plan())
         self.runner.start('h1', 1)

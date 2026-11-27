@@ -218,11 +218,12 @@ class EmptyReportFastFailTests(unittest.TestCase):
         self.empty_starts = set()       # 1-based start numbers whose MT5 writes the empty report and closes
         self.empty_after = 15           # seconds: the 11-27 member closed after 15 s
         self.started_at = {}
+        self.empty_on_close = False     # MT5 writes the empty report while a close (cancel or timeout) shuts it
         self.runner.agents_root = self.root / 'agents'
         self.empty = gzip.decompress(EMPTY_REPORT.read_bytes())
 
-    tearDown, close, mt5_writes_report, write_set, spec_for, plan = (
-        holdup_fixture.HoldupTests.tearDown, holdup_fixture.HoldupTests.close, holdup_fixture.HoldupTests.mt5_writes_report,
+    tearDown, mt5_writes_report, write_set, spec_for, plan = (
+        holdup_fixture.HoldupTests.tearDown, holdup_fixture.HoldupTests.mt5_writes_report,
         holdup_fixture.HoldupTests.write_set, holdup_fixture.HoldupTests.spec_for, holdup_fixture.HoldupTests.plan)
 
     def start(self, config):
@@ -230,9 +231,21 @@ class EmptyReportFastFailTests(unittest.TestCase):
         self.started_at[len(self.starts)] = self.now
         return identity
 
+    def close(self, identity):
+        if self.empty_on_close and self.starts:
+            self.write_empty()
+        holdup_fixture.HoldupTests.close(self, identity)
+
     def report_path(self):
         alias = read_json(self.runner.path('h1') / 'manifest.json')['members'][0]['alias']
         return Path(self.c.install['terminal_data_root']) / 'MQL5/Files/GOATStudio/HoldupReports' / (alias + '.htm'), alias
+
+    def write_empty(self):
+        path, alias = self.report_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.empty)                       # MT5's own empty report, as written on 11-27
+        for png in ('-hst', '-mfemae', '-holding'):
+            path.with_name(alias + png + '.png').write_bytes(b'png')
 
     def sleep(self, seconds):
         self.now += seconds
@@ -241,11 +254,7 @@ class EmptyReportFastFailTests(unittest.TestCase):
         n = len(self.starts)
         if n in self.empty_starts:
             if self.now - self.started_at[n] >= self.empty_after:
-                path, alias = self.report_path()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(self.empty)                       # MT5's own empty report, as written on 11-27
-                for png in ('-hst', '-mfemae', '-holding'):
-                    path.with_name(alias + png + '.png').write_bytes(b'png')
+                self.write_empty()
                 self.process_state = None
             return
         self.mt5_writes_report(0)
@@ -315,6 +324,81 @@ class EmptyReportFastFailTests(unittest.TestCase):
         self.assertIn('MT5 ran different inputs than the frozen SET', m['error'])
         self.assertNotIn('fast_fail', m)
         self.assertNotIn('empty_report', m)
+
+    # ---- Codex P1 on GOAT-EA#363: a test asked to stop is never a fast-fail, whatever its report says
+    def assert_ended_once_never_re_run(self):
+        m = self.state()['members'][0]
+        self.assertEqual((len(self.starts), m['status'], m['attempts']), (1, 'failed', 1))
+        self.assertNotIn('fast_fail', m)
+        self.assertNotIn('Fast-failed', m['error'])
+        self.assertFalse(SeedRunner.resumable(self.state()))
+        path, _ = self.report_path()
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), EMPTY_REPORT_SHA256, 'never set aside')
+
+    def test_a_cancel_inside_30_s_whose_mt5_writes_an_empty_report_while_closing_is_never_re_run(self):
+        self.empty_starts = {1};self.empty_after = 10_000       # MT5 stays live until it is closed
+        self.runner.prepare('h1', self.plan())
+        self.runner.start('h1', 5)
+        self.assertEqual(self.state()['members'][0]['status'], 'running')
+        self.empty_on_close = True
+        self.runner.cancel('h1')
+        self.runner.status('h1')                                 # observed at once: well inside the 30 s window
+        self.now += 120                                          # past any re-run's due time: still nothing to re-run
+        self.runner.status('h1')
+        self.assert_ended_once_never_re_run()
+
+
+class RerunLaunchRecoveryTests(unittest.TestCase):
+    """Codex P2 on GOAT-EA#363: the one re-run's launch can be uncertain too (MT5 started, the identity probe stalled), which
+    leaves the member reconcile_required at attempts 2. Re-identify and reconcile settle it exactly as they settle a first
+    attempt, with every proof unchanged; nothing is launched again."""
+    _f = seed_fixture.LaunchReidentifyTests
+    setUp_seed, setUp, tearDown, close, start, prepare, member, output = (
+        seed_fixture.SeedTests.setUp, _f.setUp, _f.tearDown, _f.close, _f.start, _f.prepare, _f.member, _f.output)
+    matrix, sleep, statuses, iso, command_line, config_users, orphan_start, state, ORPHAN = (
+        _f.matrix, _f.sleep, _f.statuses, staticmethod(_f.iso), _f.command_line, _f.config_users, _f.orphan_start, _f.state,
+        _f.ORPHAN)
+    del _f
+
+    def strand_the_re_run(self):
+        self.matrix(1, fail={0})                 # the first attempt closes at once with no output: a fast-fail
+        self.runner.start('batch', 20)
+        m = self.state()['members'][0]
+        self.assertTrue(fast_fail.waiting_retry(m))
+        self.fail = set();self.auto = False;self.now += 120
+        self.process.start = lambda config: self.orphan_start(config)
+        with self.assertRaises(ValueError):
+            self.runner.resume('batch', 1)
+        self.process.start = self.start
+        state = self.state();m = state['members'][0]
+        self.assertEqual((state['status'], m['status'], m['attempts']), ('reconcile_required', 'reconcile_required', 2))
+        self.assertNotIn('process', m)
+        self.assertEqual(len(self.starts), 2)
+
+    def test_resume_re_identifies_a_stranded_re_run_and_collects_it(self):
+        self.strand_the_re_run()
+        self.auto = True
+        resumed = self.runner.resume('batch', 60)
+        m = resumed['members'][0]
+        self.assertEqual((resumed['status'], m['status'], m['attempts']), ('completed', 'completed', 2))
+        self.assertEqual(m['reidentified']['process']['pid'], self.ORPHAN)
+        self.assertEqual([row['event'] for _, row in self.journal], ['reidentified'])
+        self.assertEqual(len(self.starts), 2, 'nothing launched again')
+
+    def test_reconcile_settles_a_stranded_re_run_from_its_own_output_once_mt5_closed(self):
+        self.strand_the_re_run()
+        self.output(self.member(0));self.process_state = None     # the re-run finished and MT5 closed
+        result = self.runner.reconcile('batch')
+        m = self.state()['members'][0]
+        self.assertEqual((result['settled'], result['launch_sent'], m['status'], m['attempts']), (True, False, 'completed', 2))
+        self.assertEqual(m['reconciled']['from_status'], 'reconcile_required')
+        self.assertEqual(len(self.starts), 2)
+
+    def test_own_launch_is_the_first_attempt_or_the_recorded_re_run_and_nothing_else(self):
+        ff = dict(retry_after_unix=1.0)
+        self.assertEqual([fast_fail.own_launch(m) for m in (dict(attempts=1), dict(attempts=2, fast_fail=ff))], [True, True])
+        self.assertEqual([fast_fail.own_launch(m) for m in (dict(attempts=0), dict(attempts=2), dict(attempts=2, fast_fail='x'),
+                                                             dict(attempts=3, fast_fail=ff), dict())], [False] * 5)
 
 
 class AgentLogTests(unittest.TestCase):

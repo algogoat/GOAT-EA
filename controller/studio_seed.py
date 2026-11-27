@@ -580,7 +580,7 @@ class SeedRunner:
             self._settle_unowned(root,manifest,state)
             return []
         targets=[(spec,item) for spec,item in zip(manifest['members'],state['members'])
-                 if item['status']=='reconcile_required' and item.get('attempts')==1 and not item.get('result') and 'started_unix' in item]
+                 if item['status']=='reconcile_required' and fast_fail.own_launch(item) and not item.get('result') and 'started_unix' in item]
         if not targets:reasons=[]
         elif state.get('error')==UNOWNED_BETWEEN_MEMBERS and self.locked_journal is not None:
             reasons=[state['error']+'; close that MT5, then '+self.COMMAND_PREFIX+'-resume continues (or '+self.COMMAND_PREFIX
@@ -650,7 +650,7 @@ class SeedRunner:
         uncertain=[(spec,item) for spec,item in zip(manifest['members'],state['members']) if item['status']=='reconcile_required']
         if len(uncertain)!=1:return
         spec,item=uncertain[0]
-        if (item.get('attempts')!=1 or item.get('process') is not None or item.get('result')
+        if (not fast_fail.own_launch(item) or item.get('process') is not None or item.get('result')
                 or type(item.get('started_unix')) not in (int,float) or not launch_unconfirmed(item.get('error'))):
             return
         reason=self._adoption_refusal(spec,item,state,current)
@@ -687,6 +687,9 @@ class SeedRunner:
                 if current!=expected:
                     state['status']='reconcile_required';item['status']='reconcile_required';item['error']='Selected terminal PID/provenance changed';break
                 continue
+            # Read before collection, which can turn a cancel or timeout into 'failed' (Codex P1 on GOAT-EA#363): a member a
+            # person cancelled, or the runner timed out, is never a fast-fail, whatever its report says.
+            asked=item['status'] in ('cancel_requested','timeout_requested')
             paths=self._outputs(spec)
             result=None
             if len(paths)>1:
@@ -708,7 +711,7 @@ class SeedRunner:
                 if fast_fail.is_fast_fail(item,ran,bool(paths)):
                     fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
                                      install=self.c.install,agents_root=getattr(self,'agents_root',None))
-                elif fast_fail.is_empty_report_fast_fail(item,ran) and len(paths)==1:
+                elif not asked and fast_fail.is_empty_report_fast_fail(item,ran) and len(paths)==1:
                     try:
                         moved=fast_fail.set_aside(paths[0],root/(spec['alias']+'.fastfail-attempt1'+paths[0].suffix))
                     except (OSError,ValueError) as exc:
@@ -717,7 +720,7 @@ class SeedRunner:
                     else:
                         fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
                                          install=self.c.install,agents_root=getattr(self,'agents_root',None),set_aside_report=moved)
-                elif (item.get('attempts')==2 and isinstance(item.get('fast_fail'),dict) and 0<=ran<fast_fail.FAST_FAIL_SECONDS
+                elif (not asked and item.get('attempts')==2 and isinstance(item.get('fast_fail'),dict) and 0<=ran<fast_fail.FAST_FAIL_SECONDS
                       and ((item['status']=='missing_output' and not paths) or (item['status']=='failed' and item.get('empty_report') is True))):
                     item['error']=fast_fail.final_error(item,int(round(ran)),item.get('error'))
         self._settle_status(state)

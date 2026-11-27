@@ -84,6 +84,13 @@ def waiting_retry(item):
     return item.get('status') == 'pending' and item.get('attempts') == 1 and isinstance(item.get('fast_fail'), dict)
 
 
+def own_launch(item):
+    """A launch that reconcile and re-identify may settle: the member's first attempt, or its one recorded fast-fail re-run
+    (Codex P2 on GOAT-EA#363: an uncertain re-run launch was otherwise stuck). Every other proof stays the caller's."""
+    attempts = item.get('attempts')
+    return attempts == 1 or (attempts == 2 and isinstance(item.get('fast_fail'), dict))
+
+
 def _read_tail(path, limit):
     with open(path, 'rb') as stream:
         stream.seek(0, 2);size = stream.tell()

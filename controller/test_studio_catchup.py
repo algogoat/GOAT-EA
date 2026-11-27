@@ -470,6 +470,29 @@ class NativeCycleTests(CatchupCase):
         again = self.runner.validate(self.plan())
         self.assertEqual([m['symbol'] for m in again['members']], ['EURUSD', 'GBPUSD'])
 
+    def test_a_fast_fail_after_the_ea_wrote_its_capture_is_not_re_run_and_never_strands_the_batch(self):
+        # Codex P2 on GOAT-EA#363, at the real 30 s window: the EA initialised (GoatTraceInit wrote
+        # GOATSequencePending/<capture id>/run.csv), then MT5 closed with no export. A re-run under the same capture id would
+        # be refused by _before_start on every resume, so the member ends missing_output with its capture kept, and the
+        # batch goes on with its next member.
+        self.runner.prepare('cu1', self.plan())
+        self.runner.start('cu1', 1)
+        member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
+        run = Path(self.controller.install['common_files_root']) / 'GOATSequencePending' / member['capture_id'] / 'run.csv'
+        run.write_text('capture', encoding='utf-8')
+        self.process_state = None
+        first = self.runner.status('cu1')['members'][0]
+        self.assertEqual((first['status'], first['attempts']), ('missing_output', 1))
+        self.assertNotIn('fast_fail', first)
+        self.assertIn('so it is not re-run', first['error'])
+        self.now += 120
+        self.auto = True
+        self.runner.resume('cu1', 60)
+        state = read_json(self.runner.path('cu1') / 'state.json')
+        self.assertEqual([m['status'] for m in state['members']], ['missing_output', 'completed'])
+        self.assertEqual(len(self.starts), 2, 'the captured member is never re-run')
+        self.assertEqual(run.read_text(encoding='utf-8'), 'capture')
+
     def test_requeue_skips_caught_up_members_and_retries_unjudged_ones(self):
         self.runner.prepare('cu1', self.plan())
         self.auto = True

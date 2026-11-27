@@ -526,6 +526,11 @@ class SeedRunner:
         item['status']='completed';item['finished_unix']=self.clock()
         return None
 
+    def _retry_blocked(self,spec):
+        """Why a fast-failed member cannot have its one re-run, or None. A runner whose first attempt can leave evidence a
+        re-run would collide with says so here (catch-up: its native capture), and the member then ends as it is."""
+        return None
+
     def _stray_output(self,root,spec):
         """Paths of any output a member already has before its start (its own output or a retained result)."""
         found=[str(p) for p in self._outputs(spec)]
@@ -708,10 +713,18 @@ class SeedRunner:
                 # first attempt that failed on an empty report (no expert, no symbol) inside the same 30 s counts too; its
                 # report is moved aside first (create-only, never deleted), and if that move fails the member stays failed.
                 ran=item['finished_unix']-item['started_unix']
-                if fast_fail.is_fast_fail(item,ran,bool(paths)):
+                missing=fast_fail.is_fast_fail(item,ran,bool(paths))
+                empty=not asked and fast_fail.is_empty_report_fast_fail(item,ran) and len(paths)==1
+                # Codex P2 on GOAT-EA#363: a first attempt that left evidence its re-run would collide with (a catch-up's
+                # native capture) is not re-run; it ends as it is, its evidence kept, and the batch goes on.
+                blocked=self._retry_blocked(spec) if (missing or empty) else None
+                if blocked:
+                    item['error']=(item.get('error') or '')+(' MT5 closed inside %d s, but %s, so it is not re-run.'
+                                                             %(fast_fail.FAST_FAIL_SECONDS,blocked))
+                elif missing:
                     fast_fail.record(item,started_unix=item['started_unix'],finished_unix=item['finished_unix'],error=item.get('error'),
                                      install=self.c.install,agents_root=getattr(self,'agents_root',None))
-                elif not asked and fast_fail.is_empty_report_fast_fail(item,ran) and len(paths)==1:
+                elif empty:
                     try:
                         moved=fast_fail.set_aside(paths[0],root/(spec['alias']+'.fastfail-attempt1'+paths[0].suffix))
                     except (OSError,ValueError) as exc:
